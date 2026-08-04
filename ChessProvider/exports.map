@@ -1,0 +1,13 @@
+VERSION_1.0 {
+  global:
+    RegisterDynamicLoader;
+    *Cleanup;
+    *Provider;
+    *Work;
+    *List;
+    *Stream;
+    *GetHash;
+    *Make;
+  local:
+    *;
+};
