@@ -1,3 +1,3 @@
-[submodule "ChessProvider/ChessProvider"]
-	path = ChessProvider/ChessProvider
+[submodule "ChessProvider/ChessProvider/CChess"]
+	path = ChessProvider/ChessProvider/CChess
 	url = https://github.com/Entropy675/CChess.git
