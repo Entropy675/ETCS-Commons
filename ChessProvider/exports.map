@@ -8,6 +8,7 @@ VERSION_1.0 {
     *Stream;
     *GetHash;
     *Make;
+    *MakeChild;
   local:
     *;
 };
