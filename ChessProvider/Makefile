@@ -18,6 +18,32 @@ SRC_MODULE := $(TARGET_BASE_NAME).cc
 HASH_HEADER := module_hashes.h
 
 # -------------------------
+# CChess engine sources, compiled INTO this module so ChessProvider.so is
+# self-contained -- no libcchess.so at runtime, nothing to install beside it.
+# Without this the module links with Board's methods left undefined and dlopen
+# fails at load ("undefined symbol: _ZN5Board11isCheckmateEv"), because
+# Board.h only DECLARES them.
+#
+# The exclusions are CChess's own loader and concrete renderers -- exactly the
+# layer ETCS replaces. main.cc is a standalone entry point and ChessGame*.cc is
+# the old loader; NcView/WinView are the ncurses/Windows renderers the runtime
+# now owns (and would drag in ncurses as a link dependency).
+#
+# View.cc is deliberately NOT excluded, despite being part of that same layer:
+# Log.cc owns a std::vector<View*> registry and delViewById calls
+# View::getId(), so the abstract base is a dependency of the LOGGING layer, not
+# just of rendering. It comes along until that registry moves out of Log.
+CCHESS_DIR := $(TARGET_BASE_NAME)/CChess/src
+CCHESS_EXCLUDE := $(CCHESS_DIR)/main.cc \
+                  $(CCHESS_DIR)/ChessGame.cc \
+                  $(CCHESS_DIR)/ChessGameLinux.cc \
+                  $(CCHESS_DIR)/ChessGameWindows.cc \
+                  $(CCHESS_DIR)/NcView.cc \
+                  $(CCHESS_DIR)/WinView.cc
+CCHESS_SRC := $(filter-out $(CCHESS_EXCLUDE), $(wildcard $(CCHESS_DIR)/*.cc)) \
+              $(wildcard $(CCHESS_DIR)/piece_behav/*.cc)
+
+# -------------------------
 # Detect platform
 UNAME_S := $(shell uname -s)
 
@@ -49,11 +75,17 @@ else
 endif
 # -------------------------
 # MODULE HEADERS: Local module headers
+#
+# Deliberately does NOT reach into $(CCHESS_DIR): this glob feeds the manifest
+# hashes below, which should pin THIS module's own contract surface
+# (ChessProvider.h, ChessProvider/ChessBoard.h), not the vendored engine's
+# internals -- otherwise every upstream CChess commit churns the module hash
+# and invalidates the ABI attestation for a change no consumer can observe.
 LOCAL_HEADERS := $(wildcard $(PLATFORM_DIR)/*.h) $(wildcard $(TARGET_BASE_NAME)/*.h)
 MODULE_HEADERS := $(sort $(LOCAL_HEADERS) $(TARGET_BASE_NAME).h)
 
 # List all necessary dependencies
-MODULE_DEPS := $(SRC_MODULE) $(MODULE_HEADERS) $(GLOBAL_HEADERS)
+MODULE_DEPS := $(SRC_MODULE) $(CCHESS_SRC) $(MODULE_HEADERS) $(GLOBAL_HEADERS)
 
 # -------------------------
 # Build Targets
@@ -77,7 +109,7 @@ $(HASH_HEADER): $(MODULE_HEADERS)
 # -------------------------
 # Build rule
 $(FINAL_TARGET): $(MODULE_DEPS) $(HASH_HEADER)
-	$(CXX) $(CXXFLAGS) $(EXTRADEFINES) $(LDFLAGS) -o $@ $(SRC_MODULE)
+	$(CXX) $(CXXFLAGS) $(EXTRADEFINES) $(LDFLAGS) -o $@ $(SRC_MODULE) $(CCHESS_SRC)
 
 # -------------------------
 # Clean rule

@@ -30,7 +30,12 @@
 DEFINE_WORK_FUNC(ChessBoard, Move)
 {
     std::string mv = data.restAsString();
-    if (mv.size() < 4) { data.writeString("ILLEGAL"); return; }
+    if (mv.size() < 4)
+    {
+        ETCS_LOG("ChessBoard", "Move: rejected (too short) \"" << mv << "\"");
+        data.writeString("ILLEGAL");
+        return;
+    }
 
     Pos from(mv[0] - 'a', 8 - (mv[1] - '0'));
     Pos to  (mv[2] - 'a', 8 - (mv[3] - '0'));
@@ -44,15 +49,26 @@ DEFINE_WORK_FUNC(ChessBoard, Move)
         self.game().registerPromotion(promo);
     }
 
-    if (st == ChessStatus::FAIL) data.writeString("ILLEGAL");
-    else                         data.writeString(self.game().toFENString().c_str());
+    if (st == ChessStatus::FAIL)
+    {
+        ETCS_LOG("ChessBoard", "Move: illegal \"" << mv << "\"");
+        data.writeString("ILLEGAL");
+    }
+    else
+    {
+        std::string fen = self.game().toFENString();
+        ETCS_LOG("ChessBoard", "Move: \"" << mv << "\" -> " << fen);
+        data.writeString(fen.c_str());
+    }
 }
 
 // Fen -- serialize the position. Both the render source (the UI draws from
 // this) and the sync source (a joining or re-simulating peer loads it).
 DEFINE_WORK_FUNC(ChessBoard, Fen)
 {
-    data.writeString(self.game().toFENString().c_str());
+    std::string fen = self.game().toFENString();
+    ETCS_LOG("ChessBoard", "Fen: " << fen);
+    data.writeString(fen.c_str());
 }
 
 // LoadFen -- restore a position: resume, replay, or sync to a peer's state.
@@ -62,7 +78,17 @@ DEFINE_WORK_FUNC(ChessBoard, LoadFen)
 {
     std::string fen = data.restAsString();
     bool ok = self.game().loadFEN(fen);
-    data.writeString(ok ? self.game().toFENString().c_str() : "INVALID");
+    if (ok)
+    {
+        std::string result = self.game().toFENString();
+        ETCS_LOG("ChessBoard", "LoadFen: loaded \"" << fen << "\" -> " << result);
+        data.writeString(result.c_str());
+    }
+    else
+    {
+        ETCS_LOG("ChessBoard", "LoadFen: invalid \"" << fen << "\"");
+        data.writeString("INVALID");
+    }
 }
 
 // Status -- what the View's status bar showed: side to move, check, terminal.
@@ -73,6 +99,7 @@ DEFINE_WORK_FUNC(ChessBoard, Status)
     else if (self.game().isStalemate())       s += " stalemate";
     else if (self.game().sideToMoveInCheck()) s += " check";
     else                                      s += " ok";
+    ETCS_LOG("ChessBoard", "Status: " << s);
     data.writeString(s.c_str());
 }
 
@@ -93,8 +120,9 @@ DEFINE_WORK_FUNC(ChessBoard, Status)
 DEFINE_WORK_FUNC(ChessBoard, Accept)
 {
     std::string who = data.restAsString();
-    ETCS_LOG("ChessBoard", "Accept: connection joined (" << who << ")");
-    data.writeString(self.game().toFENString().c_str()); // hand back the position
+    std::string fen = self.game().toFENString();
+    ETCS_LOG("ChessBoard", "Accept: connection joined (" << who << ") -> " << fen);
+    data.writeString(fen.c_str()); // hand back the position
 }
 
 #endif // CHESSPROVIDER_H__
