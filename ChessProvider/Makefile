@@ -68,7 +68,7 @@ $(HASH_HEADER): $(MODULE_HEADERS)
 		FULL_NAME=$$(basename $$f); \
 		VAR_NAME=$$(echo $$FULL_NAME | sed 's/\./_/g'); \
 		echo "inline const bool _reg_$$VAR_NAME = []() { \
-		    ETCS::FlatMap<ETCS::Buffer, ETCS::Buffer>::setArena(&ETCS::Entity::getArena());  \
+		    ETCS::FlatMap<ETCS::Buffer, ETCS::Buffer>::setArena(&ETCS::MemoryArena::getInstance());  \
 			ETCS::Entity::getManifest()[\"$$FULL_NAME\"] = \"$$HASH\"; \
 			return true; \
 		}();" >> $@; \
