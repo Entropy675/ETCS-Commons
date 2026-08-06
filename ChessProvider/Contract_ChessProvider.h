@@ -11,7 +11,7 @@
 // #endif
 
 // because this code is OS invariant, we don't need to do the whole typedef shenanigans to have a concrete type...
-#include "ChessProvider/ChessBoard.h"
+#include "ChessProvider/ChessGame.h"
 #define CHESSPROVIDER_CONTRACT__
 
 // auto generated hashes of headers:

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ACE Chess</title>
+<style>
+  :root { --light:#e8e2d5; --dark:#7a8a6f; --sel:#c9b458; --ink:#1c1c1a; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center;
+         justify-content:center; gap:24px; flex-wrap:wrap; padding:20px;
+         background:#14150f; color:#e8e2d5; box-sizing:border-box;
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .col { display:flex; flex-direction:column; gap:10px; }
+  #board { display:grid; grid-template-columns:repeat(8,64px);
+           grid-template-rows:repeat(8,64px);
+           border:3px solid #3b3d31; box-shadow:0 10px 40px #0008; }
+  .sq { display:flex; align-items:center; justify-content:center;
+        font-size:42px; user-select:none; }
+  .light { background:var(--light); } .dark { background:var(--dark); }
+  .sq.sel { outline:3px solid var(--sel); outline-offset:-3px; }
+  .sq span { color:var(--ink); text-shadow:0 1px 0 #fff6; }
+  .sq.b span { color:#16160f; text-shadow:0 1px 0 #8886; }
+  .playing .sq { cursor:pointer; }
+  #status { min-height:1.4em; letter-spacing:.04em; }
+  #role { color:#c9b458; }
+  #fen { font-size:11px; color:#8d907c; word-break:break-all; max-width:520px; }
+  #chat { width:260px; height:360px; overflow-y:auto; background:#1b1c14;
+          border:1px solid #3b3d31; padding:8px; font-size:12px;
+          white-space:pre-wrap; }
+  #say { width:260px; background:#1b1c14; color:#e8e2d5; border:1px solid #3b3d31;
+         padding:6px; font:inherit; font-size:12px; box-sizing:border-box; }
+  .bad { color:#d4674f; }
+</style>
+</head>
+<body>
+  <div class="col">
+    <div id="board"></div>
+    <div id="status">connecting…</div>
+    <div id="fen"></div>
+  </div>
+  <div class="col">
+    <div id="role">role: —</div>
+    <div id="chat"></div>
+    <input id="say" placeholder="say something, enter to send" maxlength="80">
+  </div>
+
+<script>
+// ── Identity ─────────────────────────────────────────────────────────────────
+// A client-generated token, NOT a connection: the server answers with
+// Connection: close, so every fetch is its own connection and nothing on the
+// wire outlives a single request. The token is what makes "this side is mine"
+// mean anything across requests -- and it is the same slot a signed ACE
+// identity drops into later, and the same thing a peer would present with no
+// server involved at all.
+//
+// Persisted, so a reload reclaims your seat rather than surrendering it.
+const KEY   = 'demo';          // must match the game's Key in chess_server.etcs
+const MOUNT = 'game';
+const TOKEN = (() => {
+  let t = localStorage.getItem('ace_chess_token');
+  if (!t) { t = Math.random().toString(36).slice(2, 10); localStorage.setItem('ace_chess_token', t); }
+  return t;
+})();
+
+// /<mount>/<key>/<token>/<verb>[/<arg>] -- which game, who, what, narrowing
+// left to right. The game locates the verb relative to its own key, so the
+// mount prefix is free to change without touching the server.
+const url = (verb, arg) =>
+  '/' + MOUNT + '/' + KEY + '/' + TOKEN + '/' + verb + (arg ? '/' + encodeURIComponent(arg) : '');
+
+const GLYPH = { K:'\u2654',Q:'\u2655',R:'\u2656',B:'\u2657',N:'\u2658',P:'\u2659',
+                k:'\u265A',q:'\u265B',r:'\u265C',b:'\u265D',n:'\u265E',p:'\u265F' };
+const boardEl  = document.getElementById('board');
+const statusEl = document.getElementById('status');
+const fenEl    = document.getElementById('fen');
+const roleEl   = document.getElementById('role');
+const chatEl   = document.getElementById('chat');
+const sayEl    = document.getElementById('say');
+
+let squares = [], selected = null, lastFen = '', myRole = 'viewer', myTurn = false;
+
+for (let y = 0; y < 8; y++)
+  for (let x = 0; x < 8; x++) {
+    const d = document.createElement('div');
+    d.className = 'sq ' + ((x + y) % 2 ? 'dark' : 'light');
+    d.dataset.alg = 'abcdefgh'[x] + (8 - y);
+    d.onclick = () => clickSquare(d);
+    boardEl.appendChild(d); squares.push(d);
+  }
+
+function draw(fen) {
+  const rows = fen.split(' ')[0].split('/');
+  let i = 0;
+  for (let y = 0; y < 8; y++)
+    for (const ch of rows[y]) {
+      if (ch >= '1' && ch <= '8') { for (let k = 0; k < +ch; k++) set(squares[i++], ''); }
+      else set(squares[i++], ch);
+    }
+  fenEl.textContent = fen;
+}
+function set(sq, ch) {
+  sq.innerHTML = ch ? '<span>' + GLYPH[ch] + '</span>' : '';
+  sq.classList.toggle('b', ch && ch === ch.toLowerCase());
+}
+
+function clickSquare(sq) {
+  // A viewer has no controls at all. Seats are claimed by MOVING, though, so a
+  // viewer whose side is still open is allowed to try -- that attempt IS the
+  // claim. Only someone who has actually been refused a seat is locked out.
+  if (myRole !== 'viewer' && !myTurn) { flash('not your turn'); return; }
+  if (!selected) { selected = sq; sq.classList.add('sel'); return; }
+  const from = selected.dataset.alg, to = sq.dataset.alg;
+  selected.classList.remove('sel'); selected = null;
+  if (from !== to) move(from + to);
+}
+
+function flash(msg) { statusEl.textContent = msg; statusEl.className = 'bad'; }
+
+async function move(uci) {
+  try {
+    const t = (await (await fetch(url('move', uci))).text()).trim();
+    if (t === 'ILLEGAL')            flash(uci + ' — illegal');
+    else if (t === 'NOT YOUR TURN') flash('not your turn');
+    else if (t === 'NOT YOUR SEAT') flash('both seats are taken — you are watching');
+    else { statusEl.className = ''; lastFen = t; draw(t); refreshStatus(); }
+  } catch (e) { flash('move failed'); }
+}
+
+async function refresh() {
+  try {
+    const fen = (await (await fetch(url('fen'))).text()).trim();
+    if (fen && fen !== lastFen) { lastFen = fen; draw(fen); }
+  } catch (e) {}
+}
+
+// "w ok viewer open taken" -- side, state, my role, white seat, black seat.
+// One request tells the client everything it needs to render its own controls,
+// rather than inferring role from a separate call that could disagree.
+async function refreshStatus() {
+  try {
+    const parts = (await (await fetch(url('status'))).text()).trim().split(/\s+/);
+    if (parts.length < 3) return;
+    const [side, state, role] = parts;
+    myRole = role;
+    myTurn = (role === 'white' && side === 'w') || (role === 'black' && side === 'b');
+    boardEl.parentElement.classList.toggle('playing', role !== 'viewer' || state === 'ok');
+    roleEl.textContent = 'role: ' + role
+      + (parts[3] ? '  white:' + parts[3] : '') + (parts[4] ? '  black:' + parts[4] : '');
+    if (statusEl.className !== 'bad')
+      statusEl.textContent = (side === 'w' ? 'white' : 'black') + ' to move — ' + state;
+  } catch (e) {}
+}
+
+async function refreshChat() {
+  try {
+    const log = await (await fetch(url('chat'))).text();
+    if (log !== chatEl.textContent) {
+      const atBottom = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4;
+      chatEl.textContent = log;
+      if (atBottom) chatEl.scrollTop = chatEl.scrollHeight;
+    }
+  } catch (e) {}
+}
+
+sayEl.addEventListener('keydown', async ev => {
+  if (ev.key !== 'Enter' || !sayEl.value.trim()) return;
+  const text = sayEl.value.trim(); sayEl.value = '';
+  try { chatEl.textContent = await (await fetch(url('say', text))).text(); }
+  catch (e) {}
+  chatEl.scrollTop = chatEl.scrollHeight;
+});
+
+// Start from the standard position so the board is visible immediately; the
+// poll replaces it as soon as the server answers. Polling doubles as the
+// heartbeat the game uses to notice an abandoned seat -- there is no
+// disconnect signal in HTTP, so presence IS traffic.
+draw('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+refresh(); refreshStatus(); refreshChat();
+setInterval(() => { refresh(); refreshStatus(); refreshChat(); }, 1000);
+</script>
+</body>
+</html>

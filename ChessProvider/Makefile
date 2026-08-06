@@ -78,7 +78,7 @@ endif
 #
 # Deliberately does NOT reach into $(CCHESS_DIR): this glob feeds the manifest
 # hashes below, which should pin THIS module's own contract surface
-# (ChessProvider.h, ChessProvider/ChessBoard.h), not the vendored engine's
+# (ChessProvider.h, ChessProvider/ChessGame.h), not the vendored engine's
 # internals -- otherwise every upstream CChess commit churns the module hash
 # and invalidates the ABI attestation for a change no consumer can observe.
 LOCAL_HEADERS := $(wildcard $(PLATFORM_DIR)/*.h) $(wildcard $(TARGET_BASE_NAME)/*.h)
