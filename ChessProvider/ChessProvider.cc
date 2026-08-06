@@ -16,4 +16,4 @@ ETCS_MODULE_EXPORT_MAIN(ChessProvider, "ChessBoard")
 //
 // If ETCS_TAG_BLOCK_HYBRID's stream tuple can't be empty, fall back to:
 //   ETCS_TAG_BLOCK_BASIC(ChessBoard, Move, Fen, Status, Reset, LoadFen, Serve, Accept)
-ETCS_TAG_BLOCK_BASIC(ChessBoard, Move, Fen, LoadFen, Status, Accept)
+ETCS_TAG_BLOCK_BASIC(ChessBoard, Move, Fen, LoadFen, Status, Accept, Filter, Key, Request, Reset, IsActive, Delete)

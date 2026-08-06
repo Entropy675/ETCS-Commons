@@ -29,46 +29,23 @@
 // a move ever reaches the engine.
 DEFINE_WORK_FUNC(ChessBoard, Move)
 {
-    std::string mv = data.restAsString();
-    if (mv.size() < 4)
-    {
-        ETCS_LOG("ChessBoard", "Move: rejected (too short) \"" << mv << "\"");
-        data.writeString("ILLEGAL");
-        return;
-    }
+    data.writeString(self.ApplyMove(data.restAsString()).c_str());
+}
 
-    Pos from(mv[0] - 'a', 8 - (mv[1] - '0'));
-    Pos to  (mv[2] - 'a', 8 - (mv[3] - '0'));
-
-    ChessStatus st = self.game().movePiece(from, to);
-    self.setLastStatus(st);
-
-    if (st == ChessStatus::PROMOTE && mv.size() >= 5)
-    {
-        std::string promo(1, mv[4]);
-        self.game().registerPromotion(promo);
-    }
-
-    if (st == ChessStatus::FAIL)
-    {
-        ETCS_LOG("ChessBoard", "Move: illegal \"" << mv << "\"");
-        data.writeString("ILLEGAL");
-    }
-    else
-    {
-        std::string fen = self.game().toFENString();
-        ETCS_LOG("ChessBoard", "Move: \"" << mv << "\" -> " << fen);
-        data.writeString(fen.c_str());
-    }
+// Request -- THE http entry point, and the only route this board registers.
+// Receives the full request path and decides the verb itself, because it is
+// also the thing that decided the path was its own (Filter). One owner for
+// "is this mine" and "what did they ask for" means the two can never disagree.
+DEFINE_WORK_FUNC(ChessBoard, Request)
+{
+    data.writeString(self.Request(data.restAsString()).c_str());
 }
 
 // Fen -- serialize the position. Both the render source (the UI draws from
 // this) and the sync source (a joining or re-simulating peer loads it).
 DEFINE_WORK_FUNC(ChessBoard, Fen)
 {
-    std::string fen = self.game().toFENString();
-    ETCS_LOG("ChessBoard", "Fen: " << fen);
-    data.writeString(fen.c_str());
+    data.writeString(self.game().toFENString().c_str());
 }
 
 // LoadFen -- restore a position: resume, replay, or sync to a peer's state.
@@ -78,34 +55,37 @@ DEFINE_WORK_FUNC(ChessBoard, LoadFen)
 {
     std::string fen = data.restAsString();
     bool ok = self.game().loadFEN(fen);
-    if (ok)
-    {
-        std::string result = self.game().toFENString();
-        ETCS_LOG("ChessBoard", "LoadFen: loaded \"" << fen << "\" -> " << result);
-        data.writeString(result.c_str());
-    }
-    else
-    {
-        ETCS_LOG("ChessBoard", "LoadFen: invalid \"" << fen << "\"");
-        data.writeString("INVALID");
-    }
+    data.writeString(ok ? self.game().toFENString().c_str() : "INVALID");
 }
 
 // Status -- what the View's status bar showed: side to move, check, terminal.
 DEFINE_WORK_FUNC(ChessBoard, Status)
 {
-    std::string s = self.game().isWhiteTurn() ? "w" : "b";
-    if      (self.game().isCheckmate())       s += " checkmate";
-    else if (self.game().isStalemate())       s += " stalemate";
-    else if (self.game().sideToMoveInCheck()) s += " check";
-    else                                      s += " ok";
-    ETCS_LOG("ChessBoard", "Status: " << s);
-    data.writeString(s.c_str());
+    data.writeString(self.StatusLine().c_str());
 }
 
-// NOTE: no Reset or Delete work function here -- EphemeralBase provides Reset
-// (ChessBoard::ResetConcrete is "new game") and DeletableBase provides Delete.
-// Re-declaring either would be a second, divergent door onto the same state.
+// ── Trait-provided verbs, exported ────────────────────────────────────────────
+// EphemeralBase gives ChessBoard Reset()/IsActive() and DeletableBase gives
+// Delete(), but inheriting a trait only supplies the C++ method -- the dispatch
+// surface is built from work functions, so each still needs a thin forwarder
+// here to be reachable from .etcs or the REPL. These call the base's PROVIDED
+// method (Reset/Delete), never the *Concrete implementation directly, so
+// whatever ceremony the base wraps around it still runs.
+DEFINE_WORK_FUNC(ChessBoard, Reset)
+{
+    bool ok = self.Reset();
+    data.writeString(ok ? self.game().toFENString().c_str() : "FAILED");
+}
+
+DEFINE_WORK_FUNC(ChessBoard, IsActive)
+{
+    data.writeString(self.IsActive() ? "active" : "finished");
+}
+
+DEFINE_WORK_FUNC(ChessBoard, Delete)
+{
+    data.writeString(self.Delete() ? "deleted" : "FAILED");
+}
 
 // ── The network edge ──────────────────────────────────────────────────────────
 // Accept -- the subscriber ConnectionManager calls per accepted connection,
@@ -120,9 +100,29 @@ DEFINE_WORK_FUNC(ChessBoard, Status)
 DEFINE_WORK_FUNC(ChessBoard, Accept)
 {
     std::string who = data.restAsString();
-    std::string fen = self.game().toFENString();
-    ETCS_LOG("ChessBoard", "Accept: connection joined (" << who << ") -> " << fen);
-    data.writeString(fen.c_str()); // hand back the position
+    self.TakeSeat();   // the seat is claimed HERE, not in the filter -- this is
+                       // the crossing actually happening, not a speculative ask
+    ETCS_LOG("ChessBoard", "Accept: connection joined (" << who << ") -- seats now "
+             << self.Seats() << "/2, key '" << self.MatchKey() << "'");
+    data.writeString(self.game().toFENString().c_str()); // hand back the position
+}
+
+// Filter -- the Filter_ predicate, exported so a router can consult it. Same
+// forwarding shape as Reset/Delete: the trait supplies Accepts(), the dispatch
+// surface needs a work function to reach it.
+DEFINE_WORK_FUNC(ChessBoard, Filter)
+{
+    self.Accepts(data);   // empty result == declined, by Filter_'s own contract
+}
+
+// Key -- read or set this board's equivalence class. A board with no key
+// accepts nothing, so this is what a matchmaker calls to open a game for
+// whoever holds the invite.
+DEFINE_WORK_FUNC(ChessBoard, Key)
+{
+    std::string k = data.restAsString();
+    if (!k.empty()) self.SetMatchKey(k);
+    data.writeString(self.MatchKey().c_str());
 }
 
 #endif // CHESSPROVIDER_H__
