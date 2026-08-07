@@ -30,6 +30,14 @@
   #say { width:260px; background:#1b1c14; color:#e8e2d5; border:1px solid #3b3d31;
          padding:6px; font:inherit; font-size:12px; box-sizing:border-box; }
   .bad { color:#d4674f; }
+  #promo { position:fixed; inset:0; display:none; align-items:center;
+           justify-content:center; background:#0009; }
+  #promo.on { display:flex; }
+  #promo .box { display:flex; gap:6px; padding:14px; background:#1b1c14;
+                border:1px solid #3b3d31; box-shadow:0 10px 40px #000a; }
+  #promo button { width:64px; height:64px; font-size:42px; cursor:pointer;
+                  background:var(--light); border:1px solid #3b3d31; color:var(--ink); }
+  #promo button:hover { background:var(--sel); }
 </style>
 </head>
 <body>
@@ -38,6 +46,7 @@
     <div id="status">connecting…</div>
     <div id="fen"></div>
   </div>
+  <div id="promo"><div class="box"></div></div>
   <div class="col">
     <div id="role">role: —</div>
     <div id="chat"></div>
@@ -110,9 +119,48 @@ function clickSquare(sq) {
   if (myRole !== 'viewer' && !myTurn) { flash('not your turn'); return; }
   if (!selected) { selected = sq; sq.classList.add('sel'); return; }
   const from = selected.dataset.alg, to = sq.dataset.alg;
+  const moverGlyph = selected.textContent;
+  const moverIsBlack = selected.classList.contains('b');
   selected.classList.remove('sel'); selected = null;
-  if (from !== to) move(from + to);
+  if (from === to) return;
+
+  // Promotion is a move the client cannot complete on its own: the engine
+  // answers PROMOTE and then waits for a piece choice, so sending a bare
+  // four-character move would leave the board mid-transaction. Detected here
+  // (a pawn arriving on its far rank) rather than inferred from the reply,
+  // because the reply for a promotion is indistinguishable from any other
+  // successful move once the choice has already been made.
+  //
+  // The DETECTION is a convenience, not a rule -- the engine still decides
+  // whether the move is legal at all, and ignores a promotion suffix on a move
+  // that isn't one. Guessing wrong here costs nothing.
+  const isPawn = moverGlyph === GLYPH.P || moverGlyph === GLYPH.p;
+  const lastRank = moverIsBlack ? '1' : '8';
+  if (isPawn && to[1] === lastRank) { askPromotion(from + to, moverIsBlack); return; }
+
+  move(from + to);
 }
+
+// r n b q, case-insensitive, matching the engine's own promotionMatchChar --
+// king and pawn are deliberately absent there, so they are absent here.
+const PROMO_CHOICES = [['q','Q','q'], ['r','R','r'], ['b','B','b'], ['n','N','n']];
+const promoEl = document.getElementById('promo');
+
+function askPromotion(uci, black) {
+  const box = promoEl.firstElementChild;
+  box.innerHTML = '';
+  for (const [letter, whiteKey, blackKey] of PROMO_CHOICES) {
+    const b = document.createElement('button');
+    b.textContent = GLYPH[black ? blackKey : whiteKey];
+    b.onclick = () => { promoEl.classList.remove('on'); move(uci + letter); };
+    box.appendChild(b);
+  }
+  promoEl.classList.add('on');
+}
+
+// Dismissing without choosing abandons the move entirely -- nothing was sent,
+// so the engine never entered the promote state and the board is unchanged.
+promoEl.onclick = ev => { if (ev.target === promoEl) promoEl.classList.remove('on'); };
 
 function flash(msg) { statusEl.textContent = msg; statusEl.className = 'bad'; }
 
