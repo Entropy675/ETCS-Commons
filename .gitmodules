@@ -1,3 +1,12 @@
 [submodule "ChessProvider/ChessProvider/CChess"]
 	path = ChessProvider/ChessProvider/CChess
 	url = https://github.com/Entropy675/CChess.git
+[submodule "DatabaseProvider/sqlite"]
+	path = DatabaseProvider/sqlite
+	url = https://github.com/sqlite/sqlite.git
+[submodule "NetworkProvider/mbedtls"]
+	path = NetworkProvider/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "NetworkProvider/picohttpparser"]
+	path = NetworkProvider/picohttpparser
+	url = https://github.com/h2o/picohttpparser.git
