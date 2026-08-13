@@ -12,6 +12,9 @@
 
 // because this code is OS invariant, we don't need to do the whole typedef shenanigans to have a concrete type...
 #include "ChessProvider/ChessGame.h"
+#include "ChessProvider/ChessNode.h"
+#include "ChessProvider/ChessLobby.h"
+
 #define CHESSPROVIDER_CONTRACT__
 
 // auto generated hashes of headers:

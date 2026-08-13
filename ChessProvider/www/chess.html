@@ -5,226 +5,586 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ACE Chess</title>
 <style>
-  :root { --light:#e8e2d5; --dark:#7a8a6f; --sel:#c9b458; --ink:#1c1c1a; }
-  body { margin:0; min-height:100vh; display:flex; align-items:center;
-         justify-content:center; gap:24px; flex-wrap:wrap; padding:20px;
-         background:#14150f; color:#e8e2d5; box-sizing:border-box;
+  :root { --light:#e8e2d5; --dark:#7a8a6f; --sel:#c9b458; --ink:#1c1c1a;
+          --bg:#14150f; --panel:#1b1c14; --line:#3b3d31; --dim:#8d907c;
+          /* One square, from which the whole board derives. min() rather than a
+             media query because the constraint is arithmetic, not a device
+             class: 8 squares plus padding must fit the narrower of the viewport's
+             width and height, and 64px is simply the cap on a large screen.
+             Breakpoints would have to guess at the sizes this computes. */
+          --sq: min(64px, calc((100vw - 28px) / 8), calc((100vh - 210px) / 8)); }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--light);
          font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+           padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .brand { color:var(--sel); letter-spacing:.12em; }
+  .spacer { flex:1; }
+  input, button { font:inherit; font-size:12px; background:var(--panel);
+                  color:var(--light); border:1px solid var(--line); padding:5px 8px; }
+  button { cursor:pointer; }
+  button:hover:not(:disabled) { background:var(--sel); color:var(--ink); }
+  button:disabled { opacity:.4; cursor:default; }
+  button.primary { background:var(--sel); color:var(--ink); }
+  /* the identity, as a way HOME rather than as decoration */
+  #me { background:none; border:none; padding:2px 4px; color:var(--sel);
+        cursor:pointer; font:inherit; letter-spacing:.04em; }
+  #me:hover { text-decoration:underline; background:none; color:var(--sel); }
+  #record { color:var(--dim); font-size:12px; }
+  #lock { color:var(--dim); font-size:11px; }
+  main { padding:20px 16px; }
+  .hidden { display:none !important; }
+
+  #home { max-width:820px; margin:0 auto; display:flex; flex-direction:column; gap:20px; }
+  #home { max-width:820px; width:100%; margin:0 auto; display:flex; flex-direction:column; gap:20px; }
+  #home table { table-layout:fixed; }
+  #home td, #home th { overflow:hidden; text-overflow:ellipsis; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .grow { flex:1; }
+  h3 { margin:0 0 6px; font-weight:normal; color:var(--dim); font-size:12px;
+       letter-spacing:.1em; text-transform:uppercase; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--dim); font-weight:normal; font-size:11px;
+       letter-spacing:.08em; text-transform:uppercase;
+       border-bottom:1px solid var(--line); padding:6px 8px; }
+  td { padding:7px 8px; border-bottom:1px solid #24261c; }
+  tr:hover td { background:#1e1f16; }
+  .key { color:var(--sel); }
+  .st-waiting{color:var(--dim);} .st-playing{color:#8fbf7a;}
+  .st-checkmate,.st-stalemate,.st-draw,.st-resign-white,.st-resign-black{color:#d4a24f;}
+  .full { color:#d4674f; }
+  .link { color:var(--dim); font-size:11px; user-select:all; }
+  .empty { color:var(--dim); padding:12px 8px; font-size:12px; }
+  /* Wrap by content, not by breakpoint: the children are allowed to grow but
+     never to shrink below a table's own readable width, so when two of them no
+     longer fit they stack instead of squeezing. flex-basis carries the minimum
+     rather than min-width, because a media query later sets min-width:0 and
+     would otherwise cancel it -- which is exactly what made the players table
+     sit on top of the join button.
+     Note that flex-basis:100% below is what forces the stack outright, so no
+     arithmetic has to be right for it to be usable. */
+  .cols { display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start; }
+  .cols > div { flex:1 1 300px; min-width:0; }
+
+  #game { display:flex; gap:24px; justify-content:center; flex-wrap:wrap; }
   .col { display:flex; flex-direction:column; gap:10px; }
-  #board { display:grid; grid-template-columns:repeat(8,64px);
-           grid-template-rows:repeat(8,64px);
-           border:3px solid #3b3d31; box-shadow:0 10px 40px #0008; }
+  #board { display:grid; grid-auto-flow:row;
+           grid-template-columns:repeat(8,var(--sq));
+           grid-template-rows:repeat(8,var(--sq));
+           border:3px solid var(--line); box-shadow:0 10px 40px #0008; }
   .sq { display:flex; align-items:center; justify-content:center;
-        font-size:42px; user-select:none; }
-  .light { background:var(--light); } .dark { background:var(--dark); }
+        /* Glyph tracks the square rather than being a second number to keep in
+           sync -- 0.68 keeps a piece inside its square at every size. */
+        font-size:calc(var(--sq) * 0.68);
+        line-height:1; user-select:none; cursor:pointer; }
+  .sq.light{background:var(--light);} .sq.dark{background:var(--dark);}
   .sq.sel { outline:3px solid var(--sel); outline-offset:-3px; }
   .sq span { color:var(--ink); text-shadow:0 1px 0 #fff6; }
   .sq.b span { color:#16160f; text-shadow:0 1px 0 #8886; }
-  .playing .sq { cursor:pointer; }
   #status { min-height:1.4em; letter-spacing:.04em; }
-  #role { color:#c9b458; }
-  #fen { font-size:11px; color:#8d907c; word-break:break-all; max-width:520px; }
-  #chat { width:260px; height:360px; overflow-y:auto; background:#1b1c14;
-          border:1px solid #3b3d31; padding:8px; font-size:12px;
-          white-space:pre-wrap; }
-  #say { width:260px; background:#1b1c14; color:#e8e2d5; border:1px solid #3b3d31;
-         padding:6px; font:inherit; font-size:12px; box-sizing:border-box; }
-  .bad { color:#d4674f; }
-  #promo { position:fixed; inset:0; display:none; align-items:center;
-           justify-content:center; background:#0009; }
-  #promo.on { display:flex; }
-  #promo .box { display:flex; gap:6px; padding:14px; background:#1b1c14;
-                border:1px solid #3b3d31; box-shadow:0 10px 40px #000a; }
-  #promo button { width:64px; height:64px; font-size:42px; cursor:pointer;
-                  background:var(--light); border:1px solid #3b3d31; color:var(--ink); }
-  #promo button:hover { background:var(--sel); }
+  #status.bad { color:#d4674f; }
+  #fen { font-size:11px; color:var(--dim); word-break:break-all; max-width:520px; }
+  #role { color:var(--sel); font-size:12px; }
+  /* Fixed width forced a horizontal scrollbar on a phone even after the board
+     scaled: the flex row could wrap, but a 270px child cannot shrink below its
+     own width without min-width:0. */
+  #chat { width:100%; max-width:340px; min-width:0; height:min(300px, 32vh);
+          overflow-y:auto; background:var(--panel); border:1px solid var(--line);
+          padding:8px; font-size:12px; white-space:pre-wrap; }
+  #say  { width:100%; max-width:340px; min-width:0; }
+  #game .col { min-width:0; max-width:100%; }
+  #fen { max-width:100%; }
+  main { overflow-x:hidden; }
+  /* Tables are the other fixed-ish thing: the Link column holds a full URL and
+     will not wrap on its own. */
+  td.link { word-break:break-all; }
+  @media (max-width:560px) {
+    /* The shareable URL is the first thing worth dropping -- it is the widest
+       column and the least useful on a phone, where sharing goes through the
+       system share sheet rather than by selecting text. */
+    #mine th:nth-child(5), #mine td:nth-child(5) { display:none; }
+    header { gap:8px; font-size:12px; }
+    /* One column per row below this width. flex-basis:100% is unconditional --
+       it does not depend on the 300px estimate being right for any particular
+       device, it simply says a full row each. */
+    .cols > div { flex:1 1 100%; }
+  }
+
+  .veil { position:fixed; inset:0; display:none; align-items:center;
+          justify-content:center; background:#0009; z-index:10; }
+  .veil.on { display:flex; }
+  .veil .box { display:flex; gap:6px; padding:16px; background:var(--panel);
+               border:1px solid var(--line); box-shadow:0 10px 40px #000a; }
+  #over .box { flex-direction:column; gap:14px; padding:24px 32px; text-align:center; }
+  #over h2 { margin:0; font-size:20px; font-weight:normal; letter-spacing:.06em; color:var(--sel); }
+  #over p { margin:0; color:var(--dim); font-size:12px; }
+  #promo button { width:64px; height:64px; font-size:42px; background:var(--light); color:var(--ink); }
 </style>
 </head>
 <body>
-  <div class="col">
-    <div id="board"></div>
-    <div id="status">connecting…</div>
-    <div id="fen"></div>
-  </div>
-  <div id="promo"><div class="box"></div></div>
-  <div class="col">
-    <div id="role">role: —</div>
-    <div id="chat"></div>
-    <input id="say" placeholder="say something, enter to send" maxlength="80">
-  </div>
+
+<header>
+  <span class="brand">ACE CHESS</span>
+  <!-- The identity is the way HOME: your name is your lobby, so clicking it
+       goes to your own self rather than to some separate "menu" page. -->
+  <button id="me" title="Go to your lobby">—</button>
+  <span id="record"></span>
+  <span id="lock"></span>
+  <input id="rename" size="10" placeholder="rename" title="Pick a name — locks once you have a result">
+  <span class="spacer"></span>
+  <span id="here" class="link"></span>
+  <button id="to-home" class="hidden">&larr; my lobby</button>
+</header>
+
+<main>
+  <section id="home">
+    <div class="bar">
+      <button id="quick" class="primary">Quick play</button>
+      <input id="new-room" class="grow" placeholder="or name a match, e.g. friday-night">
+      <button id="make">Open match</button>
+      <button id="refresh">Refresh</button>
+    </div>
+
+    <div>
+      <h3>My games</h3>
+      <table><thead><tr><th>Match</th><th>Opponent</th><th>Here</th><th>State</th><th>Link</th><th></th></tr></thead>
+      <tbody id="mine"></tbody></table>
+      <div id="no-mine" class="empty">no games yet — quick play finds you an opponent</div>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h3>All matches on this node</h3>
+        <table><thead><tr><th>Match</th><th>Here</th><th>Seats</th><th>State</th><th></th></tr></thead>
+        <tbody id="rooms"></tbody></table>
+        <div id="no-rooms" class="empty">none open</div>
+      </div>
+      <div>
+        <h3>Players</h3>
+        <table><thead><tr><th>Name</th><th>W</th><th>L</th><th>D</th><th>Games</th><th>Idle</th></tr></thead>
+        <tbody id="players"></tbody></table>
+        <div id="no-players" class="empty">nobody yet</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="game" class="hidden">
+    <div class="col">
+      <div id="board"></div>
+      <div id="status">connecting…</div>
+      <div class="bar" id="controls">
+        <button id="resign">Resign</button>
+        <button id="draw">Offer draw</button>
+        <span id="offer" class="link"></span>
+      </div>
+      <div id="fen"></div>
+    </div>
+    <div class="col">
+      <div id="role">role: —</div>
+      <div id="chat"></div>
+      <input id="say" placeholder="say something, enter to send" maxlength="80">
+    </div>
+  </section>
+</main>
+
+<div id="promo" class="veil"><div class="box"></div></div>
+<div id="over" class="veil"><div class="box">
+  <h2 id="over-title">Game over</h2><p id="over-sub"></p>
+  <button id="over-new" class="primary">New game</button>
+</div></div>
 
 <script>
-// ── Identity ─────────────────────────────────────────────────────────────────
-// A client-generated token, NOT a connection: the server answers with
-// Connection: close, so every fetch is its own connection and nothing on the
-// wire outlives a single request. The token is what makes "this side is mine"
-// mean anything across requests -- and it is the same slot a signed ACE
-// identity drops into later, and the same thing a peer would present with no
-// server involved at all.
-//
-// Persisted, so a reload reclaims your seat rather than surrendering it.
-const KEY   = 'demo';          // must match the game's Key in chess_server.etcs
+const $ = id => document.getElementById(id);
 const MOUNT = 'game';
-const TOKEN = (() => {
-  let t = localStorage.getItem('ace_chess_token');
-  if (!t) { t = Math.random().toString(36).slice(2, 10); localStorage.setItem('ace_chess_token', t); }
-  return t;
-})();
+const qs = new URLSearchParams(location.search);
 
-// /<mount>/<key>/<token>/<verb>[/<arg>] -- which game, who, what, narrowing
-// left to right. The game locates the verb relative to its own key, so the
-// mount prefix is free to change without touching the server.
-const url = (verb, arg) =>
-  '/' + MOUNT + '/' + KEY + '/' + TOKEN + '/' + verb + (arg ? '/' + encodeURIComponent(arg) : '');
+// ── Identity ─────────────────────────────────────────────────────────────────
+// A client-chosen name, NOT a connection: the server answers Connection: close,
+// so every fetch is its own connection and nothing on the wire outlives a single
+// request. The name is what makes "this side is mine" and "this record is mine"
+// mean anything across requests -- and it is the slot a signed ACE key drops
+// into later, the same thing a peer would present with no server at all.
+//
+// Stored in a COOKIE rather than only localStorage: a cookie has an explicit
+// lifetime we can state (a year), it survives across the whole origin, and it is
+// the same channel that would carry a real credential later. localStorage is
+// still read once, to migrate anyone who already has a token from before.
+function setCookie(k, v, days) {
+  document.cookie = k + '=' + encodeURIComponent(v) +
+                    '; path=/; max-age=' + (days * 86400) + '; SameSite=Lax';
+}
+function getCookie(k) {
+  const m = document.cookie.match('(^|;)\\s*' + k + '\\s*=\\s*([^;]+)');
+  return m ? decodeURIComponent(m[2]) : null;
+}
+const COOKIE = 'ace_chess_name';
 
+let TOKEN = qs.get('as')                      // explicit override, for testing
+         || getCookie(COOKIE)                  // the durable one
+         || localStorage.getItem('ace_chess_token')   // migrate the old store
+         || ('anon-' + Math.random().toString(36).slice(2, 7));
+setCookie(COOKIE, TOKEN, 365);
+
+let room    = qs.get('room') || null;   // the match id, null == home
+let locked  = false;                    // name locked by a recorded result
+
+// /<mount>/<self>/<match>/<verb>[/<arg>] -- SELF first, because that is the
+// segment that becomes implicit when the request arrives at your own machine:
+// a peer's own URL is just /<match>/<verb>.
+const api    = (verb, arg) => '/' + MOUNT + '/' + TOKEN + '/' + room + '/' + verb +
+                              (arg ? '/' + encodeURIComponent(arg) : '');
+const mine   = (verb, arg) => '/' + MOUNT + '/' + TOKEN + '/' + verb +
+                              (arg ? '/' + encodeURIComponent(arg) : '');
+const nodeUrl = verb       => '/' + MOUNT + '/' + verb;
+const matchUrl = m => location.origin + '/?room=' + encodeURIComponent(m);
+
+async function get(u) { return (await (await fetch(u)).text()); }
+const lines = t => t.split('\n').map(l => l.trim()).filter(Boolean);
+
+// ── Board ────────────────────────────────────────────────────────────────────
 const GLYPH = { K:'\u2654',Q:'\u2655',R:'\u2656',B:'\u2657',N:'\u2658',P:'\u2659',
                 k:'\u265A',q:'\u265B',r:'\u265C',b:'\u265D',n:'\u265E',p:'\u265F' };
-const boardEl  = document.getElementById('board');
-const statusEl = document.getElementById('status');
-const fenEl    = document.getElementById('fen');
-const roleEl   = document.getElementById('role');
-const chatEl   = document.getElementById('chat');
-const sayEl    = document.getElementById('say');
+const boardEl=$('board'), statusEl=$('status'), fenEl=$('fen'),
+      roleEl=$('role'), chatEl=$('chat'), sayEl=$('say');
+let squares=[], selected=null, lastFen='', myRole='viewer', myTurn=false,
+    flipped=false, overShown='';
 
-let squares = [], selected = null, lastFen = '', myRole = 'viewer', myTurn = false;
+// squares[] stays in FEN order -- 0 is a8, 63 is h1 -- so draw() walks a FEN
+// straight into it with no notion of orientation. Flipping is CSS `order`, not a
+// reordered array: otherwise every index in draw() would have to know the
+// orientation, and data-alg (the true square) would drift from the clicked cell.
+for (let y=0;y<8;y++) for (let x=0;x<8;x++) {
+  const d=document.createElement('div');
+  d.className='sq '+((x+y)%2?'dark':'light');
+  d.dataset.alg='abcdefgh'[x]+(8-y);
+  d.dataset.idx=y*8+x;
+  d.onclick=()=>clickSquare(d);
+  boardEl.appendChild(d); squares.push(d);
+}
+function applyOrientation(){ for(const d of squares) d.style.order = flipped?(63-+d.dataset.idx):+d.dataset.idx; }
+applyOrientation();
 
-for (let y = 0; y < 8; y++)
-  for (let x = 0; x < 8; x++) {
-    const d = document.createElement('div');
-    d.className = 'sq ' + ((x + y) % 2 ? 'dark' : 'light');
-    d.dataset.alg = 'abcdefgh'[x] + (8 - y);
-    d.onclick = () => clickSquare(d);
-    boardEl.appendChild(d); squares.push(d);
+// Only black flips; a viewer keeps white's view, the conventional default.
+function orientFor(role){ const w=(role==='black'); if(w===flipped) return; flipped=w; applyOrientation(); }
+
+// A FEN's placement field is eight '/'-separated ranks. Anything else is a
+// status string -- ILLEGAL, NOT FOUND, GAME OVER, BUSY -- and must be SHOWN, not
+// parsed: handing one to draw() throws inside the renderer and swallows the
+// message, which is the one thing needed to diagnose it.
+const isFen = s => typeof s==='string' && s.split(' ')[0].split('/').length===8;
+
+function draw(fen){
+  const rows=fen.split(' ')[0].split('/'); let i=0;
+  for(let y=0;y<8;y++) for(const ch of rows[y]){
+    if(ch>='1'&&ch<='8'){ for(let k=0;k<+ch;k++) set(squares[i++],''); }
+    else set(squares[i++],ch);
   }
-
-function draw(fen) {
-  const rows = fen.split(' ')[0].split('/');
-  let i = 0;
-  for (let y = 0; y < 8; y++)
-    for (const ch of rows[y]) {
-      if (ch >= '1' && ch <= '8') { for (let k = 0; k < +ch; k++) set(squares[i++], ''); }
-      else set(squares[i++], ch);
-    }
-  fenEl.textContent = fen;
+  fenEl.textContent=fen;
 }
-function set(sq, ch) {
-  sq.innerHTML = ch ? '<span>' + GLYPH[ch] + '</span>' : '';
-  sq.classList.toggle('b', ch && ch === ch.toLowerCase());
+function set(sq,ch){
+  sq.innerHTML = ch ? '<span>'+GLYPH[ch]+'</span>' : '';
+  sq.classList.toggle('b', ch && ch===ch.toLowerCase());
 }
+function flash(m){ statusEl.textContent=m; statusEl.className='bad'; }
 
-function clickSquare(sq) {
-  // A viewer has no controls at all. Seats are claimed by MOVING, though, so a
-  // viewer whose side is still open is allowed to try -- that attempt IS the
-  // claim. Only someone who has actually been refused a seat is locked out.
-  if (myRole !== 'viewer' && !myTurn) { flash('not your turn'); return; }
-  if (!selected) { selected = sq; sq.classList.add('sel'); return; }
-  const from = selected.dataset.alg, to = sq.dataset.alg;
-  const moverGlyph = selected.textContent;
-  const moverIsBlack = selected.classList.contains('b');
-  selected.classList.remove('sel'); selected = null;
-  if (from === to) return;
-
-  // Promotion is a move the client cannot complete on its own: the engine
-  // answers PROMOTE and then waits for a piece choice, so sending a bare
-  // four-character move would leave the board mid-transaction. Detected here
-  // (a pawn arriving on its far rank) rather than inferred from the reply,
-  // because the reply for a promotion is indistinguishable from any other
-  // successful move once the choice has already been made.
-  //
-  // The DETECTION is a convenience, not a rule -- the engine still decides
-  // whether the move is legal at all, and ignores a promotion suffix on a move
-  // that isn't one. Guessing wrong here costs nothing.
-  const isPawn = moverGlyph === GLYPH.P || moverGlyph === GLYPH.p;
-  const lastRank = moverIsBlack ? '1' : '8';
-  if (isPawn && to[1] === lastRank) { askPromotion(from + to, moverIsBlack); return; }
-
-  move(from + to);
+function clickSquare(sq){
+  if(!room) return;
+  // A viewer whose side is still open may try: attempting IS the claim. Only
+  // someone actually refused a seat is locked out.
+  if(myRole!=='viewer' && !myTurn){ flash('not your turn'); return; }
+  if(!selected){ selected=sq; sq.classList.add('sel'); return; }
+  const from=selected.dataset.alg, to=sq.dataset.alg;
+  const glyph=selected.textContent, isBlack=selected.classList.contains('b');
+  selected.classList.remove('sel'); selected=null;
+  if(from===to) return;
+  // Promotion cannot be completed client-side: the engine answers PROMOTE and
+  // WAITS for a piece, so a bare four-character move leaves the board
+  // mid-transaction.
+  const isPawn = glyph===GLYPH.P||glyph===GLYPH.p;
+  if(isPawn && to[1]===(isBlack?'1':'8')){ askPromotion(from+to,isBlack); return; }
+  move(from+to);
 }
 
-// r n b q, case-insensitive, matching the engine's own promotionMatchChar --
-// king and pawn are deliberately absent there, so they are absent here.
-const PROMO_CHOICES = [['q','Q','q'], ['r','R','r'], ['b','B','b'], ['n','N','n']];
-const promoEl = document.getElementById('promo');
-
-function askPromotion(uci, black) {
-  const box = promoEl.firstElementChild;
-  box.innerHTML = '';
-  for (const [letter, whiteKey, blackKey] of PROMO_CHOICES) {
-    const b = document.createElement('button');
-    b.textContent = GLYPH[black ? blackKey : whiteKey];
-    b.onclick = () => { promoEl.classList.remove('on'); move(uci + letter); };
-    box.appendChild(b);
+const PROMO=[['q','Q','q'],['r','R','r'],['b','B','b'],['n','N','n']];
+const promoEl=$('promo');
+function askPromotion(uci,black){
+  const box=promoEl.firstElementChild; box.innerHTML='';
+  for(const [letter,w,b] of PROMO){
+    const btn=document.createElement('button');
+    btn.textContent=GLYPH[black?b:w];
+    btn.onclick=()=>{ promoEl.classList.remove('on'); move(uci+letter); };
+    box.appendChild(btn);
   }
   promoEl.classList.add('on');
 }
+promoEl.onclick=ev=>{ if(ev.target===promoEl) promoEl.classList.remove('on'); };
 
-// Dismissing without choosing abandons the move entirely -- nothing was sent,
-// so the engine never entered the promote state and the board is unchanged.
-promoEl.onclick = ev => { if (ev.target === promoEl) promoEl.classList.remove('on'); };
-
-function flash(msg) { statusEl.textContent = msg; statusEl.className = 'bad'; }
-
-async function move(uci) {
-  try {
-    const t = (await (await fetch(url('move', uci))).text()).trim();
-    if (t === 'ILLEGAL')            flash(uci + ' — illegal');
-    else if (t === 'NOT YOUR TURN') flash('not your turn');
-    else if (t === 'NOT YOUR SEAT') flash('both seats are taken — you are watching');
-    else { statusEl.className = ''; lastFen = t; draw(t); refreshStatus(); }
-  } catch (e) { flash('move failed'); }
+async function move(uci){
+  try{
+    const t=(await get(api('move',uci))).trim();
+    if(t==='ILLEGAL') flash(uci+' — illegal');
+    else if(t==='NOT YOUR TURN') flash('not your turn');
+    else if(t==='NOT YOUR SEAT') flash('both seats taken — you are watching');
+    else if(t==='GAME OVER') flash('this game is finished');
+    else if(isFen(t)){ statusEl.className=''; lastFen=t; draw(t); await refreshStatus(); }
+    else flash('server said: '+(t||'(empty)'));
+  }catch(e){ flash('move failed: '+e); }
 }
 
-async function refresh() {
-  try {
-    const fen = (await (await fetch(url('fen'))).text()).trim();
-    if (fen && fen !== lastFen) { lastFen = fen; draw(fen); }
-  } catch (e) {}
+// Verbs that answer with a status line rather than a FEN.
+async function verb(name){
+  try{
+    const t=(await get(api(name))).trim();
+    if(t==='NOT YOUR SEAT'||t==='GAME OVER'){ flash(t.toLowerCase()); return; }
+    await refreshStatus();
+  }catch(e){ flash(name+' failed: '+e); }
+}
+$('resign').onclick=()=>{ if(confirm('Resign this game?')) verb('resign'); };
+$('draw').onclick=()=>verb('draw');
+
+// ── Game over ────────────────────────────────────────────────────────────────
+// Driven off the POLLED status so both sides see it: the player delivering mate
+// learns from their own reply, the one being mated only from their next poll.
+const overEl=$('over');
+function showGameOver(state,side){
+  if(overShown===state) return;
+  overShown=state;
+  if(state==='resign-white'||state==='resign-black'){
+    const quit=(state==='resign-white')?'White':'Black';
+    $('over-title').textContent='Resignation';
+    $('over-sub').textContent=quit+' resigned — '+((quit==='White')?'Black':'White')+' wins.';
+  } else if(state==='draw'){
+    $('over-title').textContent='Draw'; $('over-sub').textContent='Agreed by both players.';
+  } else if(state==='checkmate'){
+    $('over-title').textContent='Checkmate';
+    $('over-sub').textContent=((side==='w')?'Black':'White')+' wins.';
+  } else {
+    $('over-title').textContent='Stalemate';
+    $('over-sub').textContent='Draw — no legal move, and no check.';
+  }
+  overEl.classList.add('on');
+}
+function hideGameOver(){ overEl.classList.remove('on'); overShown=''; }
+
+// Any participant may reset: the position is already dead, so there is nothing
+// left to protect, and requiring a seat would strand a game whose loser closed
+// their tab. Reset clears the seats, so colours are re-taken next round.
+$('over-new').onclick=async()=>{
+  try{
+    const t=(await get(api('reset'))).trim();
+    hideGameOver();
+    if(isFen(t)){ lastFen=t; draw(t); }
+    statusEl.className=''; statusEl.textContent='new game';
+    await refreshStatus(); await refreshMe();
+  }catch(e){ flash('reset failed: '+e); }
+};
+
+// ── Game polling ─────────────────────────────────────────────────────────────
+async function refreshFen(){
+  try{ const f=(await get(api('fen'))).trim();
+       if(isFen(f)&&f!==lastFen){ lastFen=f; draw(f); } }catch(e){}
 }
 
-// "w ok viewer open taken" -- side, state, my role, white seat, black seat.
-// One request tells the client everything it needs to render its own controls,
-// rather than inferring role from a separate call that could disagree.
-async function refreshStatus() {
-  try {
-    const parts = (await (await fetch(url('status'))).text()).trim().split(/\s+/);
-    if (parts.length < 3) return;
-    const [side, state, role] = parts;
-    myRole = role;
-    myTurn = (role === 'white' && side === 'w') || (role === 'black' && side === 'b');
-    boardEl.parentElement.classList.toggle('playing', role !== 'viewer' || state === 'ok');
-    roleEl.textContent = 'role: ' + role
-      + (parts[3] ? '  white:' + parts[3] : '') + (parts[4] ? '  black:' + parts[4] : '');
-    if (statusEl.className !== 'bad')
-      statusEl.textContent = (side === 'w' ? 'white' : 'black') + ' to move — ' + state;
-  } catch (e) {}
-}
-
-async function refreshChat() {
-  try {
-    const log = await (await fetch(url('chat'))).text();
-    if (log !== chatEl.textContent) {
-      const atBottom = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4;
-      chatEl.textContent = log;
-      if (atBottom) chatEl.scrollTop = chatEl.scrollHeight;
+// "side state role wSeat bSeat drawoffer" -- one request tells the client
+// everything it needs to render its own controls, rather than inferring role
+// from a separate call that could disagree.
+async function refreshStatus(){
+  try{
+    const p=(await get(api('status'))).trim().split(/\s+/);
+    if(p.length<3){
+      // Say so rather than returning silently: role is parsed here, so a quiet
+      // return also freezes orientation and turn gating at whatever they were.
+      flash('status unparseable: '+(p.join(' ')||'(empty)')); return;
     }
-  } catch (e) {}
+    const [side,state,role]=p, wSeat=p[3], bSeat=p[4], offer=p[5]||'none';
+    myRole=role;
+    myTurn=(role==='white'&&side==='w')||(role==='black'&&side==='b');
+
+    // Orient by PRESUMPTIVE side. Seats are claimed by moving, so someone
+    // joining after white has opened is reported a viewer -- correctly -- right
+    // up until their own first move. Waiting for the server's answer flips the
+    // board one move late, which reads as the flip being broken.
+    let orient=role;
+    if(role==='viewer'&&wSeat==='taken'&&bSeat==='open') orient='black';
+    orientFor(orient);
+
+    const seated=(role==='white'||role==='black');
+    $('controls').style.visibility=seated?'visible':'hidden';
+    if(offer==='theirs'&&seated){
+      $('offer').innerHTML='draw offered — ';
+      const y=document.createElement('button'); y.textContent='accept'; y.onclick=()=>verb('draw');
+      const n=document.createElement('button'); n.textContent='decline'; n.onclick=()=>verb('decline');
+      $('offer').append(y,' ',n); $('draw').disabled=true;
+    } else {
+      $('offer').textContent=(offer==='mine')?'draw offered, waiting…':'';
+      $('draw').disabled=(offer==='mine');
+    }
+
+    roleEl.textContent='['+TOKEN+'] role: '+role+
+      (wSeat?'  white:'+wSeat:'')+(bSeat?'  black:'+bSeat:'');
+    if(statusEl.className!=='bad')
+      statusEl.textContent=(side==='w'?'white':'black')+' to move — '+state;
+
+    if(state==='checkmate'||state==='stalemate'||state==='draw'||state.startsWith('resign'))
+      showGameOver(state,side);
+    else if(overShown) hideGameOver();
+  }catch(e){}
 }
 
-sayEl.addEventListener('keydown', async ev => {
-  if (ev.key !== 'Enter' || !sayEl.value.trim()) return;
-  const text = sayEl.value.trim(); sayEl.value = '';
-  try { chatEl.textContent = await (await fetch(url('say', text))).text(); }
-  catch (e) {}
-  chatEl.scrollTop = chatEl.scrollHeight;
+async function refreshChat(){
+  try{
+    const log=await get(api('chat'));
+    if(log!==chatEl.textContent){
+      const bottom=chatEl.scrollTop+chatEl.clientHeight>=chatEl.scrollHeight-4;
+      chatEl.textContent=log;
+      if(bottom) chatEl.scrollTop=chatEl.scrollHeight;
+    }
+  }catch(e){}
+}
+sayEl.addEventListener('keydown',async ev=>{
+  if(ev.key!=='Enter'||!sayEl.value.trim()) return;
+  const t=sayEl.value.trim(); sayEl.value='';
+  try{ chatEl.textContent=await get(api('say',t)); }catch(e){}
+  chatEl.scrollTop=chatEl.scrollHeight;
 });
 
-// Start from the standard position so the board is visible immediately; the
-// poll replaces it as soon as the server answers. Polling doubles as the
-// heartbeat the game uses to notice an abandoned seat -- there is no
-// disconnect signal in HTTP, so presence IS traffic.
-draw('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
-refresh(); refreshStatus(); refreshChat();
-setInterval(() => { refresh(); refreshStatus(); refreshChat(); }, 1000);
+// ── Identity / record ────────────────────────────────────────────────────────
+// "self W L D locked|open games idle"
+async function refreshMe(){
+  try{
+    const p=(await get(mine('me'))).trim().split(/\s+/);
+    if(p.length<5) return;
+    const [, w, l, d, lk]=p;
+    $('record').textContent=w+'W '+l+'L '+d+'D';
+    locked=(lk==='locked');
+    // The name locks on the first recorded result. Not enforcement -- there is
+    // no authority here, the name is a client-supplied token -- but the client
+    // honouring its own declaration, and the seed of real persistence once an
+    // ACE key signs the identity instead of a cookie carrying it.
+    $('rename').classList.toggle('hidden', locked);
+    $('lock').textContent = locked ? '(name locked by your record)' : '';
+  }catch(e){}
+}
+$('me').onclick=()=>leaveRoom();          // your name IS the way home
+$('rename').addEventListener('change',()=>{
+  const v=$('rename').value.trim();
+  if(!v||/[\/\s]/.test(v)) { $('rename').value=''; return; }
+  if(locked) return;
+  TOKEN=v; setCookie(COOKIE,TOKEN,365); localStorage.setItem('ace_chess_token',TOKEN);
+  $('rename').value=''; $('me').textContent=TOKEN; syncUrl(); tick();
+});
+
+// ── Home ─────────────────────────────────────────────────────────────────────
+function stateCell(s){ return '<td class="st-'+s+'">'+s+'</td>'; }
+
+// My games: "match opponent occupants state"
+async function refreshMine(){
+  let ls=[]; try{ ls=lines(await get(mine('list'))); }catch(e){ return; }
+  const tb=$('mine'); tb.innerHTML='';
+  $('no-mine').classList.toggle('hidden', ls.length>0);
+  for(const line of ls){
+    const p=line.split(/\s+/);
+    if(p.length!==4){ continue; }
+    const [m,opp,here,state]=p;
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td class="key">'+m+'</td><td>'+opp+'</td><td>'+here+'/2</td>'+
+                 stateCell(state)+'<td class="link">'+matchUrl(m)+'</td><td></td>';
+    const b=document.createElement('button'); b.textContent='open';
+    b.onclick=()=>enterRoom(m);
+    tr.lastElementChild.appendChild(b); tb.appendChild(tr);
+  }
+}
+
+// Every match on the node: "match occupants seats state"
+async function refreshRooms(){
+  let ls=[]; try{ ls=lines(await get(nodeUrl('rooms'))); }catch(e){ return; }
+  const tb=$('rooms'); tb.innerHTML='';
+  $('no-rooms').classList.toggle('hidden', ls.length>0);
+  for(const line of ls){
+    const p=line.split(/\s+/);
+    // Four fields, numeric counts. Without this an error body becomes a row --
+    // "404 Not Found" reads as a plausible match, hiding the actual failure.
+    if(p.length!==4||!/^\d+$/.test(p[1])||!/^\d+$/.test(p[2])){
+      $('no-rooms').textContent='node unreachable — server said: '+line;
+      $('no-rooms').classList.remove('hidden'); tb.innerHTML=''; return;
+    }
+    const [m,here,seats,state]=p, full=(+here>=2);
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td class="key">'+m+'</td><td class="'+(full?'full':'')+'">'+here+
+                 '/2</td><td>'+seats+'</td>'+stateCell(state)+'<td></td>';
+    const b=document.createElement('button');
+    // Full matches are still enterable -- as a spectator. Arriving is free in
+    // this model; only MOVING needs a seat.
+    b.textContent=full?'watch':'join'; b.onclick=()=>enterRoom(m);
+    tr.lastElementChild.appendChild(b); tb.appendChild(tr);
+  }
+}
+
+// Every self on the node: "name W L D locked|open games idle"
+async function refreshPlayers(){
+  let ls=[]; try{ ls=lines(await get(nodeUrl('players'))); }catch(e){ return; }
+  const tb=$('players'); tb.innerHTML='';
+  $('no-players').classList.toggle('hidden', ls.length>0);
+  for(const line of ls){
+    const p=line.split(/\s+/);
+    if(p.length<7) continue;
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td class="'+(p[0]===TOKEN?'key':'')+'">'+p[0]+'</td><td>'+p[1]+
+                 '</td><td>'+p[2]+'</td><td>'+p[3]+'</td><td>'+p[5]+'</td><td>'+p[6]+'s</td>';
+    tb.appendChild(tr);
+  }
+}
+
+// Fill-in pairing: the node returns a match with space, rejoining one of my own
+// unfinished games first so a reload does not pair me with a stranger.
+$('quick').onclick=async()=>{
+  try{
+    const m=(await get(mine('join'))).trim();
+    if(!m||m.includes(' ')){ alert('join failed: '+m); return; }
+    enterRoom(m);
+  }catch(e){ alert('join failed: '+e); }
+};
+// Matches are created on demand, so opening one is just visiting it.
+$('make').onclick=()=>{ const k=$('new-room').value.trim(); if(k&&!/[\/\s]/.test(k)) enterRoom(k); };
+$('new-room').addEventListener('keydown',ev=>{ if(ev.key==='Enter') $('make').click(); });
+$('refresh').onclick=tick;
+
+// ── Views ────────────────────────────────────────────────────────────────────
+function syncUrl(){
+  const p=new URLSearchParams();
+  if(room) p.set('room',room);
+  if(qs.get('as')) p.set('as',TOKEN);
+  history.replaceState(null,'',location.pathname+(p.toString()?'?'+p:''));
+}
+function enterRoom(m){
+  room=m; syncUrl();
+  $('home').classList.add('hidden'); $('game').classList.remove('hidden');
+  $('to-home').classList.remove('hidden'); $('here').textContent=matchUrl(m);
+  lastFen=''; myRole='viewer'; myTurn=false; hideGameOver();
+  statusEl.className=''; statusEl.textContent='joining '+m+'…';
+  draw('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+  tick();
+}
+function leaveRoom(){
+  room=null; syncUrl();
+  $('game').classList.add('hidden'); $('home').classList.remove('hidden');
+  $('to-home').classList.add('hidden'); $('here').textContent='';
+  hideGameOver(); tick();
+}
+$('to-home').onclick=leaveRoom;
+
+// One timer dispatching on the current view. Home polls at half rate: it is four
+// requests, none of them urgent, and none of them heartbeat a match -- listing
+// is read-only, so browsing costs nobody a seat.
+let beat=0;
+function tick(){
+  $('me').textContent=TOKEN;
+  if(room){ refreshFen(); refreshStatus(); refreshChat(); if(beat%3===0) refreshMe(); }
+  else if(beat%2===0){ refreshMe(); refreshMine(); refreshRooms(); refreshPlayers(); }
+  beat++;
+}
+tick();
+setInterval(tick,1000);
 </script>
 </body>
 </html>
