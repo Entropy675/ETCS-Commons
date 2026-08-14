@@ -75,7 +75,7 @@ struct ChessState {};
 
 struct ChessStream : ETCS::EventStream<ChessStream, ChessState, ChessInEventPtr>
 {
-    // Defined at the bottom of ChessLobby.h, not here: it dispatches to BOTH
+    // Defined at the bottom of ChessNode.h, not here: it dispatches to BOTH
     // types and so needs both complete.
     ETCS::DispatchResult on_event(ChessState&, const ChessInEventPtr& evt, uint64_t seq);
 
@@ -84,22 +84,34 @@ struct ChessStream : ETCS::EventStream<ChessStream, ChessState, ChessInEventPtr>
     void on_completion(ChessState&, ETCS::WorkResult*, uint64_t) {}
     void on_emit(ChessState&, ETCS::GapSlot&)                   {}
 
-    // One stream for every game in this module: ordering across unrelated games
-    // is harmless (a chess move is not latency-critical) and a thread per game
-    // would be absurd. The lobby shares it too, so a lobby operation and a move
-    // on one of its games cannot interleave.
+    // NO getInstance() ANYMORE. A stream is owned by a ChessNode -- see
+    // ChessNode's own comment for why the node is the ordering domain rather
+    // than the module or the board.
     //
-    // start() is separate from the ctor, so the magic static pairs them. It can
-    // throw EventStreamZombieException if this DSO is still entangled with a
-    // prior instance's teardown -- that propagates out of the first getInstance()
-    // call rather than out of module load.
-    static ChessStream& getInstance()
-    {
-        static ChessStream s;
-        static const bool started = (s.start(ETCS::MemoryArena::getInstance()), true);
-        (void)started;
-        return s;
-    }
+    // What this type deliberately no longer does is name a particular stream. A
+    // state machine now REQUIRES an output target rather than reaching for a
+    // module-global, so the identical type code serves per-node, per-board, or
+    // N-boards-hashed-to-k wiring with no source change. Granularity became a
+    // deployment decision instead of a release decision.
+    //
+    // The old comment justified one stream for every game in the module as
+    // "ordering across unrelated games is harmless (a chess move is not
+    // latency-critical) and a thread per game would be absurd". Both halves
+    // were answering the wrong question:
+    //
+    //   - Harmless is true of a peer running one game and false of a server
+    //     running many. Two boards share no causal relation, so a shared
+    //     sequence asserts one that does not exist, and charges for the
+    //     assertion in head-of-line blocking proportional to MODULE-WIDE
+    //     traffic rather than to any one game's. Every ChessOpEvent waiter is
+    //     a parked ThreadPool thread, so that queue depth converts directly
+    //     into pool starvation.
+    //
+    //   - "A thread per game would be absurd" answers a proposal nobody had to
+    //     make. An ordering domain needs a serialization point, not a thread;
+    //     the two were only ever collapsed by getInstance() pairing them. Per
+    //     NODE is one thread in the deployment that actually exists, since
+    //     nodes are few and games are many.
 };
 
 // ── The caller-facing event ───────────────────────────────────────────────────
@@ -112,6 +124,12 @@ struct ChessStream : ETCS::EventStream<ChessStream, ChessState, ChessInEventPtr>
 // (target, arg, tok) -> string. Fourteen identical structs would be ceremony.
 struct ChessOpEvent
 {
+    // The target ordering domain, handed in rather than looked up. Null is a
+    // real state -- a board with no node in front of it -- and it is REFUSED
+    // rather than falling back to a direct call. A fallback would make the
+    // unsynchronised path the quiet one, and that path is precisely the
+    // reproduced SIGSEGV in ~Piece this stream was introduced to close.
+    ChessStream*       stream;
     ChessInEvent::Kind kind;
     void*              target;
     std::string        arg;
@@ -120,9 +138,9 @@ struct ChessOpEvent
     std::string        result;
     std::atomic<bool>  done{false};
 
-    ChessOpEvent(ChessInEvent::Kind k, void* t,
+    ChessOpEvent(ChessStream* st, ChessInEvent::Kind k, void* t,
                  std::string a = "", std::string s = "")
-        : kind(k), target(t), arg(std::move(a)), tok(std::move(s)) {}
+        : stream(st), kind(k), target(t), arg(std::move(a)), tok(std::move(s)) {}
 
     std::string operator()();
 };
@@ -134,7 +152,18 @@ inline std::string ChessOpEvent::operator()()
     // deadlock already hit once with the ack round-trip. It cannot catch re-entry
     // from THIS stream's own thread, but on_event only ever calls the *Locked
     // bodies, never back through here.
+    // NOTE, and a genuine loosening: with one stream per node this asks whether
+    // the caller is on AN ordering thread, not whether it is on THIS one. So a
+    // future node-to-node call trips it spuriously, AND the A->B-while-B->A
+    // deadlock that a single global stream made structurally impossible is no
+    // longer impossible. Cross-node calls have to be non-blocking; enforcing
+    // that here needs the assert to carry a stream identity.
     ETCS_ASSERT_NOT_ORDERING_THREAD("ChessOpEvent");
+
+    // A board with no node cannot be driven safely, so it is not driven at all.
+    // This is a BEHAVIOUR CHANGE for any script that spawns a bare ChessGame:
+    // every verb on it now answers "NO NODE" instead of running. Mint a node.
+    if (!stream) return "NO NODE";
 
     ChessInEvent in;
     in.kind       = kind;
@@ -146,7 +175,7 @@ inline std::string ChessOpEvent::operator()()
 
     // false means the stream is tearing down -- nothing will ever service this,
     // so return rather than spin on a flag that cannot flip.
-    if (!ChessStream::getInstance().enqueue(ChessInEventPtr{&in}))
+    if (!stream->enqueue(ChessInEventPtr{&in}))
         return "BUSY";
 
     // progressiveYield, NOT a bare spin. This wait runs on a ThreadPool thread
@@ -291,11 +320,16 @@ public:
 private:
     static constexpr size_t kChatLines = 40;
 
+    // Defined at the bottom of ChessNode.h -- it needs ChessNode complete.
+    // A board's ordering domain is its node's, so a board with no node has
+    // none and every verb on it refuses.
+    ChessStream* streamOf() const;
+
     // const w.r.t. the caller only: the ordering thread mutates through target.
     std::string op(Kind k, const std::string& arg = "",
                    const std::string& tok = "") const
     {
-        return ChessOpEvent{k, const_cast<ChessGame*>(this), arg, tok}();
+        return ChessOpEvent{streamOf(), k, const_cast<ChessGame*>(this), arg, tok}();
     }
 
     // ── Everything below runs ONLY on the ordering thread ─────────────────

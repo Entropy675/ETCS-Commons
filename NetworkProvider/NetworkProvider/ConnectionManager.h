@@ -396,7 +396,7 @@ private:
         return io.written > 0;
     }
 
-    void submitAccept()
+    void submitAccept(int retry = 0)
     {
         if (stopping_.load(std::memory_order_acquire) || listen_fd_ == -1) return;
         // accept_ctx_, not open_ctx_ -- it inherits open_ctx_ through its own
@@ -487,7 +487,19 @@ private:
             onConnection(fd);
             ETCS_LOG("ConnectionManager", "Usage post onConnection(fd)=" << getGlobalArena().getUsage());
         };
-        ETCS::ThreadPool::getInstance().submit(std::move(sub));
+        if (!ETCS::ThreadPool::getInstance().submit(std::move(sub)))
+        {
+            inflight_.fetch_sub(1, std::memory_order_acq_rel);
+            if (retry >= 200)
+            {
+                ETCS_LOG("ConnectionManager", "CRITICAL: accept submission refused "
+                         << retry << " times -- gate RID:" << getRID()
+                         << " is no longer accepting.");
+                return;
+            }
+            ETCS_SLEEP_MS(1);
+            submitAccept(retry + 1);
+        }
     }
 
     // Mint the child, then publish it. The connection becomes a real, listable,

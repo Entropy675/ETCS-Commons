@@ -1,6 +1,7 @@
 #ifndef CHESSNODE_H__
 #define CHESSNODE_H__
 #include "ChessLobby.h"
+#include <mutex>
 
 // ── ChessNode: the host ───────────────────────────────────────────────────────
 // Owns the selves and the boards, and does all path parsing.
@@ -32,6 +33,64 @@ public:
     ChessNode()          = default;
     virtual ~ChessNode() = default;
 
+    // ── THE ordering domain ───────────────────────────────────────────────
+    // One stream per node. Not per module, and not per board.
+    //
+    // Per module was what this replaced: it asserted a causal relation between
+    // unrelated games and charged head-of-line blocking proportional to
+    // module-wide traffic, which converts straight into ThreadPool starvation
+    // because every ChessOpEvent waiter is a parked pool thread.
+    //
+    // Per BOARD is the finest domain that is correct in isolation, and it is
+    // not what this does, for a reason worth stating: this node touches every
+    // game it hosts. roomsLocked reads liveTokensLocked/over_/checkmate_/
+    // started_ across all of them; reapLocked walks them and calls Delete();
+    // joinLocked reads active_ and every lobby's edges; ChessGame::
+    // reportOutcomeLocked calls straight back into reportLocked; ChessLobby::
+    // listLocked reads white_/black_ off boards it does not own. Every one of
+    // those is safe ONLY because it is the same thread. Cutting between node
+    // and boards turns all of them into unsynchronised cross-domain reads,
+    // repairable only by giving the node a published read model -- a real CQRS
+    // split, and a much larger change than this one.
+    //
+    // Putting the boundary AT the node means none of that machinery is needed
+    // and every listed call stays a plain function call.
+    //
+    // WHY THE NODE, in terms that survive the P2P transition: the tempting
+    // justification is "a game needs two parties, so a shared host exists
+    // anyway, and it is the natural sink for both sides". That is true of the
+    // current arrangement and FALSE of the target one -- in the peer case each
+    // participant runs their own node and their own board, and what is shared
+    // is the edge, not the host. Baking in the two-party-shared-host reasoning
+    // would be baking in centralization.
+    //
+    // The justification that holds either way: a node is ONE PARTICIPANT'S
+    // LOCAL ORDERING DOMAIN. Replay is node-to-node -- a peer syncs an ordering
+    // domain over a MirrorBuffer by replaying its events -- so the sync unit
+    // and the ordering domain must be the same object, or a peer following
+    // three of my games needs three channels. Per-board would force exactly
+    // that.
+    //
+    // It follows that contention is proportional to how centralized the
+    // deployment is: one lobby on the node (the peer case) and there is none,
+    // since the node holds one board; N lobbies and it is N-way. The
+    // centralization cost stops being a paragraph and becomes a latency term.
+    //
+    // Started lazily under call_once, not in the ctor: two pool threads can
+    // reach a freshly created node at once and start() is not idempotent. Lazy
+    // also keeps a configured-but-unused node from costing a thread.
+    ChessStream& stream() const
+    {
+        std::call_once(stream_started_, [this]
+        {
+            // Same arena as the old getInstance() used, deliberately: this
+            // change is about WHO owns the domain, not about where it
+            // allocates. Moving it to getArena() is a separate question.
+            stream_.start(ETCS::MemoryArena::getInstance());
+        });
+        return stream_;
+    }
+
     // One filter for everything under the mount. Deliberately NOT routed
     // through the stream: it runs for every request on the server, including
     // paths that turn out not to be ours, and a round trip here would serialize
@@ -58,6 +117,13 @@ public:
 
     bool DeleteConcrete()
     {
+    // OPEN, and the one thing this change leaves unfinished: the stream is
+    // never stopped. As a module singleton it lived for the life of the DSO and
+    // there was nothing to tear down; owned per node, a deleted node leaves its
+    // ordering thread running. Nodes are few and long-lived so this is not
+    // urgent, but it IS a leak per Delete, and the fix needs EventStream's own
+    // stop/join surface -- which is core, not module, so it is named here
+    // rather than guessed at.
         std::string conjugate_key = this->getSourceModule().toString() + ":"
                                    + this->getSourceTag().toString();
         ETCS_LOG("ChessNode", "Delete: firing self-DestroyEvent for RID:"
@@ -74,7 +140,7 @@ private:
 
     std::string op(Kind k, const std::string& arg = "") const
     {
-        return ChessOpEvent{k, const_cast<ChessNode*>(this), arg}();
+        return ChessOpEvent{&stream(), k, const_cast<ChessNode*>(this), arg}();
     }
 
     // ── Ordering thread only ──────────────────────────────────────────────
@@ -283,6 +349,12 @@ private:
         return g->verbLocked(self, verb, arg);
     }
 
+    // mutable: stream() is const because the read verbs are, and call_once is
+    // the mutation. The domain is part of this node's identity, not part of
+    // its observable state.
+    mutable ChessStream    stream_;
+    mutable std::once_flag stream_started_;
+
     std::string mount_ = "game";
     std::vector<std::pair<std::string, ChessLobby*>> lobbies_;   // the selves
     std::vector<std::pair<std::string, ChessGame*>>  games_;     // the boards
@@ -313,6 +385,14 @@ inline std::string ChessLobby::listLocked() const
         out += "\n";
     }
     return out;
+}
+
+// A board's ordering domain is its node's. Deferred to here because it needs
+// ChessNode complete. Null for a standalone board, which therefore refuses
+// every verb rather than running one unsynchronised.
+inline ChessStream* ChessGame::streamOf() const
+{
+    return node_ ? &node_->stream() : nullptr;
 }
 
 // The game reports to the NODE, which owns the token -> self mapping. A game with

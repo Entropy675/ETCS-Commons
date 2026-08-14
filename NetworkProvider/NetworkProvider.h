@@ -370,10 +370,20 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                 c->DeleteConcrete();
             };
 
-            pool.submit(std::move(send_sub));
+            if (!pool.submit(std::move(send_sub)))
+            {
+                ETCS_LOG("HttpServer::Serve", "send refused (SQ full) -- dropping fd="
+                         << c->GetClientFd());
+                c->DeleteConcrete();
+            }
         };
 
-        pool.submit(std::move(sub));
+        if (!pool.submit(std::move(sub)))
+        {
+            ETCS_LOG("HttpServer::Serve", "recv refused (SQ full) -- dropping fd="
+                     << c->GetClientFd());
+            c->DeleteConcrete();
+        }
     };
 
     ETCS_LOG("SRV.mem", "pre  do_recv   =" << ETCS::MemoryArena::getInstance().getUsage());
