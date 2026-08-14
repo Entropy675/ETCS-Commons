@@ -28,8 +28,11 @@ ETCS_TAG_BLOCK_HYBRID(TLSContext,
     (SendData, ReceiveData)
 )
 
+// Reset, not Delete: a connection is Ephemeral_ only now -- the pool owns its
+// lifetime, and destroying one out from under the pool would leave a dangling
+// entry.
 ETCS_TAG_BLOCK_BASIC(SocketConnectionState,
-    Delete, Close, IsOpen, SetPage, GetPage
+    Reset, Close, IsOpen, SetPage, GetPage
 )
 
 ETCS_TAG_BLOCK_BASIC(StaticHtmlPage,

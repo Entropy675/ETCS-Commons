@@ -115,6 +115,7 @@ public:
         ETCS_LOG("ConnectionManager", "Open: listening on port " << port
                  << " (RID:" << getRID() << ").");
 
+        growPool();   // mint the initial block before the first accept lands
         submitAccept();
         return true;
     }
@@ -217,6 +218,10 @@ public:
     bool ResetConcrete()
     {
         CloseConcrete();
+        {
+            std::lock_guard<std::mutex> lock(pool_mutex_);
+            for (SocketConnectionState* c : pool_) if (c) c->Reset();
+        }
         std::lock_guard<std::mutex> lock(subs_mutex_);
         subscribers_.clear();
         return true;
@@ -333,6 +338,110 @@ private:
 
     mutable std::mutex      subs_mutex_;
     std::vector<Subscriber> subscribers_;
+
+    // ── Connection pool ──────────────────────────────────────────────────
+    // Connections are minted once and RECYCLED, not created and destroyed per
+    // request. Both ends of the old lifecycle were blocking round-trips to the
+    // loader's single ordering thread -- AddTagEvent on accept, DestroyEvent
+    // plus a caller-thread scope drain on teardown -- shared with every module
+    // in the process. That is what made one slow connection delay unrelated
+    // ones. Reuse pays it once per POOL GROWTH instead of once per connection.
+    //
+    // Sized in powers of two: double at >2/3 in use, halve at <1/3. The gap
+    // between the two thresholds is what stops a load hovering at a boundary
+    // from growing and shrinking on alternate accepts.
+    static constexpr size_t kMinPool = 8;
+    static constexpr size_t kMaxPool = 4096;
+
+    mutable std::mutex                  pool_mutex_;
+    std::vector<SocketConnectionState*> pool_;
+    size_t                              pool_cursor_ = 0;
+    std::atomic<int>                    in_use_{0};
+
+    // Rotating cursor rather than a scan from zero: in the steady state the
+    // next slot is free, so the common case is one CAS.
+    SocketConnectionState* acquireConnection(int fd)
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const size_t n = pool_.size();
+            for (size_t i = 0; i < n; ++i)
+            {
+                const size_t idx = (pool_cursor_ + i) % n;
+                SocketConnectionState* c = pool_[idx];
+                if (c && c->TryClaim(fd))
+                {
+                    pool_cursor_ = (idx + 1) % n;
+                    in_use_.fetch_add(1, std::memory_order_acq_rel);
+                    rebalanceLocked();
+                    return c;
+                }
+            }
+            if (!growPoolLocked()) break;
+        }
+
+        ETCS_LOG("ConnectionManager", "pool exhausted at " << pool_.size()
+                 << " (cap " << kMaxPool << ") -- refusing fd=" << fd);
+        return nullptr;
+    }
+
+    void growPool()
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        growPoolLocked();
+    }
+
+    // Each addTag here is one loader round-trip. Amortized over the block, and
+    // the reason growth is doubling rather than incremental.
+    bool growPoolLocked()
+    {
+        const size_t cur    = pool_.size();
+        const size_t target = (cur == 0) ? kMinPool : cur * 2;
+        if (target > kMaxPool) return false;
+
+        for (size_t i = cur; i < target; ++i)
+        {
+            SocketConnectionState* c = addTag<SocketConnectionState>();
+            if (!c) { ETCS_LOG("ConnectionManager", "addTag<SocketConnectionState> failed at " << i); break; }
+            c->SetPoolCounter(&in_use_);
+            pool_.push_back(c);
+        }
+        ETCS_LOG("ConnectionManager", "pool grown " << cur << " -> " << pool_.size()
+                 << " (in use " << in_use_.load() << ")");
+        return pool_.size() > cur;
+    }
+
+    // Only ever called from acquireConnection, so every pool mutation happens
+    // on one path under one lock. A connection becoming free does not itself
+    // trigger a shrink -- that would put pool mutation on a completion thread
+    // for no benefit, since the next accept checks anyway.
+    void rebalanceLocked()
+    {
+        const size_t n    = pool_.size();
+        const int    used = in_use_.load(std::memory_order_acquire);
+
+        if (static_cast<size_t>(used) * 3 >= n * 2) { growPoolLocked(); return; }
+        if (n <= kMinPool) return;
+        if (static_cast<size_t>(used) * 3 >= n) return;
+
+        const size_t target = n / 2;
+        // Free entries only, from the back. A Draining connection is skipped
+        // rather than waited for: it will be reclaimed by a later rebalance,
+        // and blocking an accept on someone else's drain is the exact coupling
+        // this pool exists to remove.
+        for (size_t i = pool_.size(); i-- > 0 && pool_.size() > target; )
+        {
+            SocketConnectionState* c = pool_[i];
+            if (!c || c->IsActive()) continue;
+            pool_.erase(pool_.begin() + static_cast<long>(i));
+            ETCS::DestroyEvent{"NetworkProvider:SocketConnectionState", c, true}();
+        }
+        if (pool_cursor_ >= pool_.size()) pool_cursor_ = 0;
+        ETCS_LOG("ConnectionManager", "pool shrunk " << n << " -> " << pool_.size()
+                 << " (in use " << used << ")");
+    }
 
     // Module-local RID resolution. Same lookup FileHtmlPage's own
     // resolveMountTarget already performs, and same reasoning: this module's
@@ -507,10 +616,8 @@ private:
     // eventually claims it.
     void onConnection(int fd)
     {
-        ETCS_LOG("ConnectionManager", "Usage pre addTag<SocketConnectionState>=" << getGlobalArena().getUsage());
-        SocketConnectionState* conn = addTag<SocketConnectionState>();
-        ETCS_LOG("ConnectionManager", "Usage post addTag<SocketConnectionState>=" << getGlobalArena().getUsage());
-        conn->SetClientFd(fd);
+        SocketConnectionState* conn = acquireConnection(fd);
+        if (!conn) { ::close(fd); return; }
 
         ETCS_LOG("ConnectionManager", "Accepted fd=" << fd
                  << " RID:" << conn->getRID() << " on port " << port_);
@@ -528,8 +635,7 @@ private:
         {
             ETCS_LOG("ConnectionManager", "No subscribers -- dropping connection RID:"
                      << conn->getRID() << ".");
-            conn->CloseConnection();
-            conn->DeleteConcrete();
+            conn->Reset();
             return;
         }
 
@@ -604,24 +710,15 @@ private:
         if (!delivered)
         {
             ETCS_LOG("ConnectionManager", "No live subscriber took connection RID:"
-                     << conn->getRID() << " -- closing it.");
-            conn->CloseConnection();
-            conn->DeleteConcrete();
+                     << conn->getRID() << " -- recycling it.");
+            conn->Reset();
         }
 
-        {
-            std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
-            getTypedChildren(kids);
-            ETCS::MemoryArena& a = getArena();
-            ETCS::MemoryArena& g = ETCS::MemoryArena::getInstance();
-            ETCS_LOG("CM.mem", "manager arena: capacity=" << a.getCapacity()
-                     << " usage=" << a.getUsage()
-                     << " dtor_records=" << a.getDtorRecordCount()
-                     << " children=" << kids.size()
-                     << " | MODULE ROOT: capacity=" << g.getCapacity()
-                     << " usage=" << g.getUsage()
-                     << " dtor_records=" << g.getDtorRecordCount());
-        }
+        // getTypedChildren walked and copied the whole child list under the
+        // lock addTag and getTypedChild both need -- O(live connections) of
+        // lock-held work on every accept, to log a count. pool_.size() is the
+        // same number.
+        ETCS_LOG("CM.mem", "pool=" << pool_.size() << " in_use=" << in_use_.load());
     }
 };
 

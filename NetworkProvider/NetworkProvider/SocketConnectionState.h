@@ -62,11 +62,36 @@
 // teardown (evokeDestructor(&e->getArena()), called by registerDtor<T>'s
 // own lambda strictly AFTER ~SocketConnectionState() -- including
 // parser_'s own implicit destruction -- has already fully completed).
+// LIFETIME: Ephemeral_ only, deliberately NOT Deletable_. A connection has no
+// lifetime independent of the manager that accepted it -- nothing else can
+// reach one, and it cannot outlive its parent. Claiming Deletable_ forced a
+// DestroyEvent (loader ordering thread) per connection on both accept and
+// teardown; dropping it makes the manager's pool the lifetime authority and
+// Reset the return path.
 class SocketConnectionState : 
-    public ConnectionStateBase<SocketConnectionState>, public EphemeralBase<SocketConnectionState>,
-    public DeletableBase<SocketConnectionState>
+    public ConnectionStateBase<SocketConnectionState>, public EphemeralBase<SocketConnectionState>
 {
 private:
+    // Free / Serving / Draining, and the third is load-bearing. Reset is
+    // ASYNCHRONOUS: it cancels and closes, but outstanding io_uring
+    // submissions still have to retire before this object can be handed to a
+    // new client. Draining is "not reusable yet, not serving anyone" -- with
+    // only two states a reused connection could receive a completion belonging
+    // to the previous client, which is a use-after-free against a live object
+    // and so crashes nothing while corrupting both requests.
+    //
+    // Because the drain waits for io_inflight_ to reach zero before publishing
+    // Free, no stale completion can exist at reacquire time -- which is why
+    // there is no generation counter here.
+    enum class Phase : uint8_t { Free, Serving, Draining };
+    std::atomic<Phase> phase_{Phase::Free};
+    std::atomic<int>   io_inflight_{0};
+
+    // Manager's in-use count. Decremented by finalizeIfDraining, which is the
+    // only place a connection becomes reusable. Raw pointer rather than a back
+    // reference to the manager: this type has no business knowing what a
+    // ConnectionManager is.
+    std::atomic<int>*  pool_counter_ = nullptr;
     std::chrono::steady_clock::time_point last_activity_ = std::chrono::steady_clock::now();
     static constexpr int TIMEOUT_SECONDS = 10;
 
@@ -133,31 +158,76 @@ public:
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - last_activity_).count() > TIMEOUT_SECONDS)
         {
-            ETCS_LOG("Timeout reached, pruning RID: " << getRID());
-            return DeleteConcrete(); // Fires the unload event
+            ETCS_LOG("Timeout reached, recycling RID: " << getRID());
+            return ResetConcrete();
         }
         return false;
     }
-    // --- ConnectionState_ / EphemeralBase concrete surface ---
-    bool DeleteConcrete()
+
+    // --- Pool surface ---
+
+    // Free -> Serving, atomically. Two accept completions can run on different
+    // pool workers at once (submitAccept re-arms BEFORE onConnection), so the
+    // claim has to be a CAS rather than a check-then-set.
+    bool TryClaim(int fd)
     {
-        std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();
-        ETCS_LOG("Delete: firing self-DestroyEvent for RID:"
-                 << getRID() << " (" << conjugate_key << ")");
-        return ETCS::DestroyEvent{conjugate_key.c_str(), this, true}();
-    }
-    
-    bool ResetConcrete()
-    {
-        CloseConnection();
-        page_rid_ = 0;
-        send_len_ = 0;
-        parser_.ResetConcrete();
-        std::memset(recv_buf_, 0, kRecvBufSize);
-        std::memset(send_buf_, 0, kSendBufSize);
+        Phase expect = Phase::Free;
+        if (!phase_.compare_exchange_strong(expect, Phase::Serving,
+                                            std::memory_order_acq_rel)) return false;
+        SetClientFdConcrete(fd);
+        markActive();
         return true;
     }
-    bool IsActiveConcrete() const { return open_; }
+
+    void SetPoolCounter(std::atomic<int>* c) { pool_counter_ = c; }
+
+    // Bracket every IOSubmission that names this connection's fd. NoteComplete
+    // must be the LAST thing a completion callback does: it can publish this
+    // object as reusable, and anything touching it afterwards is racing a new
+    // client's request.
+    void NoteSubmit() { io_inflight_.fetch_add(1, std::memory_order_acq_rel); }
+    void NoteComplete()
+    {
+        if (io_inflight_.fetch_sub(1, std::memory_order_acq_rel) == 1)
+            finalizeIfDraining();
+    }
+
+    // --- ConnectionState_ / EphemeralBase concrete surface ---
+
+    // Begins the drain; does NOT complete it. Returns true once the transition
+    // is under way, idempotent on an already-draining or free connection.
+    // IsActive() stays true until the last completion retires.
+    bool ResetConcrete()
+    {
+        Phase expect = Phase::Serving;
+        if (!phase_.compare_exchange_strong(expect, Phase::Draining,
+                                            std::memory_order_acq_rel))
+            return true;
+
+        // Cancel first: it surfaces pending recv/send as -ECANCELED so their
+        // callbacks run promptly instead of the drain waiting on a peer that
+        // may never send again. Skipped during arena teardown for the same
+        // reason ConnectionManager::CloseConcrete skips it -- constructing an
+        // IOSubmission allocates, and allocation after teardown throws through
+        // a destructor into std::terminate.
+        if (client_fd_ != -1 && !ETCS::MemoryArena::getInstance().isTearingDown())
+        {
+            ETCS::IOSubmission cancel;
+            cancel.op = ETCS::IOOp::Cancel;
+            cancel.fd = client_fd_;
+            ETCS::ThreadPool::getInstance().submit(std::move(cancel));
+        }
+
+        CloseConnection();
+        finalizeIfDraining();
+        return true;
+    }
+
+    // Serving OR Draining. A draining connection is not reusable, so the pool
+    // must not see it as free -- this is the distinction IsConnectionOpen()
+    // (fd validity) deliberately does not make.
+    bool IsActiveConcrete() const
+    { return phase_.load(std::memory_order_acquire) != Phase::Free; }
     int  GetClientFdConcrete() const { return client_fd_; }
     void SetClientFdConcrete(int fd) { client_fd_ = fd; open_ = (fd >= 0); }
     ETCS::RID GetPageRIDConcrete() const       { return page_rid_; }
@@ -177,11 +247,37 @@ public:
     MutableByteSpan SendBuffer() { return MutableByteSpan{send_buf_, kSendBufSize}; }
     int  GetSendLen() const  { return send_len_; }
     void SetSendLen(int len) { send_len_ = len; }
+    void SetRecvLen(int len) { recv_len_ = len; }
 private:
+    // Exactly once, by CAS. Reset and the last NoteComplete both call this and
+    // can race.
+    void finalizeIfDraining()
+    {
+        if (io_inflight_.load(std::memory_order_acquire) != 0) return;
+
+        Phase expect = Phase::Draining;
+        if (!phase_.compare_exchange_strong(expect, Phase::Free,
+                                            std::memory_order_acq_rel)) return;
+
+        page_rid_ = 0;
+        parser_.ResetConcrete();
+        // Only the bytes actually written. A blind memset of both buffers is
+        // 40KB per request on a path otherwise bounded by syscalls; recv is
+        // bounded by recv_len_ and send by send_len_, so nothing beyond those
+        // is ever read.
+        if (recv_len_ > 0) std::memset(recv_buf_, 0, static_cast<size_t>(recv_len_));
+        if (send_len_ > 0) std::memset(send_buf_, 0, static_cast<size_t>(send_len_));
+        recv_len_ = 0;
+        send_len_ = 0;
+
+        if (pool_counter_) pool_counter_->fetch_sub(1, std::memory_order_acq_rel);
+    }
+
     int         client_fd_ = -1;
     bool        open_      = false;
     ETCS::RID   page_rid_  = 0;
     int         send_len_  = 0;
+    int         recv_len_  = 0;
 
     // Brackets parser_'s own construction immediately below -- see this
     // class's own file-level comment for the full reasoning. C++

@@ -238,11 +238,19 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
     // Recursive lambda held by value in its own capture -- the connection
     // stays in recv until a full request has been parsed, which may take
     // several completions for a request split across packets.
-    std::function<void(SocketConnectionState*)> do_recv;
-    do_recv = [&pool, ctx, do_recv, &self](SocketConnectionState* c) mutable
+    // shared_ptr, not a by-value self-capture. `[do_recv]` copied the
+    // std::function at LAMBDA CONSTRUCTION -- before the assignment completed
+    // -- so the captured copy was empty and the re-entry below threw
+    // bad_function_call. Only reachable when a request needs more than one
+    // recv, i.e. when it arrives split across packets, which is why small GETs
+    // never showed it. The throw unwound into the worker's catch, so the
+    // connection was never recycled and its fd never closed.
+    auto do_recv = std::make_shared<std::function<void(SocketConnectionState*)>>();
+    *do_recv = [&pool, ctx, do_recv, &self](SocketConnectionState* c) mutable
     {
-        if (c->checkTimeout()) return;          // idle prune; DeleteConcrete already fired
-        if (ctx.isInterrupted() || ctx.isTerminated()) { c->DeleteConcrete(); return; }
+        if (c->checkTimeout()) return;
+        if (!c->IsConnectionOpen()) return;     // draining; do not re-arm
+        if (ctx.isInterrupted() || ctx.isTerminated()) { c->Reset(); return; }
 
         ETCS::IOSubmission sub;
         sub.op         = ETCS::IOOp::Recv;
@@ -266,20 +274,25 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
         sub.callback = [&pool, ctx, c, do_recv, &self, scope = std::move(scope)]
                        (ETCS::IOCompletion comp) mutable
         {
-            if (comp.result <= 0) { c->DeleteConcrete(); return; }
+            // NoteComplete is the LAST statement on every path out: it can
+            // publish this connection as reusable, and anything touching c
+            // afterwards races a new client's request.
+            if (comp.result <= 0) { c->Reset(); c->NoteComplete(); return; }
             c->markActive();
 
             size_t incoming = static_cast<size_t>(comp.result);
+            c->SetRecvLen(comp.result);
             bool complete = c->GetParser().FeedRaw(c->RecvBuffer().data(), incoming);
 
             if (c->GetParser().GetState() == PicoHTTPParser::State::Error)
             {
                 ETCS_LOG("HttpServer::Serve", "Parse error on fd=" << c->GetClientFd());
-                c->DeleteConcrete();
+                c->Reset();
+                c->NoteComplete();
                 return;
             }
             if (!complete || c->GetParser().GetState() != PicoHTTPParser::State::Complete)
-            { do_recv(c); return; }
+            { (*do_recv)(c); c->NoteComplete(); return; }
 
             std::string path(c->GetParser().GetPath(), c->GetParser().GetPathLen());
 
@@ -367,28 +380,32 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             auto send_scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
             send_sub.callback   = [c, send_scope = std::move(send_scope)](ETCS::IOCompletion)
             {
-                c->DeleteConcrete();
+                c->Reset();
+                c->NoteComplete();
             };
 
+            c->NoteSubmit();
             if (!pool.submit(std::move(send_sub)))
             {
                 ETCS_LOG("HttpServer::Serve", "send refused (SQ full) -- dropping fd="
                          << c->GetClientFd());
-                c->DeleteConcrete();
+                c->NoteComplete();   // undo the submit that never happened
+                c->Reset();
             }
+            c->NoteComplete();       // this recv is done
         };
 
+        c->NoteSubmit();
         if (!pool.submit(std::move(sub)))
         {
             ETCS_LOG("HttpServer::Serve", "recv refused (SQ full) -- dropping fd="
                      << c->GetClientFd());
-            c->DeleteConcrete();
+            c->NoteComplete();
+            c->Reset();
         }
     };
 
-    ETCS_LOG("SRV.mem", "pre  do_recv   =" << ETCS::MemoryArena::getInstance().getUsage());
-    do_recv(conn);
-    ETCS_LOG("SRV.mem", "post do_recv   =" << ETCS::MemoryArena::getInstance().getUsage());
+    (*do_recv)(conn);
 }
 
 // ===========================================================================
@@ -738,10 +755,12 @@ DEFINE_STREAM_FUNC_CONSUME(TLSContext, ReceiveData)
 }
 
 // ===========================================================================
-// SocketConnectionState — unchanged. Independently addressable for
-// inspection/teardown from the shell, e.g.
+// SocketConnectionState — pooled and recycled by its ConnectionManager, not
+// created and destroyed per request. Still independently addressable for
+// inspection from the shell, e.g.
 //   list NetworkProvider::SocketConnectionState
 //   NetworkProvider::SocketConnectionState.Close <rid>
+// Delete is deliberately gone: the pool owns the lifetime.
 // ===========================================================================
 
 DEFINE_WORK_FUNC(SocketConnectionState, Close)
@@ -750,10 +769,15 @@ DEFINE_WORK_FUNC(SocketConnectionState, Close)
     self.CloseConnection();
 }
 
-DEFINE_WORK_FUNC(SocketConnectionState, Delete)
+// Asynchronous: this returns once the drain has STARTED. IsActive() stays
+// true until the last outstanding submission retires, and only then does the
+// pool see it as reusable.
+DEFINE_WORK_FUNC(SocketConnectionState, Reset)
 {
-    (void)data; (void)ctx;
-    self.Delete();
+    (void)ctx;
+    bool started = self.Reset();
+    data.reset();
+    data << started;
 }
 
 DEFINE_WORK_FUNC(SocketConnectionState, IsOpen)
