@@ -372,29 +372,47 @@ private:
     std::vector<SocketConnectionState*> pool_;
     size_t                              pool_cursor_ = 0;
     std::atomic<int>                    in_use_{0};
+    std::atomic<bool>                   growing_{false};
 
     // Rotating cursor rather than a scan from zero: in the steady state the
     // next slot is free, so the common case is one CAS.
+    //
+    // NOTHING THAT BLOCKS ON THE LOADER RUNS UNDER pool_mutex_. addTag and
+    // DestroyEvent are both blocking round-trips to the loader's single
+    // ordering thread; holding this mutex across one serializes every accept
+    // behind it, which is the coupling the pool exists to remove. Growth mints
+    // outside the lock and splices in; shrink collects victims under the lock
+    // and destroys them after releasing it.
     SocketConnectionState* acquireConnection(int fd)
     {
-        std::lock_guard<std::mutex> lock(pool_mutex_);
-
         for (int attempt = 0; attempt < 2; ++attempt)
         {
-            const size_t n = pool_.size();
-            for (size_t i = 0; i < n; ++i)
+            SocketConnectionState* claimed = nullptr;
+            bool want_grow = false;
+            std::vector<SocketConnectionState*> victims;
             {
-                const size_t idx = (pool_cursor_ + i) % n;
-                SocketConnectionState* c = pool_[idx];
-                if (c && c->TryClaim(fd))
+                std::lock_guard<std::mutex> lock(pool_mutex_);
+                const size_t n = pool_.size();
+                for (size_t i = 0; i < n; ++i)
                 {
-                    pool_cursor_ = (idx + 1) % n;
-                    in_use_.fetch_add(1, std::memory_order_acq_rel);
-                    rebalanceLocked();
-                    return c;
+                    const size_t idx = (pool_cursor_ + i) % n;
+                    SocketConnectionState* c = pool_[idx];
+                    if (c && c->TryClaim(fd))
+                    {
+                        pool_cursor_ = (idx + 1) % n;
+                        in_use_.fetch_add(1, std::memory_order_acq_rel);
+                        claimed = c;
+                        break;
+                    }
                 }
+                rebalanceLocked(want_grow, victims);
             }
-            if (!growPoolLocked()) break;
+
+            for (SocketConnectionState* v : victims)
+                ETCS::DestroyEvent{"NetworkProvider:SocketConnectionState", v, true}();
+
+            if (claimed) { if (want_grow) growPool(); return claimed; }
+            if (!growPool()) break;
         }
 
         ETCS_LOG("ConnectionManager", "pool exhausted at " << pool_.size()
@@ -402,48 +420,55 @@ private:
         return nullptr;
     }
 
-    void growPool()
+    // Mints outside pool_mutex_, splices in under it. growing_ keeps two
+    // concurrent accepts from each minting a full block.
+    bool growPool()
     {
-        std::lock_guard<std::mutex> lock(pool_mutex_);
-        growPoolLocked();
-    }
+        size_t cur, target;
+        {
+            std::lock_guard<std::mutex> lock(pool_mutex_);
+            cur    = pool_.size();
+            target = (cur == 0) ? kMinPool : cur * 2;
+            if (target > kMaxPool) return false;
+        }
+        if (growing_.exchange(true, std::memory_order_acq_rel)) return false;
 
-    // Each addTag here is one loader round-trip. Amortized over the block, and
-    // the reason growth is doubling rather than incremental.
-    bool growPoolLocked()
-    {
-        const size_t cur    = pool_.size();
-        const size_t target = (cur == 0) ? kMinPool : cur * 2;
-        if (target > kMaxPool) return false;
-
+        std::vector<SocketConnectionState*> fresh;
         for (size_t i = cur; i < target; ++i)
         {
             SocketConnectionState* c = addTag<SocketConnectionState>();
             if (!c) { ETCS_LOG("ConnectionManager", "addTag<SocketConnectionState> failed at " << i); break; }
             c->SetPoolCounter(&in_use_);
-            pool_.push_back(c);
+            fresh.push_back(c);
         }
-        ETCS_LOG("ConnectionManager", "pool grown " << cur << " -> " << pool_.size()
+
+        size_t now = 0;
+        {
+            std::lock_guard<std::mutex> lock(pool_mutex_);
+            for (SocketConnectionState* c : fresh) pool_.push_back(c);
+            now = pool_.size();
+        }
+        growing_.store(false, std::memory_order_release);
+
+        ETCS_LOG("ConnectionManager", "pool grown " << cur << " -> " << now
                  << " (in use " << in_use_.load() << ")");
-        return pool_.size() > cur;
+        return !fresh.empty();
     }
 
-    // Only ever called from acquireConnection, so every pool mutation happens
-    // on one path under one lock. A connection becoming free does not itself
-    // trigger a shrink -- that would put pool mutation on a completion thread
-    // for no benefit, since the next accept checks anyway.
-    void rebalanceLocked()
+    // Reports what to do rather than doing it: both actions block on the
+    // loader, and the caller runs them after releasing the lock.
+    void rebalanceLocked(bool& want_grow, std::vector<SocketConnectionState*>& victims)
     {
         const size_t n    = pool_.size();
         const int    used = in_use_.load(std::memory_order_acquire);
 
-        if (static_cast<size_t>(used) * 3 >= n * 2) { growPoolLocked(); return; }
+        if (static_cast<size_t>(used) * 3 >= n * 2) { want_grow = true; return; }
         if (n <= kMinPool) return;
         if (static_cast<size_t>(used) * 3 >= n) return;
 
         const size_t target = n / 2;
-        // Free entries only, from the back. A Draining connection is skipped
-        // rather than waited for: it will be reclaimed by a later rebalance,
+        // Free entries only. A Draining or Clearing connection is skipped
+        // rather than waited for -- it will be reclaimed by a later rebalance,
         // and blocking an accept on someone else's drain is the exact coupling
         // this pool exists to remove.
         for (size_t i = pool_.size(); i-- > 0 && pool_.size() > target; )
@@ -451,11 +476,12 @@ private:
             SocketConnectionState* c = pool_[i];
             if (!c || c->IsActive()) continue;
             pool_.erase(pool_.begin() + static_cast<long>(i));
-            ETCS::DestroyEvent{"NetworkProvider:SocketConnectionState", c, true}();
+            victims.push_back(c);
         }
         if (pool_cursor_ >= pool_.size()) pool_cursor_ = 0;
-        ETCS_LOG("ConnectionManager", "pool shrunk " << n << " -> " << pool_.size()
-                 << " (in use " << used << ")");
+        if (!victims.empty())
+            ETCS_LOG("ConnectionManager", "pool shrunk " << n << " -> " << pool_.size()
+                     << " (in use " << used << ")");
     }
 
     // Module-local RID resolution. Same lookup FileHtmlPage's own
@@ -651,6 +677,7 @@ private:
             ETCS_LOG("ConnectionManager", "No subscribers -- dropping connection RID:"
                      << conn->getRID() << ".");
             conn->Reset();
+            conn->NoteComplete();   // release the dispatch reference
             return;
         }
 
@@ -728,6 +755,10 @@ private:
                      << conn->getRID() << " -- recycling it.");
             conn->Reset();
         }
+
+        // Dispatch is over: whatever Serve submitted now holds its own
+        // references, and this one must go or the connection never drains.
+        conn->NoteComplete();
 
         // getTypedChildren walked and copied the whole child list under the
         // lock addTag and getTypedChild both need -- O(live connections) of

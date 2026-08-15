@@ -3,6 +3,7 @@
 #include "../../../ontology.h"
 #include "PicoHTTPParser.h"
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <unistd.h>
 // SocketConnectionState — concrete ConnectionState_ leaf for NetworkProvider.
@@ -83,9 +84,20 @@ private:
     // Because the drain waits for io_inflight_ to reach zero before publishing
     // Free, no stale completion can exist at reacquire time -- which is why
     // there is no generation counter here.
-    enum class Phase : uint8_t { Free, Serving, Draining };
+    // Clearing is not bookkeeping: finalize has to touch this object AFTER the
+    // drain completes (close the fd, reset the parser, zero the buffers), and
+    // anything that publishes Free before that work is done hands a live object
+    // to a claimer or to shrink's DestroyEvent mid-teardown. Free is stored
+    // LAST, and the Draining->Clearing CAS is what makes the work exclusive
+    // when Reset and the final NoteComplete race into finalize together.
+    enum class Phase : uint8_t { Free, Serving, Draining, Clearing };
     std::atomic<Phase> phase_{Phase::Free};
-    std::atomic<int>   io_inflight_{0};
+    // Starts at 1, and finalize restores it to 1 before publishing Free: the
+    // DISPATCH REFERENCE, held across the whole subscriber call() in
+    // onConnection and released there once dispatch returns. It means a
+    // Serving connection is never observable with zero references, which is
+    // what makes "drained" and "claimed but not yet submitting" distinguishable.
+    std::atomic<int>   io_inflight_{1};
 
     // Manager's in-use count. Decremented by finalizeIfDraining, which is the
     // only place a connection becomes reusable. Raw pointer rather than a back
@@ -174,6 +186,11 @@ public:
         Phase expect = Phase::Free;
         if (!phase_.compare_exchange_strong(expect, Phase::Serving,
                                             std::memory_order_acq_rel)) return false;
+        // io_inflight_ is ALREADY 1 here -- the dispatch reference is seeded by
+        // finalize before it publishes Free, and inherited by this CAS. Seeding
+        // it after the CAS instead would leave the same hole one instruction
+        // wide: a Reset landing there sees zero, finalizes, and republishes a
+        // connection this claimer is still about to submit I/O on.
         SetClientFdConcrete(fd);
         markActive();
         return true;
@@ -218,39 +235,52 @@ public:
         // NEW connection's recv. The close moves to finalizeIfDraining, which
         // already waits for io_inflight_ to reach zero -- so the number is only
         // released once nothing names it.
+        // Read once. Between the CAS above and here, another thread's final
+        // NoteComplete can reach Clearing and close -- so this must not read
+        // client_fd_ twice and must not write it at all.
+        const int fd = client_fd_.load(std::memory_order_acquire);
         if (io_inflight_.load(std::memory_order_acquire) > 0
-            && client_fd_ != -1
+            && fd != -1
             && !ETCS::MemoryArena::getInstance().isTearingDown())
         {
             ETCS::IOSubmission cancel;
             cancel.op = ETCS::IOOp::Cancel;
-            cancel.fd = client_fd_;
+            cancel.fd = fd;
             ETCS::ThreadPool::getInstance().submit(std::move(cancel));
         }
 
-        open_ = false;   // stop do_recv re-arming; the fd itself closes at finalize
         finalizeIfDraining();
         return true;
     }
 
-    // Serving OR Draining. A draining connection is not reusable, so the pool
-    // must not see it as free -- this is the distinction IsConnectionOpen()
-    // (fd validity) deliberately does not make.
+    // Anything but Free. A draining or clearing connection is not reusable, so
+    // the pool must not see it as free -- this is the distinction
+    // IsConnectionOpen() (fd validity) deliberately does not make.
     bool IsActiveConcrete() const
     { return phase_.load(std::memory_order_acquire) != Phase::Free; }
-    int  GetClientFdConcrete() const { return client_fd_; }
-    void SetClientFdConcrete(int fd) { client_fd_ = fd; open_ = (fd >= 0); }
+    int  GetClientFdConcrete() const { return client_fd_.load(std::memory_order_acquire); }
+    void SetClientFdConcrete(int fd) { client_fd_.store(fd, std::memory_order_release); }
     ETCS::RID GetPageRIDConcrete() const       { return page_rid_; }
     void       SetPageRIDConcrete(ETCS::RID r) { page_rid_ = r; }
-    bool IsConnectionOpenConcrete() const { return open_; }
+    // Derived, not a second flag. open_ was written by Reset, by
+    // CloseConnection and by SetClientFd from three different threads with no
+    // ordering between them; phase_ already carries the same fact.
+    bool IsConnectionOpenConcrete() const
+    {
+        return phase_.load(std::memory_order_acquire) == Phase::Serving
+            && client_fd_.load(std::memory_order_acquire) != -1;
+    }
     // --- Implementation surface used by NetworkProvider.h's consumer ---
     // Additional public methods beyond the ConnectionState_ ontology
     // contract — same pattern MbedTLSContext uses for ParseConcrete/
     // loadCACert beyond its own ontology surface.
+    // exchange, not test-then-set: makes the close exactly-once even if two
+    // paths reach it, which is what stops a double close silently killing an
+    // fd number the kernel has already handed to a newer connection.
     void CloseConnection()
     {
-        if (client_fd_ != -1) { ::close(client_fd_); client_fd_ = -1; }
-        open_ = false;
+        const int fd = client_fd_.exchange(-1, std::memory_order_acq_rel);
+        if (fd != -1) ::close(fd);
     }
     PicoHTTPParser& GetParser() { return parser_; }
     MutableByteSpan RecvBuffer() { return MutableByteSpan{recv_buf_, kRecvBufSize}; }
@@ -265,11 +295,14 @@ private:
     {
         if (io_inflight_.load(std::memory_order_acquire) != 0) return;
 
+        // Claim the teardown without publishing reusability. Draining and
+        // Clearing are both IsActive(), so nothing can claim this connection
+        // or shrink it away while the work below runs.
         Phase expect = Phase::Draining;
-        if (!phase_.compare_exchange_strong(expect, Phase::Free,
+        if (!phase_.compare_exchange_strong(expect, Phase::Clearing,
                                             std::memory_order_acq_rel)) return;
 
-        // Last possible moment: no submission names this fd any more.
+        // No submission names this fd any more.
         CloseConnection();
 
         page_rid_ = 0;
@@ -283,11 +316,18 @@ private:
         recv_len_ = 0;
         send_len_ = 0;
 
+        // Counter before Free: a claimer that wins the instant Free lands will
+        // increment, and the two must not cross.
         if (pool_counter_) pool_counter_->fetch_sub(1, std::memory_order_acq_rel);
+
+        // Seed the next claimer's dispatch reference BEFORE publishing Free.
+        io_inflight_.store(1, std::memory_order_release);
+
+        // LAST. Nothing may touch this object after this store.
+        phase_.store(Phase::Free, std::memory_order_release);
     }
 
-    int         client_fd_ = -1;
-    bool        open_      = false;
+    std::atomic<int> client_fd_{-1};
     ETCS::RID   page_rid_  = 0;
     int         send_len_  = 0;
     int         recv_len_  = 0;
