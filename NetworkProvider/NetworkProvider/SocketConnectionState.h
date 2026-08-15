@@ -204,13 +204,23 @@ public:
                                             std::memory_order_acq_rel))
             return true;
 
-        // Cancel first: it surfaces pending recv/send as -ECANCELED so their
-        // callbacks run promptly instead of the drain waiting on a peer that
-        // may never send again. Skipped during arena teardown for the same
-        // reason ConnectionManager::CloseConcrete skips it -- constructing an
+        // Cancel surfaces pending recv/send as -ECANCELED so their callbacks
+        // run promptly instead of the drain waiting on a peer that may never
+        // send again. Skipped during arena teardown for the same reason
+        // ConnectionManager::CloseConcrete skips it -- constructing an
         // IOSubmission allocates, and allocation after teardown throws through
         // a destructor into std::terminate.
-        if (client_fd_ != -1 && !ETCS::MemoryArena::getInstance().isTearingDown())
+        //
+        // NO CLOSE HERE. io_uring_prep_cancel_fd resolves the fd when the
+        // KERNEL processes the SQE, not when we submit it. Closing now returns
+        // the number to the kernel immediately, the next accept is handed the
+        // same fd, Serve submits a recv on it, and the cancel then lands on the
+        // NEW connection's recv. The close moves to finalizeIfDraining, which
+        // already waits for io_inflight_ to reach zero -- so the number is only
+        // released once nothing names it.
+        if (io_inflight_.load(std::memory_order_acquire) > 0
+            && client_fd_ != -1
+            && !ETCS::MemoryArena::getInstance().isTearingDown())
         {
             ETCS::IOSubmission cancel;
             cancel.op = ETCS::IOOp::Cancel;
@@ -218,7 +228,7 @@ public:
             ETCS::ThreadPool::getInstance().submit(std::move(cancel));
         }
 
-        CloseConnection();
+        open_ = false;   // stop do_recv re-arming; the fd itself closes at finalize
         finalizeIfDraining();
         return true;
     }
@@ -258,6 +268,9 @@ private:
         Phase expect = Phase::Draining;
         if (!phase_.compare_exchange_strong(expect, Phase::Free,
                                             std::memory_order_acq_rel)) return;
+
+        // Last possible moment: no submission names this fd any more.
+        CloseConnection();
 
         page_rid_ = 0;
         parser_.ResetConcrete();

@@ -93,7 +93,7 @@ public:
             ::close(fd);
             return false;
         }
-        if (::listen(fd, 8) < 0)
+        if (::listen(fd, kBacklog) < 0)
         {
             ETCS_LOG("ConnectionManager", "Open: listen() failed on port " << port << ".");
             ::close(fd);
@@ -116,7 +116,15 @@ public:
                  << " (RID:" << getRID() << ").");
 
         growPool();   // mint the initial block before the first accept lands
-        submitAccept();
+
+        // A WINDOW of accepts, not one. With a single outstanding accept every
+        // connection costs two thread handoffs in strict series -- cqe ->
+        // io_completion_loop -> enqueue -> notify_one -> worker -> callback ->
+        // submitAccept -> io_uring_submit -- so the accept rate is bounded by
+        // that round trip regardless of how idle the pool is. Past the backlog
+        // the kernel drops SYNs, which clients see as the server being slow.
+        // Each completion re-arms exactly one, so the window stays constant.
+        for (size_t i = 0; i < kAcceptWindow; ++i) submitAccept();
         return true;
     }
 
@@ -297,6 +305,13 @@ private:
         std::string filter_action;
         bool filtered() const { return filter_rid != 0 && !filter_action.empty(); }
     };
+
+    // Concurrent outstanding accepts. inflight_ already counts them and Close
+    // already drains on it, so the window needs no new bookkeeping.
+    static constexpr size_t kAcceptWindow = 8;
+    // Was 8. The backlog is what absorbs a burst arriving faster than the
+    // window can retire; at 8 it was the binding limit under load.
+    static constexpr int    kBacklog      = 128;
 
     int                 listen_fd_ = -1;
     int                 port_      = 0;
