@@ -268,9 +268,7 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
         // running untracked, free to touch an entity concurrently with
         // whatever is destroying it. shared_ptr because std::function needs a
         // copy-constructible target and ScopeTag's copy ctor is deleted.
-        ETCS_LOG("SRV.mem", "pre  scope     =" << ETCS::MemoryArena::getInstance().getUsage());
         auto scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
-        ETCS_LOG("SRV.mem", "post scope     =" << ETCS::MemoryArena::getInstance().getUsage());
         sub.callback = [&pool, ctx, c, do_recv, &self, scope = std::move(scope)]
                        (ETCS::IOCompletion comp) mutable
         {
@@ -332,6 +330,20 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                 asset = self.ResolvePath(path);
             }
 
+            // HTTP/1.1 is persistent by default; only close when the client
+            // asked, or when this connection has served its budget. Closing
+            // per request is what filled the client's ephemeral port range
+            // with TIME-WAIT and stalled connect() -- the visible symptom was
+            // a hung page against an idle server with an empty backlog.
+            const bool keep = c->GetParser().isPersistentConnection() && c->CanKeepAlive();
+            const char* conn_hdr = keep ? "keep-alive" : "close";
+            ETCS_LOG("HttpServer::Serve", "keepalive: minor_ver=" << c->GetParser().GetMinorVer()
+                 << " num_headers=" << c->GetParser().GetNumHeaders()
+                 << " persistent=" << c->GetParser().isPersistentConnection()
+                 << " served=" << c->Served()
+                 << " can_keep=" << c->CanKeepAlive()
+                 << " keep=" << keep);
+
             int send_len = 0;
             if (asset.matched)
             {
@@ -351,18 +363,20 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: %s\r\n"
                     "Content-Length: %zu\r\n"
-                    "Connection: close\r\n"
+                    "Connection: %s\r\n"
+                    "Keep-Alive: timeout=%d\r\n"
                     "\r\n%.*s",
-                    asset.mime_type.c_str(), asset.length,
+                    asset.mime_type.c_str(), asset.length, conn_hdr,
+                    SocketConnectionState::TIMEOUT_SECONDS,
                     static_cast<int>(asset.length), asset.data);
             }
             else
             {
                 const char* err = "404 Not Found";
                 send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
-                    "HTTP/1.1 404 Not Found\r\nConnection: close\r\n"
+                    "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n"
                     "Content-Length: %zu\r\n\r\n%s",
-                    std::strlen(err), err);
+                    conn_hdr, std::strlen(err), err);
             }
             c->SetSendLen(send_len);
 
@@ -378,9 +392,21 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             send_sub.priority   = static_cast<int>(ETCS::Priority::Medium);
             send_sub.ctx        = ctx;
             auto send_scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
-            send_sub.callback   = [c, send_scope = std::move(send_scope)](ETCS::IOCompletion)
+            send_sub.callback   = [c, keep, do_recv, send_scope = std::move(send_scope)]
+                                  (ETCS::IOCompletion comp) mutable
             {
-                c->Reset();
+                // A short write means the response did not fully land, so the
+                // next request would parse our own leftover bytes as its head.
+                // Only reuse a connection whose last response completed.
+                const bool sent_all = comp.result >= 0
+                                   && static_cast<size_t>(comp.result)
+                                        == static_cast<size_t>(c->GetSendLen());
+                if (keep && sent_all && c->IsConnectionOpen())
+                {
+                    c->RecycleForNextRequest();
+                    (*do_recv)(c);          // wait for the next request on the same fd
+                }
+                else c->Reset();
                 c->NoteComplete();
             };
 

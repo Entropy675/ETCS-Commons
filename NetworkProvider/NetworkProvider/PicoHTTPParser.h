@@ -72,6 +72,10 @@ private:
     size_t accum_len_    = 0;
     size_t prev_len_     = 0;
 
+public:
+    // Was private and unreferenced. HttpServer::Serve needs it: without a
+    // reader, every response said Connection: close and the client burned a
+    // TCP connection per request.
     bool isPersistentConnection() const 
     {
         // Logic: HTTP/1.1 is persistent by default unless "Connection: close" is present

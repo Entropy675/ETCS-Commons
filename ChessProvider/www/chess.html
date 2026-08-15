@@ -226,6 +226,10 @@ let TOKEN = qs.get('as')                      // explicit override, for testing
 setCookie(COOKIE, TOKEN, 365);
 
 let room    = qs.get('room') || null;   // the match id, null == home
+// Consumed once. The URL is an ENTRY VECTOR, not state: syncUrl rewrites it on
+// every navigation, so a stale ?room left in qs kept being read back after
+// returning home and the client went on polling a room it had left.
+qs.delete('room');
 let locked  = false;                    // name locked by a recorded result
 
 // /<mount>/<self>/<match>/<verb>[/<arg>] -- SELF first, because that is the
@@ -577,14 +581,42 @@ $('to-home').onclick=leaveRoom;
 // requests, none of them urgent, and none of them heartbeat a match -- listing
 // is read-only, so browsing costs nobody a seat.
 let beat=0;
-function tick(){
-  $('me').textContent=TOKEN;
-  if(room){ refreshFen(); refreshStatus(); refreshChat(); if(beat%3===0) refreshMe(); }
-  else if(beat%2===0){ refreshMe(); refreshMine(); refreshRooms(); refreshPlayers(); }
-  beat++;
+let ticking=false;
+
+// AWAITED, not fired in parallel. Three concurrent fetches meant three
+// concurrent TCP connections per tab; awaited, keep-alive reuses ONE. The
+// server closing per request was filling the client's ephemeral port range
+// with TIME-WAIT (60s each) until connect() stalled waiting for one to expire
+// -- which looked exactly like a server hang, with the server idle and its
+// accept backlog empty.
+//
+// ticking guards re-entry: a slow tick must not stack a second set of requests
+// on top of itself, which is how a transient stall used to become permanent.
+async function tick(){
+  if(ticking) return;
+  ticking=true;
+  try{
+    $('me').textContent=TOKEN;
+    if(room){
+      await refreshFen(); await refreshStatus(); await refreshChat();
+      if(beat%3===0) await refreshMe();
+    }
+    else if(beat%2===0){
+      await refreshMe(); await refreshMine(); await refreshRooms(); await refreshPlayers();
+    }
+    beat++;
+  } finally { ticking=false; }
+}
+
+// A hidden tab needs no board. Browsers already throttle timers in background
+// tabs, but they do not stop them, and a left-open tab polling for hours is
+// most of the churn in a long test run.
+function scheduleTick(){
+  if(!document.hidden) tick();
 }
 tick();
-setInterval(tick,1000);
+setInterval(scheduleTick,1000);
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) tick(); });
 </script>
 </body>
 </html>

@@ -105,7 +105,14 @@ private:
     // ConnectionManager is.
     std::atomic<int>*  pool_counter_ = nullptr;
     std::chrono::steady_clock::time_point last_activity_ = std::chrono::steady_clock::now();
-    static constexpr int TIMEOUT_SECONDS = 10;
+public:
+    // Public so Serve can advertise it in the Keep-Alive header -- a client
+    // told the idle window can close on its own schedule instead of being
+    // surprised by a reset mid-request. Raised from 10: under keep-alive this
+    // is now an IDLE window between requests, not a whole-request budget, and
+    // 10s would reap a connection between two of the chess client's own polls.
+    static constexpr int TIMEOUT_SECONDS = 30;
+private:
 
     // Capacities kept as named constants (not sizeof(recv_buf_) etc,
     // which would now just be sizeof(char*) = 8) — same fix PicoHTTPParser's
@@ -288,6 +295,27 @@ public:
     int  GetSendLen() const  { return send_len_; }
     void SetSendLen(int len) { send_len_ = len; }
     void SetRecvLen(int len) { recv_len_ = len; }
+
+    // Keep-alive bookkeeping. Bounded so one client cannot hold a pooled
+    // connection forever; the browser reconnects, which costs one handshake
+    // per kMaxKeepAlive requests instead of one per request.
+    static constexpr unsigned kMaxKeepAlive = 100;
+    unsigned Served() const { return served_; }
+    bool CanKeepAlive() const { return served_ < kMaxKeepAlive; }
+
+    // Between two requests on the SAME connection: clear the parser and the
+    // buffer lengths, keep the fd, the phase and the io references. Not
+    // Reset() -- that tears the connection down.
+    void RecycleForNextRequest()
+    {
+        ++served_;
+        parser_.ResetConcrete();
+        if (recv_len_ > 0) std::memset(recv_buf_, 0, static_cast<size_t>(recv_len_));
+        if (send_len_ > 0) std::memset(send_buf_, 0, static_cast<size_t>(send_len_));
+        recv_len_ = 0;
+        send_len_ = 0;
+        markActive();
+    }
 private:
     // Exactly once, by CAS. Reset and the last NoteComplete both call this and
     // can race.
@@ -331,6 +359,7 @@ private:
     ETCS::RID   page_rid_  = 0;
     int         send_len_  = 0;
     int         recv_len_  = 0;
+    unsigned    served_    = 0;   // requests served on this connection
 
     // Brackets parser_'s own construction immediately below -- see this
     // class's own file-level comment for the full reasoning. C++
