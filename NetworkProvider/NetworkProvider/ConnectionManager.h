@@ -10,6 +10,7 @@
 #include <string>
 #include <mutex>
 #include <memory>
+#include <thread>
 
 // ConnectionManager — the Gate_ for an inbound TCP listener. Owns the
 // listening fd, mints one SocketConnectionState per accepted connection as an
@@ -125,6 +126,7 @@ public:
         // the kernel drops SYNs, which clients see as the server being slow.
         // Each completion re-arms exactly one, so the window stays constant.
         for (size_t i = 0; i < kAcceptWindow; ++i) submitAccept();
+        startMaintenance();
         return true;
     }
 
@@ -138,6 +140,14 @@ public:
         if (listen_fd_ == -1) return true;
 
         stopping_.store(true, std::memory_order_release);
+
+        // Joined BEFORE the drain: it captures `this` bare and both of its
+        // jobs touch the pool, so it has to be gone before anything below
+        // starts tearing that down. stopping_ is already set, so it exits at
+        // its next check rather than sleeping out a full tick.
+        if (maintain_running_.exchange(false, std::memory_order_acq_rel)
+            && maintain_thread_.joinable())
+            maintain_thread_.join();
 
         // The close is what actually unparks anything waiting on this fd and
         // is the Gate_ contract's real obligation (see Gate.h). The cancel is
@@ -308,10 +318,29 @@ private:
 
     // Concurrent outstanding accepts. inflight_ already counts them and Close
     // already drains on it, so the window needs no new bookkeeping.
-    static constexpr size_t kAcceptWindow = 8;
+    //
+    // 32, not 8. Confirmed by TcpExtListenOverflows climbing (18 over one
+    // session): the backlog filled and the kernel DROPPED those SYNs, which a
+    // client sees as silence, not refusal -- so curl stalls through its SYN
+    // retransmit backoff (1s, 3s, 7s, 15s, 31s) and then succeeds. That is the
+    // hang-then-recover shape, and the idle counter reading 64 on recovery is
+    // the backoff, not the server.
+    //
+    // The backlog only drains as fast as accepts retire, and keep-alive made
+    // that much slower: a tab now holds a connection for up to
+    // TIMEOUT_SECONDS, so a reload opening several at once outruns a window of
+    // 8 immediately. 32 outstanding SQEs against a 256-entry ring is free.
+    static constexpr size_t kAcceptWindow = 32;
+    // How often the maintenance thread runs. Well under TIMEOUT_SECONDS so an
+    // expired connection is reaped promptly rather than a whole tick late.
+    static constexpr int    kMaintainMs   = 1000;
     // Was 8. The backlog is what absorbs a burst arriving faster than the
     // window can retire; at 8 it was the binding limit under load.
     static constexpr int    kBacklog      = 128;
+
+    std::thread        maintain_thread_;
+    std::atomic<bool>  maintain_running_{false};
+    std::atomic<long>  rearms_{0};
 
     int                 listen_fd_ = -1;
     int                 port_      = 0;
@@ -546,6 +575,78 @@ private:
         return io.written > 0;
     }
 
+    // Bring the outstanding-accept count back up to the window.
+    void topUpAccepts()
+    {
+        for (int live = inflight_.load(std::memory_order_acquire);
+             live < static_cast<int>(kAcceptWindow);
+             ++live)
+            submitAccept();
+    }
+
+    // ── Maintenance thread ────────────────────────────────────────────────
+    // Two jobs, both of which need a timer and neither of which has one.
+    //
+    // 1. REAP IDLE CONNECTIONS. checkTimeout() is only ever called from inside
+    //    do_recv, which only runs when a completion arrives. Before keep-alive
+    //    that was sufficient -- every connection completed or errored within
+    //    one request. Now an idle connection sits with a recv armed and
+    //    nothing driving it, so a client that vanishes WITHOUT a FIN (suspended
+    //    tab, closed laptop, dropped wifi) leaves that recv outstanding forever
+    //    and its pool slot claimed forever. Those accumulate, the pool fills
+    //    with ghosts, and every new connection is refused on arrival -- which
+    //    presents as a server that is idle and unreachable at the same time.
+    //
+    // 2. RE-ARM A SHRUNKEN ACCEPT WINDOW. Every re-arm otherwise happens inside
+    //    a completion, so a submission lost before its callback runs shrinks
+    //    the window permanently and silently.
+    //
+    // Its own thread rather than a Timeout submission or a pool task: if the
+    // ring or the pool is what broke, a watchdog living on either dies with it.
+    void startMaintenance()
+    {
+        if (maintain_running_.exchange(true, std::memory_order_acq_rel)) return;
+        maintain_thread_ = std::thread([this]
+        {
+            while (maintain_running_.load(std::memory_order_acquire)
+                   && !stopping_.load(std::memory_order_acquire))
+            {
+                ETCS_SLEEP_MS(kMaintainMs);
+                if (stopping_.load(std::memory_order_acquire) || listen_fd_ == -1) break;
+                if (accept_ctx_.isInterrupted() || accept_ctx_.isTerminated()) break;
+
+                reapIdle();
+
+                const int live = inflight_.load(std::memory_order_acquire);
+                if (live < static_cast<int>(kAcceptWindow))
+                {
+                    ETCS_LOG("ConnectionManager", "MAINT: accept window at " << live
+                             << "/" << kAcceptWindow << " -- topping up (total re-arms "
+                             << ++rearms_ << ")");
+                    topUpAccepts();
+                }
+            }
+        });
+    }
+
+    // Snapshot under the lock, act outside it: checkTimeout can Reset, which
+    // submits a cancel and can run finalize, and none of that should happen
+    // while an accept is blocked waiting for pool_mutex_.
+    void reapIdle()
+    {
+        std::vector<SocketConnectionState*> live;
+        {
+            std::lock_guard<std::mutex> lock(pool_mutex_);
+            for (SocketConnectionState* c : pool_)
+                if (c && c->IsActive()) live.push_back(c);
+        }
+        int reaped = 0;
+        for (SocketConnectionState* c : live) if (c->checkTimeout()) ++reaped;
+        if (reaped)
+            ETCS_LOG("ConnectionManager", "MAINT: reaped " << reaped
+                     << " idle connection(s) past " << SocketConnectionState::TIMEOUT_SECONDS << "s");
+    }
+
     void submitAccept(int retry = 0)
     {
         if (stopping_.load(std::memory_order_acquire) || listen_fd_ == -1) return;
@@ -632,7 +733,12 @@ private:
                 return;
             }
 
-            submitAccept();
+            // TOP UP to the full window, do not just add one back. One-for-one
+            // re-arming means the window can only recover at completion rate,
+            // which is exactly the rate that was too slow to drain the backlog
+            // in the first place -- a burst that empties the window keeps it
+            // empty. Topping up pulls the queue down as fast as the ring allows.
+            topUpAccepts();
             ETCS_LOG("ConnectionManager", "Usage pre onConnection(fd)=" << getGlobalArena().getUsage());
             onConnection(fd);
             ETCS_LOG("ConnectionManager", "Usage post onConnection(fd)=" << getGlobalArena().getUsage());
