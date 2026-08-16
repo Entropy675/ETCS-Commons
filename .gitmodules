@@ -10,3 +10,6 @@
 [submodule "NetworkProvider/picohttpparser"]
 	path = NetworkProvider/picohttpparser
 	url = https://github.com/h2o/picohttpparser.git
+[submodule "WindowProvider/glfw"]
+	path = WindowProvider/glfw
+	url = https://github.com/glfw/glfw.git
