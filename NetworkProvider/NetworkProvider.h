@@ -384,40 +384,82 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                      << std::string(c->GetParser().GetMethod(), c->GetParser().GetMethodLen())
                      << " " << path << " (" << (asset.matched ? "200" : "404") << ")");
 
-            ETCS::IOSubmission send_sub;
-            send_sub.op         = ETCS::IOOp::Send;
-            send_sub.fd         = c->GetClientFd();
-            send_sub.buffer     = c->SendBuffer().data();
-            send_sub.buffer_len = static_cast<size_t>(c->GetSendLen());
-            send_sub.priority   = static_cast<int>(ETCS::Priority::Medium);
-            send_sub.ctx        = ctx;
-            auto send_scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
-            send_sub.callback   = [c, keep, do_recv, send_scope = std::move(send_scope)]
-                                  (ETCS::IOCompletion comp) mutable
+            // SEND UNTIL IT IS ALL GONE. A TCP send returns how many bytes
+            // the socket ACCEPTED, not how many were asked for -- for a large
+            // response that is whatever fits the send buffer, which varies with
+            // window and memory pressure. One submission therefore delivers a
+            // prefix, and the previous code treated the completion as the whole
+            // thing: a page larger than the socket buffer arrived truncated at
+            // a different point on every reload.
+            //
+            // Same self-reference shape as do_recv, and for the same reason --
+            // a by-value capture of a std::function still being assigned is
+            // empty when the callback finally runs.
+            auto do_send = std::make_shared<std::function<void(size_t)>>();
+            // The function holds itself WEAKLY and hands a STRONG reference to
+            // each callback. Both halves of the lifetime problem, and neither
+            // one alone is enough:
+            //   - strong in the function == a cycle, one leaked std::function
+            //     per response;
+            //   - weak in the callback == freed when Serve's frame returns,
+            //     which is long before the send completes.
+            // The in-flight callback is what keeps it alive, so the chain holds
+            // exactly as long as there are bytes left, and frees on the last one.
+            std::weak_ptr<std::function<void(size_t)>> send_w = do_send;
+            *do_send = [&pool, ctx, c, keep, do_recv, send_w, &self](size_t offset) mutable
             {
-                // A short write means the response did not fully land, so the
-                // next request would parse our own leftover bytes as its head.
-                // Only reuse a connection whose last response completed.
-                const bool sent_all = comp.result >= 0
-                                   && static_cast<size_t>(comp.result)
-                                        == static_cast<size_t>(c->GetSendLen());
-                if (keep && sent_all && c->IsConnectionOpen())
+                const size_t total = static_cast<size_t>(c->GetSendLen());
+                if (total == 0 || offset >= total)
                 {
-                    c->RecycleForNextRequest();
-                    (*do_recv)(c);          // wait for the next request on the same fd
+                    if (keep && c->IsConnectionOpen())
+                    { c->RecycleForNextRequest(); (*do_recv)(c); }
+                    else c->Reset();
+                    return;
                 }
-                else c->Reset();
-                c->NoteComplete();
+
+                auto self_fn = send_w.lock();   // strong, for the callback to hold
+
+                ETCS::IOSubmission send_sub;
+                send_sub.op         = ETCS::IOOp::Send;
+                send_sub.fd         = c->GetClientFd();
+                send_sub.buffer     = c->SendBuffer().data() + offset;
+                send_sub.buffer_len = total - offset;
+                send_sub.priority   = static_cast<int>(ETCS::Priority::Medium);
+                send_sub.ctx        = ctx;
+
+                auto send_scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
+                send_sub.callback = [c, keep, do_recv, self_fn, offset, total,
+                                     send_scope = std::move(send_scope)]
+                                    (ETCS::IOCompletion comp) mutable
+                {
+                    // <= 0 covers both error and a zero-byte accept; treating 0
+                    // as progress would spin this loop forever on a dead peer.
+                    if (comp.result <= 0) { c->Reset(); c->NoteComplete(); return; }
+
+                    const size_t now = offset + static_cast<size_t>(comp.result);
+                    if (now < total) { (*self_fn)(now); c->NoteComplete(); return; }
+
+                    // Only a connection whose response fully landed can be
+                    // reused -- otherwise the next request would parse our own
+                    // leftover bytes as its request line.
+                    if (keep && c->IsConnectionOpen())
+                    { c->RecycleForNextRequest(); (*do_recv)(c); }
+                    else c->Reset();
+                    c->NoteComplete();
+                };
+
+                c->NoteSubmit();
+                if (!pool.submit(std::move(send_sub)))
+                {
+                    ETCS_LOG("HttpServer::Serve", "send refused (SQ full) at offset "
+                             << offset << "/" << total << " -- dropping fd="
+                             << c->GetClientFd());
+                    c->NoteComplete();   // undo the submit that never happened
+                    c->Reset();
+                }
             };
 
-            c->NoteSubmit();
-            if (!pool.submit(std::move(send_sub)))
-            {
-                ETCS_LOG("HttpServer::Serve", "send refused (SQ full) -- dropping fd="
-                         << c->GetClientFd());
-                c->NoteComplete();   // undo the submit that never happened
-                c->Reset();
-            }
+            (*do_send)(0);
             c->NoteComplete();       // this recv is done
         };
 
