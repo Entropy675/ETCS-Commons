@@ -31,21 +31,25 @@
 // path, where the caller is a stranger.
 DEFINE_WORK_FUNC(ChessGame, Move)
 {
+    (void)ctx;
     data.writeString(self.ApplyMove(data.restAsString()).c_str());
 }
 
 DEFINE_WORK_FUNC(ChessGame, Fen)
 {
+    (void)ctx;
     data.writeString(self.Fen().c_str());
 }
 
 DEFINE_WORK_FUNC(ChessGame, LoadFen)
 {
+    (void)ctx;
     data.writeString(self.LoadFenStr(data.restAsString()).c_str());
 }
 
 DEFINE_WORK_FUNC(ChessGame, Status)
 {
+    (void)ctx;
     data.writeString(self.StatusLine().c_str());
 }
 
@@ -60,11 +64,13 @@ DEFINE_WORK_FUNC(ChessGame, Chat)
 // the node parses paths and calls the game's verb surface directly.
 DEFINE_WORK_FUNC(ChessGame, Request)
 {
+    (void)ctx;
     data.writeString(self.Request(data.restAsString()).c_str());
 }
 
 DEFINE_WORK_FUNC(ChessGame, Key)
 {
+    (void)ctx;
     data.writeString(self.KeyVerb(data.restAsString()).c_str());
 }
 
@@ -99,21 +105,25 @@ DEFINE_WORK_FUNC(ChessGame, Accept)
 // forwarder. These call the base's PROVIDED method, never the *Concrete impl.
 DEFINE_WORK_FUNC(ChessGame, Reset)
 {
+    (void)ctx;
     data.writeString(self.Reset() ? self.Fen().c_str() : "FAILED");
 }
 
 DEFINE_WORK_FUNC(ChessGame, IsActive)
 {
+    (void)ctx;
     data.writeString(self.IsActive() ? "active" : "finished");
 }
 
 DEFINE_WORK_FUNC(ChessGame, Delete)
 {
+    (void)ctx;
     data.writeString(self.Delete() ? "deleted" : "FAILED");
 }
 
 DEFINE_WORK_FUNC(ChessGame, Filter)
 {
+    (void)ctx;
     self.Accepts(data);   // empty result == declined, by Filter_'s own contract
 }
 
@@ -125,11 +135,13 @@ DEFINE_WORK_FUNC(ChessGame, Filter)
 // exactly the divergence the node-owns-routing split was made to close.
 DEFINE_WORK_FUNC(ChessLobby, Filter)
 {
+    (void)ctx;
     self.Accepts(data);
 }
 
 DEFINE_WORK_FUNC(ChessLobby, Delete)
 {
+    (void)ctx;
     data.writeString(self.Delete() ? "deleted" : "FAILED");
 }
 
@@ -138,6 +150,7 @@ DEFINE_WORK_FUNC(ChessLobby, Delete)
 // Filter) and everything else is resolved behind it by path.
 DEFINE_WORK_FUNC(ChessNode, Request)
 {
+    (void)ctx;
     data.writeString(self.Request(data.restAsString()).c_str());
 }
 
@@ -169,11 +182,13 @@ DEFINE_WORK_FUNC(ChessNode, Mount)
 
 DEFINE_WORK_FUNC(ChessNode, Filter)
 {
+    (void)ctx;
     self.Accepts(data);
 }
 
 DEFINE_WORK_FUNC(ChessNode, Delete)
 {
+    (void)ctx;
     data.writeString(self.Delete() ? "deleted" : "FAILED");
 }
 

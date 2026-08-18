@@ -240,7 +240,7 @@ const api    = (verb, arg) => '/' + MOUNT + '/' + TOKEN + '/' + room + '/' + ver
 const mine   = (verb, arg) => '/' + MOUNT + '/' + TOKEN + '/' + verb +
                               (arg ? '/' + encodeURIComponent(arg) : '');
 const nodeUrl = verb       => '/' + MOUNT + '/' + verb;
-const matchUrl = m => location.origin + '/?room=' + encodeURIComponent(m);
+const matchUrl = m => location.origin + location.pathname + '?room=' + encodeURIComponent(m);
 
 async function get(u) { return (await (await fetch(u)).text()); }
 const lines = t => t.split('\n').map(l => l.trim()).filter(Boolean);
@@ -437,17 +437,20 @@ async function refreshStatus(){
 
 async function refreshChat(){
   try{
-    const log=await get(api('chat'));
-    if(log!==chatEl.textContent){
-      const bottom=chatEl.scrollTop+chatEl.clientHeight>=chatEl.scrollHeight-4;
-      chatEl.textContent=log;
-      if(bottom) chatEl.scrollTop=chatEl.scrollHeight;
+    const log = await get(api('chat'));
+    const bottom = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4;
+
+    if (log !== chatEl.textContent) {
+      chatEl.textContent = log;
+      if (bottom) chatEl.scrollTop = chatEl.scrollHeight;
     }
-  }catch(e){}
+  } catch (e) {}
 }
+
 sayEl.addEventListener('keydown',async ev=>{
   if(ev.key!=='Enter'||!sayEl.value.trim()) return;
-  const t=sayEl.value.trim(); sayEl.value='';
+  const t = sayEl.value.trim().replace(/%/g, '%20');   // <--- this is the % token fix
+  sayEl.value = '';
   try{ chatEl.textContent=await get(api('say',t)); }catch(e){}
   chatEl.scrollTop=chatEl.scrollHeight;
 });
@@ -614,7 +617,8 @@ async function tick(){
 function scheduleTick(){
   if(!document.hidden) tick();
 }
-tick();
+if (room) enterRoom(room);
+else tick();
 setInterval(scheduleTick,1000);
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden) tick(); });
 </script>
