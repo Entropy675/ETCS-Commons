@@ -317,6 +317,35 @@ public:
         }
     }
 
+    // Decode one path segment after splitPath. Browsers encode content-bearing
+    // args with encodeURIComponent; without this, spaces arrive as literal %20.
+    static std::string percentDecode(const std::string& in)
+    {
+        std::string out;
+        out.reserve(in.size());
+        auto hex = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            return -1;
+        };
+        for (size_t i = 0; i < in.size(); ++i)
+        {
+            if (in[i] == '%' && i + 2 < in.size())
+            {
+                const int hi = hex(in[i + 1]), lo = hex(in[i + 2]);
+                if (hi >= 0 && lo >= 0)
+                {
+                    out.push_back(static_cast<char>((hi << 4) | lo));
+                    i += 2;
+                    continue;
+                }
+            }
+            out.push_back(in[i]);
+        }
+        return out;
+    }
+
 private:
     static constexpr size_t kChatLines = 40;
 
@@ -528,8 +557,12 @@ private:
     // own arena footprint.
     void sayLocked(const std::string& tok, const std::string& text)
     {
-        if (text.empty()) return;
-        chat_.push_back(roleOfLocked(tok) + ": " + text);
+        const std::string msg = percentDecode(text);
+        if (msg.empty()) return;
+        // Author is the self that spoke, not the seat colour. Role belongs in
+        // /status; chat is who said what.
+        const std::string who = tok.empty() ? "viewer" : tok;
+        chat_.push_back(who + ": " + msg);
         if (chat_.size() > kChatLines) chat_.erase(chat_.begin());
     }
 
