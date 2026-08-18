@@ -20,8 +20,8 @@ ETCS_MODULE_EXPORT_MAIN(DatabaseProvider, "LocalDatabase") // define your tags i
 // Standard Local
 ETCS_TAG_BLOCK_HYBRID(
     LocalDatabase, 
-    (Delete, Connect, Disconnect, ExecuteRaw, InitializeSchema, BeginTransaction, ExecuteTransaction, Commit, Rollback), 
-    (QueryProduce, RowConsume)
+    (Delete, Connect, Disconnect, ExecuteRaw, Query, InitializeSchema, BeginTransaction, ExecuteTransaction, Commit, Rollback), 
+    (QueryProduce, RowProduce, RowConsume)
 )
 
 // Non-Standard Remote (e.g., with specific Connection Pooling logic)

@@ -143,6 +143,152 @@ static std::string _quoteIdentifier(const std::string& name)
 // content is arbitrary database data and could contain quotes; %Q handles
 // escaping and NULL-vs-empty-string correctly, which a naive "'" + val +
 // "'" concatenation would not.
+// Query <sql>  ->  one row, tab-separated, into the caller's Buffer.
+//
+// The synchronous read this provider never had. QueryProduce is bulk and needs
+// a paired consumer; an entity that wants ONE bounded answer mid-request had no
+// way to ask, so callers either round-tripped through a stream or gave up --
+// ForumNode refuses to evict a thread past its cap for exactly this reason,
+// with the data sitting on disk and no way to read it back.
+//
+// Bounded by the argument channel on purpose. This is a work function, so the
+// answer is arguments: one row, truncated with a flag rather than silently.
+// Anything larger is bulk and belongs on QueryProduce/RowProduce.
+//
+// Result: "<col>\t<col>\t...\n" for the first row, or "" for no rows. A
+// truncated row is prefixed "!" so a caller can tell a clipped answer from a
+// short one -- silent truncation here would look exactly like a NULL column.
+DEFINE_WORK_FUNC(LocalDatabase, Query)
+{
+    (void)ctx;
+    const std::string sql = data.restAsString();
+    data.reset();
+
+    sqlite3* db_ptr = (sqlite3*)self.GetHandle();
+    if (!db_ptr) { ETCS_LOG("Query", "no connection."); return; }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_ptr, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        ETCS_LOG("Query", "prepare failed: " << sqlite3_errmsg(db_ptr));
+        return;
+    }
+
+    std::string row;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const int cols = sqlite3_column_count(stmt);
+        for (int i = 0; i < cols; ++i)
+        {
+            if (i > 0) row += '\t';
+            const unsigned char* v = sqlite3_column_text(stmt, i);
+            if (v) row += reinterpret_cast<const char*>(v);
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    if (row.empty()) return;
+    if (row.size() + 2 > ETCS::Buffer::bufsize)
+    {
+        row.resize(ETCS::Buffer::bufsize - 2);
+        row = "!" + row;
+        ETCS_LOG("Query", "row exceeds the " << ETCS::Buffer::bufsize
+                 << "-byte argument channel -- truncated and flagged. Use "
+                 << "QueryProduce for anything this size.");
+    }
+    row += '\n';
+    data.writeString(row.c_str());
+}
+
+// RowProduce <sql>  ->  a stream of RECORDS, not statements.
+//
+// QueryProduce emits SQL text because it was built for database-to-database
+// mirroring, where the consumer is another sqlite handle that can just execute
+// it. A consumer that is NOT a database has to parse SQL back into fields -- a
+// round trip through a format neither side wanted, and the ugliest thing in
+// ForumWebsiteProvider's own load path.
+//
+// This emits the same rows in a neutral form any consumer can read:
+//
+//   first frame:  "#" <col> \t <col> \t ...      column names, once
+//   then:         <val> \t <val> \t ...          one frame per row
+//
+// Tab-separated because the values are already going through sqlite's own text
+// conversion and tabs do not occur in the identifiers or the numeric forms;
+// a value containing one is escaped as "\t" so a row can never gain a field.
+// QueryProduce is untouched -- mirroring still wants statements.
+DEFINE_STREAM_FUNC_PRODUCE(LocalDatabase, RowProduce)
+{
+    (void)data;
+    const std::string sql = stream.getConfig().restAsString();
+
+    sqlite3* db_ptr = (sqlite3*)self.GetHandle();
+    if (!db_ptr) { ETCS_LOG("RowProduce", "no connection."); return; }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_ptr, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        ETCS_LOG("RowProduce", "prepare failed: " << sqlite3_errmsg(db_ptr));
+        return;
+    }
+
+    auto escape = [](const char* v) {
+        std::string out;
+        for (const char* p = v; p && *p; ++p)
+        {
+            if      (*p == '\t') out += "\\t";
+            else if (*p == '\\') out += "\\\\";
+            else if (*p == '\n') out += "\\n";
+            else                 out += *p;
+        }
+        return out;
+    };
+
+    const int cols = sqlite3_column_count(stmt);
+
+    std::string header = "#";
+    for (int i = 0; i < cols; ++i)
+    {
+        if (i > 0) header += '\t';
+        header += sqlite3_column_name(stmt, i);
+    }
+    ETCS::Buffer slot;
+    slot.writeString(header.c_str());
+    if (!stream.writeRaw(slot))
+    {
+        ETCS_LOG("RowProduce", "consumer gone before the header landed.");
+        sqlite3_finalize(stmt);
+        return;
+    }
+
+    long rows = 0, dropped = 0;
+    while (!ctx.isInterrupted() && !ctx.isTerminated()
+           && sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        std::string line;
+        for (int i = 0; i < cols; ++i)
+        {
+            if (i > 0) line += '\t';
+            const unsigned char* v = sqlite3_column_text(stmt, i);
+            if (v) line += escape(reinterpret_cast<const char*>(v));
+        }
+
+        // A row wider than one frame is DROPPED with a count, not clipped: a
+        // truncated record read back as data is worse than a missing one,
+        // because nothing downstream can tell it was truncated.
+        if (line.size() + 1 > ETCS::Buffer::bufsize) { ++dropped; continue; }
+
+        ETCS::Buffer row;
+        row.writeString(line.c_str());
+        if (!stream.writeRaw(row)) break;
+        ++rows;
+    }
+    sqlite3_finalize(stmt);
+
+    ETCS_LOG("RowProduce", rows << " row(s) sent"
+             << (dropped ? (", " + std::to_string(dropped) + " DROPPED (wider than one frame)") : ""));
+}
+
 DEFINE_STREAM_FUNC_PRODUCE(LocalDatabase, QueryProduce)
 {
     (void)data;
