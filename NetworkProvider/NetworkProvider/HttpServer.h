@@ -209,6 +209,38 @@ public:
 
     bool IsTLSConfigured() const { return !tls_cert_.empty() && !tls_key_.empty(); }
 
+    // Re-reads the certificate and key from the paths already configured,
+    // on a RUNNING server, without dropping a single connection. This is
+    // what a renewal hook should call instead of restarting the process.
+    //
+    // No arguments by design. The paths are already config (EnableTLS), and
+    // a renewal writes new bytes to the SAME paths -- certbot's live/
+    // directory is symlinks precisely so the path never changes. Taking
+    // paths here would invite a reload that silently points somewhere else
+    // than the configured location, which is a difference you would only
+    // discover on the next restart.
+    //
+    // Deliberately preserves runtime state that a process restart destroys:
+    // live games, whatever the forum holds in memory, every other entity in
+    // the tree. A certificate rotation should not cost any of that.
+    bool ReloadCerts()
+    {
+        if (!started_ || !manager_)
+        {
+            ETCS_LOG("HttpServer", "ReloadCerts: not started (RID:" << getRID()
+                     << ") -- nothing to reload. Start reads the certificate "
+                        "from disk anyway.");
+            return false;
+        }
+        if (!IsTLSConfigured())
+        {
+            ETCS_LOG("HttpServer", "ReloadCerts: no TLS configured on RID:" << getRID()
+                     << " -- refusing.");
+            return false;
+        }
+        return manager_->ReloadCerts(tls_cert_, tls_key_);
+    }
+
     void SetRunContext(const ETCS::SignalContext& ctx) { run_ctx_ = ctx; }
 
     // An out-of-tree recipient for connections. Stored as config and forwarded

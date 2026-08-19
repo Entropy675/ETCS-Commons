@@ -27,14 +27,25 @@
 // (MutableByteSpan in SocketConnectionState.h) already establishes that
 // pattern.
 //
-// LIFETIME: owned by ConnectionManager, constructed on first EnableTLS
-// call, freed in ConnectionManager::CloseConcrete(). Every
-// TLSServerContext that references it (via a raw, non-owning pointer --
-// see TLSServerContext::Init) must be torn down (finalizeIfDraining)
-// before this is freed; ConnectionManager::CloseConcrete already runs the
-// pool drain and Reset() over every pooled connection before this would
-// ever be reached, so that ordering holds structurally, not by
-// convention.
+// LIFETIME: reference-counted, and deliberately so. ConnectionManager
+// holds a shared_ptr to the CURRENT config; every TLSServerContext holds
+// its own shared_ptr to whichever config its session was set up against
+// (TLSServerContext::Init). That is what makes ReloadCerts safe without
+// dropping connections: installing a new config only changes what FUTURE
+// connections get, while sessions already in flight keep the exact config
+// their mbedtls_ssl_context points into until they close, at which point
+// the superseded config is destroyed by the last release.
+//
+// This replaced an earlier raw-pointer arrangement that required "every
+// referencing context must be torn down before this is freed" to hold as
+// an ordering CONVENTION. Convention is the wrong mechanism for a
+// use-after-free involving private key material: the refcount now enforces
+// it, so no future call site can get the ordering wrong.
+//
+// ONE CONFIG, ONE LOAD. A config is built, loaded, and thereafter only
+// read -- reloading means constructing a NEW one, never re-loading this
+// one (see LoadCertAndKey's own guard for why re-loading in place is not
+// merely discouraged but broken).
 class TLSServerConfig
 {
 public:
@@ -64,12 +75,27 @@ public:
     TLSServerConfig(const TLSServerConfig&)            = delete;
     TLSServerConfig& operator=(const TLSServerConfig&) = delete;
 
-    // Loads the server certificate chain and private key, seeds the DRBG,
-    // and finalizes conf_ as IS_SERVER. Call once, before the first
-    // connection is accepted on a TLS-enabled gate -- ConnectionManager's
-    // own EnableTLS work action is the only caller.
+    // Loads the server certificate chain and private key, initialises PSA,
+    // and finalizes conf_ as IS_SERVER. (No DRBG seeding -- that went away
+    // with the 4.x move to PSA-owned randomness; see the ctor comment.)
+    // CALL ONCE PER OBJECT. Refused on a second call, and that is a
+    // correctness guard rather than tidiness: mbedtls_x509_crt_parse_file
+    // APPENDS to the certificate chain rather than replacing it, so a
+    // second load would leave conf_ presenting the old certificate and the
+    // new one stapled together, and mbedtls_pk_parse_keyfile over an
+    // already-populated context is its own problem. An earlier version of
+    // this class described re-loading as "idempotent-ish", which was simply
+    // wrong. Reload builds a fresh config instead -- see this class's own
+    // LIFETIME note and ConnectionManager::ReloadCerts.
     bool LoadCertAndKey(const std::string& cert_path, const std::string& key_path)
     {
+        if (ready_)
+        {
+            std::cerr << "[TLSServerConfig] LoadCertAndKey called twice on the same "
+                         "config -- refusing. Build a new config instead.\n";
+            return false;
+        }
+
         // Before any crypto, and unconditionally: PSA is the RNG and key
         // backend in 4.x, so nothing below works without it. Idempotent --
         // a second call once initialised is a no-op success, which matters

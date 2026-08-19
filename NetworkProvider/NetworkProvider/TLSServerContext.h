@@ -3,6 +3,7 @@
 #include "../../../ontology.h"
 #include "TLSServerConfig.h"
 #include <cstring>
+#include <memory>
 #include "mbedtls/ssl.h"
 #include "mbedtls/error.h"
 
@@ -99,10 +100,21 @@ public:
     // Called once per claim (SocketConnectionState::TryClaim, via
     // finalizeIfDraining having already called Free() on the PREVIOUS
     // occupant -- see this class's own Free()/finalizeIfDraining split
-    // note below). shared_conf outlives every connection referencing it
-    // (ConnectionManager owns it; see TLSServerConfig.h's own LIFETIME
-    // note), so a raw, non-owning pointer is correct and safe here.
-    bool Init(TLSServerConfig* shared_conf)
+    // note below).
+    //
+    // SHARED OWNERSHIP, not a borrowed pointer. This connection holds its
+    // own reference to the config for as long as its session lives, which
+    // is what makes certificate reload safe: ConnectionManager::ReloadCerts
+    // installs a NEW config for connections accepted after it, while every
+    // connection already mid-session keeps the exact config its
+    // mbedtls_ssl_context was set up against, until it closes. The old
+    // config is destroyed when the last connection using it lets go.
+    //
+    // mbedtls_ssl_setup stores a pointer to the config INSIDE ssl_, so the
+    // config must outlive ssl_ -- that requirement is why this is a
+    // shared_ptr rather than a raw pointer, and why Free() below releases
+    // it only after mbedtls_ssl_free has run.
+    bool Init(std::shared_ptr<TLSServerConfig> shared_conf)
     {
         if (!shared_conf || !shared_conf->IsReady()) return false;
         mbedtls_ssl_init(&ssl_);
@@ -113,6 +125,7 @@ public:
             phase_ = Phase::Error;
             return false;
         }
+        conf_ = std::move(shared_conf);
         mbedtls_ssl_set_bio(&ssl_, this, &TLSServerContext::bioSend, &TLSServerContext::bioRecv, nullptr);
         cipher_in_.reset();
         cipher_out_.reset();
@@ -144,6 +157,13 @@ public:
         if (cipher_out_.len > 0 && cipher_out_.ptr) std::memset(cipher_out_.ptr, 0, cipher_out_.len);
         cipher_in_.reset();
         cipher_out_.reset();
+        // AFTER mbedtls_ssl_free, never before: ssl_ holds an internal
+        // pointer to the config, so releasing our reference first could
+        // drop the last one and free the config out from under the very
+        // call that is tearing ssl_ down. This is also the moment a
+        // superseded config (one replaced by ReloadCerts while this
+        // connection was mid-session) finally becomes free-able.
+        conf_.reset();
         phase_ = Phase::Idle;
     }
 
@@ -244,6 +264,10 @@ private:
     Phase               phase_ = Phase::Idle;
     CipherSpan          cipher_in_;
     CipherSpan          cipher_out_;
+    // Keeps THIS session's config alive for exactly as long as the session
+    // -- see Init's own comment. Held rather than borrowed so a reload can
+    // never pull the config out from under a live handshake.
+    std::shared_ptr<TLSServerConfig> conf_;
 };
 
 #endif // TLSSERVERCONTEXT_H__

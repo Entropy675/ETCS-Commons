@@ -164,6 +164,27 @@ DEFINE_WORK_FUNC(HttpServer, EnableTLS)
     data << ok;
 }
 
+// ReloadCerts — rotates the certificate on a running server, in place, with
+// no dropped connections and no process restart. Takes no arguments: it
+// re-reads the paths EnableTLS already stored, which is what a renewal
+// rewrites in place.
+//
+// Nothing changes unless the new certificate loads cleanly, so a failed
+// renewal leaves the server serving its existing one rather than taking the
+// site down. Connections already established finish against the certificate
+// they handshook with; only new ones see the new chain.
+DEFINE_WORK_FUNC(HttpServer, ReloadCerts)
+{
+    (void)data; (void)ctx;
+    bool ok = self.ReloadCerts();
+    if (ok)
+        ETCS_LOG("HttpServer::ReloadCerts", "certificate reloaded on RID:"
+                 << self.getRID() << " -- live, no connections dropped.");
+    // Failures are logged in full by the layer that knows why.
+    data.reset();
+    data << ok;
+}
+
 DEFINE_WORK_FUNC(HttpServer, Start)
 {
     (void)data;
@@ -695,6 +716,32 @@ DEFINE_WORK_FUNC(ConnectionManager, EnableTLS)
     }
 
     bool ok = self.EnableTLS(cert_path, key_path);
+    data.reset();
+    data << ok;
+}
+
+// ReloadCerts <cert_path> <key_path> — gate-level certificate rotation, for
+// a script-created bare ConnectionManager. HttpServer.ReloadCerts is the
+// one to use for a server; it needs no arguments because it already knows
+// its own paths.
+DEFINE_WORK_FUNC(ConnectionManager, ReloadCerts)
+{
+    (void)ctx;
+    std::string cert_path;
+    std::string key_path;
+    data >> cert_path;
+    data >> key_path;
+
+    if (cert_path.empty() || key_path.empty())
+    {
+        ETCS_LOG("ConnectionManager::ReloadCerts",
+                 "expected '<cert_path> <key_path>' -- got: " << data.buf);
+        data.reset();
+        data << false;
+        return;
+    }
+
+    bool ok = self.ReloadCerts(cert_path, key_path);
     data.reset();
     data << ok;
 }

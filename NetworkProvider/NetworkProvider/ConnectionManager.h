@@ -458,36 +458,107 @@ public:
     // property of the listener, so it is settled before the listener exists
     // or not at all.
     //
-    // Idempotent-ish across repeated pre-Open calls: each reloads cert/key
-    // into the SAME tls_conf_ and, on success, leaves tls_enabled_ true --
-    // a failed reload does not silently disable a previously-working config.
+    // Repeatable before Open: each call builds a FRESH config and installs
+    // it only on success, so calling it twice with different paths simply
+    // takes the second, and a failed call leaves any previously-working
+    // config exactly as it was.
     bool EnableTLS(const std::string& cert_path, const std::string& key_path)
     {
         if (listen_fd_ != -1)
         {
             ETCS_LOG("ConnectionManager", "EnableTLS: already open on port " << port_
                      << " (RID:" << getRID() << ") -- REFUSING. A listener's "
-                        "transport is fixed for its lifetime; close it first.");
+                        "transport is fixed for its lifetime; close it first. "
+                        "To rotate a certificate on a RUNNING gate, use "
+                        "ReloadCerts.");
             return false;
         }
+        return installConfig(cert_path, key_path, "EnableTLS");
+    }
 
-        bool ok = tls_conf_.LoadCertAndKey(cert_path, key_path);
-        if (!ok)
+    // Rotates the certificate on a RUNNING gate, with no dropped
+    // connections and no rebind. This is what a renewal hook calls.
+    //
+    // Allowed while open, unlike EnableTLS, and the difference is not
+    // arbitrary. EnableTLS decides whether this listener speaks TLS at all,
+    // which is a property of the listener and must be settled before it
+    // exists. ReloadCerts changes only WHICH certificate an already-TLS
+    // gate presents -- it cannot turn plaintext into TLS, and it refuses to
+    // try.
+    //
+    // Nothing is disturbed unless the new certificate actually loads: the
+    // new config is built and validated in full BEFORE it is installed, so
+    // a botched renewal (expired file, wrong path, unreadable key) leaves
+    // the running gate serving its existing certificate. Failing closed
+    // here would mean a fumbled cron job takes the site down while a
+    // perfectly valid certificate was still on disk.
+    //
+    // Connections already established keep the config they handshook
+    // against until they close -- see TLSServerContext::Init. Only
+    // connections accepted after this point see the new one.
+    bool ReloadCerts(const std::string& cert_path, const std::string& key_path)
+    {
+        if (!IsTLSActive())
         {
-            ETCS_LOG("ConnectionManager", "EnableTLS: failed to load cert='"
-                     << cert_path << "' key='" << key_path << "' (RID:" << getRID()
-                     << ") -- TLS " << (tls_enabled_ ? "remains enabled on the "
-                                          "previous config" : "not enabled") << ".");
+            ETCS_LOG("ConnectionManager", "ReloadCerts: TLS is not enabled on RID:"
+                     << getRID() << " -- refusing. ReloadCerts rotates a certificate; "
+                        "it does not turn a plaintext gate into a TLS one.");
             return false;
         }
-        tls_enabled_ = true;
-        ETCS_LOG("ConnectionManager", "EnableTLS: loaded cert='" << cert_path
-                 << "' key='" << key_path << "' (RID:" << getRID() << ") -- "
-                    "TLS termination active for future connections.");
-        return true;
+        return installConfig(cert_path, key_path, "ReloadCerts");
+    }
+
+    // Whether this gate terminates TLS at all. Cheap enough to take the
+    // lock -- it is consulted once per accepted connection, next to two
+    // syscalls and a pool claim.
+    bool IsTLSActive() const
+    {
+        std::lock_guard<std::mutex> lock(tls_mutex_);
+        return tls_conf_ != nullptr;
     }
 
 private:
+    // Builds a FRESH config, validates it fully, and only then installs it.
+    // Shared by EnableTLS and ReloadCerts so both get identical validation
+    // and identical failure semantics -- the only difference between them
+    // is the guard each applies before calling this.
+    //
+    // A new object every time, never a reload in place: LoadCertAndKey is
+    // single-use by construction (see its own guard), and building fresh is
+    // also what gives in-flight connections something stable to keep
+    // pointing at.
+    bool installConfig(const std::string& cert_path, const std::string& key_path,
+                       const char* who)
+    {
+        auto fresh = std::make_shared<TLSServerConfig>();
+        if (!fresh->LoadCertAndKey(cert_path, key_path))
+        {
+            ETCS_LOG("ConnectionManager", who << ": failed to load cert='" << cert_path
+                     << "' key='" << key_path << "' (RID:" << getRID()
+                     << ") -- nothing changed; the gate keeps whatever it was "
+                        "already using.");
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(tls_mutex_);
+            tls_conf_ = std::move(fresh);
+        }
+        ETCS_LOG("ConnectionManager", who << ": loaded cert='" << cert_path
+                 << "' key='" << key_path << "' (RID:" << getRID()
+                 << ") -- in effect for connections accepted from now on; "
+                    "sessions already established keep their own until they close.");
+        return true;
+    }
+
+    // A COPY, taken under the lock. The refcount bump is the whole point:
+    // whatever this hands back stays valid for the caller even if
+    // ReloadCerts replaces tls_conf_ an instant later.
+    std::shared_ptr<TLSServerConfig> currentTLSConfig() const
+    {
+        std::lock_guard<std::mutex> lock(tls_mutex_);
+        return tls_conf_;
+    }
+
     // filter_rid/filter_action are OPTIONAL (0/"" means unfiltered). A filtered
     // subscriber declares a predicate this gate consults before handing over a
     // connection; an unfiltered one takes anything.
@@ -531,17 +602,25 @@ private:
     std::atomic<int>    inflight_{0};
     std::atomic<bool>   stopping_{false};
 
-    // TLS termination. tls_conf_ is the ONE shared, read-only mbedtls_ssl_config
-    // this gate builds when EnableTLS succeeds (TLSServerConfig.h's own LIFETIME
-    // note); tls_enabled_ is what onConnection below branches on to decide
-    // whether a freshly accepted fd goes through the handshake phase
-    // (TLSConnectionIO.h's DriveTLSHandshake) before subscriber dispatch, or
-    // straight to dispatchToSubscribers as plaintext, unchanged from before
-    // this feature existed. Freed automatically by tls_conf_'s own destructor
-    // at ConnectionManager teardown -- see TLSServerConfig.h's LIFETIME note
-    // for why that ordering is structurally, not conventionally, safe.
-    TLSServerConfig     tls_conf_;
-    bool                tls_enabled_ = false;
+    // TLS termination. Non-null means this gate terminates TLS: onConnection
+    // below takes a copy per accepted connection and, if there is one, runs
+    // the handshake phase (TLSConnectionIO.h's DriveTLSHandshake) before
+    // subscriber dispatch. Null means plaintext straight to
+    // dispatchToSubscribers, unchanged from before this feature existed.
+    // The CURRENT config new connections are handed. shared_ptr rather than
+    // a plain member because a connection outlives the manager's interest
+    // in the config it used: after ReloadCerts, sessions still in flight
+    // hold the superseded config alive until they close (see
+    // TLSServerConfig.h's own LIFETIME note). nullptr means plaintext.
+    //
+    // Guarded by its own mutex, not by pool_mutex_ or subs_mutex_ -- it is
+    // read on the io completion thread once per accept and written from
+    // whichever thread ran ReloadCerts, and it has nothing to do with the
+    // pool or the subscriber list. Copies are taken out of it rather than
+    // referenced (currentTLSConfig below), so the lock is never held across
+    // anything that could block.
+    mutable std::mutex               tls_mutex_;
+    std::shared_ptr<TLSServerConfig> tls_conf_;
 
     // Connections currently between accept and handshake-settled.
     //
@@ -986,7 +1065,7 @@ private:
     // killable entity the instant it is accepted -- not whenever some consumer
     // eventually claims it.
     //
-    // When tls_enabled_, a freshly claimed connection owes a HANDSHAKE before
+    // On a TLS gate, a freshly claimed connection owes a HANDSHAKE before
     // it owes a subscriber anything -- dispatchToSubscribers (below) must
     // never see a connection whose bytes are still ciphertext, since neither
     // HttpServer nor any other subscriber has ever been taught TLS exists
@@ -1006,9 +1085,13 @@ private:
         ETCS_LOG("ConnectionManager", "Accepted fd=" << fd
                  << " RID:" << conn->getRID() << " on port " << port_);
 
-        if (tls_enabled_)
+        // One copy, taken once, for this connection's whole session. If a
+        // ReloadCerts lands while this handshake is in flight, this
+        // connection finishes against the config it started with rather
+        // than half of each.
+        if (std::shared_ptr<TLSServerConfig> cfg = currentTLSConfig())
         {
-            if (!conn->GetTLS().Init(&tls_conf_))
+            if (!conn->GetTLS().Init(std::move(cfg)))
             {
                 ETCS_LOG("ConnectionManager", "TLS Init failed for fd=" << fd
                          << " RID:" << conn->getRID() << " -- dropping.");
@@ -1047,8 +1130,8 @@ private:
     }
 
     // The plaintext subscriber-dispatch body onConnection always ran before
-    // TLS existed, extracted verbatim so the non-TLS path (tls_enabled_ ==
-    // false) is byte-for-byte unchanged. Called either directly from
+    // TLS existed, extracted verbatim so the plaintext path (no config
+    // installed) is byte-for-byte unchanged. Called either directly from
     // onConnection (plaintext) or from a TLS handshake's on_settled callback
     // once DriveTLSHandshake reports success (TLSConnectionIO.h) -- in both
     // cases the caller holds exactly the one io_inflight_ reference this
