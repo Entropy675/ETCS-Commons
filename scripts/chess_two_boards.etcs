@@ -1,0 +1,17 @@
+#!/usr/bin/env etcs
+# Two independent games in one trace: separate entities, separate state.
+# Each ChessGame owns its Board by value, so nothing is shared between them.
+ChessProvider
+ChessGame white_game
+spawn white_game
+spawn black_game
+
+Move white_game e2e4
+Move black_game d2d4
+
+# different positions, proving the boards are genuinely independent
+Fen white_game
+Fen black_game
+
+Delete white_game
+Delete black_game

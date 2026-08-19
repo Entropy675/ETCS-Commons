@@ -1,0 +1,47 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/scripts
+
+# The whole site. Owns the transport and nothing else: each domain is detached
+# and brings its own routes, so this file never learns what a thread or a board
+# is.
+#
+# Order matters twice over.
+#
+# The LANDING PAGE is added first. HttpServer::ResolvePath walks typed children
+# in the order they were added and takes the first match, and chess_web.etcs's
+# own board_page also answers "/" -- so whichever is attached first owns it.
+# Adding landing here, before either lobby is detached, is what makes that
+# deterministic rather than a function of which script ran first.
+#
+# The lobbies are detached AFTER Start. Each one spawns `web` by that same name,
+# and spawn_entity retargets a pending name already bound to a live entity of
+# the same module and tag -- PersistentNames is process-scope, not per-script --
+# so they find THIS server instead of minting a second one and failing to bind
+# 8080. Their own Start calls are no-ops: StartConcrete returns false when a
+# manager already exists. Their duplicate FileHtmlPage children are harmless
+# for the same first-match reason, just redundant.
+
+NetworkProvider
+HttpServer web
+spawn web
+SetPort 8080
+
+web.add(StaticHtmlPage landing)
+SetHtmlFromFile ./www/static/index.html
+context NetworkProvider::HttpServer web
+
+# Everything else is disk layout as url layout: /chess.html, /forum.html,
+# /whitepaper.html. One page type, no per-document entity, and adding a
+# document is copying a file rather than editing this script.
+web.add(FileHtmlPage tree)
+LoadFromDisk ./www
+ListPaths tree
+context NetworkProvider::HttpServer web
+
+Start
+IsStarted
+
+detach chess_lobby.etcs
+detach forum_lobby.etcs
+
+# http://localhost:8080/

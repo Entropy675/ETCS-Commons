@@ -1,0 +1,34 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/scripts
+
+ForumWebsiteProvider
+ForumNode node
+spawn node
+Mount node forum
+
+context DatabaseProvider::LocalDatabase forumdb
+spawn forumdb
+Connect ./forum.db
+
+context ForumWebsiteProvider::ForumNode node
+Db node @forumdb
+InitDb node
+
+context DatabaseProvider::LocalDatabase forumdb
+RowProduce SELECT * FROM forum_thread
+context ForumWebsiteProvider::ForumNode node
+LoadRows
+
+context DatabaseProvider::LocalDatabase forumdb
+RowProduce SELECT * FROM forum_post
+context ForumWebsiteProvider::ForumNode node
+LoadRows
+
+context DatabaseProvider::LocalDatabase forumdb
+RowProduce SELECT * FROM forum_body
+context ForumWebsiteProvider::ForumNode node
+LoadRows
+
+Verify node
+
+detach forum_web.etcs forum=node

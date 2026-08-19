@@ -1,0 +1,10 @@
+#!/usr/bin/env etcs
+
+
+NetworkProvider
+HttpServer web
+SetPort 8080
+web.add(FileHtmlPage tree)
+LoadFromDisk ./www
+context NetworkProvider::HttpServer web
+Start

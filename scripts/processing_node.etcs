@@ -1,0 +1,7 @@
+#!/media/user/Data/ACE/ETCS/bin/etcs
+DatabaseProvider
+LocalDatabase db
+Connect processing.db
+ExecuteRaw PRAGMA journal_mode=WAL;
+InitializeSchema CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT, role TEXT);
+InitializeSchema CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, event TEXT);

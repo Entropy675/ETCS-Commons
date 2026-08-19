@@ -1,0 +1,6 @@
+#!/media/user/Data/ACE/ETCS/bin/etcs
+DatabaseProvider
+LocalDatabase from
+QueryProduce SELECT * FROM audit
+context DatabaseProvider::LocalDatabase to
+RowConsume

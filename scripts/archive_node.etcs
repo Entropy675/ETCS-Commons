@@ -1,0 +1,6 @@
+#!/media/user/Data/ACE/ETCS/bin/etcs
+DatabaseProvider
+LocalDatabase db
+Connect archive.db
+ExecuteRaw PRAGMA journal_mode=WAL;
+InitializeSchema CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, event TEXT);

@@ -1,0 +1,8 @@
+#!/media/user/Data/ACE/ETCS/bin/etcs
+DatabaseProvider
+LocalDatabase db
+Connect source.db
+ExecuteRaw PRAGMA journal_mode=WAL;
+InitializeSchema CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT, role TEXT);
+ExecuteTransaction DELETE FROM users;INSERT INTO users (name, role) VALUES('Sibte', 'architect'), ('Lux', 'capital');
+ExecuteRaw PRAGMA wal_checkpoint(FULL);

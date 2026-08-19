@@ -1,0 +1,12 @@
+#!/media/user/Data/ACE/ETCS/bin/etcs
+DatabaseProvider
+LocalDatabase
+Connect test2122.db
+ExecuteRaw PRAGMA journal_mode=WAL;
+ExecuteRaw PRAGMA synchronous=NORMAL;
+InitializeSchema CREATE TABLE IF NOT EXISTS ace_test(id INTEGER PRIMARY KEY, val TEXT);
+ExecuteTransaction DELETE FROM ace_test;INSERT INTO ace_test (val) VALUES('Luke'), ('Sibte'), ('Test123'), ('Test3');
+ExecuteRaw PRAGMA wal_checkpoint(FULL);
+QueryProduce SELECT * FROM ace_test
+RowConsume
+Disconnect

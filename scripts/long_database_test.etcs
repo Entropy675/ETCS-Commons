@@ -1,0 +1,25 @@
+#!/media/user/Data/ACE/ETCS/bin/etcs
+# 3-Node Causal DAG: Source -> Processing -> Archive
+# Orchestrator only — no direct DB actions here, just role wiring.
+DatabaseProvider
+LocalDatabase source
+run source_node.etcs db=source
+
+context DatabaseProvider::LocalDatabase processing
+run processing_node.etcs db=processing
+
+run mirror_users.etcs from=source to=processing
+run processing_derive.etcs db=processing
+
+context DatabaseProvider::LocalDatabase archive
+run archive_node.etcs db=archive
+
+run mirror_audit.etcs from=processing to=archive
+
+# Reverse dependency shutdown
+context DatabaseProvider::LocalDatabase archive
+Disconnect
+context DatabaseProvider::LocalDatabase processing
+Disconnect
+context DatabaseProvider::LocalDatabase source
+Disconnect

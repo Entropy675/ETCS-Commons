@@ -1,0 +1,32 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/scripts
+
+# Chess over HTTP, the transport script (arbitrary network provider transport script).
+# ETCS scripts only care about traits and RIDs, the names are arbitrary bindings to RIDs that are deref'd via @
+
+NetworkProvider
+HttpServer web
+spawn web
+SetPort 8080
+
+web.add(StaticHtmlPage board_page)
+SetHtmlFromFile ./www/static/chess.html
+context NetworkProvider::HttpServer web
+
+web.add(FileHtmlPage tree)
+LoadFromDisk ./www
+ListPaths tree
+context NetworkProvider::HttpServer web
+
+# Add route @game (where @ = give me the RID) + Request + @game + Filter, 
+# this is the process by which a filter providing type's paths are registered as routes (see ConnectionManager type)
+#
+#   GET /game/demo/fen        -> Fen
+#   GET /game/demo/move/e2e4  -> Move with "e2e4"
+#   GET /game/demo/status     -> Status
+AddRoute @game Request @game Filter
+
+Start
+IsStarted
+
+# Open http://localhost:8080/
