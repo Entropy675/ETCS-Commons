@@ -47,6 +47,32 @@ public:
         manager_ = addTag<ConnectionManager>();
         manager_->SetOpenContext(run_ctx_);
 
+        // TLS BEFORE Open, not after. The gate begins accepting inside
+        // Open -- there is no later moment a script could reach in which
+        // the listener exists but has not yet taken a connection, so
+        // enabling TLS from outside would always race the first client.
+        // This is the same "stored as config, forwarded to the gate on
+        // Start, wiring happens once at a known point" shape AddHandler's
+        // own comment describes, and for the same reason.
+        //
+        // A FAILURE HERE FAILS THE START. Falling through would open a
+        // port that a script explicitly asked to be TLS and serve it in
+        // plaintext instead -- every client would either see garbage or,
+        // worse, downgrade silently and send credentials in the clear.
+        // A server that cannot honour the security it was configured with
+        // must not run: refusing is the only safe reading of a bad cert
+        // path, and it surfaces as one visible failed line, exactly like
+        // a bad port does.
+        if (IsTLSConfigured() && !manager_->EnableTLS(tls_cert_, tls_key_))
+        {
+            ETCS_LOG("HttpServer", "Start: TLS was configured (cert='" << tls_cert_
+                     << "' key='" << tls_key_ << "') but could not be enabled -- "
+                        "REFUSING to start in plaintext on port " << port_ << ".");
+            manager_->Delete();
+            manager_ = nullptr;
+            return false;
+        }
+
         ETCS::Buffer cfg;
         cfg << port_;
         if (!manager_->Open(cfg))
@@ -109,8 +135,79 @@ public:
 
     // --- Configuration surface ---
 
-    void SetPort(int port) { port_ = port; }
+    // REFUSED WHILE STARTED. The listener is bound once, inside Open, and
+    // nothing re-reads port_ afterwards -- so accepting a new value here
+    // would leave this entity REPORTING one port while its gate serves
+    // another, and a later Stop/Start would then silently come up on a port
+    // nobody asked for. Config that cannot be applied live must not pretend
+    // it was: same "visible failed line rather than silent divergence"
+    // contract OpenConcrete already uses for a double Open.
+    //
+    // Re-declaring the port it is ALREADY on stays a quiet success, because
+    // that is not a state change. Traces that re-bind to a running server do
+    // exactly this -- chess_web.etcs opens with `SetPort 8080` whether or not
+    // it minted the server it just found -- and turning a genuine no-op into
+    // a warning would train people to ignore the warning.
+    bool SetPort(int port)
+    {
+        if (port == port_) return true;
+        if (started_)
+        {
+            ETCS_LOG("HttpServer", "SetPort: already started on port " << port_
+                     << " (RID:" << getRID() << ") -- REFUSING to retarget to "
+                     << port << ". Stop first.");
+            return false;
+        }
+        port_ = port;
+        return true;
+    }
     int  GetPort() const   { return port_; }
+
+    // Deferred, exactly like SetPort and AddHandler: this stores paths and
+    // nothing else. Nothing is read, parsed or validated until Start hands
+    // them to the gate (see StartConcrete above for why that is the only
+    // safe point). So a bad path reported here would be a lie -- the
+    // failure surfaces on Start, where it can actually refuse to serve.
+    //
+    // Persists across Stop/Start for the same reason handlers do: it is
+    // configuration, not generated state, so restarting a server keeps the
+    // security it was configured with rather than quietly dropping to
+    // plaintext on the second Start.
+    // Refused while started, for the same reason SetPort is and one worse:
+    // the gate is already accepting, so a stored change would apply to
+    // nothing, and the entity would read as TLS-configured while serving
+    // plaintext. That is the single most dangerous thing this class could
+    // misreport -- someone checking configuration to decide whether traffic
+    // is encrypted would get the wrong answer. Stop first.
+    bool EnableTLS(const std::string& cert_path, const std::string& key_path)
+    {
+        if (started_)
+        {
+            ETCS_LOG("HttpServer", "EnableTLS: already started on port " << port_
+                     << " (RID:" << getRID() << ") -- REFUSING. The gate is "
+                        "accepting and its transport cannot change under live "
+                        "connections. Stop first.");
+            return false;
+        }
+        tls_cert_ = cert_path;
+        tls_key_  = key_path;
+        return true;
+    }
+
+    bool ClearTLS()
+    {
+        if (started_)
+        {
+            ETCS_LOG("HttpServer", "ClearTLS: already started on port " << port_
+                     << " (RID:" << getRID() << ") -- REFUSING. Stop first.");
+            return false;
+        }
+        tls_cert_.clear();
+        tls_key_.clear();
+        return true;
+    }
+
+    bool IsTLSConfigured() const { return !tls_cert_.empty() && !tls_key_.empty(); }
 
     void SetRunContext(const ETCS::SignalContext& ctx) { run_ctx_ = ctx; }
 
@@ -320,6 +417,12 @@ private:
     int                  port_    = 8080;
     bool                 started_ = false;
     ConnectionManager*   manager_ = nullptr;
+
+    // Paths only -- see EnableTLS's own comment. Both empty means plaintext,
+    // which is the default and stays the default: nothing here changes the
+    // behaviour of a server that never calls EnableTLS.
+    std::string          tls_cert_;
+    std::string          tls_key_;
     std::vector<Handler> handlers_;
     std::vector<Route>   routes_;
     ETCS::SignalContext  run_ctx_;

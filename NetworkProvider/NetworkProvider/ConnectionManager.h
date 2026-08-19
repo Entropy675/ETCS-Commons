@@ -2,6 +2,8 @@
 #define CONNECTIONMANAGER_H__
 #include "../../../ontology.h"
 #include "SocketConnectionState.h"
+#include "TLSServerConfig.h"
+#include "TLSConnectionIO.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -149,10 +151,35 @@ public:
             && maintain_thread_.joinable())
             maintain_thread_.join();
 
+        // THE FD NUMBER IS RETIRED HERE, BUT THE DESCRIPTOR IS CLOSED AFTER
+        // THE DRAIN -- see the close below. Taking it out of listen_fd_ now
+        // keeps Close idempotent (a second call returns at the top) and stops
+        // submitAccept re-arming, while leaving the descriptor itself open
+        // for as long as anything still names it.
+        //
+        // That split is the fix for a real hang. This function used to
+        // ::close(listen_fd_) immediately after submitting the cancel below,
+        // and io_uring_prep_cancel_fd resolves its fd when the KERNEL
+        // processes the SQE, not when we submit it -- so the close raced
+        // ahead, the cancel matched nothing, and every outstanding accept
+        // stayed pending forever. io_uring holds its own reference to the
+        // file, so closing the descriptor does NOT retire them either. With
+        // a 32-deep accept window that is 32 references that never come
+        // back. The old 5s ceiling hid it as a pause; without the ceiling it
+        // is a hang, which is how it was finally found.
+        //
+        // SocketConnectionState::ResetConcrete already documents this exact
+        // hazard and already solves it this exact way ("NO CLOSE HERE ...
+        // the close moves to finalizeIfDraining, which already waits for
+        // io_inflight_ to reach zero -- so the number is only released once
+        // nothing names it"). This gate simply never got the same treatment.
+        const int closing_fd = listen_fd_;
+        listen_fd_ = -1;
+
         // The close is what actually unparks anything waiting on this fd and
         // is the Gate_ contract's real obligation (see Gate.h). The cancel is
-        // an optimisation on top -- it lets the pool retire an outstanding
-        // accept promptly instead of discovering the closed fd on its own.
+        // what retires the accept window promptly rather than leaving it
+        // parked on a descriptor nobody will ever connect to again.
         //
         // Deliberately skipped during arena teardown. Constructing an
         // IOSubmission allocates (its SignalContext carries Buffers), and by
@@ -166,60 +193,171 @@ public:
         // already joined by that point in shutdown, so there is no
         // outstanding submission left for a cancel to reach, and the OS
         // reclaims the descriptor at process exit regardless.
+        // Whether the mechanism that retires the accept window actually got
+        // armed. The drain below is causal -- it waits for a count to reach
+        // zero rather than for time to pass -- so it may only wait when
+        // something is actually capable of driving that count down. If the
+        // cancel was skipped (teardown) or refused (ring full), the pending
+        // accepts have nothing left to retire them and waiting on them would
+        // be waiting on an event that is never coming.
+        bool cancel_armed = false;
         if (!ETCS::MemoryArena::getInstance().isTearingDown())
         {
             ETCS::IOSubmission cancel;
             cancel.op  = ETCS::IOOp::Cancel;
-            cancel.fd  = listen_fd_;
+            cancel.fd  = closing_fd;
             cancel.ctx = open_ctx_;
-            ETCS::ThreadPool::getInstance().submit(std::move(cancel));
+            cancel_armed = ETCS::ThreadPool::getInstance().submit(std::move(cancel));
+            if (!cancel_armed)
+                ETCS_LOG("ConnectionManager", "Close: cancel submission REFUSED (SQ full) -- "
+                         << inflight_.load() << " accept(s) cannot be retired and will be "
+                            "abandoned rather than waited on.");
         }
 
-        ::close(listen_fd_);
-        listen_fd_ = -1;
+        // Retire connections still MID-HANDSHAKE before draining on them.
+        //
+        // This is what makes the causal drain below actually converge rather
+        // than merely refuse to lie. The cancel above names listen_fd_, which
+        // says nothing about any connection's own fd, and the maintenance
+        // thread that would otherwise reap a stalled handshake through
+        // checkTimeout was joined further up -- so a peer that completes TCP
+        // and then says nothing has an outstanding recv that nobody is left
+        // to retire. Waiting on that count would be waiting on an event that
+        // is never coming. Reset submits that connection's own cancel, which
+        // surfaces its recv as -ECANCELED, which runs the completion, which
+        // settles the handshake as failed and decrements the count. Forcing
+        // the event beats timing out on its absence.
+        //
+        // ONLY handshaking connections, deliberately. Close stops listening;
+        // it does not evict established peers, and an in-flight keep-alive
+        // request is none of its business -- that distinction between Close
+        // and Delete is the whole reason both verbs exist. A handshaking
+        // connection is different in kind: its I/O was issued under
+        // accept_ctx_, which this function is about to release, so it is
+        // this gate's own outstanding work rather than a subscriber's.
+        //
+        // Snapshot under the lock, act outside it -- Reset can run finalize,
+        // and none of that should happen while an accept is blocked waiting
+        // for pool_mutex_. Same discipline reapIdle already documents.
+        {
+            std::vector<SocketConnectionState*> handshaking;
+            {
+                std::lock_guard<std::mutex> lock(pool_mutex_);
+                for (SocketConnectionState* c : pool_)
+                    if (c && c->IsActive()
+                        && c->GetTLS().GetPhase() == TLSServerContext::Phase::Handshaking)
+                        handshaking.push_back(c);
+            }
+            if (!handshaking.empty())
+                ETCS_LOG("ConnectionManager", "Close: retiring " << handshaking.size()
+                         << " connection(s) still mid-handshake so their references "
+                            "can actually retire.");
+            for (SocketConnectionState* c : handshaking) c->Reset();
+        }
 
         // Drain: do not report closed while a completion could still fire and
-        // touch this entity. Bounded rather than unbounded -- a stuck pool
-        // should surface as a loud warning, not a hang in a destructor.
+        // touch this entity.
         //
-        // ETCS_SLEEP_MS's return is deliberately ignored: false means the
-        // sleep was cut short by a signal (EINTR), which is not a reason to
-        // stop waiting for an in-flight completion. The only thing that ends
-        // this loop early is the count reaching zero; the ceiling is the only
-        // other exit. Conflating the two would let a stray signal report a
-        // clean close while a completion was still pending.
-        int retries = 0;
-        while (inflight_.load(std::memory_order_acquire) > 0)
+        // CAUSAL, NOT TIMED. This loop used to carry a 5s ceiling, and the
+        // ceiling was the bug: a deadline answers "has enough time passed"
+        // when the question is "can the remaining count still converge",
+        // and those are different questions whose answers only coincide by
+        // luck. Worse, a ceiling that fires proceeds anyway -- releasing
+        // accept_scope_ and returning "closed" while a completion is still
+        // live and still able to touch this entity, which is precisely the
+        // state the drain exists to rule out. Timing out is not a safe
+        // fallback here; it is the unsafe outcome wearing a warning label.
+        //
+        // So the loop now ends on exactly two things, both of them facts
+        // about whether convergence is still POSSIBLE, neither of them a
+        // clock:
+        //
+        //   1. The counts reach zero -- the wait succeeded.
+        //   2. Convergence is provably impossible, for one of two reasons
+        //      the pool can actually tell us about (below).
+        //
+        // If neither holds we keep waiting, indefinitely and on purpose. An
+        // in-flight completion that can still arrive WILL arrive: every path
+        // that could otherwise strand one already submits a Cancel to force
+        // it out as -ECANCELED (ResetConcrete, and this function's own
+        // cancel above), so the counts converge on their own without anyone
+        // timing them. A genuine hang here means an invariant is already
+        // broken, and hanging visibly at the point of breakage is a better
+        // outcome than continuing past it -- the wait is what makes the
+        // breakage a stoppable event rather than a silent corruption that
+        // surfaces somewhere unrelated later.
+        //
+        // tls_handshakes_ is drained alongside inflight_, not after it: both
+        // name work issued under accept_ctx_, and accept_scope_ below must
+        // outlive every last piece of it. See tls_handshakes_'s own comment
+        // for why the accept count alone stopped being sufficient once the
+        // handshake phase made onConnection asynchronous.
+        int spin = 0;
+        while (cancel_armed
+               && (inflight_.load(std::memory_order_acquire) > 0
+                   || tls_handshakes_.load(std::memory_order_acquire) > 0))
         {
-            // The drain is only meaningful while the pool can still run
-            // completions. At process exit ThreadPool's own static destructor
-            // may already have joined its io and worker threads -- ordering
-            // between two independent Meyers singletons is unspecified, and
-            // the observed sequence is precisely that: pool drained, THEN this
-            // Close reached, with one accept still outstanding that nothing
-            // was left alive to complete. Waiting there spins the full ceiling
-            // for nothing, on every exit.
+            ETCS::ThreadPool& pool = ETCS::ThreadPool::getInstance();
+
+            // TERMINATION 1 -- nothing is left alive to complete anything.
+            // At process exit ThreadPool's own static destructor may already
+            // have joined its io and worker threads; ordering between two
+            // independent Meyers singletons is unspecified, and the observed
+            // sequence is precisely that: pool drained, THEN this Close
+            // reached, with one accept still outstanding that nothing was
+            // left alive to complete.
             //
             // Breaking out is safe rather than a concession: if the pool is
-            // drained, no callback can be running or ever start, which is the
-            // exact property the wait exists to establish.
-            if (ETCS::ThreadPool::getInstance().isDrained())
+            // drained, no callback can be running or ever start, which is
+            // the exact property the wait exists to establish. This is a
+            // causal fact about the pool, not an elapsed-time guess.
+            if (pool.isDrained())
             {
                 ETCS_LOG("ConnectionManager", "Close: pool already drained -- "
-                         << inflight_.load() << " submission(s) can no longer "
-                            "complete; skipping the wait.");
+                         << inflight_.load() << " accept + " << tls_handshakes_.load()
+                         << " handshake submission(s) can no longer "
+                            "complete; ending the wait.");
                 break;
             }
 
-            ETCS_SLEEP_MS(10);
-            if (++retries > 500) // 5s ceiling
+            // TERMINATION 2 -- a worker was force-cancelled, so the counts
+            // are known-corrupt rather than merely slow. This is THE reason
+            // the old ceiling existed, named directly instead of inferred
+            // from elapsed time: ThreadPool's watchdog sets this flag
+            // immediately before it cancels a thread, and a cancelled worker
+            // never runs the NoteComplete it was holding, so whatever it
+            // owned is permanently unaccounted for. Observing the event that
+            // breaks the invariant is causal; waiting 5s and assuming it
+            // must have happened is not.
+            //
+            // NOTE that getLastError CONSUMES the flag -- it is a one-slot
+            // channel shared with every other reader in the process. Logged
+            // in full here rather than swallowed, so consuming it does not
+            // destroy the only record that it happened.
+            std::string cancelled_tag;
+            if (pool.getLastError(cancelled_tag))
             {
-                ETCS_LOG("ConnectionManager", "Close: " << inflight_.load()
-                         << " accept submission(s) still in flight after 5s -- "
-                            "proceeding anyway.");
+                ETCS_LOG("ConnectionManager", "Close: pool reported a force-cancelled task ('"
+                         << cancelled_tag << "') -- " << inflight_.load() << " accept + "
+                         << tls_handshakes_.load() << " handshake reference(s) can never be "
+                            "released by it. Ending the wait; this gate's accounting for "
+                            "those submissions is now permanently short.");
                 break;
             }
+
+            // Pure backoff, and deliberately not a decision: nothing about
+            // how long this has spun is allowed to end the loop. Yields
+            // rather than spinning hot for the reason ChessGame's own wait
+            // documents -- this can run on a ThreadPool thread, and a hot
+            // spin there starves the very completions being waited on, which
+            // would turn a finite wait into a real deadlock.
+            ETCS::LMAXSequentialSharedPage::progressiveYield(spin);
         }
+
+        // NOW the descriptor goes back to the OS -- once the drain above has
+        // established that nothing still names it. Closing any earlier is
+        // what broke the cancel; see the closing_fd comment above.
+        ::close(closing_fd);
 
         accept_scope_.reset();
         accept_ctx_ = ETCS::SignalContext{};
@@ -303,6 +441,52 @@ public:
     // gate itself runs under.
     void SetOpenContext(const ETCS::SignalContext& ctx) { open_ctx_ = ctx; }
 
+    // Turns on server-side TLS termination for every connection accepted
+    // from this point forward. Builds the ONE shared TLSServerConfig
+    // (TLSServerConfig.h) once; every SocketConnectionState's own
+    // TLSServerContext (TLSServerContext.h) is set up against it fresh, per
+    // connection, in onConnection below -- cheap per-connection state
+    // against expensive per-config state, the standard mbedTLS pattern.
+    //
+    // REFUSED WHILE OPEN. An earlier version of this allowed a mid-flight
+    // call and documented that it "only affects connections accepted from
+    // that point on" -- which is a gate serving plaintext and TLS
+    // simultaneously on one port, with which mode a given connection got
+    // decided by whether it happened to arrive before or after this call.
+    // Nothing can reason about that, least of all anyone trying to
+    // establish whether traffic on this port is encrypted. A transport is a
+    // property of the listener, so it is settled before the listener exists
+    // or not at all.
+    //
+    // Idempotent-ish across repeated pre-Open calls: each reloads cert/key
+    // into the SAME tls_conf_ and, on success, leaves tls_enabled_ true --
+    // a failed reload does not silently disable a previously-working config.
+    bool EnableTLS(const std::string& cert_path, const std::string& key_path)
+    {
+        if (listen_fd_ != -1)
+        {
+            ETCS_LOG("ConnectionManager", "EnableTLS: already open on port " << port_
+                     << " (RID:" << getRID() << ") -- REFUSING. A listener's "
+                        "transport is fixed for its lifetime; close it first.");
+            return false;
+        }
+
+        bool ok = tls_conf_.LoadCertAndKey(cert_path, key_path);
+        if (!ok)
+        {
+            ETCS_LOG("ConnectionManager", "EnableTLS: failed to load cert='"
+                     << cert_path << "' key='" << key_path << "' (RID:" << getRID()
+                     << ") -- TLS " << (tls_enabled_ ? "remains enabled on the "
+                                          "previous config" : "not enabled") << ".");
+            return false;
+        }
+        tls_enabled_ = true;
+        ETCS_LOG("ConnectionManager", "EnableTLS: loaded cert='" << cert_path
+                 << "' key='" << key_path << "' (RID:" << getRID() << ") -- "
+                    "TLS termination active for future connections.");
+        return true;
+    }
+
 private:
     // filter_rid/filter_action are OPTIONAL (0/"" means unfiltered). A filtered
     // subscriber declares a predicate this gate consults before handing over a
@@ -346,6 +530,46 @@ private:
     int                 port_      = 0;
     std::atomic<int>    inflight_{0};
     std::atomic<bool>   stopping_{false};
+
+    // TLS termination. tls_conf_ is the ONE shared, read-only mbedtls_ssl_config
+    // this gate builds when EnableTLS succeeds (TLSServerConfig.h's own LIFETIME
+    // note); tls_enabled_ is what onConnection below branches on to decide
+    // whether a freshly accepted fd goes through the handshake phase
+    // (TLSConnectionIO.h's DriveTLSHandshake) before subscriber dispatch, or
+    // straight to dispatchToSubscribers as plaintext, unchanged from before
+    // this feature existed. Freed automatically by tls_conf_'s own destructor
+    // at ConnectionManager teardown -- see TLSServerConfig.h's LIFETIME note
+    // for why that ordering is structurally, not conventionally, safe.
+    TLSServerConfig     tls_conf_;
+    bool                tls_enabled_ = false;
+
+    // Connections currently between accept and handshake-settled.
+    //
+    // Needed because the TLS path broke an invariant the accept chain used
+    // to hold for free. Before TLS, onConnection dispatched SYNCHRONOUSLY
+    // inside the accept completion, so by the time that callback returned
+    // the connection already belonged to a subscriber holding its own
+    // conn_io scope, and inflight_ reaching zero genuinely meant "nothing
+    // this gate started is still running". With TLS, onConnection returns
+    // while handshake I/O is still outstanding under accept_ctx_ -- so
+    // inflight_ hits zero, CloseConcrete's drain passes, and accept_scope_
+    // is released out from under live submissions issued under its own
+    // derived context.
+    //
+    // Draining on this as well closes that window. The per-submission
+    // tls_io ScopeTags (TLSConnectionIO.h) name the work; this is what
+    // makes Close actually WAIT for it, which a scope alone does not do.
+    //
+    // Convergence is FORCED, not awaited: CloseConcrete resets every
+    // still-handshaking connection before it drains on this, so each one's
+    // own cancel surfaces its outstanding recv as -ECANCELED and settles it.
+    // Without that step this count would genuinely never reach zero for a
+    // peer that completes TCP and then goes silent -- the maintenance thread
+    // that would normally reap it via checkTimeout is joined before the
+    // drain, and the cancel on listen_fd_ says nothing about a connection's
+    // own fd. See that call site for why only handshaking connections are
+    // retired and established ones are left alone.
+    std::atomic<int>    tls_handshakes_{0};
 
     // The context this gate was opened under -- the caller's, inherited from
     // whatever started the server. Parent of accept_scope_'s own derived
@@ -761,6 +985,19 @@ private:
     // Mint the child, then publish it. The connection becomes a real, listable,
     // killable entity the instant it is accepted -- not whenever some consumer
     // eventually claims it.
+    //
+    // When tls_enabled_, a freshly claimed connection owes a HANDSHAKE before
+    // it owes a subscriber anything -- dispatchToSubscribers (below) must
+    // never see a connection whose bytes are still ciphertext, since neither
+    // HttpServer nor any other subscriber has ever been taught TLS exists
+    // (the carry-forward doc's whole point: termination happens HERE, before
+    // dispatch, so every subscriber keeps seeing plaintext forever). So this
+    // function now does one of two things with the reference acquireConnection
+    // (via TryClaim) seeded onto conn->io_inflight_: either it drives that
+    // reference straight into dispatchToSubscribers's own trailing
+    // NoteComplete() (plaintext, unchanged), or it hands the reference to
+    // DriveTLSHandshake and lets ITS bool-return contract (TLSConnectionIO.h's
+    // own top-of-file comment) decide who releases it and when.
     void onConnection(int fd)
     {
         SocketConnectionState* conn = acquireConnection(fd);
@@ -769,6 +1006,55 @@ private:
         ETCS_LOG("ConnectionManager", "Accepted fd=" << fd
                  << " RID:" << conn->getRID() << " on port " << port_);
 
+        if (tls_enabled_)
+        {
+            if (!conn->GetTLS().Init(&tls_conf_))
+            {
+                ETCS_LOG("ConnectionManager", "TLS Init failed for fd=" << fd
+                         << " RID:" << conn->getRID() << " -- dropping.");
+                conn->Reset();
+                conn->NoteComplete();   // release the dispatch reference
+                return;
+            }
+
+            // DriveTLSHandshake's own bool return: true means the entry
+            // reference it was handed (the one acquireConnection seeded) is
+            // ALREADY fully accounted for -- either the handshake resolved
+            // synchronously and on_settled already ran to completion
+            // (including dispatchToSubscribers's own trailing NoteComplete,
+            // or the Reset()+NoteComplete() on failure), or it never will
+            // resolve synchronously but the reference was still consumed on
+            // this path. false means a new async ciphertext IO is now
+            // outstanding and THIS call site owns releasing the entry
+            // reference exactly once, immediately -- see TLSConnectionIO.h's
+            // top-of-file contract for the full reasoning.
+            // Counted BEFORE the drive, released on the single settled
+            // path below -- see tls_handshakes_'s own comment for why
+            // CloseConcrete has to wait on this separately from inflight_.
+            tls_handshakes_.fetch_add(1, std::memory_order_acq_rel);
+            bool settled = TLSIO::DriveTLSHandshake(conn, this, accept_ctx_,
+                [this, conn](bool ok)
+                {
+                    tls_handshakes_.fetch_sub(1, std::memory_order_acq_rel);
+                    if (ok) dispatchToSubscribers(conn);
+                    else    { conn->Reset(); conn->NoteComplete(); }
+                });
+            if (!settled) conn->NoteComplete();
+            return;
+        }
+
+        dispatchToSubscribers(conn);
+    }
+
+    // The plaintext subscriber-dispatch body onConnection always ran before
+    // TLS existed, extracted verbatim so the non-TLS path (tls_enabled_ ==
+    // false) is byte-for-byte unchanged. Called either directly from
+    // onConnection (plaintext) or from a TLS handshake's on_settled callback
+    // once DriveTLSHandshake reports success (TLSConnectionIO.h) -- in both
+    // cases the caller holds exactly the one io_inflight_ reference this
+    // function's own trailing NoteComplete() releases.
+    void dispatchToSubscribers(SocketConnectionState* conn)
+    {
         // Snapshot under the lock, dispatch outside it: a subscriber's action
         // can do anything, including registering or unregistering, and holding
         // this lock across that would be a self-deadlock waiting to happen.

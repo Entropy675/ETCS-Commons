@@ -2,6 +2,7 @@
 #define SOCKETCONNECTIONSTATE_H__
 #include "../../../ontology.h"
 #include "PicoHTTPParser.h"
+#include "TLSServerContext.h"
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -119,6 +120,12 @@ private:
     // own accum_ needed for the identical reason.
     static constexpr size_t kRecvBufSize = ETCS_NETWORK_MAX_HEADER_SIZE;
     static constexpr size_t kSendBufSize = ETCS_NETWORK_MAX_HEADER_SIZE * 4;
+    // TLS ciphertext staging, in and out. ETCS_NETWORK_MAX_HEADER_SIZE
+    // (64KB) comfortably covers several max-size (~16KB) TLS records
+    // queued at once -- same "named constant, not sizeof(...)" discipline
+    // kRecvBufSize/kSendBufSize already follow, for the identical reason:
+    // these are now char* into the arena, not std::array members.
+    static constexpr size_t kCipherBufSize = ETCS_NETWORK_MAX_HEADER_SIZE;
 
     // MutableByteSpan — trivial non-owning (pointer, length) pair, returned
     // BY VALUE from RecvBuffer()/SendBuffer() below. Exists purely so every
@@ -146,6 +153,22 @@ public:
         send_buf_ = static_cast<char*>(getArena().allocateRaw(static_cast<long long>(kSendBufSize)));
         std::memset(recv_buf_, 0, kRecvBufSize);
         std::memset(send_buf_, 0, kSendBufSize);
+
+        // TLS ciphertext staging -- arena-owned by THIS entity, same as
+        // recv_buf_/send_buf_ immediately above, and bound into tls_ once
+        // here rather than tls_ allocating its own (tls_ is a plain,
+        // non-Entity composed member with no getArena() of its own -- see
+        // TLSServerContext.h's own top comment). Bound unconditionally,
+        // whether or not this listener ever enables TLS: the cost is two
+        // pointer stores against buffers that simply go unused on a
+        // plaintext-only gate, and it means tls_.Init() never has to run a
+        // separate "did BindCipherBuffers already happen" check on every
+        // claim.
+        char* cipher_in_buf  = static_cast<char*>(getArena().allocateRaw(static_cast<long long>(kCipherBufSize)));
+        char* cipher_out_buf = static_cast<char*>(getArena().allocateRaw(static_cast<long long>(kCipherBufSize)));
+        std::memset(cipher_in_buf,  0, kCipherBufSize);
+        std::memset(cipher_out_buf, 0, kCipherBufSize);
+        tls_.BindCipherBuffers(cipher_in_buf, kCipherBufSize, cipher_out_buf, kCipherBufSize);
 
         // Replace parser_'s own default self-allocated accum_ buffer
         // with one drawn from THIS entity's own arena directly -- still
@@ -292,6 +315,13 @@ public:
     PicoHTTPParser& GetParser() { return parser_; }
     MutableByteSpan RecvBuffer() { return MutableByteSpan{recv_buf_, kRecvBufSize}; }
     MutableByteSpan SendBuffer() { return MutableByteSpan{send_buf_, kSendBufSize}; }
+    // TLS surface used by ConnectionManager's own handshake-phase driver
+    // and HttpServer::Serve's do_recv/do_send (NetworkProvider.h) -- see
+    // TLSServerContext.h's own top comment for why the actual io_uring
+    // submissions live in THOSE files rather than here or inside tls_
+    // itself. Not part of the ConnectionState_ ontology contract, same as
+    // GetParser()/RecvBuffer()/SendBuffer() immediately above.
+    TLSServerContext& GetTLS() { return tls_; }
     int  GetSendLen() const  { return send_len_; }
     void SetSendLen(int len) { send_len_ = len; }
     void SetRecvLen(int len) { recv_len_ = len; }
@@ -332,6 +362,24 @@ private:
 
         // No submission names this fd any more.
         CloseConnection();
+
+        // TLS session teardown belongs exactly here, never in
+        // RecycleForNextRequest -- this is the ONLY function that runs
+        // when a connection is actually giving up its fd and returning to
+        // the pool for a DIFFERENT, unrelated peer to claim (see
+        // TryClaim's own comment: SetClientFdConcrete happens there, on
+        // the NEXT peer's accept). A live mbedtls_ssl_context freed here
+        // between two requests on the SAME connection would mean every
+        // keep-alive request after the first re-handshakes from scratch
+        // (best case) or, worse, races finalizeIfDraining freeing session
+        // key material out from under a request that hasn't sent its
+        // response yet (this function only runs once io_inflight_ has
+        // provably reached zero, so that specific race can't happen, but
+        // it would still silently break keep-alive's whole premise -- the
+        // same TLS session serving many requests -- exactly as leaked
+        // between two requests). No-op if TLS was never active on this
+        // connection (see TLSServerContext::Free's own idempotency note).
+        tls_.Free();
 
         page_rid_ = 0;
         parser_.ResetConcrete();
@@ -393,5 +441,15 @@ private:
 
     char* recv_buf_ = nullptr;
     char* send_buf_ = nullptr;
+
+    // Plain composed member, not arena-redirected the way parser_ is --
+    // TLSServerContext is not an Entity (see its own top comment) and owns
+    // no arena-allocatable state of its own beyond the two spans bound in
+    // this entity's own constructor above. mbedtls's own internal
+    // allocations (the ssl_ context's working buffers) go through
+    // mbedtls's own allocator, exactly as they already do for
+    // MbedTLSContext.h's client-side ssl_ member -- outside the ETCS arena
+    // discipline, same as any other third-party library embedded here.
+    TLSServerContext tls_;
 };
 #endif // SOCKETCONNECTIONSTATE_H__

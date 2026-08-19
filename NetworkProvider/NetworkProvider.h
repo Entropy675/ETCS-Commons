@@ -49,8 +49,13 @@ DEFINE_WORK_FUNC(HttpServer, SetPort)
     (void)ctx;
     int port = 8080;
     data >> port;
-    self.SetPort(port);
-    ETCS_LOG("HttpServer::SetPort", "port=" << port << " on RID:" << self.getRID());
+    bool ok = self.SetPort(port);
+    if (ok)
+        ETCS_LOG("HttpServer::SetPort", "port=" << port << " on RID:" << self.getRID());
+    // Refusal is logged by SetPort itself, with the reason -- not repeated
+    // here. The result goes back through data so a trace can see it.
+    data.reset();
+    data << ok;
 }
 
 // AddHandler <rid> <Action> — registers an out-of-tree recipient for
@@ -121,6 +126,42 @@ DEFINE_WORK_FUNC(HttpServer, ClearHandlers)
 {
     (void)data; (void)ctx;
     self.ClearHandlers();
+}
+
+// EnableTLS <cert_path> <key_path> — configures TLS termination for this
+// server's gate. Deferred: this only stores the paths, and Start is what
+// forwards them (see HttpServer::EnableTLS and StartConcrete for why that
+// is the only point at which it can be done without racing the first
+// client). Call it BEFORE Start; calling it after affects the next Start.
+//
+// If the cert or key cannot be loaded, Start REFUSES rather than falling
+// back to plaintext -- so a typo in a path is a server that does not come
+// up, not a server quietly serving HTTPS traffic in the clear.
+DEFINE_WORK_FUNC(HttpServer, EnableTLS)
+{
+    (void)ctx;
+    std::string cert_path;
+    std::string key_path;
+    data >> cert_path;
+    data >> key_path;
+
+    if (cert_path.empty() || key_path.empty())
+    {
+        ETCS_LOG("HttpServer::EnableTLS",
+                 "expected '<cert_path> <key_path>' -- got: " << data.buf);
+        data.reset();
+        data << false;
+        return;
+    }
+
+    bool ok = self.EnableTLS(cert_path, key_path);
+    if (ok)
+        ETCS_LOG("HttpServer::EnableTLS", "TLS configured on RID:" << self.getRID()
+                 << " (cert='" << cert_path << "' key='" << key_path
+                 << "') -- applied at Start.");
+    // Refusal is logged by EnableTLS itself, with the reason.
+    data.reset();
+    data << ok;
 }
 
 DEFINE_WORK_FUNC(HttpServer, Start)
@@ -252,34 +293,32 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
         if (!c->IsConnectionOpen()) return;     // draining; do not re-arm
         if (ctx.isInterrupted() || ctx.isTerminated()) { c->Reset(); return; }
 
-        ETCS::IOSubmission sub;
-        sub.op         = ETCS::IOOp::Recv;
-        sub.fd         = c->GetClientFd();
-        sub.buffer     = c->RecvBuffer().data();
-        sub.buffer_len = c->RecvBuffer().size();
-        sub.priority   = static_cast<int>(ETCS::Priority::Medium);
-        sub.ctx        = ctx;
-
-        // Registered against the SERVER, not the connection: this is what
-        // makes a destroy of the server actually wait for in-flight
-        // per-connection I/O. Without it the outer Serve call's own scope
-        // clears the instant this function returns -- which is immediately,
-        // since it only submits -- while every lambda it launched keeps
-        // running untracked, free to touch an entity concurrently with
-        // whatever is destroying it. shared_ptr because std::function needs a
-        // copy-constructible target and ScopeTag's copy ctor is deleted.
-        auto scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
-        sub.callback = [&pool, ctx, c, do_recv, &self, scope = std::move(scope)]
-                       (ETCS::IOCompletion comp) mutable
+        // Shared "plaintext bytes have arrived" handler -- identical parse/
+        // route/send logic regardless of whether those bytes came straight
+        // off the wire or out of TLSServerContext::ReadPlain via
+        // TLSIO::SubmitTLSRecv (TLSConnectionIO.h). That is the whole point
+        // of terminating TLS below this layer rather than above it: this
+        // body never learns which path it took. `result` mirrors
+        // ETCS::IOCompletion::result's own contract exactly (>0 bytes ready
+        // in c->RecvBuffer(), <=0 closed/error) so both callers can hand it
+        // the same value they'd have gotten from a raw recv completion.
+        //
+        // Must end with EXACTLY ONE c->NoteComplete() on every path out --
+        // it is the terminal continuation for whichever single io_inflight_
+        // reference (raw recv's own NoteSubmit, or TLSIO::SubmitTLSRecv's
+        // entry reference) led to it running, per TLSConnectionIO.h's own
+        // reference-ownership contract for the TLS case, and per this
+        // function's pre-existing convention for the raw case.
+        auto on_plaintext = [&pool, ctx, c, do_recv, &self](int result) mutable
         {
             // NoteComplete is the LAST statement on every path out: it can
             // publish this connection as reusable, and anything touching c
             // afterwards races a new client's request.
-            if (comp.result <= 0) { c->Reset(); c->NoteComplete(); return; }
+            if (result <= 0) { c->Reset(); c->NoteComplete(); return; }
             c->markActive();
 
-            size_t incoming = static_cast<size_t>(comp.result);
-            c->SetRecvLen(comp.result);
+            size_t incoming = static_cast<size_t>(result);
+            c->SetRecvLen(result);
             bool complete = c->GetParser().FeedRaw(c->RecvBuffer().data(), incoming);
 
             if (c->GetParser().GetState() == PicoHTTPParser::State::Error)
@@ -394,7 +433,12 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             //
             // Same self-reference shape as do_recv, and for the same reason --
             // a by-value capture of a std::function still being assigned is
-            // empty when the callback finally runs.
+            // empty when the callback finally runs. Only used by the RAW
+            // (non-TLS) branch below -- the TLS branch calls
+            // TLSIO::SubmitTLSSend directly, which already loops internally
+            // over mbedtls's own partial-write semantics (see
+            // TLSConnectionIO.h's own comment on why that is a SEPARATE loop
+            // from this one, distinct from this send-offset loop).
             auto do_send = std::make_shared<std::function<void(size_t)>>();
             // The function holds itself WEAKLY and hands a STRONG reference to
             // each callback. Both halves of the lifetime problem, and neither
@@ -414,6 +458,35 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                     if (keep && c->IsConnectionOpen())
                     { c->RecycleForNextRequest(); (*do_recv)(c); }
                     else c->Reset();
+                    return;
+                }
+
+                if (c->GetTLS().IsEstablished())
+                {
+                    // TLSIO::SubmitTLSSend owns the WHOLE plaintext offset
+                    // loop internally (its own ciphertext flush after every
+                    // chunk mbedtls_ssl_write actually consumes -- see its
+                    // own comment), so this call site is entered once, at
+                    // the current offset, and on_progress fires exactly once
+                    // more: with the final offset (== total) on success, or
+                    // a value <= 0 on error (conn already Reset() by
+                    // SubmitTLSSend in that case -- see its own comment, so
+                    // this callback does not need its own Reset() on that
+                    // path). Same NoteSubmit-then-branch-on-return-value
+                    // shape as every other TLSIO call site in this module.
+                    c->NoteSubmit();
+                    bool settled = TLSIO::SubmitTLSSend(c, &self, ctx, offset, total,
+                        [c, keep, do_recv](long long progress)
+                        {
+                            if (progress > 0)
+                            {
+                                if (keep && c->IsConnectionOpen())
+                                { c->RecycleForNextRequest(); (*do_recv)(c); }
+                                else c->Reset();
+                            }
+                            c->NoteComplete();
+                        });
+                    if (!settled) c->NoteComplete();
                     return;
                 }
 
@@ -461,6 +534,45 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
 
             (*do_send)(0);
             c->NoteComplete();       // this recv is done
+        };
+
+        if (c->GetTLS().IsEstablished())
+        {
+            // Same NoteSubmit-then-branch-on-return-value shape as every
+            // other TLSIO call site (see TLSConnectionIO.h's own top-of-file
+            // contract): this recv's one reference either gets fully handed
+            // off to on_plaintext synchronously (settled == true, nothing
+            // further to do here) or is released right away because a new
+            // ciphertext Recv is now the thing actually in flight
+            // (settled == false, on_plaintext runs later from that
+            // completion instead).
+            c->NoteSubmit();
+            if (!TLSIO::SubmitTLSRecv(c, &self, ctx, on_plaintext))
+                c->NoteComplete();
+            return;
+        }
+
+        ETCS::IOSubmission sub;
+        sub.op         = ETCS::IOOp::Recv;
+        sub.fd         = c->GetClientFd();
+        sub.buffer     = c->RecvBuffer().data();
+        sub.buffer_len = c->RecvBuffer().size();
+        sub.priority   = static_cast<int>(ETCS::Priority::Medium);
+        sub.ctx        = ctx;
+
+        // Registered against the SERVER, not the connection: this is what
+        // makes a destroy of the server actually wait for in-flight
+        // per-connection I/O. Without it the outer Serve call's own scope
+        // clears the instant this function returns -- which is immediately,
+        // since it only submits -- while every lambda it launched keeps
+        // running untracked, free to touch an entity concurrently with
+        // whatever is destroying it. shared_ptr because std::function needs a
+        // copy-constructible target and ScopeTag's copy ctor is deleted.
+        auto scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
+        sub.callback = [on_plaintext, scope = std::move(scope)]
+                       (ETCS::IOCompletion comp) mutable
+        {
+            on_plaintext(static_cast<int>(comp.result));
         };
 
         c->NoteSubmit();
@@ -556,6 +668,35 @@ DEFINE_WORK_FUNC(ConnectionManager, Delete)
 {
     (void)data; (void)ctx;
     self.Delete();
+}
+
+// EnableTLS <cert_path> <key_path> — turns on server-side TLS termination
+// for this gate (ConnectionManager::EnableTLS, ConnectionManager.h). A
+// script calls this once, before Open, on any gate meant to speak TLS;
+// every connection accepted afterward goes through the handshake phase
+// (TLSConnectionIO.h's DriveTLSHandshake) before reaching a subscriber --
+// HttpServer::Serve and everything else registered on this gate keeps
+// seeing plaintext, unaware TLS ever happened.
+DEFINE_WORK_FUNC(ConnectionManager, EnableTLS)
+{
+    (void)ctx;
+    std::string cert_path;
+    std::string key_path;
+    data >> cert_path;
+    data >> key_path;
+
+    if (cert_path.empty() || key_path.empty())
+    {
+        ETCS_LOG("ConnectionManager::EnableTLS",
+                 "expected '<cert_path> <key_path>' -- got: " << data.buf);
+        data.reset();
+        data << false;
+        return;
+    }
+
+    bool ok = self.EnableTLS(cert_path, key_path);
+    data.reset();
+    data << ok;
 }
 
 // ===========================================================================

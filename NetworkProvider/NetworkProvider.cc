@@ -6,6 +6,7 @@ ETCS_MODULE_EXPORT_MAIN(NetworkProvider,
 // its pages as typed children.
 ETCS_TAG_BLOCK_BASIC(HttpServer,
     SetPort, AddHandler, ClearHandlers, AddRoute, ClearRoutes,
+    EnableTLS,
     Start, Stop, IsStarted,
     Serve, ListPaths, Delete
 )
@@ -14,7 +15,8 @@ ETCS_TAG_BLOCK_BASIC(HttpServer,
 // controls around it.
 ETCS_TAG_BLOCK_BASIC(ConnectionManager,
     Open, Close, IsOpen,
-    RegisterConsumer, UnregisterConsumer, Delete
+    RegisterConsumer, UnregisterConsumer, Delete,
+    EnableTLS
 )
 
 // HTTPParser — a Parser_ leaf. No server actions remain.
