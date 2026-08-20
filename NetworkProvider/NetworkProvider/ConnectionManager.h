@@ -508,6 +508,39 @@ public:
         return installConfig(cert_path, key_path, "ReloadCerts");
     }
 
+    // Same rotation, against the paths this gate is ALREADY using -- which
+    // is the ordinary case, because a renewal rewrites files in place rather
+    // than moving them. certbot's live/ directory is symlinks precisely so
+    // the path a server was configured with stays the path the new
+    // certificate appears at.
+    //
+    // That makes the no-argument form the SAFER one to reach for, not merely
+    // the shorter: a hook that repeats the paths can drift from the ones the
+    // gate actually loaded -- someone edits the trace, or a second cert gets
+    // provisioned -- and reload silently starts serving a certificate nobody
+    // configured. Asking the gate what it is using cannot drift.
+    bool ReloadCerts()
+    {
+        std::string cert, key;
+        {
+            std::lock_guard<std::mutex> lock(tls_mutex_);
+            cert = tls_cert_path_;
+            key  = tls_key_path_;
+        }
+        if (cert.empty() || key.empty())
+        {
+            ETCS_LOG("ConnectionManager", "ReloadCerts: no certificate paths recorded on RID:"
+                     << getRID() << " -- this gate was never given any, so there is "
+                        "nothing to reload. Use EnableTLS before Open.");
+            return false;
+        }
+        // Released the lock before this: installConfig parses files from
+        // disk, and holding a mutex that every accept contends on across
+        // file I/O would stall the accept path for the duration of a
+        // certificate parse.
+        return ReloadCerts(cert, key);
+    }
+
     // Whether this gate terminates TLS at all. Cheap enough to take the
     // lock -- it is consulted once per accepted connection, next to two
     // syscalls and a pool claim.
@@ -540,8 +573,15 @@ private:
             return false;
         }
         {
+            // Config and the paths it came from move together, under one
+            // lock: the no-argument ReloadCerts reads those paths to decide
+            // what to load, so a window where they described a different
+            // config than the one installed would let a reload pick up the
+            // previous certificate's path and quietly revert.
             std::lock_guard<std::mutex> lock(tls_mutex_);
-            tls_conf_ = std::move(fresh);
+            tls_conf_      = std::move(fresh);
+            tls_cert_path_ = cert_path;
+            tls_key_path_  = key_path;
         }
         ETCS_LOG("ConnectionManager", who << ": loaded cert='" << cert_path
                  << "' key='" << key_path << "' (RID:" << getRID()
@@ -621,6 +661,15 @@ private:
     // anything that could block.
     mutable std::mutex               tls_mutex_;
     std::shared_ptr<TLSServerConfig> tls_conf_;
+
+    // Where tls_conf_ was loaded FROM, so the no-argument ReloadCerts can
+    // reload in place. Guarded by the same mutex and written in the same
+    // critical section as tls_conf_ itself -- they are one fact, not two.
+    // Empty until the first successful EnableTLS, which is exactly the
+    // condition that makes a bare ReloadCerts meaningless and is checked
+    // there.
+    std::string                      tls_cert_path_;
+    std::string                      tls_key_path_;
 
     // Connections currently between accept and handshake-settled.
     //

@@ -720,10 +720,18 @@ DEFINE_WORK_FUNC(ConnectionManager, EnableTLS)
     data << ok;
 }
 
-// ReloadCerts <cert_path> <key_path> — gate-level certificate rotation, for
-// a script-created bare ConnectionManager. HttpServer.ReloadCerts is the
-// one to use for a server; it needs no arguments because it already knows
-// its own paths.
+// ReloadCerts [<cert_path> <key_path>] — gate-level certificate rotation,
+// for a script-created bare ConnectionManager. HttpServer.ReloadCerts is
+// the one to use for a server.
+//
+// With NO arguments it reloads the paths this gate already has, which is
+// what a renewal wants: the files change, their location does not. Give
+// paths only to point the gate somewhere genuinely different.
+//
+// Half a pair is refused rather than guessed at. Silently pairing a
+// supplied cert with a remembered key would be a plausible reading and a
+// terrible one -- a mismatched pair fails at handshake time, on real
+// clients, rather than here.
 DEFINE_WORK_FUNC(ConnectionManager, ReloadCerts)
 {
     (void)ctx;
@@ -732,16 +740,23 @@ DEFINE_WORK_FUNC(ConnectionManager, ReloadCerts)
     data >> cert_path;
     data >> key_path;
 
-    if (cert_path.empty() || key_path.empty())
+    bool ok;
+    if (cert_path.empty() && key_path.empty())
+    {
+        ok = self.ReloadCerts();
+    }
+    else if (cert_path.empty() || key_path.empty())
     {
         ETCS_LOG("ConnectionManager::ReloadCerts",
-                 "expected '<cert_path> <key_path>' -- got: " << data.buf);
-        data.reset();
-        data << false;
-        return;
+                 "expected no arguments (reload the configured paths) or "
+                 "'<cert_path> <key_path>' -- got: " << data.buf);
+        ok = false;
+    }
+    else
+    {
+        ok = self.ReloadCerts(cert_path, key_path);
     }
 
-    bool ok = self.ReloadCerts(cert_path, key_path);
     data.reset();
     data << ok;
 }

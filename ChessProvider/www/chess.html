@@ -81,6 +81,7 @@
   .sq.sel { outline:3px solid var(--sel); outline-offset:-3px; }
   .sq span { color:var(--ink); text-shadow:0 1px 0 #fff6; }
   .sq.b span { color:#16160f; text-shadow:0 1px 0 #8886; }
+  .sq.last { box-shadow: inset 0 0 10px 2px #705000; }
   #status { min-height:1.4em; letter-spacing:.04em; }
   #status.bad { color:#d4674f; }
   #fen { font-size:11px; color:var(--dim); word-break:break-all; max-width:520px; }
@@ -323,6 +324,12 @@ function askPromotion(uci,black){
 }
 promoEl.onclick=ev=>{ if(ev.target===promoEl) promoEl.classList.remove('on'); };
 
+function highlightLast(to){
+  boardEl.querySelector('.last')?.classList.remove('last');
+  const sq = boardEl.querySelector('[data-alg="'+to+'"]');
+  if(sq) sq.classList.add('last');
+}
+
 async function move(uci){
   try{
     const t=(await get(api('move',uci))).trim();
@@ -330,7 +337,7 @@ async function move(uci){
     else if(t==='NOT YOUR TURN') flash('not your turn');
     else if(t==='NOT YOUR SEAT') flash('both seats taken — you are watching');
     else if(t==='GAME OVER') flash('this game is finished');
-    else if(isFen(t)){ statusEl.className=''; lastFen=t; draw(t); await refreshStatus(); }
+    else if(isFen(t)){ statusEl.className=''; lastFen=t; draw(t); highlightLast(uci.slice(2,4)); await refreshStatus(); }
     else flash('server said: '+(t||'(empty)'));
   }catch(e){ flash('move failed: '+e); }
 }
@@ -384,9 +391,22 @@ $('over-new').onclick=async()=>{
 };
 
 // ── Game polling ─────────────────────────────────────────────────────────────
+function detectLastMove(oldFen, newFen){
+  const expand = f => f.split(' ')[0].split('/').join('').replace(/\d/g, d => ' '.repeat(+d)).split('');
+  const o = expand(oldFen), n = expand(newFen);
+  let to = -1;
+  for(let i = 0; i < 64; i++){
+    if(o[i] !== n[i] && n[i] !== ' '){
+      if(n[i]==='K'||n[i]==='k'){ to=i; break; }
+      if(to===-1) to=i;
+    }
+  }
+  if(to>=0) highlightLast('abcdefgh'[to%8]+(8-Math.floor(to/8)));
+}
+
 async function refreshFen(){
   try{ const f=(await get(api('fen'))).trim();
-       if(isFen(f)&&f!==lastFen){ lastFen=f; draw(f); } }catch(e){}
+       if(isFen(f)&&f!==lastFen){ const prev=lastFen; lastFen=f; draw(f); if(prev) detectLastMove(prev,f); } }catch(e){}
 }
 
 // "side state role wSeat bSeat drawoffer" -- one request tells the client
@@ -427,7 +447,7 @@ async function refreshStatus(){
     roleEl.textContent='['+TOKEN+'] role: '+role+
       (wSeat?'  white:'+wSeat:'')+(bSeat?'  black:'+bSeat:'');
     if(statusEl.className!=='bad')
-      statusEl.textContent=(side==='w'?'white':'black')+' to move — '+state;
+      statusEl.textContent=(side==='w'?'white':'black')+' to move'+(state!=='ok'?' — '+state:'');
 
     if(state==='checkmate'||state==='stalemate'||state==='draw'||state.startsWith('resign'))
       showGameOver(state,side);
