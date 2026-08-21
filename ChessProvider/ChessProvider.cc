@@ -11,7 +11,7 @@ ETCS_MODULE_EXPORT_MAIN(ChessProvider, "ChessGame ChessLobby ChessNode")
 // same re-simulation applyMoveLocked already performs), those tags become
 // HYBRID. That is also the point at which two peers stop sharing one board.
 ETCS_TAG_BLOCK_BASIC(ChessGame,
-    Move, Fen, LoadFen, Status, Chat, Request, Key, Seats,
+    Move, Fen, LoadFen, Status, Chat, History, Leave, Request, Key, Seats,
     Accept, Reset, IsActive, Delete, Filter)
 
 // A self is reached through its node, so it carries only the two verbs every

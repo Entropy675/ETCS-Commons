@@ -59,6 +59,27 @@ DEFINE_WORK_FUNC(ChessGame, Chat)
     data.writeString(self.ChatLog().c_str());
 }
 
+// The move list as positions: "<uci> <fen>" per ply, oldest first, index 0 the
+// root with "-" for its move. The client's back/forward review reads this, and
+// it is the reason a spectator who arrives at move thirty can still step
+// through the first twenty-nine.
+DEFINE_WORK_FUNC(ChessGame, History)
+{
+    (void)ctx;
+    data.writeString(self.History(data.restAsString()).c_str());
+}
+
+// Explicit departure: release the seat this token holds and forget its
+// heartbeat, rather than waiting out the reaper's thirty-second grace. The
+// token comes in as the argument because, unlike Move above, there is no
+// trusted-caller reading of "leave with no token" -- a leave that names nobody
+// would have to mean "evict everyone", which is Reset's job.
+DEFINE_WORK_FUNC(ChessGame, Leave)
+{
+    (void)ctx;
+    data.writeString(self.Leave(data.restAsString()).c_str());
+}
+
 // Standalone routing, for a board spawned with NO node in front of it (the
 // single fixed game chess_server.etcs opens). Under a node this is unused --
 // the node parses paths and calls the game's verb surface directly.

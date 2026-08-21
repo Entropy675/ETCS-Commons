@@ -47,7 +47,7 @@ class ChessNode;
 struct ChessInEvent
 {
     enum class Kind : uint8_t { Request, Move, LoadFen, Fen, Status, Chat, Say,
-                                Key, Reset, IsActive,
+                                Key, Reset, IsActive, History, Leave,
                                 LobbyRequest, LobbyList, LobbyJoin, LobbyPlayers };
 
     Kind        kind;
@@ -228,7 +228,7 @@ public:
     using Clock = std::chrono::steady_clock;
     using Kind  = ChessInEvent::Kind;
 
-    ChessGame()  { board.setStartingBoard(true); refreshTerminal(); }
+    ChessGame()  { board.setStartingBoard(true); refreshTerminal(); recordHistoryLocked(""); }
     virtual ~ChessGame() = default;
 
     // ── Public surface: every one of these serializes ─────────────────────
@@ -239,6 +239,8 @@ public:
     std::string Fen() const                            { return op(Kind::Fen); }
     std::string StatusLine(const std::string& t = "") const { return op(Kind::Status, "", t); }
     std::string ChatLog() const                        { return op(Kind::Chat); }
+    std::string History(const std::string& from = "0") { return op(Kind::History, from); }
+    std::string Leave(const std::string& tok)          { return op(Kind::Leave, "", tok); }
     std::string KeyVerb(const std::string& k = "")     { return op(Kind::Key, k); }
 
     // ── EphemeralBase / DeletableBase ─────────────────────────────────────
@@ -347,7 +349,88 @@ public:
     }
 
 private:
-    static constexpr size_t kChatLines = 40;
+    // Raised from 40 because the log now carries narration as well as speech:
+    // arrivals, seat claims, every move, and the outcome. A 40-line ring was
+    // scrolled clean by roughly twenty plies, which threw away the conversation
+    // to make room for the move list -- the opposite of what either is for.
+    static constexpr size_t kChatLines    = 200;
+
+    // ── The frame budget ──────────────────────────────────────────────────
+    // A route's ENTIRE reply is one ETCS::Buffer: HttpServer::DispatchRoute
+    // declares `ETCS::Buffer payload`, calls the work function with it, and
+    // assigns it straight to io. So a reply has MAX_TAG_BUFFER_SIZE to live in,
+    // and what happens on overflow is worse than truncation:
+    //
+    //     bool writeString(const char* str)
+    //     {
+    //         reset();                                   // <-- clears FIRST
+    //         if (strlen(str) + 1 > bufsize) return false;  // <-- leaves it EMPTY
+    //
+    // The buffer is reset before the capacity check, so an oversized reply does
+    // not arrive clipped -- it arrives as nothing at all. That is the whole bug
+    // report: the chat worked until the pane filled and then every line
+    // vanished at once, because the pane filling and the log crossing bufsize
+    // are the same event, and the crossing blanks the response rather than
+    // shortening it. (It is logged, so the server's own log names it.)
+    //
+    // Fixed-size verbs were never at risk -- a FEN is 56 bytes, a status line
+    // 40 -- which is why this only surfaced once chat started carrying
+    // narration and grew several times faster.
+    //
+    // Widening the buffer is possible (TBuffer<N> takes any N, and NBuffer is
+    // already 8K) but it is not the fix, for two reasons: the work function is
+    // handed an ETCS::Buffer& by HttpServer, so this module cannot choose the
+    // width on its own; and a log with no upper bound reaches any width
+    // eventually, so a wider buffer only moves the cliff. Paging removes it.
+    //
+    // The growing verbs therefore answer in PAGES: a "<base> <next>" header and
+    // then as many whole lines as fit. 200 rather than a number derived from
+    // bufsize because this module should not encode a constant it does not own
+    // -- a build with a bigger Buffer simply gets the same correct answer in
+    // the same number of requests, and one with a smaller Buffer is the only
+    // case that would need this lowered.
+    static constexpr size_t kFrameBudget = 200;
+
+    // Lines dropped off the front of each ring. A page is addressed by ABSOLUTE
+    // index, so a client that was reading at 40 can tell the difference between
+    // "nothing new" and "the 40 you had are gone" -- without which a full ring
+    // silently renumbers under the reader and it re-appends lines it already
+    // has.
+    size_t chat_base_ = 0, history_base_ = 0;
+
+    // "<base> <next>\n" then src[from - base ...], stopping before the budget.
+    // Whole lines only: half a line is not a thing any reader here can use.
+    std::string pageLocked(const std::vector<std::string>& src,
+                           size_t base, size_t from) const
+    {
+        if (from < base) from = base;               // caller fell behind the ring
+        size_t i = (from - base < src.size()) ? (from - base) : src.size();
+        std::string body;
+        while (i < src.size() && body.size() + src[i].size() + 1 <= kFrameBudget)
+        {
+            body += src[i];
+            body += "\n";
+            ++i;
+        }
+        // A single line longer than the whole budget would otherwise never be
+        // sent and the reader would stall on it forever, re-requesting the same
+        // index. Ship it clipped: losing the tail of one over-long line beats
+        // losing every line after it.
+        if (body.empty() && i < src.size())
+        {
+            body = src[i].substr(0, kFrameBudget);
+            body += "\n";
+            ++i;
+        }
+        return std::to_string(base) + " " + std::to_string(base + i) + "\n" + body;
+    }
+
+    // A FEN per ply. Bounded for the same reason chat is: a game is presence,
+    // not an archive, and anything durable belongs in a database provider. The
+    // cap drops the OLDEST plies, so a very long game loses its opening rather
+    // than its recent moves -- which is the half a review pane is actually
+    // used for. 600 plies is past the longest recorded tournament game.
+    static constexpr size_t kHistoryPlies = 600;
 
     // Defined at the bottom of ChessNode.h -- it needs ChessNode complete.
     // A board's ordering domain is its node's, so a board with no node has
@@ -366,6 +449,32 @@ private:
     // that would enqueue behind itself and never complete.
 
     std::string fenLocked() const { return board.toFENString(); }
+
+    // ── History ───────────────────────────────────────────────────────────
+    // One line per ply: "<uci> <fen>", oldest first, index 0 being the position
+    // the game STARTED from and carrying "-" for its move. Keeping the root in
+    // the same list rather than beside it means a client walking backwards
+    // never needs to know what a starting position looks like -- which matters
+    // because a game may have been seeded with loadFen and not start from one.
+    //
+    // Recorded server-side rather than left to the client because a spectator
+    // who arrives at move thirty has no snapshots of their own, and neither
+    // does a player who reloaded. The client still keeps its own snapshots as
+    // a fast path; this is what makes them recoverable.
+    void recordHistoryLocked(const std::string& uci)
+    {
+        history_.emplace_back((uci.empty() ? "-" : uci) + " " + board.toFENString());
+        // Dropping the front discards the root line with it, so past the cap the
+        // first entry is an ordinary mid-game ply. Harmless: the client renders
+        // positions, it does not reconstruct them from the root.
+        if (history_.size() > kHistoryPlies) { history_.erase(history_.begin()); ++history_base_; }
+    }
+
+    // Paged. A ply line is a uci plus a FEN, about 75 bytes, so a whole game
+    // has never fitted in one reply and never will -- this verb was born
+    // needing the paging that chat only grew into.
+    std::string historyPageLocked(size_t from) const
+    { return pageLocked(history_, history_base_, from); }
 
     // Distinct tokens with recent traffic. This, not Seats(), is what "is this
     // room full" means: seats are claimed by MOVING, so two people staring at
@@ -390,6 +499,15 @@ private:
         recorded_ = false;
         started_  = false;
         refreshTerminal();
+        // The chat SURVIVES a reset while the history does not, and the
+        // difference is deliberate: the position is a new game, so replaying the
+        // old one under it would be a lie, but the people are the same people
+        // and their conversation did not end. The log line below is what joins
+        // the two halves.
+        history_.clear();
+        history_base_ = 0;
+        recordHistoryLocked("");
+        logLocked("new game -- seats are open");
         return true;
     }
 
@@ -397,6 +515,12 @@ private:
     {
         if (!board.loadFEN(fen)) return "INVALID";
         refreshTerminal();
+        // A loaded position is a new root, not a continuation: the plies before
+        // it never happened on this board and stepping back into them would
+        // show a line that does not lead here.
+        history_.clear();
+        history_base_ = 0;
+        recordHistoryLocked("");
         return board.toFENString();
     }
 
@@ -429,9 +553,15 @@ private:
         if (!over_.empty()) return "GAME OVER";
         if (mv.size() < 4)  return "ILLEGAL";
 
+        // Hoisted out of the token branch below: the narration after the move
+        // lands needs to know which SIDE moved, and by then the board has
+        // already flipped the turn. Reading it back from the board afterwards
+        // would report the opponent.
+        const bool white_moved = board.isWhiteTurn();
+
         if (!tok.empty())
         {
-            const bool white_to_move = board.isWhiteTurn();
+            const bool white_to_move = white_moved;
             std::string& seat        = white_to_move ? white_ : black_;
             const std::string& other = white_to_move ? black_ : white_;
 
@@ -444,6 +574,12 @@ private:
                 seat = tok;
                 ETCS_LOG("ChessGame", "seat claimed: "
                          << (white_to_move ? "white" : "black") << " -> " << tok);
+                // Announced HERE, before the move is validated, because the
+                // claim has already happened -- seat is assigned on the line
+                // above and is not rolled back if movePiece refuses. Deferring
+                // the line until the move is known legal would leave a seat
+                // held by someone the log never named.
+                logLocked(tok + " sits as " + (white_to_move ? "white" : "black"));
             }
             else if (seat != tok)
             {
@@ -465,12 +601,27 @@ private:
         }
         if (st == ChessStatus::FAIL) return "ILLEGAL";
 
+        const bool first_move = !started_;
         started_ = true;
         // Moving answers a pending offer: playing on IS declining, the ordinary
         // convention, and it saves the offerer waiting for a reply already given.
         draw_offer_.clear();
         refreshTerminal();
-        if (!active_) reportOutcomeLocked();
+        recordHistoryLocked(mv);
+
+        if (first_move) logLocked("game started");
+        // Side, not self: a move is made by white, and which self holds white is
+        // already in the seat line above. Suffixed the way a scoresheet is, so
+        // the log reads as a game rather than as a request trace.
+        logLocked(std::string(white_moved ? "white" : "black") + " plays " + mv
+                  + (checkmate_ ? "#" : (board.sideToMoveInCheck() ? "+" : "")));
+
+        if (!active_)
+        {
+            if      (checkmate_) logLocked(std::string(white_moved ? "white" : "black") + " wins by checkmate");
+            else if (stalemate_) logLocked("stalemate -- drawn");
+            reportOutcomeLocked();
+        }
         return board.toFENString();
     }
 
@@ -485,6 +636,7 @@ private:
         over_ = "resign-" + role;
         draw_offer_.clear();
         ETCS_LOG("ChessGame", "resignation: " << role << " (" << tok << ")");
+        logLocked(role + " resigns -- " + (role == "white" ? "black" : "white") + " wins");
         refreshTerminal();
         reportOutcomeLocked();
         return statusLineLocked(tok);
@@ -505,10 +657,15 @@ private:
             over_ = "draw";
             draw_offer_.clear();
             ETCS_LOG("ChessGame", "draw agreed");
+            logLocked(role + " accepts -- drawn by agreement");
             refreshTerminal();
             reportOutcomeLocked();
             return statusLineLocked(tok);
         }
+        // Re-offering your own standing offer is a no-op above the log too:
+        // without this the log gains a line every time an impatient player
+        // clicks the button again.
+        if (draw_offer_ != tok) logLocked(role + " offers a draw");
         draw_offer_ = tok;
         ETCS_LOG("ChessGame", "draw offered by " << role);
         return statusLineLocked(tok);
@@ -517,8 +674,60 @@ private:
     std::string declineLocked(const std::string& tok)
     {
         if (roleOfLocked(tok) == "viewer") return "NOT YOUR SEAT";
-        if (!draw_offer_.empty() && draw_offer_ != tok) draw_offer_.clear();
+        if (!draw_offer_.empty() && draw_offer_ != tok)
+        {
+            draw_offer_.clear();
+            logLocked(roleOfLocked(tok) + " declines the draw");
+        }
         return statusLineLocked(tok);
+    }
+
+    // ── Explicit departure ────────────────────────────────────────────────
+    // HTTP gives no disconnect signal, which is why presence is inferred from
+    // traffic at all -- but "no signal" is not the same as "no statement". A
+    // client that KNOWS it is leaving can say so, and this is the verb it says
+    // it with: the seat is released now instead of in thirty seconds.
+    //
+    // The reaper is not replaced by this, it is demoted to the fallback it
+    // should always have been. A crashed tab, a closed laptop and a dropped
+    // network still say nothing, and those cases are exactly what the grace
+    // period exists for. This one closes the case that was ALWAYS reportable
+    // and was being handled as though it were not: the sole occupant of a
+    // two-player game clicking back to the lobby, after which the room sat
+    // half-claimed for half a minute and the next arrival was told the seat was
+    // taken by someone who had already gone.
+    //
+    // Idempotent and unauthenticated in the same sense every other verb here
+    // is: the token IS the identity, so a leave can only release the seat that
+    // token holds. There is nothing to spoof that moving as that token could
+    // not already do.
+    std::string leaveLocked(const std::string& tok)
+    {
+        if (tok.empty()) return "OK";
+
+        // Erase the heartbeat FIRST, so liveTokensLocked stops counting this
+        // token immediately -- the room list is what the next arrival reads to
+        // decide whether to join or watch, and it must not report a ghost.
+        const bool was_here = (seen_.erase(tok) > 0);
+        if (draw_offer_ == tok) draw_offer_.clear();
+
+        // Mutually exclusive by the claim rule in applyMoveLocked: one token
+        // can never hold both seats.
+        if (white_ == tok)
+        {
+            white_.clear();
+            ETCS_LOG("ChessGame", "white seat released (left): " << tok);
+            logLocked(tok + " left -- white seat is open");
+        }
+        else if (black_ == tok)
+        {
+            black_.clear();
+            ETCS_LOG("ChessGame", "black seat released (left): " << tok);
+            logLocked(tok + " left -- black seat is open");
+        }
+        else if (was_here) logLocked(tok + " left");
+
+        return "OK";
     }
 
     std::string roleOfLocked(const std::string& tok) const
@@ -552,6 +761,21 @@ private:
         return s;
     }
 
+    // No exceptions on a bad cursor: the argument comes off a URL, so garbage
+    // is an ordinary input and "start from the beginning" is a safe reading of
+    // it. stoul would throw straight through the ordering thread.
+    static size_t parseIndex(const std::string& s)
+    {
+        size_t n = 0;
+        for (char c : s)
+        {
+            if (c < '0' || c > '9') return 0;
+            n = n * 10 + static_cast<size_t>(c - '0');
+            if (n > 100000000u) return 0;      // nonsense, not a cursor
+        }
+        return n;
+    }
+
     // A bounded ring, deliberately trivial: chat is presence, not history, and
     // anything durable belongs in a database provider rather than in the game's
     // own arena footprint.
@@ -566,10 +790,50 @@ private:
         if (chat_.size() > kChatLines) chat_.erase(chat_.begin());
     }
 
+    // ── Narration ─────────────────────────────────────────────────────────
+    // Events go into the SAME ring as speech rather than into a second channel.
+    // One channel because the two are read together -- "bob sits as black" is
+    // only useful next to what bob then said -- and because a second endpoint
+    // would be a second poll, a second merge, and a second thing that can be
+    // one request out of date with the first.
+    //
+    // Marked with a leading "* " so a client can tell narration from speech
+    // with no protocol change: a human's line is always "<self>: <text>", and
+    // "* " is not a prefix any "<self>:" can produce, since the space cannot be
+    // where the colon is. Worth stating because the alternative -- trusting an
+    // unforgeable author field -- does not exist here: the self IS client
+    // supplied.
+    void logLocked(const std::string& text)
+    {
+        chat_.push_back("* " + text);
+        if (chat_.size() > kChatLines) { chat_.erase(chat_.begin()); ++chat_base_; }
+    }
+
+    std::string chatPageLocked(size_t from) const
+    { return pageLocked(chat_, chat_base_, from); }
+
+    // What a caller with no cursor gets: the TAIL, not the whole log. Used by
+    // the shell's Chat verb and by any client that has not been taught to page.
+    // The tail rather than the head because the last thing said is the thing
+    // worth seeing, and because "the whole log" is the answer that blanks the
+    // buffer -- there is no size of chat for which returning all of it is
+    // correct, so the no-argument form does not offer it.
     std::string chatLogLocked() const
     {
-        std::string out;
-        for (const auto& line : chat_) { out += line; out += "\n"; }
+        size_t from = chat_base_;
+        std::string out = pageLocked(chat_, chat_base_, from);
+        // Walk forward until the page reaching the end is the one returned.
+        while (true)
+        {
+            size_t next = from + 1;
+            if (next >= chat_base_ + chat_.size()) break;
+            std::string cand = pageLocked(chat_, chat_base_, next);
+            // Stop as soon as advancing no longer reaches further: the last
+            // page that still ends at the end of the ring is the tail.
+            if (cand.size() < out.size() && next + 1 >= chat_base_ + chat_.size()) { out = cand; break; }
+            out = cand;
+            from = next;
+        }
         return out;
     }
 
@@ -578,6 +842,12 @@ private:
     void touchLocked(const std::string& tok)
     {
         if (tok.empty()) return;
+        // First heartbeat from this token is an arrival. Detected here rather
+        // than at the edge join in ChessNode because the edge is added by
+        // VISITING a match, including from the lobby's own listing, and
+        // announcing an arrival for someone who merely has the game in their
+        // list would be narration of something that did not happen.
+        if (seen_.find(tok) == seen_.end()) logLocked(tok + " is here");
         seen_[tok] = Clock::now();
     }
 
@@ -595,8 +865,10 @@ private:
                        now - it->second).count() >= grace_seconds;
         };
 
-        if (gone(white_)) { ETCS_LOG("ChessGame", "white seat released (idle): " << white_); white_.clear(); }
-        if (gone(black_)) { ETCS_LOG("ChessGame", "black seat released (idle): " << black_); black_.clear(); }
+        if (gone(white_)) { ETCS_LOG("ChessGame", "white seat released (idle): " << white_);
+                            logLocked(white_ + " timed out -- white seat is open"); white_.clear(); }
+        if (gone(black_)) { ETCS_LOG("ChessGame", "black seat released (idle): " << black_);
+                            logLocked(black_ + " timed out -- black seat is open"); black_.clear(); }
 
         // Every observer must be STALE, not merely present. The earlier
         // condition asked only whether anyone had EVER been seen -- true the
@@ -622,14 +894,29 @@ private:
     std::string verbLocked(const std::string& tok, const std::string& verb,
                            const std::string& arg)
     {
+        // leave is handled BEFORE the heartbeat, and has to be: touchLocked
+        // would re-register the very presence this verb exists to withdraw, so
+        // a leave arriving through the ordinary path would announce a departure
+        // and then immediately contradict it. reapLocked still runs after, so a
+        // departure that empties the room can trip the abandoned-before-first-
+        // move reset in the same request rather than on the next visitor's.
+        if (verb == "leave")   { const std::string r = leaveLocked(tok); reapLocked(30); return r; }
+
         touchLocked(tok);
         reapLocked(30);
 
         if (verb == "move")    return applyMoveLocked(arg, tok);
         if (verb == "fen" || verb.empty()) return fenLocked();
         if (verb == "status")  return statusLineLocked(tok);
-        if (verb == "say")     { sayLocked(tok, arg); return chatLogLocked(); }
-        if (verb == "chat")    return chatLogLocked();
+        // say answers OK, not the log: the reply used to be the whole chat,
+        // which is the single largest thing this server ever tried to return
+        // and the most likely to blank. The speaker's own next poll shows them
+        // their line a beat later, which is what every other client already
+        // sees anyway.
+        if (verb == "say")     { sayLocked(tok, arg); return "OK"; }
+        if (verb == "chat")    return arg.empty() ? chatLogLocked()
+                                                  : chatPageLocked(parseIndex(arg));
+        if (verb == "history") return historyPageLocked(parseIndex(arg));
         if (verb == "resign")  return resignLocked(tok);
         if (verb == "draw")    return drawLocked(tok);
         if (verb == "decline") return declineLocked(tok);
@@ -691,6 +978,12 @@ private:
 
     std::unordered_map<std::string, Clock::time_point> seen_;  // token -> heartbeat
     std::vector<std::string> chat_;
+
+    // "<uci> <fen>" per ply, oldest first, root at index 0 with "-" for its
+    // move. A vector rather than the deque the ring behaviour suggests: the cap
+    // is hit by roughly no games at all, so the one erase(begin()) it would
+    // save is not worth a second container shape in this file.
+    std::vector<std::string> history_;
 };
 
 #endif // CHESSGAME_H__

@@ -472,8 +472,11 @@ inline ETCS::DispatchResult ChessStream::on_event(ChessState&,
                 case ChessInEvent::Kind::Fen:      result = g->fenLocked();               break;
                 case ChessInEvent::Kind::Status:   result = g->statusLineLocked(tok);     break;
                 case ChessInEvent::Kind::Chat:     result = g->chatLogLocked();           break;
+                case ChessInEvent::Kind::History:  result = g->historyPageLocked(ChessGame::parseIndex(arg)); break;
+                case ChessInEvent::Kind::Leave:    result = g->leaveLocked(tok);
+                                                   g->reapLocked(30);                     break;
                 case ChessInEvent::Kind::Say:      g->sayLocked(tok, arg);
-                                                   result = g->chatLogLocked();           break;
+                                                   result = "OK";                         break;
                 case ChessInEvent::Kind::Key:      result = g->keyLocked(arg);            break;
                 case ChessInEvent::Kind::Reset:    g->resetLocked();
                                                    result = g->fenLocked();               break;
@@ -492,7 +495,7 @@ inline ETCS::DispatchResult ChessStream::on_event(ChessState&,
     // Drop, not Inline: the work is finished and nothing downstream consumes an
     // emit, so a gap slot would reserve reorder capacity for nothing. The
     // serialization comes from the ordering thread being a single thread.
-    return { ETCS::DispatchKind::Drop, 0, nullptr };
+    return { ETCS::DispatchKind::Drop, {}, nullptr };
 }
 
 #endif // CHESSNODE_H__

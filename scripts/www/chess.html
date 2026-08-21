@@ -12,7 +12,7 @@
              class: 8 squares plus padding must fit the narrower of the viewport's
              width and height, and 64px is simply the cap on a large screen.
              Breakpoints would have to guess at the sizes this computes. */
-          --sq: min(64px, calc((100vw - 28px) / 8), calc((100vh - 210px) / 8)); }
+          --sq: min(64px, calc((100vw - 28px) / 8), calc((100vh - 222px) / 8)); }
   * { box-sizing:border-box; }
   body { margin:0; min-height:100vh; background:var(--bg); color:var(--light);
          font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
@@ -81,7 +81,70 @@
   .sq.sel { outline:3px solid var(--sel); outline-offset:-3px; }
   .sq span { color:var(--ink); text-shadow:0 1px 0 #fff6; }
   .sq.b span { color:#16160f; text-shadow:0 1px 0 #8886; }
+  /* Two soft pulses, then a steady low glow. The pulses are what catch the eye
+     when a move lands while you were looking somewhere else; the glow is what
+     answers "where was it again?" thirty seconds later. A pure animation that
+     ended at nothing would lose the second job, and the stationary version this
+     replaces never did the first -- an opponent's move on a quiet board simply
+     changed colour with nothing to draw the eye to it.
+     The 0/100% frames deliberately match .sq.last's own box-shadow so the
+     settle is continuous rather than a step. */
+  .sq.last { box-shadow: inset 0 0 10px 2px #70500080; }
+  .sq.flash { animation: lastflash 1.15s ease-in-out 1 both; }
+  @keyframes lastflash {
+    0%   { box-shadow: inset 0 0 10px  2px #70500080; }
+    18%  { box-shadow: inset 0 0 22px  7px #d9b45cf0; }
+    40%  { box-shadow: inset 0 0 10px  2px #70500060; }
+    62%  { box-shadow: inset 0 0 22px  7px #d9b45cf0; }
+    100% { box-shadow: inset 0 0 10px  2px #70500080; }
+  }
+  @media (prefers-reduced-motion: reduce) { .sq.flash { animation:none; } }
+
+  /* Review mode. Greyed as ONE surface rather than square by square: what is
+     being said is "this whole board is not the live one", and a per-square
+     treatment reads as a highlight -- the opposite meaning, and already spoken
+     for by .sel and .last. filter also greys the piece glyphs, which a
+     background swap could not, so the light squares stay light relative to the
+     dark ones and the position remains readable while unmistakably inert.
+     No banner over the board: the grey, the forward/live buttons that appear
+     beside the status line, and the status text itself already say it three
+     times, and a fourth in a strip across the board covered the back rank. */
+  #board.review { filter:grayscale(1) brightness(.62) contrast(.9); }
+  /* Pointer-events off, not just a cursor change: the click handler already
+     refuses in review, but a board that visibly accepts clicks and then says no
+     is worse than one that does not respond. */
+  #board.review { pointer-events:none; }
+  /* The bar and the board are one object, so they are wrapped in a column of
+     their own: .col carries gap:10px, which would otherwise float the bar ten
+     pixels off the board it belongs to. width:max-content makes the wrapper
+     take the board's width rather than the column's, which is what lets the
+     bar's border line up with the board's own 3px frame. */
+  #boardwrap { display:flex; flex-direction:column; width:max-content; max-width:100%; }
+  /* Chrome, so it is sized like chrome: the bar is the board's frame with
+     controls in it, not a row of its own. Height comes from the buttons, so
+     they carry the shrink -- 1px of padding and a 10px glyph put the whole bar
+     at roughly half what a default-sized button forced, and nothing here is
+     read for long enough to need 12px.
+     flex-wrap is deliberately OFF: wrapping would silently double the height
+     it is the point of this rule to keep down, and the row is five short
+     buttons that fit inside eight squares at every size the board reaches. */
+  #boardbar { display:flex; align-items:center; gap:2px; flex-wrap:nowrap;
+              padding:1px 3px; background:var(--panel);
+              border:3px solid var(--line); border-bottom-width:0; }
+  #boardbar button { padding:0 5px; font-size:9px; line-height:1.45;
+                     letter-spacing:.02em; }
+  /* The arrow glyphs render small at 10px next to Latin text, so they get their
+     own size -- matching the visual weight rather than the point size, which is
+     what makes a mixed row of glyphs and words look level. */
+  #boardbar button#rw-first, #boardbar button#rw-back,
+  #boardbar button#rw-fwd,   #boardbar button#rw-last { font-size:10px; padding:0 5px; }
+  /* Pushed to the far end, so the buttons stay put as the text appears and
+     disappears instead of shunting sideways each time review is entered. */
+  #ply { color:var(--dim); font-size:9px; margin-left:auto; padding-left:8px;
+         white-space:nowrap; }
   #status { min-height:1.4em; letter-spacing:.04em; }
+  #status.review { color:var(--sel); }
+  #status.review { color:var(--sel); }
   #status.bad { color:#d4674f; }
   #fen { font-size:11px; color:var(--dim); word-break:break-all; max-width:520px; }
   #role { color:var(--sel); font-size:12px; }
@@ -91,6 +154,12 @@
   #chat { width:100%; max-width:340px; min-width:0; height:min(300px, 32vh);
           overflow-y:auto; background:var(--panel); border:1px solid var(--line);
           padding:8px; font-size:12px; white-space:pre-wrap; }
+  /* Narration, dimmed. Same column as speech deliberately -- "bob sits as
+     black" is only worth reading next to what bob then said -- but never
+     mistakable for it, because the server marks its own lines and the client
+     is the only thing that decides how a marked line looks. */
+  #chat .sys { color:var(--dim); font-style:italic; }
+  #chat .sys::before { content:'· '; }
   #say  { width:100%; max-width:340px; min-width:0; }
   #game .col { min-width:0; max-width:100%; }
   #fen { max-width:100%; }
@@ -170,7 +239,26 @@
 
   <section id="game" class="hidden">
     <div class="col">
-      <div id="board"></div>
+      <!-- A chrome bar ATTACHED to the board: same width, flush against its top
+           edge, sharing its border, so it reads as part of the board rather
+           than as buttons that happen to sit near it. Deliberately a general
+           board toolbar and not a review widget -- flip, copy PGN, a clock all
+           belong here later, which is why it is #boardbar with the review
+           controls grouped inside it rather than #review.
+           Back is always offered; forward, first, last and "live" only exist
+           once there is something to go forward TO, so the bar carries one
+           glyph in the ordinary case and grows only while in use. -->
+      <div id="boardwrap">
+        <div id="boardbar">
+          <button id="rw-first" class="hidden" title="first position (Home)">&#x23EE;</button>
+          <button id="rw-back" title="back one move (←)">&#x25C0;</button>
+          <button id="rw-fwd" class="hidden" title="forward one move (→)">&#x25B6;</button>
+          <button id="rw-last" class="hidden" title="latest position (End)">&#x23ED;</button>
+          <button id="rw-live" class="hidden primary" title="return to the live board (Esc)">Live</button>
+          <span id="ply"></span>
+        </div>
+        <div id="board"></div>
+      </div>
       <div id="status">connecting…</div>
       <div class="bar" id="controls">
         <button id="resign">Resign</button>
@@ -245,6 +333,79 @@ const matchUrl = m => location.origin + location.pathname + '?room=' + encodeURI
 async function get(u) { return (await (await fetch(u)).text()); }
 const lines = t => t.split('\n').map(l => l.trim()).filter(Boolean);
 
+// ── The local game cache ─────────────────────────────────────────────────────
+// Positions survive a refresh, so reopening a game does not re-fetch a history
+// the browser already had. localStorage rather than a cookie, despite the cache
+// being conceptually the same idea: a cookie is sent on EVERY request, and this
+// page polls two or three times a second, so a few kilobytes of position data
+// would ride along on each one -- onto a server whose replies we have just
+// spent this change keeping under a frame. Cookies also cap around 4KB for the
+// whole origin, which is about fifty plies; localStorage is megabytes and never
+// touches the wire.
+//
+// This is also the shape the WASM/P2P version wants. Once ChessProvider runs in
+// the page there is no fetch to avoid, but there IS a local record of the game
+// that must outlive a reload, and it is this one -- the store stops being a
+// cache of someone else's history and becomes the client's own copy, which is
+// what a peer holds by definition.
+const CACHE_PREFIX = 'ace_chess_hist:';
+const CACHE_MAX    = 600;      // plies kept per match, matching the server's ring
+let cacheKey=null, cacheDirty=false, cacheTimer=0;
+
+function cacheLoad(match){
+  cacheKey = CACHE_PREFIX + match;
+  try{
+    const raw = localStorage.getItem(cacheKey);
+    if(!raw) return;
+    const o = JSON.parse(raw);
+    if(!o || o.v!==1 || !o.p) return;
+    for(const k in o.p){
+      const l=o.p[k], sp=l.indexOf(' ');
+      if(sp<0) continue;
+      const fen=l.slice(sp+1);
+      if(!isFen(fen)) continue;
+      histMap.set(+k, {uci:l.slice(0,sp), fen:fen});
+    }
+    histBase = o.b|0;
+    histEnd  = Math.max(histEnd, o.e|0);
+    // histSynced is deliberately NOT restored. The cache says what this browser
+    // last saw, which is a claim about the past; whether it is still the CURRENT
+    // game is a question only the server can answer, and syncEnd asks it before
+    // the cache is allowed to decide how far back the arrow may go.
+  }catch(e){}
+}
+
+function cacheSave(){
+  if(!cacheKey) return;
+  try{
+    let keys=[...histMap.keys()].sort((a,b)=>a-b);
+    if(keys.length>CACHE_MAX) keys=keys.slice(keys.length-CACHE_MAX);
+    const p={};
+    for(const k of keys){ const h=histMap.get(k); p[k]=h.uci+' '+h.fen; }
+    localStorage.setItem(cacheKey, JSON.stringify({v:1,b:histBase,e:histEnd,p:p}));
+  }catch(e){
+    // Quota, or storage disabled outright (private windows, embedded views).
+    // The cache is an optimisation; losing it costs requests, not correctness.
+    try{ localStorage.removeItem(cacheKey); }catch(_){}
+  }
+}
+
+// Coalesced: a live game touches the map on every move, and a game being walked
+// backwards touches it once per fetched block. Writing through on each would
+// serialise the whole map several times a second for no benefit.
+function cacheTouch(){
+  cacheDirty=true;
+  if(cacheTimer) return;
+  cacheTimer=setTimeout(()=>{ cacheTimer=0; if(cacheDirty){ cacheDirty=false; cacheSave(); } }, 1500);
+}
+function cacheFlush(){ if(cacheDirty){ cacheDirty=false; cacheSave(); } }
+
+function cacheDrop(){
+  cacheDirty=false;
+  if(cacheTimer){ clearTimeout(cacheTimer); cacheTimer=0; }
+  if(cacheKey) try{ localStorage.removeItem(cacheKey); }catch(e){}
+}
+
 // ── Board ────────────────────────────────────────────────────────────────────
 const GLYPH = { K:'\u2654',Q:'\u2655',R:'\u2656',B:'\u2657',N:'\u2658',P:'\u2659',
                 k:'\u265A',q:'\u265B',r:'\u265C',b:'\u265D',n:'\u265E',p:'\u265F' };
@@ -252,6 +413,28 @@ const boardEl=$('board'), statusEl=$('status'), fenEl=$('fen'),
       roleEl=$('role'), chatEl=$('chat'), sayEl=$('say');
 let squares=[], selected=null, lastFen='', myRole='viewer', myTurn=false,
     flipped=false, overShown='';
+
+// ── Review state ─────────────────────────────────────────────────────────────
+// The game as POSITIONS, keyed by the SERVER's absolute ply index -- 0 is the
+// position the game started from -- and the key is what survives the server's
+// ring dropping its oldest plies, which a plain array's indices would not.
+//
+// Positions rather than moves because rendering a past state must not require
+// replaying one: the client has no engine, and re-deriving move twelve from
+// twelve applications of a move it cannot validate would put a second, weaker
+// rules implementation in the browser.
+//
+// SPARSE, and filled backwards on demand. A ply line is a uci plus a FEN, so
+// only a handful fit in one reply and a whole game is always many -- pulling
+// all of it the first time anyone touches the back arrow would be a burst of
+// requests to show one position. The map holds what this client watched happen;
+// stepping back past that point fetches the block it landed in and keeps it.
+const HIST_BLOCK = 8;          // how far back one fetch reaches
+let histMap = new Map();       // absolute ply index -> {uci, fen}
+let histBase = 0;              // oldest index the server still holds
+let histEnd  = 0;              // one PAST the newest known index (0 == unknown)
+let ply=-1;                    // -1 == live. Otherwise an absolute index.
+let histSynced=false;          // has the end been agreed with the server
 
 // squares[] stays in FEN order -- 0 is a8, 63 is h1 -- so draw() walks a FEN
 // straight into it with no notion of orientation. Flipping is CSS `order`, not a
@@ -293,6 +476,10 @@ function flash(m){ statusEl.textContent=m; statusEl.className='bad'; }
 
 function clickSquare(sq){
   if(!room) return;
+  // Belt and braces with the pointer-events rule in CSS: the click cannot
+  // arrive today, but the guard is what makes the invariant true in the code
+  // rather than in a stylesheet a later change could relax.
+  if(ply>=0){ flash('reviewing — press Live to move'); return; }
   // A viewer whose side is still open may try: attempting IS the claim. Only
   // someone actually refused a seat is locked out.
   if(myRole!=='viewer' && !myTurn){ flash('not your turn'); return; }
@@ -323,6 +510,25 @@ function askPromotion(uci,black){
 }
 promoEl.onclick=ev=>{ if(ev.target===promoEl) promoEl.classList.remove('on'); };
 
+function clearLast(){
+  for(const e of boardEl.querySelectorAll('.last,.flash')) e.classList.remove('last','flash');
+}
+// pulse=true replays the two flashes. Off by default because stepping through
+// history re-marks a square several times a second, and a strobing board is
+// not what "here is the move" should feel like -- the pulse is reserved for a
+// move actually LANDING.
+function highlightLast(to, pulse){
+  clearLast();
+  const sq = boardEl.querySelector('[data-alg="'+to+'"]');
+  if(!sq) return;
+  sq.classList.add('last');
+  if(!pulse) return;
+  // Reflow between remove and add, or re-adding the class inside the same frame
+  // is a no-op and the second move to the same square never flashes.
+  void sq.offsetWidth;
+  sq.classList.add('flash');
+}
+
 async function move(uci){
   try{
     const t=(await get(api('move',uci))).trim();
@@ -330,7 +536,10 @@ async function move(uci){
     else if(t==='NOT YOUR TURN') flash('not your turn');
     else if(t==='NOT YOUR SEAT') flash('both seats taken — you are watching');
     else if(t==='GAME OVER') flash('this game is finished');
-    else if(isFen(t)){ statusEl.className=''; lastFen=t; draw(t); await refreshStatus(); }
+    else if(isFen(t)){
+      statusEl.className=''; lastFen=t; noteLive(uci,t);
+      draw(t); highlightLast(uci.slice(2,4),true); await refreshStatus();
+    }
     else flash('server said: '+(t||'(empty)'));
   }catch(e){ flash('move failed: '+e); }
 }
@@ -345,6 +554,245 @@ async function verb(name){
 }
 $('resign').onclick=()=>{ if(confirm('Resign this game?')) verb('resign'); };
 $('draw').onclick=()=>verb('draw');
+
+// ── Review: stepping back through the game ───────────────────────────────────
+// Reviewing is a purely LOCAL mode. Nothing is sent, no seat is affected, and
+// polling carries on underneath -- so a player can look at move six while their
+// opponent thinks, and be returned to a live board that is already up to date
+// the moment they press Live. That is why lastFen keeps being updated while
+// ply>=0 and only draw() is suppressed: the live position is never stale, it is
+// merely not the one on screen.
+// Where the live position sits, read off the FEN: fullmove number and side to
+// move ARE a ply counter, so the client can address "how far from the start"
+// without asking anyone. Used only to AIM the first request -- the reply's own
+// header is what indices are trusted from afterwards, so a game seeded with
+// loadFen (whose fullmove does not start at 1) costs an extra page rather than
+// reading the wrong plies.
+function plyFromFen(fen){
+  const f=fen.split(' ');
+  const full=parseInt(f[5],10);
+  if(!isFinite(full)||full<1) return 0;
+  return (full-1)*2 + (f[1]==='b'?1:0);
+}
+
+// A position watched arriving. Once the end is agreed, every landed move is
+// simply the next index, so no estimate is involved after the first sync.
+function noteLive(uci,fen){
+  const idx = histSynced ? histEnd : plyFromFen(fen);
+  const have = histMap.get(idx);
+  if(have && have.fen===fen) return;      // a poll re-seeing the same position
+  histMap.set(idx,{uci:uci||'-', fen:fen});
+  histEnd = Math.max(histEnd, idx+1);
+  cacheTouch();
+}
+
+function histRow(l){
+  const sp=l.indexOf(' ');
+  if(sp<0) return null;
+  const r={uci:l.slice(0,sp), fen:l.slice(sp+1).trim()};
+  return isFen(r.fen) ? r : null;
+}
+
+// One page, merged in. The reply's first line sits at max(from, base) because
+// the server clamps a cursor that has fallen behind its ring, so THAT is the
+// index the lines are keyed from -- not the requested from.
+async function loadPage(from){
+  const t = await get(api('history', String(Math.max(0,from))));
+  if(!t) return null;
+  const p = parsePage(t);
+  // Unpaged server: the whole list arrives at once, keyed from zero.
+  if(!p){
+    let i=0;
+    for(const l of lines(t)){ const r=histRow(l); if(r) histMap.set(i++, r); }
+    if(i){ histBase=0; histEnd=Math.max(histEnd,i); histSynced=true; cacheTouch(); }
+    return null;
+  }
+  histBase = p.base;
+  let i = Math.max(from, p.base);
+  for(const l of p.lines){
+    const r=histRow(l);
+    if(r){
+      // The server disagreeing with a cached position means the cache is from a
+      // DIFFERENT game -- the match was reset while this browser was away, and
+      // the indices now point at somebody else's moves. Throw the local copy
+      // out entirely rather than keeping a board that is half one game and half
+      // another; the server is the only thing that knows which is current.
+      const had=histMap.get(i);
+      if(had && had.fen!==r.fen){
+        histMap.clear(); cacheDrop();
+        histEnd=0;
+      }
+      histMap.set(i, r);
+    }
+    i++;
+  }
+  histEnd = Math.max(histEnd, p.next);
+  cacheTouch();
+  return p;
+}
+
+// Agree with the server on where the game ends, once per visit. Aimed with the
+// FEN's own ply count, so the ordinary case is a SINGLE request: asking from the
+// live index returns that one line and a next of index+1, which is the total.
+// An estimate that overshoots is clamped and still answers with the total; only
+// one that undershoots pages forward, and that is bounded.
+//
+// Run even when the cache already claims to know the end, because that claim is
+// about the game as it was last seen. This is the request that catches a reset.
+async function syncEnd(){
+  if(histSynced || histBusy || !room) return;
+  histBusy=true;
+  try{
+    let from = lastFen ? plyFromFen(lastFen) : 0;
+    let serverEnd = 0;
+    for(let guard=0; guard<200; guard++){
+      const p = await loadPage(from);
+      if(!p) break;                       // unpaged server, or a dead reply
+      serverEnd = Math.max(serverEnd, p.next);
+      if(!p.lines.length || p.next<=from) break;
+      from = p.next;
+    }
+    // The end the server reports REPLACES the cached one, rather than being
+    // maxed with it. A cache can legitimately hold plies the server has since
+    // dropped off the front of its ring -- that is the whole point of keeping
+    // it -- but it can never hold plies BEYOND the server's end, because that
+    // would mean the game got shorter, and a game only gets shorter by being
+    // reset. Comparing positions cannot catch that on its own: a reset game
+    // starts from the same opening position as the one it replaced, so index 0
+    // agrees perfectly while every index after it belongs to a dead game.
+    if(serverEnd>0 && serverEnd<histEnd){
+      for(const k of [...histMap.keys()]) if(k>=serverEnd) histMap.delete(k);
+      histEnd = serverEnd;
+      if(ply>=histEnd) ply=-1;
+      cacheTouch();
+    }
+    histSynced = histEnd>0;
+  }catch(e){}finally{ histBusy=false; }
+}
+
+// Make sure index i is in hand. Asks for i ITSELF: a page runs FORWARD from the
+// cursor, so requesting i is the one request guaranteed to contain it, whereas
+// aiming a block behind it and paging forward costs a request per couple of
+// plies before arriving. Being right about which request to make matters more
+// here than fetching a lot in one go.
+async function ensureIndex(i){
+  if(i<0 || histMap.has(i)) return histMap.has(i);
+  if(histBusy) return false;
+  histBusy=true;
+  try{ await loadPage(i); }catch(e){}finally{ histBusy=false; }
+  return histMap.has(i);
+}
+
+// Warm the plies BEHIND the one being shown, off the critical path. A page
+// carries a couple of entries forward, so stepping back two at a time covers
+// the range with no gaps. Nothing awaits this: the position the user asked for
+// is already on the board, and this only decides whether the NEXT click waits.
+let prefetching=false;
+async function prefetchBack(i){
+  if(prefetching) return;
+  prefetching=true;
+  try{
+    const floor=Math.max(histBase, i-HIST_BLOCK);
+    for(let j=i-1, n=0; j>=floor && n<6; j-=2, n++){
+      if(histBusy) break;                       // a real click wants the wire
+      if(histMap.has(j) && histMap.has(j+1)) continue;
+      await loadPage(j);
+    }
+  }catch(e){}finally{ prefetching=false; }
+}
+
+function reviewUi(){
+  const on=(ply>=0), last=histEnd-1;
+  $('rw-fwd').classList.toggle('hidden',!on);
+  $('rw-first').classList.toggle('hidden',!on);
+  $('rw-last').classList.toggle('hidden',!on);
+  $('rw-live').classList.toggle('hidden',!on);
+  // Before the end is agreed, "no earlier position" is not something the client
+  // knows: a spectator arriving at move thirty has one snapshot and twenty-nine
+  // plies waiting on the server. Greying the button out on that reading would
+  // hide the feature from exactly the people who need it, so it stays live
+  // until a sync has established there is nothing there.
+  $('rw-back').disabled = on ? (ply<=histBase) : (histSynced && histEnd<2);
+  $('rw-fwd').disabled  = on && ply>=last;
+  $('rw-first').disabled= on && ply<=histBase;
+  $('rw-last').disabled = on && ply>=last;
+  $('ply').textContent = on ? (ply+' / '+last) : '';
+  boardEl.classList.toggle('review',on);
+}
+
+// async: the position may not be in hand, and fetching it is the point. The
+// board is left exactly as it was until the position IS in hand, so a fetch
+// that fails changes nothing rather than blanking it.
+async function showPly(i){
+  const want=Math.max(histBase,Math.min(histEnd-1,i));
+  if(!histMap.has(want)){
+    $('ply').textContent='loading…';
+    if(!await ensureIndex(want)){ flash('could not load that position'); reviewUi(); return; }
+  }
+  const h=histMap.get(want);
+  if(!h){ reviewUi(); return; }
+  ply=want;
+  prefetchBack(want);          // deliberately not awaited
+  draw(h.fen);
+  if(h.uci&&h.uci!=='-'&&h.uci.length>=4) highlightLast(h.uci.slice(2,4)); else clearLast();
+  statusEl.className='review';
+  statusEl.textContent=(ply===0?'starting position'
+                        :((h.uci&&h.uci!=='-'&&!h.uci.startsWith('??')) ? 'after '+h.uci : 'move '+ply))
+                       +' — '+(histEnd-1-ply)+' behind the live board';
+  reviewUi();
+}
+
+// quiet: leave the drawing to the caller. Used by the poll path, which is about
+// to draw the newly arrived position anyway -- without it the board would be
+// painted twice in one tick, the first time with the previous move's highlight,
+// which reads as a flicker.
+// quiet is an INTERNAL flag, and must never be reached from an event handler:
+// see the wiring of #rw-live below for what happens when it is. Read as a
+// strict boolean so a stray event object cannot be mistaken for one.
+function goLive(quiet){
+  quiet = (quiet === true);
+  ply=-1;
+  reviewUi();
+  if(quiet) return;
+  if(lastFen){ draw(lastFen); const h=histMap.get(histEnd-1);
+               if(h&&h.uci!=='-'&&h.uci.length>=4) highlightLast(h.uci.slice(2,4)); }
+  statusEl.className=''; statusEl.textContent='live';
+  refreshStatus();
+}
+
+async function stepBack(){
+  // Fetched lazily, on the first press rather than on entering the room: most
+  // visits never open the review pane at all, and this is one request that
+  // would otherwise be paid by every one of them.
+  if(!histSynced) await syncEnd();
+  if(histEnd<2){ flash('no earlier position to show'); reviewUi(); return; }
+  await showPly(ply<0 ? histEnd-2 : ply-1);
+}
+
+$('rw-back').onclick=stepBack;
+$('rw-fwd').onclick=()=>{ if(ply>=0&&ply<histEnd-1) showPly(ply+1); };
+$('rw-first').onclick=()=>showPly(histBase);
+$('rw-last').onclick=()=>showPly(histEnd-1);
+// Wrapped, NOT passed directly: an onclick handler is called with the MouseEvent
+// as its first argument, so `onclick=goLive` invoked goLive(event) -- and event
+// is truthy, so it took the `quiet` path, which exists to SKIP the redraw for
+// the poll that is about to draw the new position itself. Pressing Live
+// therefore un-greyed the board and left the reviewed position sitting on it,
+// so the next click sent a move read off squares the pieces were no longer on.
+$('rw-live').onclick=()=>goLive();
+
+// Arrow keys, but never while the chat box or a text field has focus -- typing
+// "e4" into chat must not also rewind the board.
+document.addEventListener('keydown',ev=>{
+  if(!room) return;
+  const t=ev.target;
+  if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA')) return;
+  if(ev.key==='ArrowLeft')  { ev.preventDefault(); stepBack(); }
+  else if(ev.key==='ArrowRight'){ ev.preventDefault(); if(ply>=0&&ply<histEnd-1) showPly(ply+1); }
+  else if(ev.key==='Home')  { if(ply>=0){ ev.preventDefault(); showPly(histBase); } }
+  else if(ev.key==='End')   { if(ply>=0){ ev.preventDefault(); showPly(histEnd-1); } }
+  else if(ev.key==='Escape'){ if(ply>=0){ ev.preventDefault(); goLive(); } }
+});
 
 // ── Game over ────────────────────────────────────────────────────────────────
 // Driven off the POLLED status so both sides see it: the player delivering mate
@@ -377,16 +825,63 @@ $('over-new').onclick=async()=>{
   try{
     const t=(await get(api('reset'))).trim();
     hideGameOver();
-    if(isFen(t)){ lastFen=t; draw(t); }
+    // The server drops its history on reset, so the client must too -- a back
+    // arrow that walked into the PREVIOUS game would be showing positions that
+    // are not on this board's line at all.
+    histMap.clear(); cacheDrop(); histBase=0; histEnd=0; ply=-1; histSynced=false;
+    clearLast(); reviewUi();
+    if(isFen(t)){ lastFen=t; noteLive('',t); draw(t); }
     statusEl.className=''; statusEl.textContent='new game';
     await refreshStatus(); await refreshMe();
   }catch(e){ flash('reset failed: '+e); }
 };
 
 // ── Game polling ─────────────────────────────────────────────────────────────
+// Which square a move ENDED on, recovered by diffing two positions. Only needed
+// for moves this client did not make -- its own go through move(), which knows
+// the uci outright. A castle changes four squares and a capture changes two, so
+// "the changed square that is now occupied" is ambiguous; the king is preferred
+// because it is the piece that identifies a castle, and otherwise the first
+// such square is taken, which is right for every ordinary move and cosmetically
+// wrong at worst.
+function detectLastMove(oldFen, newFen){
+  const expand = f => f.split(' ')[0].split('/').join('').replace(/\d/g, d => ' '.repeat(+d)).split('');
+  const o = expand(oldFen), n = expand(newFen);
+  let to = -1;
+  for(let i = 0; i < 64; i++){
+    if(o[i] !== n[i] && n[i] !== ' '){
+      if(n[i]==='K'||n[i]==='k'){ to=i; break; }
+      if(to===-1) to=i;
+    }
+  }
+  if(to<0) return '';
+  return 'abcdefgh'[to%8]+(8-Math.floor(to/8));
+}
+
 async function refreshFen(){
-  try{ const f=(await get(api('fen'))).trim();
-       if(isFen(f)&&f!==lastFen){ lastFen=f; draw(f); } }catch(e){}
+  try{
+    const f=(await get(api('fen'))).trim();
+    if(!isFen(f)||f===lastFen) return;
+    const prev=lastFen;
+    lastFen=f;
+    const to=prev?detectLastMove(prev,f):'';
+    // '??'+to rather than a real uci: the FROM square is genuinely unknown here
+    // and inventing one would put a wrong move in the review list. Only the
+    // destination is used, and showPly reads it from slice(2,4).
+    noteLive(to?('??'+to):'', f);
+    // A live board follows the game; a reviewed one does not, by definition.
+    // lastFen is still updated above so pressing Live lands on the CURRENT
+    // position rather than on whatever was live when review started.
+    // A move landing SNAPS the reviewer back to the live board. Deliberate,
+    // and the opposite of leaving them where they were: while you are looking
+    // at move six the game is not waiting for you, and the thing you need to
+    // see the instant it happens is the move that was just played. The flash
+    // is what makes the jump legible rather than jarring -- the board changes
+    // and the square that caused it is already pulsing.
+    if(ply>=0) goLive(true);
+    draw(f);
+    if(to) highlightLast(to,true);
+  }catch(e){}
 }
 
 // "side state role wSeat bSeat drawoffer" -- one request tells the client
@@ -426,8 +921,10 @@ async function refreshStatus(){
 
     roleEl.textContent='['+TOKEN+'] role: '+role+
       (wSeat?'  white:'+wSeat:'')+(bSeat?'  black:'+bSeat:'');
-    if(statusEl.className!=='bad')
-      statusEl.textContent=(side==='w'?'white':'black')+' to move — '+state;
+    // ply>=0 owns the status line while reviewing: it is the caption for the
+    // board being shown, and "white to move" would describe a different board.
+    if(statusEl.className!=='bad' && ply<0)
+      statusEl.textContent=(side==='w'?'white':'black')+' to move'+(state!=='ok'?' — '+state:'');
 
     if(state==='checkmate'||state==='stalemate'||state==='draw'||state.startsWith('resign'))
       showGameOver(state,side);
@@ -435,23 +932,141 @@ async function refreshStatus(){
   }catch(e){}
 }
 
-async function refreshChat(){
-  try{
-    const log = await get(api('chat'));
-    const bottom = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4;
+// The log carries two kinds of line now: speech, "<self>: <text>", and the
+// server's own narration, marked with a leading "* ". Rendered as one element
+// per line rather than as one blob of text, which is what lets narration be
+// styled at all -- and textContent per line, never innerHTML, because every
+// line contains client-supplied text.
+//
+// Compared against a REMEMBERED string rather than against the DOM: reading
+// chatEl.textContent back to diff it would concatenate the lines without the
+// newlines that separated them, so the comparison never matched and the pane
+// was rebuilt on every single poll -- which is also what kept losing the
+// selection when someone tried to copy a line.
+// ── Paging ───────────────────────────────────────────────────────────────────
+// A route's whole reply is one ETCS::Buffer, and TBuffer::writeString calls
+// reset() BEFORE its capacity check -- so an oversized reply does not come back
+// clipped, it comes back EMPTY. That is why the chat blanked the moment the log
+// filled the pane: those are the same moment, and crossing the line deletes the
+// response rather than shortening it.
+//
+// So chat and history are read in pages: "<base> <next>" then whole lines.
+// base is the absolute index of the oldest line the server still holds, next
+// the index to ask for after this one. Absolute indices rather than a count
+// because the server's rings drop from the front, and a client reading at 40
+// has to be able to tell "nothing new" from "the 40 you had are gone".
+function parsePage(t){
+  const nl=t.indexOf('\n');
+  if(nl<0) return null;
+  const m=/^(\d+) (\d+)$/.exec(t.slice(0,nl));
+  if(!m) return null;
+  return { base:+m[1], next:+m[2], lines:t.slice(nl+1).split('\n').filter(Boolean) };
+}
 
-    if (log !== chatEl.textContent) {
-      chatEl.textContent = log;
-      if (bottom) chatEl.scrollTop = chatEl.scrollHeight;
+let chatSeen=null, chatLines=[], chatFrom=0;
+
+// In-flight guards. chatFrom is a CURSOR the reply advances, so two overlapping
+// reads both fetch from the same index and both append what they get -- every
+// line twice. tick()'s own `ticking` flag does not cover this, because the
+// second caller is not a tick: sending a message pulls the log immediately so
+// the sender sees their own line without waiting a beat, and that pull can land
+// on top of a poll already in the air.
+let chatBusy=false, histBusy=false;
+
+function chatLine(text){
+  const d=document.createElement('div');
+  if(text.startsWith('* ')){ d.className='sys'; d.textContent=text.slice(2); }
+  else d.textContent=text;
+  return d;
+}
+
+// APPENDS when the log has only grown, and only rebuilds when it has not.
+//
+// Rebuilding every time was the bug: narration means the log now changes on
+// every move and every arrival rather than only when somebody speaks, and a
+// rebuild resets scrollTop to zero. Anyone scrolled up reading was thrown back
+// to the top a second later, which made the pane unusable exactly when it had
+// the most in it -- and it destroyed any in-progress text selection with it.
+//
+// The log is a bounded ring on the server, so once it is full the oldest line
+// drops and the new log is NOT an extension of the old one. That is the case
+// the prefix test catches, and the only case that still needs a full rebuild;
+// scroll position is preserved across it by hand.
+function renderChat(log){
+  const next = log.split('\n').filter(Boolean);
+  const pinned = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4;
+
+  let grown = next.length >= chatLines.length;
+  if(grown) for(let i=0;i<chatLines.length;i++)
+    if(chatLines[i]!==next[i]){ grown=false; break; }
+
+  if(grown){
+    for(let i=chatLines.length;i<next.length;i++) chatEl.appendChild(chatLine(next[i]));
+  } else {
+    const keep = chatEl.scrollTop;
+    chatEl.textContent='';
+    for(const l of next) chatEl.appendChild(chatLine(l));
+    chatEl.scrollTop = keep;
+  }
+
+  chatLines=next; chatSeen=log;
+  // Follow the tail only for a reader who was already at it. Someone scrolled
+  // up has said, by scrolling up, that they are reading something else.
+  if(pinned) chatEl.scrollTop=chatEl.scrollHeight;
+}
+
+function appendChat(ls){
+  const pinned = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4;
+  for(const l of ls){ chatEl.appendChild(chatLine(l)); chatLines.push(l); }
+  if(pinned) chatEl.scrollTop=chatEl.scrollHeight;
+}
+
+async function refreshChat(){
+  if(chatBusy) return;
+  chatBusy=true;
+  try{
+    // Loops rather than taking one page per poll. In the steady state that is a
+    // single request -- the second finds nothing new and stops -- but a client
+    // arriving at a conversation already in progress is many pages behind, and
+    // one page per second would spend ten seconds visibly dribbling the
+    // backlog in. Bounded so a runaway log cannot pin the connection.
+    for(let round=0; round<16; round++){
+      const t = await get(api('chat', String(chatFrom)));
+      // An empty body is NOT an empty log. It is what an over-long reply looks
+      // like on the way out, and what a dropped request looks like on the way
+      // back. Either way the right move is to leave the pane alone -- blanking
+      // it on a bad poll is the bug this whole path exists to fix.
+      if(!t) return;
+
+      const p = parsePage(t);
+      // No header means a server that predates paging: the body is the whole
+      // log, so render it wholesale. Keeps a new page working against an old
+      // binary instead of showing nothing.
+      if(!p){ if(t !== chatSeen) renderChat(t); return; }
+
+      if(p.base > chatFrom){
+        // The ring dropped lines this client never read. Say so rather than
+        // stitching the gap invisibly -- a conversation with a silent hole in
+        // it reads as a conversation that did not happen.
+        chatEl.textContent=''; chatLines=[]; chatFrom=p.base;
+        if(p.base>0) chatEl.appendChild(chatLine('* earlier messages dropped'));
+      }
+      if(p.lines.length) appendChat(p.lines);
+      if(p.next<=chatFrom) break;          // nothing new, or a stuck cursor
+      chatFrom = p.next;
+      if(!p.lines.length) break;
     }
-  } catch (e) {}
+  } catch (e) {} finally { chatBusy=false; }
 }
 
 sayEl.addEventListener('keydown',async ev=>{
   if(ev.key!=='Enter'||!sayEl.value.trim()) return;
   const t = sayEl.value.trim().replace(/%/g, '%20');   // <--- this is the % token fix
   sayEl.value = '';
-  try{ chatEl.textContent=await get(api('say',t)); }catch(e){}
+  // say answers "OK" now rather than echoing the whole log back -- that echo
+  // was the single largest reply this client ever asked for. Pull the new line
+  // in through the ordinary paged path instead.
+  try{ await get(api('say',t)); await refreshChat(); }catch(e){}
   chatEl.scrollTop=chatEl.scrollHeight;
 });
 
@@ -477,6 +1092,11 @@ $('rename').addEventListener('change',()=>{
   const v=$('rename').value.trim();
   if(!v||/[\/\s]/.test(v)) { $('rename').value=''; return; }
   if(locked) return;
+  // The seat is held by the TOKEN, so renaming mid-match abandons the old name
+  // in the chair -- visible to everyone else as a seat held by a player who no
+  // longer exists, for the full grace period. Leave under the old name first;
+  // the next poll re-enters as the new one, and reclaims the seat by moving.
+  sendLeave();
   TOKEN=v; setCookie(COOKIE,TOKEN,365); localStorage.setItem('ace_chess_token',TOKEN);
   $('rename').value=''; $('me').textContent=TOKEN; syncUrl(); tick();
 });
@@ -563,22 +1183,57 @@ function syncUrl(){
   if(qs.get('as')) p.set('as',TOKEN);
   history.replaceState(null,'',location.pathname+(p.toString()?'?'+p:''));
 }
+// ── Departure ────────────────────────────────────────────────────────────────
+// HTTP has no disconnect signal, so the server infers presence from polling and
+// releases an idle seat after thirty seconds. That grace is right for the cases
+// it was built for -- a crashed tab, a closed laptop, a dropped connection --
+// and wrong for the one case the client can actually see coming: someone
+// deliberately leaving. Saying so turns "the seat frees up eventually" into
+// "the seat is free", which is the difference between the next arrival being
+// told the room is full by a player who already left and simply sitting down.
+//
+// keepalive rather than sendBeacon: the verb is a GET, and sendBeacon can only
+// POST. keepalive is exactly the same promise -- the request outlives the
+// document -- on the method this API actually speaks. Fire and forget: there is
+// no page left to show an error to, and the reaper still covers the failure.
+function sendLeave(){
+  if(!room) return;
+  const u=api('leave');
+  try{ fetch(u,{keepalive:true,cache:'no-store'}).catch(()=>{}); }catch(e){}
+}
+
 function enterRoom(m){
   room=m; syncUrl();
   $('home').classList.add('hidden'); $('game').classList.remove('hidden');
   $('to-home').classList.remove('hidden'); $('here').textContent=matchUrl(m);
   lastFen=''; myRole='viewer'; myTurn=false; hideGameOver();
+  // Review state belongs to a match, not to the tab: carrying one game's
+  // positions into the next one would let the back arrow walk out of the game
+  // being watched and into a finished one.
+  histMap=new Map(); histBase=0; histEnd=0; ply=-1; histSynced=false;
+  chatSeen=null; chatLines=[]; chatFrom=0; chatEl.textContent='';
+  cacheLoad(m);
+  clearLast(); reviewUi();
   statusEl.className=''; statusEl.textContent='joining '+m+'…';
   draw('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
   tick();
 }
 function leaveRoom(){
+  sendLeave();                 // BEFORE room is cleared -- api() reads it
   room=null; syncUrl();
   $('game').classList.add('hidden'); $('home').classList.remove('hidden');
   $('to-home').classList.add('hidden'); $('here').textContent='';
+  cacheFlush(); histMap=new Map(); histBase=0; histEnd=0; ply=-1; histSynced=false;
+  cacheKey=null; boardEl.classList.remove('review');
   hideGameOver(); tick();
 }
 $('to-home').onclick=leaveRoom;
+
+// pagehide, not visibilitychange: switching tabs is not leaving, and dropping a
+// seat because someone looked at their email mid-game would be worse than the
+// problem this fixes. pagehide covers the close, the reload and the navigation
+// away, which are the departures the client can be sure of.
+window.addEventListener('pagehide',()=>{ cacheFlush(); sendLeave(); });
 
 // One timer dispatching on the current view. Home polls at half rate: it is four
 // requests, none of them urgent, and none of them heartbeat a match -- listing
