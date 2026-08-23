@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ETCS — Entity Tag Component System</title>
+<style>
+  :root { --light:#e8e2d5; --sel:#c9b458; --ink:#1c1c1a;
+          --bg:#14150f; --panel:#1b1c14; --line:#3b3d31; --dim:#8d907c;
+          --ok:#8fbf7a; --warn:#d4a24f; --bad:#d4674f; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--light);
+         font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+           padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel);
+           position:sticky; top:0; z-index:10; }
+  .brand { color:var(--sel); letter-spacing:.12em; text-decoration:none; }
+  .brand:hover { text-decoration:none; color:var(--sel); }
+  .spacer { flex:1; }
+  .meta { color:var(--dim); font-size:11px; letter-spacing:.04em; }
+  main { padding:28px 16px 60px; max-width:820px; margin:0 auto; }
+  /* Title block */
+  .doc-title { margin:8px 0 4px; font-size:22px; font-weight:normal; color:var(--sel);
+               letter-spacing:.06em; line-height:1.3; }
+  .doc-sub { color:var(--dim); font-size:13px; margin:0 0 6px; line-height:1.4; }
+  .doc-by { color:var(--dim); font-size:12px; margin:0 0 28px; }
+  .doc-by span { color:var(--light); }
+  hr.rule { border:none; border-top:1px solid var(--line); margin:28px 0; }
+  /* Headings */
+  h1 { font-size:16px; font-weight:normal; color:var(--sel); letter-spacing:.1em;
+       text-transform:uppercase; margin:36px 0 14px; padding-bottom:6px;
+       border-bottom:1px solid var(--line); }
+  h1.doc-title { font-size:22px; text-transform:none; letter-spacing:.06em;
+                 margin:8px 0 4px; padding:0; border:none; line-height:1.3; }
+  h2 { font-size:14px; font-weight:normal; color:var(--sel); margin:28px 0 10px;
+       letter-spacing:.04em; }
+  h3 { font-size:13px; font-weight:normal; color:var(--warn); margin:22px 0 8px;
+       letter-spacing:.03em; }
+  h4 { font-size:12px; font-weight:normal; color:var(--dim); margin:18px 0 6px;
+       letter-spacing:.06em; text-transform:uppercase; }
+  /* Body */
+  p { margin:0 0 12px; }
+  strong { color:var(--light); font-weight:normal; }
+  em { font-style:italic; color:var(--light); }
+  a { color:var(--sel); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  ul, ol { margin:0 0 14px; padding-left:1.4em; }
+  li { margin-bottom:4px; }
+  /* Tables */
+  table { width:100%; border-collapse:collapse; font-size:12px; margin:14px 0 18px;
+          table-layout:auto; }
+  th { text-align:left; color:var(--dim); font-weight:normal; font-size:11px;
+       letter-spacing:.06em; text-transform:uppercase;
+       border-bottom:1px solid var(--line); padding:7px 8px; vertical-align:top; }
+  td { padding:7px 8px; border-bottom:1px solid #24261c; vertical-align:top;
+       word-break:break-word; }
+  tr:hover td { background:#1e1f16; }
+  colgroup col { width:auto !important; }
+  /* Code */
+  code { font-family:inherit; font-size:12px; color:var(--sel);
+         background:var(--panel); padding:1px 4px; border:1px solid var(--line); }
+  pre { background:var(--panel); border:1px solid var(--line); padding:12px 14px;
+        overflow-x:auto; margin:12px 0 16px; font-size:12px; line-height:1.45; }
+  pre code { background:none; border:none; padding:0; color:var(--light); }
+  /* Math */
+  .math.display { display:block; text-align:center; margin:16px 0; color:var(--warn);
+                  font-size:13px; letter-spacing:.02em; }
+  .math.inline { color:var(--warn); }
+  /* Blockquote if any */
+  blockquote { margin:12px 0; padding:8px 14px; border-left:2px solid var(--line);
+               color:var(--dim); }
+  /* Glossary / directory polish */
+  #glossary + table td:first-child,
+  table td:first-child { color:var(--sel); }
+  /* Footer */
+  footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--line);
+           color:var(--dim); font-size:11px; letter-spacing:.04em; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" class="brand">ETCS</a>
+  <span class="meta">Entity Tag Component System</span>
+  <span class="spacer"></span>
+  <span class="meta">Confidential Pre-Release — 2026</span>
+</header>
+<main>
+  <h1 class="doc-title">ETCS — Entity Tag Component System</h1>
+  <p class="doc-sub">A Unified Causal Substrate for Secure, Extensible, and Ontology-First Computing</p>
+  <p class="doc-by"><span>Anticurrent Entropy Inc.</span> · Confidential Pre-Release — 2026</p>
+  <hr class="rule">
+  <h1 id="abstract">Abstract</h1>
+  <p>ETCS (Entity Tag Component System) is a systems substrate in which type identity, ABI contract, capability boundary, and causal graph are a single unified compile-time artifact. Built on CRTP-based static dispatch with a materially instantiated ontology tag stack, ETCS eliminates the traditional separation between design-time type hierarchies and runtime execution models. Access control is structural rather than enforced: a capability does not exist unless the corresponding header is present in a module's compilation unit. Because the etcs causal-trace language is expressly not Turing-complete, causal paths through any module are finite and enumerable by construction a property of the language's grammar rather than of testing coverage and a dual-stage exhaustion pipeline, now in development, will hash-certify that enumerated space prior to module admission. The result is a system in which security, extensibility, ABI stability, and ontological coherence are consequences of a single architectural decision rather than independently maintained properties. ETCS is the substrate underlying the ACE platform (Anticurrent Entropy Inc.), with Vale as its game engine component. The system carries driver-layer ambitions and is distributed under an LGPL ontology and core, with a proprietary-but-free runtime.</p>
+  <h1 id="motivation">1. Motivation</h1>
+  <h2 id="the-accretion-problem">1.1 The Accretion Problem</h2>
+  <p>Most software systems are built by accretion. A practical decision here, a library choice there, a workaround that becomes load-bearing. The consequence is that type systems, ABI contracts, access control policies, and execution graphs are separate artifacts maintained in parallel. They diverge over time, require translation layers between them, and produce security surfaces at every boundary. Polymorphism incurs runtime overhead. ABI contracts are fragile across version boundaries. Access control is a policy applied after the fact rather than a structural property of the system.</p>
+  <p>ETCS was not designed to solve these problems individually. It was derived from a more fundamental question: what is the minimal sufficient form of a computing substrate such that identity, capability, causality, and extensibility are the same property expressed at different scales?</p>
+  <h2 id="the-generative-approach">1.2 The Generative Approach</h2>
+  <p>The answer is an ontology-first architecture in which the conceptual hierarchy and the compile-time type machinery are identical artifacts. The system does not map a design model onto an implementation. The design model is the implementation. Every property of the system follows from this single commitment.</p>
+  <h1 id="architecture">2. Architecture</h1>
+  <h2 id="the-ontology-as-type-system">2.1 The Ontology as Type System</h2>
+  <p>The ETCS ontology is a directed acyclic hierarchy of types organized into lineages. Each lineage represents a conceptual domain: Database, Network, Renderer, InputDevice, and so forth. Within each lineage, types are progressively specialized: Database -> LocalDatabase -> SQLiteDatabase. A leaf type such as SQLiteDatabase is a concrete realization of its entire lineage.</p>
+  <p>Critically, this hierarchy does not exist only at design time and evaporate into a vtable at runtime. The full lineage is materially present on every leaf instance as an instantiated tag stack. The hierarchy is not scaffolding that produces a flat runtime structure. It is a permanent property of every instance.</p>
+  <h2 id="crtp-proxy-leaves-and-static-dispatch">2.2 CRTP Proxy Leaves and Static Dispatch</h2>
+  <p>Every leaf type in the ETCS ontology is a CRTP (Curiously Recurring Template Pattern) proxy. CRTP provides static polymorphism without virtual dispatch: the entire type relationship is resolved at compile time, producing direct function invocations with zero runtime indirection. There are no vtables, no dynamic casts, no type erasure.</p>
+  <p>A caller holding a Database tag invokes the concrete SQLiteDatabase implementation directly through the Database interface. The function being called is always the leaf's implementation. The tag stack determines which subset of that implementation's surface is nameable from a given vantage point, not which function executes.</p>
+  <p>The tag stack is not a vtable chain. It is a set of typed views onto a single function table, where the view determines what is nameable but not what executes.</p>
+  <h2 id="hash-identity-and-type-ownership">2.3 Hash Identity and Type Ownership</h2>
+  <p>Each type in the ETCS ontology carries a hash that serves as its identity. This hash is defined by the type provider module itself, not by an external registry or runtime type system. Two properties follow:</p>
+  <p>The hash for a given type is constant regardless of runtime instance -- SQLiteDatabase always has the same hash. Two types that share an identical method surface at some abstraction level are nonetheless distinct: Database and LocalDatabase expose the same methods but have different hashes because they are different types.</p>
+  <p>Identity is therefore absolute and module-owned. No two types are the same regardless of shared interface surface. The type provider is the sole authority on identity, and this authority is stable across DLL, shared object, WebAssembly, and process boundaries without requiring a shared runtime type system.</p>
+  <h2 id="the-lmax-causal-buffer">2.4 The LMAX Causal Buffer</h2>
+  <p>Inter-module communication in ETCS is mediated by an LMAX-style ring buffer that enforces strict causal ordering across the runtime DAG. This buffer is not merely a performance optimization. It is the mechanism that makes the (entity, data, context) call primitive compose identically across thread, DLL, process, and network boundaries.</p>
+  <p>The causal ordering semantics of the buffer define a partial order over all inter-module events. A cross-module dependency cycle would require an event to precede itself in this partial order, which is inexpressible in the primitive. The DAG structure of the module graph is therefore not a maintained invariant or a validated constraint. It is a consequence of what the transport layer can represent.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Boundary</th>
+        <th>Mechanism</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>In-thread call</td>
+        <td>LMAX primitive, local queue</td>
+      </tr>
+      <tr>
+        <td>Cross-DLL call</td>
+        <td>LMAX primitive, shared buffer</td>
+      </tr>
+      <tr>
+        <td>IPC</td>
+        <td>LMAX primitive, pipe-backed</td>
+      </tr>
+      <tr>
+        <td>Network</td>
+        <td>LMAX primitive, serialized</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>All four are the same abstraction. Location transparency is not a feature added on top of the architecture. It is the natural form of a system where the causal primitive is uniform.</p>
+  <h2 id="the-two-ordering-mechanisms">2.5 The Two Ordering Mechanisms and Their Duality</h2>
+  <p>ETCS expresses causal ordering at two distinct scales, which are complementary and non-interfering.</p>
+  <p>Compile-time causal ordering is expressed through the GapReorderBuffer's bitmask dependency matrix. Each type provider owns a local EventStream with a 64-slot ring and a 64x64-bit blocked-by matrix. Every event carries a tag_closure_mask encoding which causal domains it touches. When a new event arrives, its mask is intersected against all in-flight events if no intersection exists, the event passes through at full LMAX throughput. If an intersection exists, the event is held until its blocking predecessor drains. The matrix is bounded to 64 slots because a single type provider's lineage is bounded by the ontology, and 64 is generous for any realistic provider. The entire matrix fits in L1 cache.</p>
+  <p>Runtime causal ordering is expressed through the produce/consume work function pairs that connect providers across module boundaries. These are explicit, typed declarations of cross-provider causal relationships. The consumer's local EventStream sees cross-provider events arrive sequentially through the ring, providing natural serialization at every boundary. By the transitivity of the chain, global causal ordering is maintained without any global coordination mechanism.</p>
+  <p>The compile-time mechanism handles the closed world of a single provider's type space. The runtime mechanism handles the open world of arbitrary cross-provider topology. The produce/consume pairing constraint is what keeps them from needing to know about each other.</p>
+  <p>The only event class that requires global coordination outside this duality is memory topology change module creation and deletion. This is handled exclusively by the loader, which is the single authority for topology mutations. All other ordering requirements are fully covered by the two mechanisms above.</p>
+  <h2 id="cycle-containment">2.6 Cycle Containment</h2>
+  <p>ETCS modules are locally cyclic, isolated state machines. Each module owns its compute, memory, and scheduling. Internal cycles are unrestricted. External inter-module interaction is strictly mediated through the LMAX buffer, making cross-module cycles structurally inexpressible (via time/decoherence wave front) rather than merely disallowed.</p>
+  <p>This separation gives the system a property that is difficult to achieve through conventional means: high local dynamism combined with global causal reasonability. Modules can implement arbitrarily complex internal state machines while the system-level causal graph remains a DAG.</p>
+  <h1 id="structural-access-control">3. Structural Access Control</h1>
+  <h2 id="capability-as-header-inclusion">3.1 Capability as Header Inclusion</h2>
+  <p>The most architecturally significant property of ETCS is that capability and dependency are the same concept. A module can interact only with types whose headers are present in its compilation unit. If a header is absent, the type does not exist in that compilation unit -- the reference simply does not exist.</p>
+  <p>This is not access control in the conventional sense. Conventional access control is a positive claim: this principal has permission X. The attack surface is the permission-granting mechanism. ETCS access control is a negative space: a module can only operate on what it has explicitly declared a dependency on. There is no permission to forge, no token to steal, no escalation path that does not require modifying the build itself.</p>
+  <p>The build graph is the coupling graph. The compilation graph is the security graph. The dependency graph is the authority graph. These are not parallel artifacts. They are the same artifact.</p>
+  <h2 id="compile-time-enforcement">3.2 Compile-Time Enforcement</h2>
+  <p>This pushes access control to the earliest possible point in the software lifecycle not runtime, not link time, not type checking, but the preprocessor. Before a single type is resolved, the vocabulary of what a module can express is fixed by its include graph.</p>
+  <p>The security implication is significant. A third-party module author can interact only with types whose headers were distributed to them. The set of types accessible to a module is determined at the moment the SDK is handed over, not at the moment the module executes. The trust boundary is header distribution.</p>
+  <h2 id="ontological-absence-vs-filtering">3.3 Ontological Absence vs. Filtering</h2>
+  <p>A module that does not hold a given tag does not see the corresponding type as restricted. It does not see it at all. Inaccessible content is ontologically absent rather than filtered. This distinction has security consequences: there is no filter to bypass, no audit gap between should not access and cannot access.</p>
+  <h2 id="extension-to-ai-action-confinement">3.4 Extension to Al Action Confinement</h2>
+  <p>The ontological-absence property described above is not specific to human-authored modules. Any caller driving the ETCS call interface including a third-party Al system issuing .etcs traces, or the ETCS-native Al planned for the platform is confined to the same header-bounded, non-Turing-complete action space as any other module. The caller does not merely have its actions restricted after the fact; it cannot express an action outside its granted ontology, for the identical structural reason a conventional module cannot: the reference does not exist.</p>
+  <p>This has a direct consequence for explainability. Because the action space available to any caller is finite and typed by construction (Sections 2.1, 3.1, 4.1), an Al system operating through ETCS produces traces drawn from the same closed set the causal exhaustion pipeline is designed to enumerate for any other module (Section 4). Explainability here is not a logging or interpretability layer added on top of the agent's behavior. It is a property of the substrate the agent is confined to, identical in kind to the access-control guarantee described in Section 3.1 and, like the certification pipeline itself, its full exhaustion tooling is target infrastructure rather than deployed today (Section 9).</p>
+  <p>Anticurrent Entropy Inc. intends to apply this same mechanism to a planned ETCS-native Al, whose action surface would be governed by the ontology and exhaustion machinery described throughout this document rather than a separate, purpose-built safety layer.</p>
+  <h2 id="the-loader-as-the-locus">3.5 The Loader as the Locus of Guarantee, Not the Open Interface</h2>
+  <p>ETCS is usefully understood as three separable things. The distributed runtime -- the compiled loader binary Anticurrent Entropy Inc. builds and gives away free of charge, embedding the operator signing key and performing the manifest hash verification described in Section 9 -- is proprietary but free: available to anyone at no cost, but not itself released under LGPL. CORE, the header-only interface defining entities, arenas, the event and signal machinery, and the loading contract itself, is LGPL, maintained by Anticurrent Entropy Inc. under the ACE guild, and is a precondition for building either a loader or a conforming module. ONTOLOGY, the trait and type hierarchy a module declares conformance to (Section 2.1), is likewise LGPL and maintained under the same guild, and is required specifically to write a module rather than a bare loader.</p>
+  <p>Throughout this document, the ACE guild refers to the set of holders of currently participating worker-tier stock in the ACE ecosystem (Section 6.5) -- primarily developers who have earned that stock by converting a module's list price under Section 6.4, and who share in the annual worker-pool distribution for as long as they hold stock still within its participation window. Guild membership is thus a live property of currently held, still-locked worker-tier stock rather than a permanent title: a holder ages out of it as their stock converts to ordinary shareholder equity at the end of its lock (Section 6.5) and ceases to participate in the pool. This is a governance-and-equity term specific to Anticurrent Entropy Inc.; it is unrelated to any in-fiction "guild" mechanic in the Vale narrative world described in the accompanying philosophy paper.</p>
+  <p>Because CORE is openly published and sufficient, on its own, to specify what a loader must honor, any technically competent party can write an independent loader against it not by forking Anticurrent Entropy Inc.'s own loader source, which is not released, but by building fresh against the same open interface. The bar for "is technically a loader" is low: a bare entry point and the CORE headers are enough to begin instantiating entities and running modules against the shared ontology, however far short such a thing would fall of the hardened, hash-verifying, sandbox-interposing binary this document describes.</p>
+  <p>Such an independently built loader is not a security hole in the system this document describes. It is a different, unguaranteed system that happens to share an open interface. It can load ETCS-conformant modules -- the modules themselves are unchanged -- but it carries none of the structural-access-control, hash-attestation, or causal-certification properties described above, because those properties belong to the specific, key-bearing, verifying runtime Anticurrent Entropy Inc. builds and distributes, not to the openly published interface any implementation of a loader must satisfy.</p>
+  <p>This is the defensibility argument of Section 6.8 applied one layer down: the asset was never the code, open or otherwise. An independently built loader sits entirely outside the trust graph this document describes, in the same way any independently written software does -- built against an openly published interface, and structurally unrelated to the guarantees made here.</p>
+  <p>For a reader of this document: "ETCS" the distributed runtime refers to the specific proprietary-but-free binary carrying Anticurrent Entropy Inc.'s guarantees. "ETCS" the open interface CORE and ONTOLOGY together is LGPL and, considered alone, guarantees nothing beyond defining what any conforming implementation must honor. Both are correctly called ETCS. Only one of them is what Sections 2-4 describe.</p>
+  <h1 id="causal-exhaustion">4. Causal Exhaustion and Module Certification</h1>
+  <h2 id="the-source-of-decidability">4.1 The Source of Decidability: A Non-Turing-Complete Causal Language</h2>
+  <p>Causal exhaustion is possible because of what is exhausted, not because of how much compute is thrown at exhausting it. A type-providing module is written in ordinary C++: Turing-complete, capable of arbitrary internal logic, unconstrained in how a developer implements the behavior behind a given tag's actions. Exhaustion does not attempt to enumerate the reachable states of that C++ implementation, which would be undecidable in general.</p>
+  <p>What is exhausted instead is the space of etcs causal traces expressible against a module's declared ontology surface its tags and the actions those tags expose. The etcs language is deliberately not Turing-complete. It has no branches, no loops, and no mutable variables in the conventional sense: role names are fixed slots that bind to entity instances, not variables that can accumulate unbounded computed state. Concurrency is expressed through exactly one structural primitive, the produce/consume pair, whose two sides have symmetric and bounded lifetimes rather than arbitrary asynchronous composition.</p>
+  <p>These restrictions are what make the trace space finite by construction. A language that cannot express unbounded branching, iteration, or state accumulation cannot express an unbounded causal trace, regardless of how large or complex the module behind it is. Exhaustion enumerates a closed, finite space not because coverage happened to be complete, but because the space could not have been otherwise.</p>
+  <p>Type-providing modules are Turing-complete and developer-authored. The causal traces run against them are not. Decidability is a property of the etcs grammar, not a claim about the modules it addresses.</p>
+  <h2 id="the-admission-operator">4.2 The Admission Operator</h2>
+  <p>Module admission in ETCS is governed by an operator C that maps a module and the current ontology state to either an updated ontology state or rejection:</p>
+  <div class="math display">C : (U<sub>i</sub>, AO<sub>i</sub>) → U<sub>i+1</sub> ∪ {⊥}</div>
+  <p>If coherence fails, no state transition occurs. If coherence succeeds, the ontology is atomically updated. There is no partial integration, no staged adoption, no coexistence of incompatible ontology versions. The system maintains a single active induced causal closure at all times.</p>
+  <h2 id="what-causal-exhaustion-means">4.3 What Causal Exhaustion Means</h2>
+  <p>Causal exhaustion is the procedure by which C evaluates a candidate module. It is not testing, verification against an external specification, or sandboxed behavioral observation in the conventional sense. It is the enumeration of every reachable causal path within the closed space defined jointly by the module's header-bounded ontology (which types and actions are visible) and the non-Turing-complete .etcs grammar (what can be expressed against them), followed by execution of all enumerated paths.</p>
+  <p>Exhaustion is therefore actually exhaustive, not a sampling approximation, over that closed space. Every path that the module can express is executed. The result is a set of causal traces:</p>
+  <div class="math display">T<sub>M</sub> = {τ<sub>1</sub>, τ<sub>2</sub>, …, τ<sub>n</sub>}</div>
+  <p>This trace set is hashed. The hash serves as the causal identity of the module: a certificate that its admissible execution graph is exactly what was observed during exhaustion.</p>
+  <p>Causal exhaustion's determinism guarantee is scoped precisely: it is a guarantee over causal state an entity's identity, its tag/type set, and, where a tag's data is persistent, the store/rehydrate path defined by whichever persistence-handling traits that tag's type declares, itself part of what exhaustion exercises rather than a persistence blind spot not over continuous or physical runtime values. A memory address, a wall-clock reading, or any other continuous quantity is not part of the trace two exhaustion runs are compared against, and is not required to match between them.</p>
+  <p>This is not a carved-out exception to determinism; it follows from what the grammar can express at all (Section 4.1). A continuous value cannot branch a causal path on its own, because the grammar has no construct for conditioning on one directly -- only a discrete tag transition is a causal event the grammar can express, execute, or exhaust. A continuous value therefore affects the trace only at the specific point it is deliberately captured into a tag decision; everywhere else it is causally inert by construction, not merely unobserved. The ordering of tag transitions that do occur is itself guaranteed by the GapReorderBuffer's compile-time bitmask matrix (Section 2.5): two runs may differ in exactly when a transition occurs, but never in what transitioned or in what causal order, because that order is fixed by type-level dependency masks rather than by timing.</p>
+  <p>Should any channel ever leak continuous variance into a tag decision, the consequence is not silent divergence. A tag decision that is not reproducible under the same operator produces the trace non-equivalence failure already described in Section 4.5-- exhaustion rejects it before admission, rather than the runtime tolerating a quiet mismatch afterward. Causal-state determinism is therefore self-enforcing: any violation of it is structurally caught as an admission failure, not a hidden bug.</p>
+  <p>The trace set T<sub>M</sub> is itself a proof object, not a test report: it is a complete, deterministic enumeration of the module's reachable causal state space, not a sample of it. This is a property of the etcs grammar's non-Turing-completeness established in Section 4.1, not a property of any particular implementation causal exhaustion is doable by any party holding a module and its declared ontology, using nothing beyond the language's own decidability. In this sense ETCS module signatures are proof-carrying in the literal sense of the term: what a consumer can in principle verify is a reproducible proof object, not an attestation resting on trust in whoever produced it. No enumeration tooling exists yet, at Anticurrent Entropy Inc. or anywhere else (Section 9). Anticurrent Entropy Inc. intends to be the first operator to build and run this tooling at production scale, not the only party architecturally capable of doing so.</p>
+</main>
+</body>
+</html>
