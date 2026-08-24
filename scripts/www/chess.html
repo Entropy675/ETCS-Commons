@@ -25,10 +25,7 @@
          font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
   header { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
            padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
-  .brand { color:var(--ink); letter-spacing:.12em; text-decoration:none;
-           display:inline-flex; align-items:center;
-           background:#d3b78e; border:1px solid #a8815a; padding:4px 10px; }
-  .brand img { height:40px; width:40px; margin-right:.5em; }
+  .brand { color:var(--sel); letter-spacing:.12em; text-decoration:none; }
   .spacer { flex:1; }
   input, button { font:inherit; font-size:12px; background:var(--panel);
                   color:var(--light); border:1px solid var(--line); padding:5px 8px; }
@@ -203,7 +200,7 @@
 <body>
 
 <header>
-  <a href="/" class="brand"><img src="/favicon/logo-mark-square.svg" alt="">ACE CHESS</a>
+  <a href="/" class="brand">ACE CHESS</a>
   <!-- The identity is the way HOME: your name is your lobby, so clicking it
        goes to your own self rather than to some separate "menu" page. -->
   <button id="me" title="Go to your lobby">—</button>

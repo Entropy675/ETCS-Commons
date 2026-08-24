@@ -20,18 +20,21 @@
          font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
          display:flex; flex-direction:column; }
   header { padding:14px 20px; border-bottom:1px solid var(--line);
-           background:var(--panel); display:flex; align-items:center; gap:14px;
+           background:var(--panel); display:flex; align-items:baseline; gap:14px;
            flex-wrap:wrap; }
-  .brand { color:var(--ink); letter-spacing:.16em; font-size:15px;
-           display:inline-flex; align-items:center;
-           background:#d3b78e; border:1px solid #a8815a; padding:4px 10px; }
-  .brand img { height:40px; width:40px; margin-right:.5em; }
+  .brand { color:var(--sel); letter-spacing:.16em; font-size:15px; }
   .sub { color:var(--dim); font-size:11px; }
+  .hero { display:grid; grid-template-columns:66px 1fr; align-items:stretch;
+          gap:22px; margin-bottom:34px; }
+  .hero-logo { width:100%; height:100%; object-fit:contain; display:block; }
+  .hero-text { display:flex; flex-direction:column; justify-content:center; }
+  .hero-name { display:block; font-size:24px; letter-spacing:.05em; color:var(--light);
+               margin-bottom:6px; }
   .spacer { flex:1; }
   #uptime { color:var(--dim); font-size:11px; }
   main { flex:1; max-width:860px; margin:0 auto; padding:36px 20px 60px; width:100%; }
   h1 { font-size:20px; font-weight:normal; margin:0 0 6px; letter-spacing:.02em; }
-  .lede { color:var(--dim); margin:0 0 34px; max-width:62ch; }
+  .lede { color:var(--dim); margin:0 0 12px; max-width:62ch; }
   h2 { font-size:11px; font-weight:normal; color:var(--dim); letter-spacing:.12em;
        text-transform:uppercase; margin:34px 0 12px;
        border-bottom:1px solid var(--line); padding-bottom:6px; }
@@ -50,20 +53,26 @@
 </head>
 <body>
 <header>
-  <span class="brand"><img src="/favicon/logo-mark-square.svg" alt="">ACE</span>
+  <span class="brand">ACE</span>
   <span class="sub">Anticurrent Entropy</span>
   <span class="spacer"></span>
   <span id="uptime" style="color: var(--ok);">ETCS runtime up</span>
 </header>
 
 <main>
-  <h1>Everything on this page is served by one runtime.</h1>
-  <p class="lede">
-    Not one process per service. One process, in which each of the things below
-    is a set of entities that happen to be reachable over HTTP.
-  </p>
-  <a href="https://github.com/Entropy675">The code will be released here (GitHub)</a>
-  <a href="https://github.com/Entropy675/ETCS-Commons">LGPL commons available here (GitHub)</a>
+  <div class="hero">
+    <img class="hero-logo" src="/favicon/logo-mark-tall.svg" alt="">
+    <div class="hero-text">
+      <span class="hero-name">Anticurrent Entropy Inc.</span>
+      <h1>Everything on this page is served by one runtime.</h1>
+      <p class="lede">
+        Not one process per service. One process, in which each of the things below
+        is a set of entities that happen to be reachable over HTTP.
+      </p>
+      <a href="https://github.com/Entropy675">The code will be released here (GitHub)</a>
+      <a href="https://github.com/Entropy675/ETCS-Commons">LGPL commons available here (GitHub)</a>
+    </div>
+  </div>
   <h2>Running here</h2>
 
   <a class="card" href="https://anticurrententropy.com/chess.html">

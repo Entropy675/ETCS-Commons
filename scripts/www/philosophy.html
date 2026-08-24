@@ -21,11 +21,8 @@
   header { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
            padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel);
            position:sticky; top:0; z-index:10; }
-  .brand { color:var(--ink); letter-spacing:.12em; text-decoration:none;
-           display:inline-flex; align-items:center;
-           background:#d3b78e; border:1px solid #a8815a; padding:4px 10px; }
-  .brand:hover { text-decoration:none; filter:brightness(1.08); }
-  .brand img { height:40px; width:40px; margin-right:.5em; }
+  .brand { color:var(--sel); letter-spacing:.12em; text-decoration:none; }
+  .brand:hover { text-decoration:none; color:var(--sel); }
   .spacer { flex:1; }
   .meta { color:var(--dim); font-size:11px; letter-spacing:.04em; }
   main { padding:28px 16px 60px; max-width:820px; margin:0 auto; }
@@ -89,7 +86,7 @@
 </head>
 <body>
 <header>
-  <a href="/" class="brand"><img src="/favicon/logo-mark-square.svg" alt="">ACE ETCS</a>
+  <a href="/" class="brand">ACE ETCS</a>
   <span class="meta">Entity Tag Component System</span>
   <span class="spacer"></span>
   <span class="meta"> Pre-Release — 2026</span>

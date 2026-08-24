@@ -1,0 +1,51 @@
+From ac2d62c37baebe6d610bab3651ae74642bc76025 Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.com>
+Date: Mon, 24 Aug 2026 16:12:53 +0000
+Subject: [PATCH] www: stop deriving the hero logo's width from its stretched
+ height
+
+The previous fix (a49fc57) moved .hero to grid and set the logo's
+width via an auto column track sized from height:100%. That worked
+in local testing but the report from a real browser run was that the
+text block starts about half-way into the logo -- the auto column's
+width was resolved from the SVG's pre-stretch intrinsic size (20px)
+rather than the post-stretch rendered size, so the image overflowed
+its column and the text column started underneath it. This is a
+real, browser-dependent divergence: whether 'auto' track/flex-basis
+sizing accounts for a stretched, aspect-ratio-derived replaced
+element's final size instead of its intrinsic one isn't handled the
+same way everywhere.
+
+Removed that dependency entirely instead of chasing it further. The
+logo's column now has a fixed width (66px, matching the image's
+natural size at the intro block's typical height), and the image
+fills that column with object-fit:contain, which needs no
+stretch-vs-intrinsic resolution at all -- it just scales the image
+to fit a box whose dimensions are already both known. The row's auto
+height is then simply the max of the logo's own natural rendered
+height and the text block's content height, so the logo still comes
+out tip-to-tip with the text in the normal case, and in every case
+(shorter or longer text) it degrades to being vertically centered in
+its column rather than overlapping anything.
+---
+ scripts/www/index.html | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/www/index.html b/scripts/www/index.html
+index 0d29c96..456ce75 100644
+--- a/scripts/www/index.html
++++ b/scripts/www/index.html
+@@ -24,9 +24,9 @@
+            flex-wrap:wrap; }
+   .brand { color:var(--sel); letter-spacing:.16em; font-size:15px; }
+   .sub { color:var(--dim); font-size:11px; }
+-  .hero { display:grid; grid-template-columns:auto 1fr; align-items:stretch;
++  .hero { display:grid; grid-template-columns:66px 1fr; align-items:stretch;
+           gap:22px; margin-bottom:34px; }
+-  .hero-logo { height:100%; width:auto; display:block; }
++  .hero-logo { width:100%; height:100%; object-fit:contain; display:block; }
+   .hero-text { display:flex; flex-direction:column; justify-content:center; }
+   .hero-name { display:block; font-size:24px; letter-spacing:.05em; color:var(--light);
+                margin-bottom:6px; }
+-- 
+2.43.0
