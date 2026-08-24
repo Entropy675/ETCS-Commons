@@ -1,8 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
+<html lang="en"><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="48x48" href="/favicon/favicon-48x48.png">
+<link rel="icon" href="/favicon/favicon.ico">
+<link rel="apple-touch-icon" href="/favicon/apple-touch-icon.png">
+<link rel="manifest" href="/favicon/site.webmanifest">
 <title>ACE</title>
 <style>
   :root { --light:#e8e2d5; --sel:#c9b458; --ink:#1c1c1a;
@@ -13,9 +20,12 @@
          font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
          display:flex; flex-direction:column; }
   header { padding:14px 20px; border-bottom:1px solid var(--line);
-           background:var(--panel); display:flex; align-items:baseline; gap:14px;
+           background:var(--panel); display:flex; align-items:center; gap:14px;
            flex-wrap:wrap; }
-  .brand { color:var(--sel); letter-spacing:.16em; font-size:15px; }
+  .brand { color:var(--ink); letter-spacing:.16em; font-size:15px;
+           display:inline-flex; align-items:center;
+           background:#d3b78e; border:1px solid #a8815a; padding:4px 10px; }
+  .brand img { height:40px; width:40px; margin-right:.5em; }
   .sub { color:var(--dim); font-size:11px; }
   .spacer { flex:1; }
   #uptime { color:var(--dim); font-size:11px; }
@@ -40,10 +50,10 @@
 </head>
 <body>
 <header>
-  <span class="brand">ACE</span>
+  <span class="brand"><img src="/favicon/logo-mark-square.svg" alt="">ACE</span>
   <span class="sub">Anticurrent Entropy</span>
   <span class="spacer"></span>
-  <span id="uptime"></span>
+  <span id="uptime" style="color: var(--ok);">ETCS runtime up</span>
 </header>
 
 <main>
@@ -52,10 +62,11 @@
     Not one process per service. One process, in which each of the things below
     is a set of entities that happen to be reachable over HTTP.
   </p>
-
+  <a href="https://github.com/Entropy675">The code will be released here (GitHub)</a>
+  <a href="https://github.com/Entropy675/ETCS-Commons">LGPL commons available here (GitHub)</a>
   <h2>Running here</h2>
 
-  <a class="card" href="/chess.html">
+  <a class="card" href="https://anticurrententropy.com/chess.html">
     <span class="path">/chess.html</span>
     <span class="name">CHESS</span>
     <div class="what">Two players, one board, no account.</div>
@@ -64,7 +75,7 @@
     </div>
   </a>
 
-  <a class="card" href="/forum.html">
+  <a class="card" href="https://anticurrententropy.com/forum.html">
     <span class="path">/forum.html</span>
     <span class="name">FORUM</span>
     <div class="what">Threads, basic bulletin board.</div>
@@ -75,7 +86,7 @@
 
   <h2>What it is</h2>
 
-  <a class="card" href="/whitepaper.html">
+  <a class="card" href="https://anticurrententropy.com/whitepaper.html">
     <span class="path">/whitepaper.html</span>
     <span class="name">WHITEPAPER</span>
     <div class="what">The runtime, and why it is shaped this way.</div>
@@ -84,10 +95,18 @@
       compile-time artifact.
     </div>
   </a>
+  <a class="card" href="https://anticurrententropy.com/philosophy.html">
+    <span class="path">/philosophy.html</span>
+    <span class="name">PHILOSOPHY</span>
+    <div class="what">Why make something new?</div>
+    <div class="why">
+      Question seeking answers.
+    </div>
+  </a>
 </main>
 
 <footer>
-  Anticurrent Entropy Inc. &middot; the two demos above are the smallest
+  Anticurrent Entropy Inc. · the two demos above are the smallest
   complete instances of the thing, not mockups of it.
 </footer>
 
@@ -99,10 +118,10 @@
   const el = document.getElementById('uptime');
   try {
     const r = await fetch('/forum/index');
-    el.textContent = r.ok ? 'runtime up' : 'runtime unreachable';
+    el.textContent = r.ok ? 'ETCS runtime up' : 'ETCS runtime unreachable';
     el.style.color = r.ok ? 'var(--ok)' : 'var(--dim)';
-  } catch (e) { el.textContent = 'runtime unreachable'; }
+  } catch (e) { el.textContent = 'ETCS runtime unreachable'; }
 })();
 </script>
-</body>
-</html>
+
+</body></html>

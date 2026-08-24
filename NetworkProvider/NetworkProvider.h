@@ -419,15 +419,43 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                              << c->SendBuffer().size() << ") -- response TRUNCATED.");
                 }
 
+                // Only the true fallback -- an extension MimeForExtension has
+                // no explicit case for -- downloads instead of opening in-tab.
+                // Every filtered type (html, css, js, images, fonts, wasm,
+                // json, text/plain -- see MimeForExtension) is inline, so a
+                // type only ever needs one line added there to be viewable
+                // rather than downloaded; nothing here has to change. This
+                // also means style.css/app.js still work when pulled in by
+                // index.html regardless -- browsers only consult
+                // Content-Disposition on a top-level navigation or explicit
+                // fetch-and-save, never on a <link>/<script>/<img> subresource
+                // load. Filename comes from the last path segment; '"' and
+                // any stray CR/LF are stripped since `path` is
+                // attacker-controlled input landing straight in a header.
+                std::string disposition_hdr;
+                if (asset.mime_type == "application/octet-stream")
+                {
+                    size_t slash = path.find_last_of('/');
+                    std::string filename = (slash == std::string::npos)
+                        ? path : path.substr(slash + 1);
+                    filename.erase(std::remove_if(filename.begin(), filename.end(),
+                        [](unsigned char ch) { return ch == '"' || ch == '\\' || ch == '\r' || ch == '\n'; }),
+                        filename.end());
+                    if (filename.empty()) filename = "download";
+                    disposition_hdr = "Content-Disposition: attachment; filename=\"" + filename + "\"\r\n";
+                }
+
                 send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: %s\r\n"
                     "Content-Length: %zu\r\n"
                     "Connection: %s\r\n"
                     "Keep-Alive: timeout=%d\r\n"
+                    "%s"
                     "\r\n%.*s",
                     asset.mime_type.c_str(), asset.length, conn_hdr,
                     SocketConnectionState::TIMEOUT_SECONDS,
+                    disposition_hdr.c_str(),
                     static_cast<int>(asset.length), asset.data);
             }
             else

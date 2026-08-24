@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="48x48" href="/favicon/favicon-48x48.png">
+<link rel="icon" href="/favicon/favicon.ico">
+<link rel="apple-touch-icon" href="/favicon/apple-touch-icon.png">
+<link rel="manifest" href="/favicon/site.webmanifest">
 <title>ACE Forum</title>
 <style>
   :root { --light:#e8e2d5; --sel:#c9b458; --ink:#1c1c1a;
@@ -13,7 +20,10 @@
          font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
   header { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
            padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
-  .brand { color:var(--sel); letter-spacing:.12em; text-decoration:none; }
+  .brand { color:var(--ink); letter-spacing:.12em; text-decoration:none;
+           display:inline-flex; align-items:center;
+           background:#d3b78e; border:1px solid #a8815a; padding:4px 10px; }
+  .brand img { height:40px; width:40px; margin-right:.5em; }
   .spacer { flex:1; }
   input, button, textarea { font:inherit; font-size:12px; background:var(--panel);
                   color:var(--light); border:1px solid var(--line); padding:5px 8px; }
@@ -63,7 +73,7 @@
 </head>
 <body>
 <header>
-  <a href="/" class="brand">ACE FORUM</a>
+  <a href="/" class="brand"><img src="/favicon/logo-mark-square.svg" alt="">ACE FORUM</a>
   <button id="me" title="back to the index">-</button>
   <span id="record"></span>
   <span id="lock"></span>

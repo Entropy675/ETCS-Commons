@@ -422,6 +422,7 @@ private:
         if (ext == "woff")                 return "font/woff";
         if (ext == "map")                  return "application/json"; // sourcemaps
         if (ext == "txt")                  return "text/plain";
+        if (ext == "etcs")                 return "text/plain"; // raw script source, viewable not downloaded
         return "application/octet-stream";
     }
 
