@@ -583,10 +583,19 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
         (*do_send)(c, 0);
     };
 
+    // Own reference, separate from dispatchToSubscribers's dispatch
+    // reference -- its own trailing NoteComplete() releases THAT one
+    // unconditionally once target->call() returns here, regardless of
+    // what async work this starts. Without this, ReadUntilParsed's
+    // "entered holding one reference, released on every path out" (its
+    // own contract, ConnectionRecvLoop.h) was silently consuming the
+    // SAME reference dispatch still thinks it owns -- a double release
+    // on every dispatched connection, io_inflight_ eventually going
+    // negative and the pool slot never draining.
+    conn->NoteSubmit();
     ReadUntilParsed(conn, &self, ctx,
         [on_request](SocketConnectionState* c) { (*on_request)(c); });
 }
-
 // ===========================================================================
 // ConnectionManager — the Gate_. All four actions forward to the concrete
 // surface; the accept chain itself is internal (ConnectionManager.h).

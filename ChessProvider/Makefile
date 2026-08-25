@@ -110,9 +110,39 @@ $(HASH_HEADER): $(MODULE_HEADERS)
 # Build rule
 $(FINAL_TARGET): $(MODULE_DEPS) $(HASH_HEADER)
 	$(CXX) $(CXXFLAGS) $(EXTRADEFINES) $(LDFLAGS) -o $@ $(SRC_MODULE) $(CCHESS_SRC)
+# -------------------------
+# Header dependencies
+#
+# A separate -MM pass rather than -MMD on the build rule above: that rule
+# compiles AND links in one command, so gcc writes a single <target>.d holding
+# only the LAST source's deps -- a vendored C file, not the module. -MF does not
+# help; every source in the command writes that same name.
+#
+# -MT names FINAL_TARGET directly, so the generated line feeds straight into the
+# rule above. -MP adds phony header targets so a deleted header is not a hard
+# error.
+#
+# This is what makes a core/ edit rebuild this module at all: MODULE_DEPS lists
+# a handful of global headers by hand and none of core/, which is how a module
+# and the loader came to be built from different GapSlot layouts out of one
+# tree.
+#
+# HASH_HEADER is a prerequisite because -include makes make build DEPFILE
+# BEFORE anything else, and the -MM pass preprocesses SRC_MODULE for real --
+# so a generated header that does not exist yet is a fatal error on a clean
+# tree, not a missing dependency edge.
+DEPFILE := $(SRC_MODULE:.cc=.d)
+$(DEPFILE): $(SRC_MODULE) $(HASH_HEADER)
+	@$(CXX) $(CXXFLAGS) $(EXTRADEFINES) -MM -MP -MT '$(FINAL_TARGET)' -MF $@ $(SRC_MODULE)
+# Skipped for `clean`: -include makes make build DEPFILE before any goal, and
+# a tree too broken to preprocess must still be cleanable.
+ifeq (,$(filter clean,$(MAKECMDGOALS)))
+-include $(DEPFILE)
+endif
+
 
 # -------------------------
 # Clean rule
 .PHONY: clean
 clean:
-	rm -f $(FINAL_TARGET) *.o $(PLATFORM_DIR)/*.hash $(HASH_HEADER)
+	rm -f $(FINAL_TARGET) *.o $(PLATFORM_DIR)/*.hash $(HASH_HEADER) $(DEPFILE)

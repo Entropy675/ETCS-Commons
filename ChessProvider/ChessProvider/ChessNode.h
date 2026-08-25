@@ -492,10 +492,28 @@ inline ETCS::DispatchResult ChessStream::on_event(ChessState&,
     // flag and then reads result_out, so this store is the happens-before edge.
     if (e.done) e.done->store(true, std::memory_order_release);
 
-    // Drop, not Inline: the work is finished and nothing downstream consumes an
-    // emit, so a gap slot would reserve reorder capacity for nothing. The
-    // serialization comes from the ordering thread being a single thread.
-    return { ETCS::DispatchKind::Drop, {}, nullptr };
+    // Drop, not Inline: the caller was released above (e.done->store) and
+    // nothing downstream consumes an emit, so the slot is handed straight back
+    // -- see GapReorderBuffer::abandon.
+    //
+    // The mask is no longer part of this return; it is resolved before dispatch
+    // by mask_for, and this stream does not define one, so it inherits
+    // EventStream's all(). Fail-shut, and exactly today's behaviour: every
+    // event ordered against every other, which is what one ordering thread
+    // already gave.
+    //
+    // Narrowing it means writing ChessStream::mask_for, and the node's own
+    // ordering-domain comment above is the warning label. Cross-node
+    // independence is not this mask's job -- that comes from one stream per
+    // node. Within a node, a tag bit names a DECLARED TYPE while the mask must
+    // name what an op TOUCHES: roomsLocked reads liveTokensLocked/over_/
+    // checkmate_/started_ across every game, reapLocked walks them and calls
+    // Delete(), ChessLobby::listLocked reads white_/black_ off boards it does
+    // not own. TAG_CLOSURE (ETCS_API.h) covers that -- ChessNode
+    // addTag<ChessGame>()s and addTag<ChessLobby>()s, so its closure already
+    // carries both bits -- which leaves mask_for here little more than
+    // returning e.target's myTagClosure().
+    return { ETCS::DispatchKind::Drop, nullptr };
 }
 
 #endif // CHESSNODE_H__
