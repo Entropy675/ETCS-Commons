@@ -64,6 +64,14 @@ DEFINE_WORK_FUNC(HttpServer, SetPort)
 // (server -> manager -> connections -> pages) is parent/child.
 //
 // Persists across Stop/Start: a handler is configuration, not generated state.
+// AddHandler <rid> <Action> [<filter_rid> <FilterAction>] — registers a
+// gate-level recipient: something that owns a whole connection, as opposed
+// to AddRoute's per-path recipients. The optional filter is the same
+// convention AddRoute already uses one layer up, forwarded straight through
+// to ConnectionManager::RegisterConsumer -- this is what lets a script give
+// a filtered gate-level consumer (a tarpit matching scan-shaped paths, say)
+// to a server without ever needing to name the ConnectionManager the
+// server mints internally on Start.
 DEFINE_WORK_FUNC(HttpServer, AddHandler)
 {
     (void)ctx;
@@ -74,11 +82,30 @@ DEFINE_WORK_FUNC(HttpServer, AddHandler)
 
     if (rid == 0 || action.empty())
     {
-        ETCS_LOG("HttpServer::AddHandler", "expected '<rid> <Action>' -- got: " << data.buf);
+        ETCS_LOG("HttpServer::AddHandler",
+                 "expected '<rid> <Action> [<filter_rid> <FilterAction>]' -- got: "
+                 << data.buf);
         return;
     }
-    self.AddHandler(rid, action);
+
+    // Both extractions are no-ops on an exhausted buffer, so the two-argument
+    // form parses as unfiltered with no sentinel needed -- same shape
+    // AddRoute's own parse uses.
+    ETCS::RID   filter_rid = 0;
+    std::string filter_action;
+    data >> filter_rid;
+    data >> filter_action;
+    if ((filter_rid == 0) != filter_action.empty())
+    {
+        ETCS_LOG("HttpServer::AddHandler", "half a filter given -- registering unfiltered.");
+        filter_rid = 0; filter_action.clear();
+    }
+
+    self.AddHandler(rid, action, filter_rid, filter_action);
     ETCS_LOG("HttpServer::AddHandler", "RID:" << rid << " ." << action
+             << (filter_rid ? " filtered by RID:" + std::to_string(filter_rid)
+                               + " ." + filter_action
+                             : std::string(" (unfiltered)"))
              << " on RID:" << self.getRID());
 }
 
@@ -285,7 +312,7 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                  << " is not this server's gate -- refusing.");
         return;
     }
-    
+
     ETCS_LOG("HttpServer::Serve", "invoked with manager RID:" << manager_rid
          << " conn RID:" << conn_rid);
 
@@ -295,346 +322,269 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
     SocketConnectionState* conn = static_cast<SocketConnectionState*>(found->getTrueType());
     if (!conn) return;
 
-    auto& pool = self.getThreadPool();
-
-    // Recursive lambda held by value in its own capture -- the connection
-    // stays in recv until a full request has been parsed, which may take
-    // several completions for a request split across packets.
-    // shared_ptr, not a by-value self-capture. `[do_recv]` copied the
-    // std::function at LAMBDA CONSTRUCTION -- before the assignment completed
-    // -- so the captured copy was empty and the re-entry below threw
-    // bad_function_call. Only reachable when a request needs more than one
-    // recv, i.e. when it arrives split across packets, which is why small GETs
-    // never showed it. The throw unwound into the worker's catch, so the
-    // connection was never recycled and its fd never closed.
-    auto do_recv = std::make_shared<std::function<void(SocketConnectionState*)>>();
-    *do_recv = [&pool, ctx, do_recv, &self](SocketConnectionState* c) mutable
+    // on_request -- what to do once ReadUntilParsed (ConnectionRecvLoop.h,
+    // now shared with ConnectionManager's own gate-level pre-parse; see its
+    // own top comment for why the recv/parse loop moved out of this
+    // function entirely) hands back a connection whose one request is fully
+    // parsed: build the response and send it.
+    //
+    // Self-referencing shared_ptr for the same reason the pre-shared-loop
+    // do_recv needed one: do_send's own keep-alive re-arm calls back into
+    // this closure by name, and a std::function cannot capture itself at
+    // the point it is still being assigned.
+    auto on_request = std::make_shared<std::function<void(SocketConnectionState*)>>();
+    *on_request = [ctx, &self, on_request](SocketConnectionState* c) mutable
     {
-        if (c->checkTimeout()) return;
-        if (!c->IsConnectionOpen()) return;     // draining; do not re-arm
-        if (ctx.isInterrupted() || ctx.isTerminated()) { c->Reset(); return; }
+        // This function is entered holding one io_inflight_ reference --
+        // handed off, disarmed, by ReadUntilParsed's own on_complete
+        // contract (ConnectionRecvLoop.h). Disarmed further down once
+        // do_send takes it over.
+        ConnRef entry = ConnRef::Wrap(c);
 
-        // Shared "plaintext bytes have arrived" handler -- identical parse/
-        // route/send logic regardless of whether those bytes came straight
-        // off the wire or out of TLSServerContext::ReadPlain via
-        // TLSIO::SubmitTLSRecv (TLSConnectionIO.h). That is the whole point
-        // of terminating TLS below this layer rather than above it: this
-        // body never learns which path it took. `result` mirrors
-        // ETCS::IOCompletion::result's own contract exactly (>0 bytes ready
-        // in c->RecvBuffer(), <=0 closed/error) so both callers can hand it
-        // the same value they'd have gotten from a raw recv completion.
+        std::string path(c->GetParser().GetPath(), c->GetParser().GetPathLen());
+
+        // A query string is part of the request TARGET, not the path.
+        // picohttpparser hands back the target verbatim, so "/?as=alice"
+        // arrives here as the path and matches neither a route nor a page
+        // -- the landing page 404s the moment anyone appends a parameter.
+        // Strip it once, here, so every consumer below (route filters,
+        // ResolvePath, the page tree) sees the same normalized path.
         //
-        // Must end with EXACTLY ONE c->NoteComplete() on every path out --
-        // it is the terminal continuation for whichever single io_inflight_
-        // reference (raw recv's own NoteSubmit, or TLSIO::SubmitTLSRecv's
-        // entry reference) led to it running, per TLSConnectionIO.h's own
-        // reference-ownership contract for the TLS case, and per this
-        // function's pre-existing convention for the raw case.
-        auto on_plaintext = [&pool, ctx, c, do_recv, &self](int result) mutable
+        // The query itself is deliberately DISCARDED rather than parsed:
+        // nothing in this server reads parameters, and the one thing that
+        // wanted an identity carries it in the path instead
+        // (/<mount>/<key>/<token>/<verb>), which is the shape a peer with
+        // no server can also use.
+        const size_t qpos = path.find('?');
+        if (qpos != std::string::npos)
         {
-            // NoteComplete is the LAST statement on every path out: it can
-            // publish this connection as reusable, and anything touching c
-            // afterwards races a new client's request.
-            if (result <= 0) { c->Reset(); c->NoteComplete(); return; }
-            c->markActive();
+            ETCS_LOG("HttpServer", "stripping query from '" << path << "'");
+            path.erase(qpos);
+        }
 
-            size_t incoming = static_cast<size_t>(result);
-            c->SetRecvLen(result);
-            bool complete = c->GetParser().FeedRaw(c->RecvBuffer().data(), incoming);
+        // Routes first, pages second. A route is a live entity answering a
+        // path; a page is stored content. route_body must outlive the send
+        // below, since asset.data points into it rather than copying.
+        ETCS::Buffer route_body;
+        HtmlPage_::ResolvedAsset asset;
+        if (self.DispatchRoute(path, route_body, ctx))
+        {
+            asset.matched   = true;
+            asset.data      = route_body.buf;
+            asset.length    = route_body.written;
+            asset.mime_type = "text/plain";
+        }
+        else
+        {
+            asset = self.ResolvePath(path);
+        }
 
-            if (c->GetParser().GetState() == PicoHTTPParser::State::Error)
+        // HTTP/1.1 is persistent by default; only close when the client
+        // asked, or when this connection has served its budget. Closing
+        // per request is what filled the client's ephemeral port range
+        // with TIME-WAIT and stalled connect() -- the visible symptom was
+        // a hung page against an idle server with an empty backlog.
+        const bool keep = c->GetParser().isPersistentConnection() && c->CanKeepAlive();
+        const char* conn_hdr = keep ? "keep-alive" : "close";
+        ETCS_LOG("HttpServer::Serve", "keepalive: minor_ver=" << c->GetParser().GetMinorVer()
+             << " num_headers=" << c->GetParser().GetNumHeaders()
+             << " persistent=" << c->GetParser().isPersistentConnection()
+             << " served=" << c->Served()
+             << " can_keep=" << c->CanKeepAlive()
+             << " keep=" << keep);
+
+        int send_len = 0;
+        if (asset.matched)
+        {
+            // SendBuffer() is fixed (ETCS_NETWORK_MAX_HEADER_SIZE * 4).
+            // Anything larger is clipped by snprintf's own bound rather
+            // than corrupting memory, but is still a broken response.
+            // Flagged loudly; the real fix is a chunked send loop feeding
+            // several IOSubmission::Send calls, not yet wired here.
+            if (asset.length + 256 > c->SendBuffer().size())
             {
-                ETCS_LOG("HttpServer::Serve", "Parse error on fd=" << c->GetClientFd());
-                c->Reset();
-                c->NoteComplete();
+                ETCS_LOG("HttpServer::Serve", "WARNING: asset '" << path << "' ("
+                         << asset.length << " bytes) exceeds SendBuffer capacity ("
+                         << c->SendBuffer().size() << ") -- response TRUNCATED.");
+            }
+
+            // Only the true fallback -- an extension MimeForExtension has
+            // no explicit case for -- downloads instead of opening in-tab.
+            // Every filtered type (html, css, js, images, fonts, wasm,
+            // json, text/plain -- see MimeForExtension) is inline, so a
+            // type only ever needs one line added there to be viewable
+            // rather than downloaded; nothing here has to change. This
+            // also means style.css/app.js still work when pulled in by
+            // index.html regardless -- browsers only consult
+            // Content-Disposition on a top-level navigation or explicit
+            // fetch-and-save, never on a <link>/<script>/<img> subresource
+            // load. Filename comes from the last path segment; '"' and
+            // any stray CR/LF are stripped since `path` is
+            // attacker-controlled input landing straight in a header.
+            std::string disposition_hdr;
+            if (asset.mime_type == "application/octet-stream")
+            {
+                size_t slash = path.find_last_of('/');
+                std::string filename = (slash == std::string::npos)
+                    ? path : path.substr(slash + 1);
+                filename.erase(std::remove_if(filename.begin(), filename.end(),
+                    [](unsigned char ch) { return ch == '"' || ch == '\\' || ch == '\r' || ch == '\n'; }),
+                    filename.end());
+                if (filename.empty()) filename = "download";
+                disposition_hdr = "Content-Disposition: attachment; filename=\"" + filename + "\"\r\n";
+            }
+
+            send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: %s\r\n"
+                "Content-Length: %zu\r\n"
+                "Connection: %s\r\n"
+                "Keep-Alive: timeout=%d\r\n"
+                "%s"
+                "\r\n%.*s",
+                asset.mime_type.c_str(), asset.length, conn_hdr,
+                SocketConnectionState::TIMEOUT_SECONDS,
+                disposition_hdr.c_str(),
+                static_cast<int>(asset.length), asset.data);
+        }
+        else
+        {
+            const char* err = "404 Not Found";
+            send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
+                "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n"
+                "Content-Length: %zu\r\n\r\n%s",
+                conn_hdr, std::strlen(err), err);
+        }
+        c->SetSendLen(send_len);
+
+        ETCS_LOG("HttpServer::Serve", "Serving: "
+                 << std::string(c->GetParser().GetMethod(), c->GetParser().GetMethodLen())
+                 << " " << path << " (" << (asset.matched ? "200" : "404") << ")");
+
+        // SEND UNTIL IT IS ALL GONE. A TCP send returns how many bytes the
+        // socket ACCEPTED, not how many were asked for -- for a large
+        // response that is whatever fits the send buffer, which varies with
+        // window and memory pressure. One submission therefore delivers a
+        // prefix, and the previous code treated the completion as the whole
+        // thing: a page larger than the socket buffer arrived truncated at
+        // a different point on every reload.
+        //
+        // do_send re-enters ITSELF (via its own captured shared_ptr, same
+        // self-reference shape as on_request) once the response is fully
+        // sent, rather than special-casing "just finished" separately at
+        // every completion site -- its own top guard (`offset >= total`)
+        // is the ONE place keep-alive re-arm vs close is decided, instead
+        // of that logic being repeated once per completion path (raw
+        // success, raw refused-submission never reaches it, TLS success).
+        // Only the raw (non-TLS) branch below submits its own Send;
+        // the TLS branch calls TLSIO::SubmitTLSSend directly, which already
+        // loops internally over mbedtls's own partial-write semantics (see
+        // TLSConnectionIO.h's own comment on why that is a separate loop
+        // from this offset loop).
+        auto do_send = std::make_shared<std::function<void(SocketConnectionState*, size_t)>>();
+        *do_send = [ctx, keep, on_request, &self, do_send](SocketConnectionState* c, size_t offset) mutable
+        {
+            // Same reference-ownership contract as ReadUntilParsed and
+            // every TarpitNode function: entered holding one reference,
+            // released on every path out unless handed to new async work.
+            ConnRef entry = ConnRef::Wrap(c);
+
+            const size_t total = static_cast<size_t>(c->GetSendLen());
+            if (total == 0 || offset >= total)
+            {
+                // Only a connection whose response fully landed can be
+                // reused -- otherwise the next request would parse our own
+                // leftover bytes as its request line.
+                if (keep && c->IsConnectionOpen())
+                {
+                    c->RecycleForNextRequest();
+                    entry.disarm();
+                    ReadUntilParsed(c, &self, ctx,
+                        [on_request](SocketConnectionState* cc) { (*on_request)(cc); });
+                }
+                else c->Reset();
                 return;
             }
-            if (!complete || c->GetParser().GetState() != PicoHTTPParser::State::Complete)
-            { (*do_recv)(c); c->NoteComplete(); return; }
 
-            std::string path(c->GetParser().GetPath(), c->GetParser().GetPathLen());
-
-            // A query string is part of the request TARGET, not the path.
-            // picohttpparser hands back the target verbatim, so "/?as=alice"
-            // arrives here as the path and matches neither a route nor a page
-            // -- the landing page 404s the moment anyone appends a parameter.
-            // Strip it once, here, so every consumer below (route filters,
-            // ResolvePath, the page tree) sees the same normalized path.
-            //
-            // The query itself is deliberately DISCARDED rather than parsed:
-            // nothing in this server reads parameters, and the one thing that
-            // wanted an identity carries it in the path instead
-            // (/<mount>/<key>/<token>/<verb>), which is the shape a peer with
-            // no server can also use.
-            const size_t qpos = path.find('?');
-            if (qpos != std::string::npos)
+            if (c->GetTLS().IsEstablished())
             {
-                ETCS_LOG("HttpServer", "stripping query from '" << path << "'");
-                path.erase(qpos);
-            }
-
-            // Routes first, pages second. A route is a live entity answering a
-            // path; a page is stored content. route_body must outlive the send
-            // below, since asset.data points into it rather than copying.
-            ETCS::Buffer route_body;
-            HtmlPage_::ResolvedAsset asset;
-            if (self.DispatchRoute(path, route_body, ctx))
-            {
-                asset.matched   = true;
-                asset.data      = route_body.buf;
-                asset.length    = route_body.written;
-                asset.mime_type = "text/plain";
-            }
-            else
-            {
-                asset = self.ResolvePath(path);
-            }
-
-            // HTTP/1.1 is persistent by default; only close when the client
-            // asked, or when this connection has served its budget. Closing
-            // per request is what filled the client's ephemeral port range
-            // with TIME-WAIT and stalled connect() -- the visible symptom was
-            // a hung page against an idle server with an empty backlog.
-            const bool keep = c->GetParser().isPersistentConnection() && c->CanKeepAlive();
-            const char* conn_hdr = keep ? "keep-alive" : "close";
-            ETCS_LOG("HttpServer::Serve", "keepalive: minor_ver=" << c->GetParser().GetMinorVer()
-                 << " num_headers=" << c->GetParser().GetNumHeaders()
-                 << " persistent=" << c->GetParser().isPersistentConnection()
-                 << " served=" << c->Served()
-                 << " can_keep=" << c->CanKeepAlive()
-                 << " keep=" << keep);
-
-            int send_len = 0;
-            if (asset.matched)
-            {
-                // SendBuffer() is fixed (ETCS_NETWORK_MAX_HEADER_SIZE * 4).
-                // Anything larger is clipped by snprintf's own bound rather
-                // than corrupting memory, but is still a broken response.
-                // Flagged loudly; the real fix is a chunked send loop feeding
-                // several IOSubmission::Send calls, not yet wired here.
-                if (asset.length + 256 > c->SendBuffer().size())
-                {
-                    ETCS_LOG("HttpServer::Serve", "WARNING: asset '" << path << "' ("
-                             << asset.length << " bytes) exceeds SendBuffer capacity ("
-                             << c->SendBuffer().size() << ") -- response TRUNCATED.");
-                }
-
-                // Only the true fallback -- an extension MimeForExtension has
-                // no explicit case for -- downloads instead of opening in-tab.
-                // Every filtered type (html, css, js, images, fonts, wasm,
-                // json, text/plain -- see MimeForExtension) is inline, so a
-                // type only ever needs one line added there to be viewable
-                // rather than downloaded; nothing here has to change. This
-                // also means style.css/app.js still work when pulled in by
-                // index.html regardless -- browsers only consult
-                // Content-Disposition on a top-level navigation or explicit
-                // fetch-and-save, never on a <link>/<script>/<img> subresource
-                // load. Filename comes from the last path segment; '"' and
-                // any stray CR/LF are stripped since `path` is
-                // attacker-controlled input landing straight in a header.
-                std::string disposition_hdr;
-                if (asset.mime_type == "application/octet-stream")
-                {
-                    size_t slash = path.find_last_of('/');
-                    std::string filename = (slash == std::string::npos)
-                        ? path : path.substr(slash + 1);
-                    filename.erase(std::remove_if(filename.begin(), filename.end(),
-                        [](unsigned char ch) { return ch == '"' || ch == '\\' || ch == '\r' || ch == '\n'; }),
-                        filename.end());
-                    if (filename.empty()) filename = "download";
-                    disposition_hdr = "Content-Disposition: attachment; filename=\"" + filename + "\"\r\n";
-                }
-
-                send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: %s\r\n"
-                    "Content-Length: %zu\r\n"
-                    "Connection: %s\r\n"
-                    "Keep-Alive: timeout=%d\r\n"
-                    "%s"
-                    "\r\n%.*s",
-                    asset.mime_type.c_str(), asset.length, conn_hdr,
-                    SocketConnectionState::TIMEOUT_SECONDS,
-                    disposition_hdr.c_str(),
-                    static_cast<int>(asset.length), asset.data);
-            }
-            else
-            {
-                const char* err = "404 Not Found";
-                send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
-                    "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n"
-                    "Content-Length: %zu\r\n\r\n%s",
-                    conn_hdr, std::strlen(err), err);
-            }
-            c->SetSendLen(send_len);
-
-            ETCS_LOG("HttpServer::Serve", "Serving: "
-                     << std::string(c->GetParser().GetMethod(), c->GetParser().GetMethodLen())
-                     << " " << path << " (" << (asset.matched ? "200" : "404") << ")");
-
-            // SEND UNTIL IT IS ALL GONE. A TCP send returns how many bytes
-            // the socket ACCEPTED, not how many were asked for -- for a large
-            // response that is whatever fits the send buffer, which varies with
-            // window and memory pressure. One submission therefore delivers a
-            // prefix, and the previous code treated the completion as the whole
-            // thing: a page larger than the socket buffer arrived truncated at
-            // a different point on every reload.
-            //
-            // Same self-reference shape as do_recv, and for the same reason --
-            // a by-value capture of a std::function still being assigned is
-            // empty when the callback finally runs. Only used by the RAW
-            // (non-TLS) branch below -- the TLS branch calls
-            // TLSIO::SubmitTLSSend directly, which already loops internally
-            // over mbedtls's own partial-write semantics (see
-            // TLSConnectionIO.h's own comment on why that is a SEPARATE loop
-            // from this one, distinct from this send-offset loop).
-            auto do_send = std::make_shared<std::function<void(size_t)>>();
-            // The function holds itself WEAKLY and hands a STRONG reference to
-            // each callback. Both halves of the lifetime problem, and neither
-            // one alone is enough:
-            //   - strong in the function == a cycle, one leaked std::function
-            //     per response;
-            //   - weak in the callback == freed when Serve's frame returns,
-            //     which is long before the send completes.
-            // The in-flight callback is what keeps it alive, so the chain holds
-            // exactly as long as there are bytes left, and frees on the last one.
-            std::weak_ptr<std::function<void(size_t)>> send_w = do_send;
-            *do_send = [&pool, ctx, c, keep, do_recv, send_w, &self](size_t offset) mutable
-            {
-                const size_t total = static_cast<size_t>(c->GetSendLen());
-                if (total == 0 || offset >= total)
-                {
-                    if (keep && c->IsConnectionOpen())
-                    { c->RecycleForNextRequest(); (*do_recv)(c); }
-                    else c->Reset();
-                    return;
-                }
-
-                if (c->GetTLS().IsEstablished())
-                {
-                    // TLSIO::SubmitTLSSend owns the WHOLE plaintext offset
-                    // loop internally (its own ciphertext flush after every
-                    // chunk mbedtls_ssl_write actually consumes -- see its
-                    // own comment), so this call site is entered once, at
-                    // the current offset, and on_progress fires exactly once
-                    // more: with the final offset (== total) on success, or
-                    // a value <= 0 on error (conn already Reset() by
-                    // SubmitTLSSend in that case -- see its own comment, so
-                    // this callback does not need its own Reset() on that
-                    // path). Same NoteSubmit-then-branch-on-return-value
-                    // shape as every other TLSIO call site in this module.
-                    c->NoteSubmit();
-                    bool settled = TLSIO::SubmitTLSSend(c, &self, ctx, offset, total,
-                        [c, keep, do_recv](long long progress)
+                // TLSIO::SubmitTLSSend owns the WHOLE plaintext offset loop
+                // internally (its own ciphertext flush after every chunk
+                // mbedtls_ssl_write actually consumes -- see its own
+                // comment), so this call site is entered once, at the
+                // current offset, and on_progress fires exactly once more:
+                // with the final byte count on success, or a value <= 0 on
+                // error (conn already Reset() by SubmitTLSSend in that case
+                // -- see its own comment). Same Acquire-then-branch-on-
+                // return-value shape as every other TLSIO call site.
+                ConnRef work = ConnRef::Acquire(c);
+                bool settled = TLSIO::SubmitTLSSend(c, &self, ctx, offset, total,
+                    [c, keep, ctx, on_request, &self](long long progress)
+                    {
+                        ConnRef ref = ConnRef::Wrap(c);
+                        if (progress > 0)
                         {
-                            if (progress > 0)
+                            if (keep && c->IsConnectionOpen())
                             {
-                                if (keep && c->IsConnectionOpen())
-                                { c->RecycleForNextRequest(); (*do_recv)(c); }
-                                else c->Reset();
+                                c->RecycleForNextRequest();
+                                ref.disarm();
+                                ReadUntilParsed(c, &self, ctx,
+                                    [on_request](SocketConnectionState* cc) { (*on_request)(cc); });
+                                return;
                             }
-                            c->NoteComplete();
-                        });
-                    if (!settled) c->NoteComplete();
-                    return;
-                }
+                            c->Reset();
+                        }
+                        // progress <= 0: SubmitTLSSend has ALREADY Reset()
+                        // conn itself on that path -- nothing left to do but
+                        // let `ref` release on the way out.
+                    });
+                if (settled) work.disarm();
+                return;
+            }
 
-                auto self_fn = send_w.lock();   // strong, for the callback to hold
+            ETCS::IOSubmission send_sub;
+            send_sub.op         = ETCS::IOOp::Send;
+            send_sub.fd         = c->GetClientFd();
+            send_sub.buffer     = c->SendBuffer().data() + offset;
+            send_sub.buffer_len = total - offset;
+            send_sub.priority   = static_cast<int>(ETCS::Priority::Medium);
+            send_sub.ctx        = ctx;
 
-                ETCS::IOSubmission send_sub;
-                send_sub.op         = ETCS::IOOp::Send;
-                send_sub.fd         = c->GetClientFd();
-                send_sub.buffer     = c->SendBuffer().data() + offset;
-                send_sub.buffer_len = total - offset;
-                send_sub.priority   = static_cast<int>(ETCS::Priority::Medium);
-                send_sub.ctx        = ctx;
+            auto send_scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
+            send_sub.callback = [c, offset, total, do_send, send_scope = std::move(send_scope)]
+                                (ETCS::IOCompletion comp) mutable
+            {
+                ConnRef ref = ConnRef::Wrap(c);
+                // <= 0 covers both error and a zero-byte accept; treating 0
+                // as progress would spin this loop forever on a dead peer.
+                if (comp.result <= 0) { c->Reset(); return; }
 
-                auto send_scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
-                send_sub.callback = [c, keep, do_recv, self_fn, offset, total,
-                                     send_scope = std::move(send_scope)]
-                                    (ETCS::IOCompletion comp) mutable
-                {
-                    // <= 0 covers both error and a zero-byte accept; treating 0
-                    // as progress would spin this loop forever on a dead peer.
-                    if (comp.result <= 0) { c->Reset(); c->NoteComplete(); return; }
-
-                    const size_t now = offset + static_cast<size_t>(comp.result);
-                    if (now < total) { (*self_fn)(now); c->NoteComplete(); return; }
-
-                    // Only a connection whose response fully landed can be
-                    // reused -- otherwise the next request would parse our own
-                    // leftover bytes as its request line.
-                    if (keep && c->IsConnectionOpen())
-                    { c->RecycleForNextRequest(); (*do_recv)(c); }
-                    else c->Reset();
-                    c->NoteComplete();
-                };
-
-                c->NoteSubmit();
-                if (!pool.submit(std::move(send_sub)))
-                {
-                    ETCS_LOG("HttpServer::Serve", "send refused (SQ full) at offset "
-                             << offset << "/" << total << " -- dropping fd="
-                             << c->GetClientFd());
-                    c->NoteComplete();   // undo the submit that never happened
-                    c->Reset();
-                }
+                // Re-enter do_send at the new offset either way -- when
+                // `now == total` this immediately hits its own top guard
+                // and handles keep-alive/close from the one place that
+                // decides it, rather than repeating that decision here.
+                const size_t now = offset + static_cast<size_t>(comp.result);
+                ref.disarm();
+                (*do_send)(c, now);
             };
 
-            (*do_send)(0);
-            c->NoteComplete();       // this recv is done
+            ConnRef work = ConnRef::Acquire(c);
+            if (c->getThreadPool().submit(std::move(send_sub))) { work.disarm(); }
+            else
+            {
+                ETCS_LOG("HttpServer::Serve", "send refused (SQ full) at offset "
+                         << offset << "/" << total << " -- dropping fd="
+                         << c->GetClientFd());
+                c->Reset();
+            }
         };
 
-        if (c->GetTLS().IsEstablished())
-        {
-            // Same NoteSubmit-then-branch-on-return-value shape as every
-            // other TLSIO call site (see TLSConnectionIO.h's own top-of-file
-            // contract): this recv's one reference either gets fully handed
-            // off to on_plaintext synchronously (settled == true, nothing
-            // further to do here) or is released right away because a new
-            // ciphertext Recv is now the thing actually in flight
-            // (settled == false, on_plaintext runs later from that
-            // completion instead).
-            c->NoteSubmit();
-            if (!TLSIO::SubmitTLSRecv(c, &self, ctx, on_plaintext))
-                c->NoteComplete();
-            return;
-        }
-
-        ETCS::IOSubmission sub;
-        sub.op         = ETCS::IOOp::Recv;
-        sub.fd         = c->GetClientFd();
-        sub.buffer     = c->RecvBuffer().data();
-        sub.buffer_len = c->RecvBuffer().size();
-        sub.priority   = static_cast<int>(ETCS::Priority::Medium);
-        sub.ctx        = ctx;
-
-        // Registered against the SERVER, not the connection: this is what
-        // makes a destroy of the server actually wait for in-flight
-        // per-connection I/O. Without it the outer Serve call's own scope
-        // clears the instant this function returns -- which is immediately,
-        // since it only submits -- while every lambda it launched keeps
-        // running untracked, free to touch an entity concurrently with
-        // whatever is destroying it. shared_ptr because std::function needs a
-        // copy-constructible target and ScopeTag's copy ctor is deleted.
-        auto scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
-        sub.callback = [on_plaintext, scope = std::move(scope)]
-                       (ETCS::IOCompletion comp) mutable
-        {
-            on_plaintext(static_cast<int>(comp.result));
-        };
-
-        c->NoteSubmit();
-        if (!pool.submit(std::move(sub)))
-        {
-            ETCS_LOG("HttpServer::Serve", "recv refused (SQ full) -- dropping fd="
-                     << c->GetClientFd());
-            c->NoteComplete();
-            c->Reset();
-        }
+        entry.disarm();
+        (*do_send)(c, 0);
     };
 
-    (*do_recv)(conn);
+    ReadUntilParsed(conn, &self, ctx,
+        [on_request](SocketConnectionState* c) { (*on_request)(c); });
 }
 
 // ===========================================================================
@@ -1182,6 +1132,70 @@ DEFINE_WORK_FUNC(FileHtmlPage, Resolve)
 }
 
 DEFINE_WORK_FUNC(FileHtmlPage, Delete)
+{
+    (void)data; (void)ctx;
+    self.Delete();
+}
+
+// ===========================================================================
+// TarpitNode — a self-registering Filter_ + gate-level consumer, the same
+// two-action shape ChessNode/ChessGame already use for route-level
+// filtering (ChessProvider.h's own Filter/Request pair). Registered via
+// HttpServer::AddHandler's optional filter arguments (forwarded straight to
+// ConnectionManager::RegisterConsumer), never wired specially into
+// HttpServer or ConnectionManager themselves -- see TarpitNode.h's own top
+// comment for the full reasoning.
+// ===========================================================================
+
+DEFINE_WORK_FUNC(TarpitNode, Filter)
+{
+    (void)ctx;
+    self.Accepts(data);
+}
+
+// Payload is (manager_rid, conn_rid) -- ConnectionManager::dispatchToSubscribers'
+// own frame, unpacked here exactly as HttpServer::Serve unpacks the same
+// shape one type over.
+DEFINE_WORK_FUNC(TarpitNode, Request)
+{
+    ETCS::RID manager_rid = 0;
+    ETCS::RID conn_rid    = 0;
+    data >> manager_rid;
+    data >> conn_rid;
+    self.ClaimAndDelay(manager_rid, conn_rid, ctx);
+}
+
+DEFINE_WORK_FUNC(TarpitNode, AddTarpitPattern)
+{
+    (void)ctx;
+    self.AddTarpitPattern(data.toString());
+}
+
+DEFINE_WORK_FUNC(TarpitNode, ClearTarpitPatterns)
+{
+    (void)data; (void)ctx;
+    self.ClearTarpitPatterns();
+}
+
+DEFINE_WORK_FUNC(TarpitNode, LoadDefaultTarpitPatterns)
+{
+    (void)data; (void)ctx;
+    self.LoadDefaultTarpitPatterns();
+    ETCS_LOG("TarpitNode::LoadDefaultTarpitPatterns", "RID:" << self.getRID()
+             << " -- " << self.TarpitPatternCount() << " pattern(s) loaded.");
+}
+
+DEFINE_WORK_FUNC(TarpitNode, SetTarpitDelayMs)
+{
+    (void)ctx;
+    int ms = 0;
+    data >> ms;
+    self.SetTarpitDelayMs(ms);
+    data.reset();
+    data << self.GetTarpitDelayMs();
+}
+
+DEFINE_WORK_FUNC(TarpitNode, Delete)
 {
     (void)data; (void)ctx;
     self.Delete();

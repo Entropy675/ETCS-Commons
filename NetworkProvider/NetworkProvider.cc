@@ -1,6 +1,6 @@
 #include "NetworkProvider.h"
 ETCS_MODULE_EXPORT_MAIN(NetworkProvider,
-    "HttpServer ConnectionManager HTTPParser TLSContext SocketConnectionState StaticHtmlPage FileHtmlPage")
+    "HttpServer ConnectionManager HTTPParser TLSContext SocketConnectionState StaticHtmlPage FileHtmlPage TarpitNode")
 
 // HttpServer — root-level. A bag of config with Start/Stop; owns its gate and
 // its pages as typed children.
@@ -46,4 +46,12 @@ ETCS_TAG_BLOCK_BASIC(StaticHtmlPage,
 
 ETCS_TAG_BLOCK_BASIC(FileHtmlPage,
     LoadFromDisk, MountExternal, EnsureFallback, Resolve, ListPaths, Delete
+)
+
+// TarpitNode — a self-registering Filter_ + gate-level consumer. See
+// TarpitNode.h's own top comment for why this is a standalone type rather
+// than special-cased logic in HttpServer/ConnectionManager.
+ETCS_TAG_BLOCK_BASIC(TarpitNode,
+    Filter, Request, AddTarpitPattern, ClearTarpitPatterns,
+    LoadDefaultTarpitPatterns, SetTarpitDelayMs, Delete
 )

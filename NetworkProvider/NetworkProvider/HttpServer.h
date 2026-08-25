@@ -97,7 +97,7 @@ public:
         else
         {
             for (const auto& h : handlers_)
-                manager_->RegisterConsumer(h.rid, h.action);
+                manager_->RegisterConsumer(h.rid, h.action, h.filter_rid, h.filter_action);
         }
 
         started_ = true;
@@ -247,13 +247,23 @@ public:
     // to the gate on Start, so handlers can be declared in any order relative
     // to everything else and the wiring happens once, at a known point.
     // Persists across Stop/Start -- it is configuration, not generated state.
-    void AddHandler(ETCS::RID rid, const std::string& action)
+    //
+    // filter_rid/filter_action are OPTIONAL (0/"" means unfiltered), same
+    // convention AddRoute already uses one layer up: a script that wants a
+    // gate-level consumer to see only SOME connections (a tarpit matching
+    // scan-shaped paths, say) passes its own Filter_ action here instead of
+    // having to reach into a manager this type mints internally and is
+    // never otherwise script-addressable. Forwarded to
+    // ConnectionManager::RegisterConsumer verbatim -- this method does not
+    // interpret the filter any more than RegisterConsumer itself does.
+    void AddHandler(ETCS::RID rid, const std::string& action,
+                    ETCS::RID filter_rid = 0, const std::string& filter_action = "")
     {
         if (rid == 0 || action.empty()) return;
         for (auto& h : handlers_)
             if (h.rid == rid && h.action == action) return;
-        handlers_.push_back(Handler{rid, action});
-        if (manager_) manager_->RegisterConsumer(rid, action); // live add
+        handlers_.push_back(Handler{rid, action, filter_rid, filter_action});
+        if (manager_) manager_->RegisterConsumer(rid, action, filter_rid, filter_action); // live add
     }
 
     void ClearHandlers()
@@ -427,10 +437,15 @@ public:
     }
 
 private:
+    // Optional filter, same convention as Route below and Subscriber one
+    // layer down in ConnectionManager: 0/"" means unfiltered (takes every
+    // connection this server doesn't otherwise claim as its own default).
     struct Handler
     {
         ETCS::RID   rid;
         std::string action;
+        ETCS::RID   filter_rid    = 0;
+        std::string filter_action;
     };
 
     // A ROUTE is the request-level counterpart to a gate subscriber. The gate

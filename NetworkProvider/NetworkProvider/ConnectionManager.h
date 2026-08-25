@@ -4,6 +4,7 @@
 #include "SocketConnectionState.h"
 #include "TLSServerConfig.h"
 #include "TLSConnectionIO.h"
+#include "ConnectionRecvLoop.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <memory>
 #include <thread>
+#include <cstring>
 
 // ConnectionManager — the Gate_ for an inbound TCP listener. Owns the
 // listening fd, mints one SocketConnectionState per accepted connection as an
@@ -411,6 +413,14 @@ public:
         for (auto& s : subscribers_)
             if (s.rid == rid && s.action == action) return; // already registered
         subscribers_.push_back(Subscriber{rid, action, filter_rid, filter_action});
+        // Kept in lockstep with subscribers_ at every mutation site (here,
+        // UnregisterConsumer, and dispatchToSubscribers's own dead-entry
+        // sweep) so beginDispatch can answer "is there a filtered
+        // subscriber at all" with one relaxed atomic load instead of taking
+        // subs_mutex_ and scanning the list on every accepted connection --
+        // see hasFilteredSubscriber's own comment.
+        if (filter_rid != 0 && !filter_action.empty())
+            filtered_subscriber_count_.fetch_add(1, std::memory_order_relaxed);
         ETCS_LOG("ConnectionManager", "RegisterConsumer: RID:" << rid
                  << " ." << action
                  << (filter_rid ? " filtered by RID:" + std::to_string(filter_rid)
@@ -423,7 +433,12 @@ public:
     {
         std::lock_guard<std::mutex> lock(subs_mutex_);
         for (auto it = subscribers_.begin(); it != subscribers_.end(); )
-            it = (it->rid == rid) ? subscribers_.erase(it) : it + 1;
+        {
+            if (it->rid != rid) { ++it; continue; }
+            if (it->filtered())
+                filtered_subscriber_count_.fetch_sub(1, std::memory_order_relaxed);
+            it = subscribers_.erase(it);
+        }
     }
 
     size_t SubscriberCount() const
@@ -629,6 +644,10 @@ private:
     // How often the maintenance thread runs. Well under TIMEOUT_SECONDS so an
     // expired connection is reaped promptly rather than a whole tick late.
     static constexpr int    kMaintainMs   = 1000;
+    // Maintenance ticks between stuck-connection reports (see reapIdle).
+    // 30 at kMaintainMs=1000 is one line per stuck connection every ~30s --
+    // enough to watch a count fail to move, quiet enough to read around.
+    static constexpr int    kStuckReportTicks = 30;
     // Was 8. The backlog is what absorbs a burst arriving faster than the
     // window can retire; at 8 it was the binding limit under load.
     static constexpr int    kBacklog      = 128;
@@ -636,6 +655,9 @@ private:
     std::thread        maintain_thread_;
     std::atomic<bool>  maintain_running_{false};
     std::atomic<long>  rearms_{0};
+    // Touched only by the maintenance thread, so a plain int is correct --
+    // see reapIdle's own stuck report for what it paces.
+    int                stuck_report_tick_ = 0;
 
     int                 listen_fd_ = -1;
     int                 port_      = 0;
@@ -734,6 +756,18 @@ private:
 
     mutable std::mutex      subs_mutex_;
     std::vector<Subscriber> subscribers_;
+
+    // Count of subscribers_ entries with filtered()==true, maintained
+    // alongside every mutation of subscribers_ itself (RegisterConsumer,
+    // UnregisterConsumer, dispatchToSubscribers's own dead-entry sweep) so
+    // hasFilteredSubscriber() below never has to touch subs_mutex_ or scan
+    // the list on the accept-time hot path. Relaxed ordering is enough: the
+    // actual dispatch decision still reads subscribers_ itself under the
+    // lock (dispatchToSubscribers's own snapshot), so a stale count here can
+    // only ever cost one extra (or one skipped) pre-parse on the connection
+    // immediately following a registration change -- never an incorrect
+    // dispatch.
+    std::atomic<int>        filtered_subscriber_count_{0};
 
     // ── Connection pool ──────────────────────────────────────────────────
     // Connections are minted once and RECYCLED, not created and destroyed per
@@ -915,6 +949,33 @@ private:
                      << " no longer resolves -- declining for subscriber RID:" << s.rid);
             return false;
         }
+
+        // Snapshot the probe BEFORE the call. Filter_'s own contract
+        // (Filter.h) is "probe in, key out -- empty means decline", which
+        // is only meaningful once AcceptsConcrete actually RAN. A target
+        // resolved to the wrong entity, or given a filter_action its tag
+        // does not provide, does not throw here -- call()'s own dispatch
+        // logs "Tag: X does not provide requested action: Y" and simply
+        // returns, leaving `io` holding exactly the probe it was never
+        // given a chance to interpret. That is non-empty, so without this
+        // check it reads as an ACCEPT -- exactly backwards, and silently:
+        // every connection matches a filter that never ran, and gets
+        // dispatched to an action the target doesn't have either (the
+        // matched subscriber's own action string is equally unexamined),
+        // which the receiving ModuleBundle also logs-and-drops -- so
+        // nothing is served AT ALL, not even the unfiltered fallback,
+        // for every single connection this gate accepts.
+        //
+        // A byte-identical, still non-empty `io` is the tell: any genuine
+        // AcceptsConcrete either declines by emptying `io` (every Filter_
+        // in this codebase does -- TarpitNode::AcceptsConcrete included)
+        // or accepts by writing an actual key, which is never simply the
+        // untouched probe handed in. Comparing raw bytes rather than
+        // reaching for an operator== keeps this independent of whatever
+        // equality Buffer may or may not define.
+        const size_t probe_len = io.written;
+        std::vector<char> probe_bytes(io.buf, io.buf + probe_len);
+
         ETCS::Buffer action = qualifiedAction(f, s.filter_action);
         try { f->call(action, io, accept_ctx_); }
         catch (const std::exception& ex)
@@ -924,6 +985,19 @@ private:
                      << " -- declining.");
             return false;
         }
+
+        if (io.written == probe_len
+            && (probe_len == 0 || std::memcmp(io.buf, probe_bytes.data(), probe_len) == 0))
+        {
+            ETCS_LOG("ConnectionManager", "filter RID:" << s.filter_rid
+                     << " ." << s.filter_action << " left the probe untouched -- "
+                        "that action likely does not exist on RID:" << s.filter_rid
+                     << "'s actual tag (see the ModuleBundle log line just above,"
+                        " if one printed) -- declining rather than treating an "
+                        "unrun filter as a match.");
+            return false;
+        }
+
         return io.written > 0;
     }
 
@@ -997,6 +1071,35 @@ private:
         if (reaped)
             ETCS_LOG("ConnectionManager", "MAINT: reaped " << reaped
                      << " idle connection(s) past " << SocketConnectionState::TIMEOUT_SECONDS << "s");
+
+        // STUCK REPORT. A connection that is IsActive() but no longer open
+        // is mid-drain: Reset has run, but finalizeIfDraining has not, which
+        // means io_inflight_ has not reached zero. That is NORMAL for a tick
+        // or two while a cancel surfaces the outstanding op as -ECANCELED --
+        // and PERMANENT if a reference was leaked, because nothing else will
+        // ever drive that count down and the connection's pool slot is gone
+        // for the process's lifetime.
+        //
+        // The two cases are indistinguishable from any other log line this
+        // module writes, which is exactly why this exists: it prints the
+        // one number that separates them (how many references are actually
+        // outstanding) alongside the RID, so a leak can be attributed to a
+        // specific connection and a specific count rather than inferred
+        // from a pool that quietly stops recycling. Deliberately rate
+        // limited -- a stuck connection is stuck forever, so reporting it
+        // every tick would reproduce precisely the unbounded-repetition
+        // problem checkTimeout's own Serving guard just removed.
+        if (++stuck_report_tick_ >= kStuckReportTicks)
+        {
+            stuck_report_tick_ = 0;
+            for (SocketConnectionState* c : live)
+                if (!c->IsConnectionOpen())
+                    ETCS_LOG("ConnectionManager", "MAINT: connection RID:" << c->getRID()
+                             << " is still draining with " << c->InflightCount()
+                             << " io reference(s) outstanding -- if this count never "
+                                "reaches 0 it is a LEAKED reference, and this "
+                                "connection's pool slot is gone for good.");
+        }
     }
 
     void submitAccept(int retry = 0)
@@ -1168,14 +1271,101 @@ private:
                 [this, conn](bool ok)
                 {
                     tls_handshakes_.fetch_sub(1, std::memory_order_acq_rel);
-                    if (ok) dispatchToSubscribers(conn);
+                    if (ok) beginDispatch(conn);
                     else    { conn->Reset(); conn->NoteComplete(); }
                 });
             if (!settled) conn->NoteComplete();
             return;
         }
 
-        dispatchToSubscribers(conn);
+        beginDispatch(conn);
+    }
+
+    // Whether ANY registered subscriber is filtered. This is the sole gate on
+    // whether preParseThenDispatch ever runs at all: with no filtered
+    // consumer registered, a path-aware pre-parse would be pure unrequested
+    // cost -- one extra recv and one extra parse per connection, paid by a
+    // deployment that never asked for path-aware gate-level filtering.
+    //
+    // A relaxed atomic load, not a locked scan -- this runs once per
+    // ACCEPTED CONNECTION, right next to the accept syscall itself, so it is
+    // squarely in the hot path onConnection already documents as
+    // performance-sensitive (see submitAccept's own comments on why the
+    // accept window exists at all). Locking subs_mutex_ here would also
+    // contend with RegisterConsumer/UnregisterConsumer on every accept, for
+    // a fact (whether any filtered subscriber exists) that changes on the
+    // order of "a script ran a config action", not per-connection.
+    // filtered_subscriber_count_ is kept exactly in step with subscribers_
+    // itself at every mutation site -- see its own comment for why a
+    // relaxed read here is still safe.
+    bool hasFilteredSubscriber() const
+    {
+        return filtered_subscriber_count_.load(std::memory_order_relaxed) > 0;
+    }
+
+    // The single entry point onConnection now calls instead of
+    // dispatchToSubscribers directly. Byte-for-byte identical behavior to
+    // before this existed, for the common case: no filtered subscriber means
+    // no pre-parse, straight to dispatchToSubscribers exactly as always.
+    // Only once a script has actually registered a filtered gate-level
+    // consumer (a tarpit or similar) does this pay for a pre-parse -- and
+    // only then, because only then does askFilter have anything to gain from
+    // one: an unfiltered subscriber's own action (HttpServer::Serve) does its
+    // own recv/parse itself and has never needed this.
+    void beginDispatch(SocketConnectionState* conn)
+    {
+        if (!hasFilteredSubscriber())
+        {
+            // Worth a line rather than a silent branch. This is the single
+            // point at which path-aware gate-level filtering is skipped for
+            // a connection, and "no filtered subscriber is registered" looks
+            // exactly like "the filter ran and declined" from anywhere
+            // downstream -- both end with the ordinary handler answering
+            // normally. A tar-pit that is registered against the wrong
+            // entity, or not registered at all, is invisible without this.
+            ETCS_LOG("ConnectionManager", "no filtered subscriber registered -- "
+                     "dispatching connection RID:" << conn->getRID()
+                     << " without a pre-parse.");
+            dispatchToSubscribers(conn);
+            return;
+        }
+        preParseThenDispatch(conn);
+    }
+
+    // ConnectionManager's own top-of-file comment says it plainly: "It does
+    // NOT interpret connections." This is the one deliberate, narrow
+    // exception, and it earns that exception on two grounds. First, it is
+    // gated behind hasFilteredSubscriber() above, so the protocol-agnostic
+    // default this type has always offered is completely unchanged unless a
+    // script opts in by registering a filtered consumer. Second, this module
+    // only ever serves HTTP in practice -- PicoHTTPParser is its only
+    // Parser_ -- so reading enough bytes to ask "what path is this" is not
+    // actually assuming more about the protocol than the rest of this module
+    // already does.
+    //
+    // Why this has to exist at all: HttpServer::DispatchRoute's own
+    // route-level Filter_ call (chess, forum) already sees the path, because
+    // by the time it runs, HttpServer::Serve's own recv has already read and
+    // parsed the request. askFilter's own gate-level call, by contrast, has
+    // always run at ACCEPT time -- before a single byte is read -- which is
+    // why its probe has only ever carried (manager_rid, conn_rid), never a
+    // path. A gate-level filter that wants to match on path needs the parse
+    // to have already happened before askFilter runs, and this is where
+    // that happens.
+    //
+    // The recv/parse loop itself is ReadUntilParsed (ConnectionRecvLoop.h),
+    // shared with HttpServer::Serve rather than a second copy of it living
+    // here -- the two callers want exactly the same thing (read bytes until
+    // one request is fully parsed) for the same reason, so a change to
+    // either one's needs belongs in one place. What stays HERE, and does
+    // NOT move into the shared loop, is only "what to do once parsed":
+    // handing the connection to dispatchToSubscribers, so a filtered
+    // consumer's own Filter_ (TarpitNode::AcceptsConcrete, say) can finally
+    // see a path.
+    void preParseThenDispatch(SocketConnectionState* conn)
+    {
+        ReadUntilParsed(conn, this, accept_ctx_,
+            [this](SocketConnectionState* c) { dispatchToSubscribers(c); });
     }
 
     // The plaintext subscriber-dispatch body onConnection always ran before
@@ -1270,7 +1460,15 @@ private:
             std::lock_guard<std::mutex> lock(subs_mutex_);
             for (ETCS::RID r : dead)
                 for (auto it = subscribers_.begin(); it != subscribers_.end(); )
-                    it = (it->rid == r) ? subscribers_.erase(it) : it + 1;
+                {
+                    if (it->rid != r) { ++it; continue; }
+                    // Kept in lockstep with subscribers_, same as
+                    // RegisterConsumer/UnregisterConsumer -- see
+                    // filtered_subscriber_count_'s own comment.
+                    if (it->filtered())
+                        filtered_subscriber_count_.fetch_sub(1, std::memory_order_relaxed);
+                    it = subscribers_.erase(it);
+                }
         }
 
         if (!delivered)

@@ -17,12 +17,14 @@
     #include "NetworkProvider/SocketConnectionState.h"
     #include "NetworkProvider/ConnectionManager.h"
     #include "NetworkProvider/HttpServer.h"
-    
+    #include "NetworkProvider/TarpitNode.h"
+
     typedef MbedTLSContext TLSContext;
     typedef PicoHTTPParser HTTPParser;
-    // StaticHtmlPage, FileHtmlPage, SocketConnectionState, ConnectionManager
-    // and HttpServer are too simple to be typedef'd -- no cross-platform alias
-    // indirection applies, so the concrete type name IS the contract tag.
+    // StaticHtmlPage, FileHtmlPage, SocketConnectionState, ConnectionManager,
+    // HttpServer and TarpitNode are too simple to be typedef'd -- no
+    // cross-platform alias indirection applies, so the concrete type name IS
+    // the contract tag.
     //
     // NOTE on HTTPParser: it is now a Parser_ leaf and nothing else. The
     // accept/serve role it used to carry moved to ConnectionManager (Gate_)

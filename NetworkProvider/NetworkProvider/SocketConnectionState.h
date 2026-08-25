@@ -195,8 +195,32 @@ public:
         // fully completed.
     }
     void markActive() { last_activity_ = std::chrono::steady_clock::now(); }
-    bool checkTimeout() 
+
+    // How many io references are still outstanding. Diagnostic only -- the
+    // ONE number that distinguishes "this connection is taking a while to
+    // drain" from "this connection can never drain because a reference was
+    // leaked", which are indistinguishable from the outside otherwise and
+    // look identical in a log. See ConnectionManager::reapIdle's own stuck
+    // report, which is the only caller.
+    int InflightCount() const { return io_inflight_.load(std::memory_order_acquire); }
+
+    bool checkTimeout()
     {
+        // ONLY a Serving connection can time out. Anything else has already
+        // begun (or finished) teardown and there is nothing here to
+        // contribute -- ResetConcrete's CAS would fail and it would return
+        // true anyway, since it is idempotent by design and reports "the
+        // transition is under way" rather than "I did something".
+        //
+        // Without this guard that idempotent `true` is indistinguishable
+        // from a real reap, so a connection stuck mid-drain is re-reported
+        // as freshly reaped on EVERY maintenance tick, forever: unbounded
+        // identical log lines, and a "reaped N idle connection(s)" count
+        // that keeps claiming progress while nothing is actually being
+        // recycled. That turns the one signal that would name a stuck
+        // connection into the noise that hides it.
+        if (phase_.load(std::memory_order_acquire) != Phase::Serving) return false;
+
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - last_activity_).count() > TIMEOUT_SECONDS)
         {

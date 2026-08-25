@@ -67,6 +67,33 @@ LoadFromDisk ./www
 ListPaths tree
 context NetworkProvider::HttpServer web
 
+# The tar-pit: a self-registering, gate-level filter that catches
+# bot-scan-shaped paths (.env, wp-admin, .php, ...) and answers them with a
+# deliberately slow 404 instead of routing them anywhere real -- see
+# TarpitNode.h for why it lives here as its own entity rather than a flag on
+# HttpServer or ConnectionManager. Byte-identical to run_website.etcs's own
+# copy of this block -- the tar-pit does not know it is being served over
+# TLS any more than chess or forum do; termination happens below every
+# subscriber, filtered ones included.
+#
+# FULLY QUALIFIED, and it has to be -- see run_website.etcs's own copy of
+# this block for what a bare `TarpitNode tarpit` silently does instead when
+# a tag is already in context (it spawns a second HttpServer under that
+# name and every @tarpit below resolves to it).
+context NetworkProvider::TarpitNode tarpit
+spawn tarpit
+LoadDefaultTarpitPatterns
+
+# AddHandler @tarpit Request @tarpit Filter registers the tar-pit as a
+# FILTERED gate-level consumer, tried before unfiltered ones. AddHandler
+# @web Serve is NOT redundant with Start's own implicit default -- that
+# default only fires when handlers_ is EMPTY, and adding the tar-pit above
+# means it no longer is. Without this second line the tar-pit would be the
+# only registered consumer and every real request would find no fallback.
+context NetworkProvider::HttpServer web
+AddHandler @tarpit Request @tarpit Filter
+AddHandler @web Serve
+
 Start
 IsStarted
 
