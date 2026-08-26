@@ -259,8 +259,31 @@ public:
     void NoteSubmit() { io_inflight_.fetch_add(1, std::memory_order_acq_rel); }
     void NoteComplete()
     {
-        if (io_inflight_.fetch_sub(1, std::memory_order_acq_rel) == 1)
-            finalizeIfDraining();
+        const int prev = io_inflight_.fetch_sub(1, std::memory_order_acq_rel);
+
+        // An over-release is unrecoverable BY CONSTRUCTION, which is why it
+        // is worth a branch on the hot path: finalizeIfDraining returns
+        // early unless the count is exactly 0, so once it has gone negative
+        // no ordinary sequence of releases can ever bring it back -- this
+        // pool slot is permanently un-drainable from here on. That is the
+        // "-2 io reference(s) outstanding" a reapIdle sweep reports much
+        // later, by which point the frame that double-released is long
+        // gone. Caught here it names the exact release that did it.
+        //
+        // Free: fetch_sub already returns the previous value and it was
+        // already being compared, so this is one register test, no extra
+        // atomic.
+        if (prev <= 0)
+        {
+            ETCS_LOG("SocketConnectionState", "OVER-RELEASE RID:" << getRID()
+                     << " io_inflight_ " << prev << " -> " << (prev - 1)
+                     << " -- this connection can no longer drain.");
+#ifdef ETCS_REFCOUNT_ABORT
+            std::abort();   // opt-in: stop in the frame that caused it
+#endif
+            return;         // do not let a negative count reach finalize
+        }
+        if (prev == 1) finalizeIfDraining();
     }
 
     // --- ConnectionState_ / EphemeralBase concrete surface ---

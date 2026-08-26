@@ -583,16 +583,17 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
         (*do_send)(c, 0);
     };
 
-    // Own reference, separate from dispatchToSubscribers's dispatch
-    // reference -- its own trailing NoteComplete() releases THAT one
-    // unconditionally once target->call() returns here, regardless of
-    // what async work this starts. Without this, ReadUntilParsed's
-    // "entered holding one reference, released on every path out" (its
-    // own contract, ConnectionRecvLoop.h) was silently consuming the
-    // SAME reference dispatch still thinks it owns -- a double release
-    // on every dispatched connection, io_inflight_ eventually going
-    // negative and the pool slot never draining.
-    conn->NoteSubmit();
+    // A reference of Serve's OWN, acquired here and handed straight to
+    // ReadUntilParsed -- which wraps it on entry and releases it on every
+    // path out (its contract, ConnectionRecvLoop.h). Deliberately NOT
+    // dispatchToSubscribers's dispatch reference: that one is owned by
+    // dispatch's own `entry` ConnRef and released once this call returns,
+    // whatever async work it started. Spending it here instead was a double
+    // release on every dispatched connection -- io_inflight_ going negative,
+    // and, because finalizeIfDraining only fires at exactly 0, a pool slot
+    // that could never drain again.
+    ConnRef work = ConnRef::Acquire(conn);
+    work.disarm();          // ReadUntilParsed owns it from here
     ReadUntilParsed(conn, &self, ctx,
         [on_request](SocketConnectionState* c) { (*on_request)(c); });
 }

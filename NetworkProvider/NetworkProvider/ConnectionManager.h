@@ -5,6 +5,7 @@
 #include "TLSServerConfig.h"
 #include "TLSConnectionIO.h"
 #include "ConnectionRecvLoop.h"
+#include "ConnRef.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -1234,6 +1235,10 @@ private:
         SocketConnectionState* conn = acquireConnection(fd);
         if (!conn) { ::close(fd); return; }
 
+        // TryClaim seeded exactly one io_inflight_ reference -- the dispatch
+        // reference. This owns it until something downstream takes it over.
+        ConnRef entry = ConnRef::Wrap(conn);
+
         ETCS_LOG("ConnectionManager", "Accepted fd=" << fd
                  << " RID:" << conn->getRID() << " on port " << port_);
 
@@ -1248,21 +1253,18 @@ private:
                 ETCS_LOG("ConnectionManager", "TLS Init failed for fd=" << fd
                          << " RID:" << conn->getRID() << " -- dropping.");
                 conn->Reset();
-                conn->NoteComplete();   // release the dispatch reference
-                return;
+                return;                 // entry releases the dispatch reference
             }
 
             // DriveTLSHandshake's own bool return: true means the entry
             // reference it was handed (the one acquireConnection seeded) is
             // ALREADY fully accounted for -- either the handshake resolved
-            // synchronously and on_settled already ran to completion
-            // (including dispatchToSubscribers's own trailing NoteComplete,
-            // or the Reset()+NoteComplete() on failure), or it never will
-            // resolve synchronously but the reference was still consumed on
-            // this path. false means a new async ciphertext IO is now
-            // outstanding and THIS call site owns releasing the entry
-            // reference exactly once, immediately -- see TLSConnectionIO.h's
-            // top-of-file contract for the full reasoning.
+            // synchronously and on_settled already ran to completion, or it
+            // never will resolve synchronously but the reference was still
+            // consumed on this path -- so `entry` disarms. false means a new
+            // async ciphertext IO is outstanding and the entry reference is
+            // spare, which is exactly what leaving `entry` armed settles on
+            // return. See TLSConnectionIO.h's top-of-file contract.
             // Counted BEFORE the drive, released on the single settled
             // path below -- see tls_handshakes_'s own comment for why
             // CloseConcrete has to wait on this separately from inflight_.
@@ -1270,14 +1272,18 @@ private:
             bool settled = TLSIO::DriveTLSHandshake(conn, this, accept_ctx_,
                 [this, conn](bool ok)
                 {
+                    // Invoked holding a live reference, like every
+                    // continuation in this module.
+                    ConnRef ref = ConnRef::Wrap(conn);
                     tls_handshakes_.fetch_sub(1, std::memory_order_acq_rel);
-                    if (ok) beginDispatch(conn);
-                    else    { conn->Reset(); conn->NoteComplete(); }
+                    if (ok) { ref.disarm(); beginDispatch(conn); }
+                    else    { conn->Reset(); }   // ref releases
                 });
-            if (!settled) conn->NoteComplete();
+            if (settled) entry.disarm();
             return;
         }
 
+        entry.disarm();     // beginDispatch takes the dispatch reference
         beginDispatch(conn);
     }
 
@@ -1373,10 +1379,16 @@ private:
     // installed) is byte-for-byte unchanged. Called either directly from
     // onConnection (plaintext) or from a TLS handshake's on_settled callback
     // once DriveTLSHandshake reports success (TLSConnectionIO.h) -- in both
-    // cases the caller holds exactly the one io_inflight_ reference this
-    // function's own trailing NoteComplete() releases.
+    // cases the caller hands over exactly the one io_inflight_ reference
+    // that this function's own `entry` ConnRef releases.
     void dispatchToSubscribers(SocketConnectionState* conn)
     {
+        // The dispatch reference, owned for this whole function. This is the
+        // contract HttpServer::Serve broke once by consuming it a second
+        // time (see NetworkProvider.h) -- expressed as ownership rather than
+        // as a rule, it is not something a subscriber can quietly spend.
+        ConnRef entry = ConnRef::Wrap(conn);
+
         // Snapshot under the lock, dispatch outside it: a subscriber's action
         // can do anything, including registering or unregistering, and holding
         // this lock across that would be a self-deadlock waiting to happen.
@@ -1391,8 +1403,7 @@ private:
             ETCS_LOG("ConnectionManager", "No subscribers -- dropping connection RID:"
                      << conn->getRID() << ".");
             conn->Reset();
-            conn->NoteComplete();   // release the dispatch reference
-            return;
+            return;                 // entry releases the dispatch reference
         }
 
         // Payload is the connection's own RID: the subscriber is out-of-tree,
@@ -1480,7 +1491,9 @@ private:
 
         // Dispatch is over: whatever Serve submitted now holds its own
         // references, and this one must go or the connection never drains.
-        conn->NoteComplete();
+        // Released HERE rather than at scope exit because the log below
+        // reports in_use_, which this release can decrement.
+        entry.release();
 
         // getTypedChildren walked and copied the whole child list under the
         // lock addTag and getTypedChild both need -- O(live connections) of

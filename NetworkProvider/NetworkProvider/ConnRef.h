@@ -75,6 +75,15 @@ public:
     // destructor becomes a no-op after this.
     void disarm() { conn_ = nullptr; }
 
+    // Release NOW rather than at scope exit, for the rare place where the
+    // exact release POINT is load-bearing rather than just the fact of it --
+    // ConnectionManager::dispatchToSubscribers logs the pool's in-use count
+    // on the line immediately after, and releasing later would print a
+    // connection that has in fact already gone. Prefer plain scope exit
+    // everywhere else: a release you have to place by hand is the thing this
+    // class exists to get rid of. Idempotent, like disarm().
+    void release() { if (conn_) { conn_->NoteComplete(); conn_ = nullptr; } }
+
     SocketConnectionState* get() const { return conn_; }
     explicit operator bool() const     { return conn_ != nullptr; }
 
