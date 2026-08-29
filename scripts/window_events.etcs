@@ -1,7 +1,0 @@
-#!/usr/bin/env etcs
-WindowProvider
-Window window
-
-Window.ProduceEvents window
-Window.ConsumeEvents window
-Window.Close window

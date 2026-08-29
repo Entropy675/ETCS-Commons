@@ -1,7 +1,0 @@
-#!/usr/bin/env etcs 
-WindowProvider
-Window main
-
-detach window_events.etcs window=main
-Window.Run main 600 600 'GraphicalLoader Test GUI' 
-Window.Delete main
