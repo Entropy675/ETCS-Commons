@@ -3,6 +3,7 @@
 #include "../../../ontology.h"
 #include "SocketConnectionState.h"
 #include "TLSServerContext.h"
+#include "ConnRef.h"
 #include <functional>
 #include "mbedtls/ssl.h"
 #include "mbedtls/error.h"
@@ -47,28 +48,35 @@
 //   true  -- that entry reference has ALREADY been fully accounted for by
 //            the time this call returns, because the CONTINUATION was
 //            invoked and the continuation owns it (see below). The caller
-//            of a `true`-returning call does NOTHING further -- no
-//            NoteComplete, nothing.
+//            must not release it a second time.
 //
-//   false -- a NEW ciphertext IOSubmission is now in flight (its own
-//            NoteSubmit already ran), and the ENTRY reference is still
-//            outstanding, now spare relative to that new one. The caller
-//            MUST call conn->NoteComplete() exactly once, immediately, as
-//            its very next statement -- the identical
-//            `(*do_recv)(c); c->NoteComplete();` hand-off shape used
-//            throughout this module, just returned as a bool instead of
-//            written out by hand at every call site.
+//   false -- a NEW ciphertext IOSubmission is now in flight (it took its own
+//            reference), and the ENTRY reference is still outstanding, now
+//            spare relative to that new one. The caller must release it.
+//
+// AT A CALL SITE, THAT BOOL IS JUST A disarm() CONDITION. The caller holds
+// its reference in a ConnRef (ConnRef.h) like everything else in this
+// module, so both outcomes are one line with nothing to remember:
+//
+//     ConnRef work = ConnRef::Acquire(conn);
+//     if (TLSIO::SubmitTLSRecv(conn, owner, ctx, on_bytes)) work.disarm();
+//
+// true disarms because the callee already accounted for that reference;
+// false leaves it armed so the destructor releases it right there, which is
+// what "the caller must release it" used to mean as a hand-written
+// NoteComplete at each site. ConnectionRecvLoop.h drives all four of these
+// exactly this way.
 //
 // THE CONTINUATION OWNS THE REFERENCE. Every continuation parameter
 // (on_drained / on_settled / on_plaintext / on_progress) is invoked with a
 // live reference in hand and is responsible for releasing it exactly once,
-// on every path out of itself. That is not a new rule invented here: it is
-// exactly what ConnectionManager::dispatchToSubscribers already does with
-// its own trailing NoteComplete(), and what HttpServer::Serve's plaintext
-// handler already does on each of its branches. Stating it uniformly is
-// what lets these four functions nest through each other -- synchronously,
-// asynchronously, and recursively -- without any of them needing to know
-// how deep it is or who called it.
+// on every path out of itself -- in practice by opening with its own
+// ConnRef::Wrap(conn), which is what every continuation written here does.
+// Handing the reference onward is a disarm() immediately before the call,
+// exactly as ConnRef.h documents. Stating it uniformly is what lets these
+// four functions nest through each other -- synchronously, asynchronously,
+// and recursively -- without any of them needing to know how deep it is or
+// who called it.
 //
 // A CONSEQUENCE WORTH SPELLING OUT: a continuation is invoked on EVERY
 // terminal path, including failures -- a refused submission, a dead peer, a
@@ -163,24 +171,36 @@ inline bool FlushCipherOut(SocketConnectionState* conn, ETCS::Entity* owner,
     sub.callback = [conn, owner, ctx, on_drained, scope = std::move(scope)]
                    (ETCS::IOCompletion comp) mutable
     {
+        // This completion fires holding the reference its own submission
+        // took. ConnRef makes that ownership explicit for every path below
+        // rather than leaving it to a hand-written NoteComplete per branch.
+        ConnRef ref = ConnRef::Wrap(conn);
+
         // <= 0 covers both error and a zero-byte accept, exactly like every
         // other send completion in this module -- treating 0 as progress
         // would spin this loop forever on a dead peer.
-        if (comp.result <= 0) { on_drained(false); return; }
+        if (comp.result <= 0) { ref.disarm(); on_drained(false); return; }
         conn->GetTLS().CipherOut().off += static_cast<size_t>(comp.result);
-        if (!FlushCipherOut(conn, owner, ctx, on_drained))
-            conn->NoteComplete();
+
+        // true: the recursive call already accounted for the reference it
+        // was entered with -- ours -- so disarm. false: it left a new op in
+        // flight and ours is now spare, which ref's destructor settles.
+        if (FlushCipherOut(conn, owner, ctx, on_drained)) ref.disarm();
     };
-    conn->NoteSubmit();
-    if (!conn->getThreadPool().submit(std::move(sub)))
     {
+        ConnRef work = ConnRef::Acquire(conn);
+        if (conn->getThreadPool().submit(std::move(sub)))
+        {
+            work.disarm();   // the submitted op's completion owns this now
+            return false;
+        }
         ETCS_LOG("TLSConnectionIO", "FlushCipherOut: send refused (SQ full) on fd="
                  << conn->GetClientFd());
-        conn->NoteComplete();   // undo the NoteSubmit -- that submission never happened
-        on_drained(false);
-        return true;
-    }
-    return false;
+    }   // work releases here -- the same point the hand-written "undo the
+        // NoteSubmit" sat, so the continuation below still runs with exactly
+        // the entry reference and nothing else outstanding.
+    on_drained(false);
+    return true;
 }
 
 // Drives the TLS handshake to completion or failure. Called once from
@@ -242,10 +262,12 @@ inline bool DriveTLSHandshake(SocketConnectionState* conn, ETCS::Entity* owner,
         return FlushCipherOut(conn, owner, ctx,
             [conn, owner, ctx, on_settled, finished](bool ok)
         {
-            if (!ok)      { on_settled(false); return; }
-            if (finished) { on_settled(true);  return; }
-            if (!DriveTLSHandshake(conn, owner, ctx, on_settled))
-                conn->NoteComplete();
+            // A continuation is invoked holding a live reference (this
+            // file's contract, above); ConnRef is where that now lives.
+            ConnRef ref = ConnRef::Wrap(conn);
+            if (!ok)      { ref.disarm(); on_settled(false); return; }
+            if (finished) { ref.disarm(); on_settled(true);  return; }
+            if (DriveTLSHandshake(conn, owner, ctx, on_settled)) ref.disarm();
         });
     }
 
@@ -280,21 +302,23 @@ inline bool DriveTLSHandshake(SocketConnectionState* conn, ETCS::Entity* owner,
     sub.callback = [conn, owner, ctx, on_settled, scope = std::move(scope)]
                    (ETCS::IOCompletion comp) mutable
     {
-        if (comp.result <= 0) { on_settled(false); return; }
+        ConnRef ref = ConnRef::Wrap(conn);
+        if (comp.result <= 0) { ref.disarm(); on_settled(false); return; }
         conn->GetTLS().CipherIn().len += static_cast<size_t>(comp.result);
-        if (!DriveTLSHandshake(conn, owner, ctx, on_settled))
-            conn->NoteComplete();
+        if (DriveTLSHandshake(conn, owner, ctx, on_settled)) ref.disarm();
     };
-    conn->NoteSubmit();
-    if (!conn->getThreadPool().submit(std::move(sub)))
     {
+        ConnRef work = ConnRef::Acquire(conn);
+        if (conn->getThreadPool().submit(std::move(sub)))
+        {
+            work.disarm();
+            return false;
+        }
         ETCS_LOG("TLSConnectionIO", "DriveTLSHandshake: recv refused (SQ full) on fd="
                  << conn->GetClientFd());
-        conn->NoteComplete();
-        on_settled(false);
-        return true;
-    }
-    return false;
+    }   // work releases here, as the hand-written NoteComplete did
+    on_settled(false);
+    return true;
 }
 
 // Steady-state read, once Established. Mirrors an ordinary IOCompletion's
@@ -333,13 +357,14 @@ inline bool SubmitTLSRecv(SocketConnectionState* conn, ETCS::Entity* owner,
         return FlushCipherOut(conn, owner, ctx,
             [conn, owner, ctx, on_plaintext, staged_ret](bool ok)
         {
-            if (!ok) { on_plaintext(-1); return; }
-            if (staged_ret > 0) { on_plaintext(staged_ret); return; }
+            ConnRef ref = ConnRef::Wrap(conn);
+            if (!ok) { ref.disarm(); on_plaintext(-1); return; }
+            if (staged_ret > 0) { ref.disarm(); on_plaintext(staged_ret); return; }
             if (staged_ret == 0 || staged_ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
-            { on_plaintext(0); return; }
-            if (!TLSServerContext::IsWouldBlock(staged_ret)) { on_plaintext(-1); return; }
-            if (!SubmitTLSRecv(conn, owner, ctx, on_plaintext))
-                conn->NoteComplete();
+            { ref.disarm(); on_plaintext(0); return; }
+            if (!TLSServerContext::IsWouldBlock(staged_ret))
+            { ref.disarm(); on_plaintext(-1); return; }
+            if (SubmitTLSRecv(conn, owner, ctx, on_plaintext)) ref.disarm();
         });
     }
 
@@ -372,24 +397,28 @@ inline bool SubmitTLSRecv(SocketConnectionState* conn, ETCS::Entity* owner,
     sub.callback = [conn, owner, ctx, on_plaintext, scope = std::move(scope)]
                    (ETCS::IOCompletion comp) mutable
     {
+        ConnRef ref = ConnRef::Wrap(conn);
+
         // Passed through rather than flattened to -1: result 0 is a clean
         // EOF and the handler distinguishes it from an error exactly as it
         // does for a raw recv completion.
-        if (comp.result <= 0) { on_plaintext(static_cast<int>(comp.result)); return; }
+        if (comp.result <= 0)
+        { ref.disarm(); on_plaintext(static_cast<int>(comp.result)); return; }
         conn->GetTLS().CipherIn().len += static_cast<size_t>(comp.result);
-        if (!SubmitTLSRecv(conn, owner, ctx, on_plaintext))
-            conn->NoteComplete();
+        if (SubmitTLSRecv(conn, owner, ctx, on_plaintext)) ref.disarm();
     };
-    conn->NoteSubmit();
-    if (!conn->getThreadPool().submit(std::move(sub)))
     {
+        ConnRef work = ConnRef::Acquire(conn);
+        if (conn->getThreadPool().submit(std::move(sub)))
+        {
+            work.disarm();
+            return false;
+        }
         ETCS_LOG("TLSConnectionIO", "SubmitTLSRecv: recv refused (SQ full) on fd="
                  << conn->GetClientFd());
-        conn->NoteComplete();
-        on_plaintext(-1);
-        return true;
-    }
-    return false;
+    }   // work releases here, as the hand-written NoteComplete did
+    on_plaintext(-1);
+    return true;
 }
 
 // Steady-state write, once Established. offset/total are PLAINTEXT offsets
@@ -438,11 +467,12 @@ inline bool SubmitTLSSend(SocketConnectionState* conn, ETCS::Entity* owner,
         return FlushCipherOut(conn, owner, ctx,
             [conn, owner, ctx, new_offset, total, on_progress, staged_ret](bool ok)
         {
-            if (!ok) { conn->Reset(); on_progress(-1); return; }
+            ConnRef ref = ConnRef::Wrap(conn);
+            if (!ok) { ref.disarm(); conn->Reset(); on_progress(-1); return; }
             if (staged_ret <= 0 && !TLSServerContext::IsWouldBlock(staged_ret))
-            { conn->Reset(); on_progress(-1); return; }
-            if (!SubmitTLSSend(conn, owner, ctx, new_offset, total, on_progress))
-                conn->NoteComplete();
+            { ref.disarm(); conn->Reset(); on_progress(-1); return; }
+            if (SubmitTLSSend(conn, owner, ctx, new_offset, total, on_progress))
+                ref.disarm();
         });
     }
 
@@ -488,22 +518,24 @@ inline bool SubmitTLSSend(SocketConnectionState* conn, ETCS::Entity* owner,
     sub.callback = [conn, owner, ctx, offset, total, on_progress, scope = std::move(scope)]
                    (ETCS::IOCompletion comp) mutable
     {
-        if (comp.result <= 0) { conn->Reset(); on_progress(-1); return; }
+        ConnRef ref = ConnRef::Wrap(conn);
+        if (comp.result <= 0) { ref.disarm(); conn->Reset(); on_progress(-1); return; }
         conn->GetTLS().CipherIn().len += static_cast<size_t>(comp.result);
-        if (!SubmitTLSSend(conn, owner, ctx, offset, total, on_progress))
-            conn->NoteComplete();
+        if (SubmitTLSSend(conn, owner, ctx, offset, total, on_progress)) ref.disarm();
     };
-    conn->NoteSubmit();
-    if (!conn->getThreadPool().submit(std::move(sub)))
     {
+        ConnRef work = ConnRef::Acquire(conn);
+        if (conn->getThreadPool().submit(std::move(sub)))
+        {
+            work.disarm();
+            return false;
+        }
         ETCS_LOG("TLSConnectionIO", "SubmitTLSSend: recv refused (SQ full) on fd="
                  << conn->GetClientFd());
-        conn->NoteComplete();
-        conn->Reset();
-        on_progress(-1);
-        return true;
-    }
-    return false;
+    }   // work releases here, as the hand-written NoteComplete did
+    conn->Reset();
+    on_progress(-1);
+    return true;
 }
 
 } // namespace TLSIO

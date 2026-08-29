@@ -1,5 +1,0 @@
-#!/media/user/Data/ACE/ETCS/bin/etcs
-DatabaseProvider
-LocalDatabase db
-ExecuteTransaction DELETE FROM audit;INSERT INTO audit (event) VALUES('user_sync_complete');
-ExecuteRaw PRAGMA wal_checkpoint(FULL);

@@ -1,6 +1,0 @@
-#!/media/user/Data/ACE/ETCS/bin/etcs
-
-NetworkProvider
-HTTPParser server
-Listen server 8080
-TestPage server
