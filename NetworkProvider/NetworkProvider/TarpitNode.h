@@ -167,16 +167,26 @@ public:
     // never race a half-built SendBuffer) and holds it behind
     // TarpitScheduler rather than sending immediately.
     //
-    // Entered holding EXACTLY ONE io_inflight_ reference -- same contract
-    // as ReadUntilParsed and every function in this module: a ConnRef owns
-    // it, released automatically unless disarmed because something else
-    // took it over (see ConnRef.h).
+    // A reference of ClaimAndDelay's OWN, acquired here and handed to the
+    // delayed job (or to sendNow on the capacity-refuse path). Deliberately
+    // NOT dispatchToSubscribers's dispatch reference: that one is owned by
+    // dispatch's own `entry` ConnRef and released once this call returns,
+    // whatever async work it started. Spending it here instead was a double
+    // release on every tarpit-matched connection -- io_inflight_ going
+    // negative, and, because finalizeIfDraining only fires at exactly 0, a
+    // pool slot that could never drain again. Same bug HttpServer::Serve
+    // had before ConnRef::Acquire; see NetworkProvider.h Serve for the
+    // parallel fix.
     void ClaimAndDelay(ETCS::RID manager_rid, ETCS::RID conn_rid, const ETCS::SignalContext& ctx)
     {
         SocketConnectionState* conn = resolveConnection(manager_rid, conn_rid);
         if (!conn) return;   // gate or connection gone between Filter and Request --
                               // nothing to construct a ConnRef around
-        ConnRef entry = ConnRef::Wrap(conn);
+
+        // Own reference, separate from dispatchToSubscribers's dispatch
+        // reference -- its own trailing release after call() returns must
+        // not collide with the one the scheduler (or sendNow) still holds.
+        ConnRef work = ConnRef::Acquire(conn);
 
         const char* err = "404 Not Found";
         int send_len = snprintf(conn->SendBuffer().data(), conn->SendBuffer().size(),
@@ -185,13 +195,13 @@ public:
             std::strlen(err), err);
         conn->SetSendLen(send_len);
 
-        // Hand the reference off to whichever of the two paths below
-        // actually ends up using it -- the scheduled job's own closure
-        // (the common case) or, if scheduling is refused, sendNow called
-        // directly right here. Either way the far side reclaims it with
-        // its own ConnRef::Wrap as its first statement; nothing here has
-        // to remember to release anything afterward.
-        entry.disarm();
+        // Hand the acquired reference off to whichever of the two paths
+        // below actually ends up using it -- the scheduled job's own
+        // closure (the common case) or, if scheduling is refused, sendNow
+        // called directly right here. Either way the far side reclaims it
+        // with its own ConnRef::Wrap as its first statement; nothing here
+        // has to remember to release anything afterward.
+        work.disarm();
         bool scheduled = TarpitScheduler::getInstance().ScheduleDelayed(delay_ms_,
             [this, conn, ctx]()
             {
