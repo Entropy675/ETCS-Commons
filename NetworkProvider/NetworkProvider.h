@@ -1100,6 +1100,18 @@ DEFINE_WORK_FUNC(FileHtmlPage, LoadFromDisk)
              << "' into RID:" << self.getRID());
 }
 
+DEFINE_WORK_FUNC(FileHtmlPage, SetDefaultExtension)
+{
+    // Optional path-extension fallback for this tree: when a request path
+    // segment is not found as written, try it once with this suffix. Empty
+    // string clears the fallback (exact-name only). Leading '.' is optional.
+    ETCS::Buffer ext;
+    data >> ext;
+    self.SetDefaultExtension(ext.toString());
+    ETCS_LOG("FileHtmlPage::SetDefaultExtension", "RID:" << self.getRID()
+             << " default_extension='" << self.GetDefaultExtension() << "'");
+}
+
 DEFINE_WORK_FUNC(FileHtmlPage, MountExternal)
 {
     (void)ctx;

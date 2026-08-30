@@ -148,6 +148,23 @@ public:
     }
     StaticHtmlPage* GetFallbackPage() const { return fallback_page_; }
 
+    // Default path-extension fallback for ResolveConcrete: when a request
+    // segment does not match any child as written (e.g. "/index"), try the
+    // same segment with this extension appended (e.g. "/index.html") before
+    // declaring a miss. Empty means no fallback -- exact-name only, which is
+    // the historical behaviour. Leading '.' is optional on input; stored form
+    // always includes it so concatenation is unambiguous. Applies only on
+    // the tree root this is set on (HttpServer walks each page root's
+    // Resolve), and only when the segment does not already end with the
+    // extension -- so "/index.html" still resolves in one step and never
+    // becomes "/index.html.html".
+    void SetDefaultExtension(const std::string& ext)
+    {
+        if (ext.empty()) { default_extension_.clear(); return; }
+        default_extension_ = (ext[0] == '.') ? ext : ("." + ext);
+    }
+    const std::string& GetDefaultExtension() const { return default_extension_; }
+
     // --- Register a mount child directly, not from disk -- the
     // programmatic counterpart to a directory entry LoadFromDisk would
     // have created, for mounting an externally-owned StaticHtmlPage at a
@@ -251,6 +268,20 @@ public:
         {
             if (node->kind_ == Kind::Mount) break;
             auto it = node->children_by_name_.find(segments[i]);
+            if (it == node->children_by_name_.end()
+                && !default_extension_.empty())
+            {
+                // Bare name missed -- try the configured default extension
+                // once. Only when the segment does not already end with it,
+                // so an explicit "/index.html" is never rewritten.
+                const std::string& seg = segments[i];
+                const std::string& ext = default_extension_;
+                const bool already =
+                    seg.size() >= ext.size()
+                    && seg.compare(seg.size() - ext.size(), ext.size(), ext) == 0;
+                if (!already)
+                    it = node->children_by_name_.find(seg + ext);
+            }
             if (it == node->children_by_name_.end()) return result; // not found
             node = it->second;
         }
@@ -278,9 +309,13 @@ public:
             return result;
         }
 
-        // Directory: try a real index.html child first, then a local
+        // Directory: try a real index child first (index.html by default,
+        // or "index" + default_extension_ when one is set), then a local
         // synthesized fallback, else genuinely not found.
-        auto idx_it = node->children_by_name_.find(kIndexFile);
+        const std::string index_name = default_extension_.empty()
+            ? std::string(kIndexFile)
+            : ("index" + default_extension_);
+        auto idx_it = node->children_by_name_.find(index_name);
         if (idx_it != node->children_by_name_.end() && idx_it->second->kind_ == Kind::File)
         {
             result.matched   = true;
@@ -345,6 +380,10 @@ private:
     // entity's own local_arena_ the way Entity's own tags/typed_children_
     // maps do for their actual payload.
     std::unordered_map<std::string, FileHtmlPage*> children_by_name_;
+
+    // Tree-root only (see SetDefaultExtension): optional suffix tried when
+    // a path segment misses its exact-name child. Empty = exact-name only.
+    std::string default_extension_;
 
     // Directory-kind: local, synthesized fallback content -- see
     // EnsureFallbackPage()'s own comment.
