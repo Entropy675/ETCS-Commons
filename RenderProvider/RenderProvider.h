@@ -623,14 +623,15 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
     self.SetDamping(per_sec);
 }
 
-// Radians of view rotation per pixel of pointer movement. The look arrives on
-// the same stream as the keys and is applied to whichever camera projects this
-// scene -- see Scene3D::PointerDelta on why the angle lives here rather than
-// on the camera.
-DEFINE_WORK_FUNC_TYPED(Scene3D, SetSensitivity, (float, rad_per_px))
+// A MULTIPLIER on the calibrated default, which is two full turns for one pass
+// across the frame. Stated as a ratio rather than as radians per pixel so it
+// means the same thing at any window size -- see Scene3D::SetSensitivity.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSensitivity, (float, scale))
 {
     (void)ctx;
-    self.SetSensitivity(rad_per_px);
+    self.SetSensitivity(scale);
+    ETCS_LOG("Scene3D::SetSensitivity", "x" << self.Sensitivity()
+             << " -> " << self.RadiansPerPixel() << " rad/px at the current frame width.");
 }
 
 // A push, in joules along a direction -- the primitive the input edge drives,
@@ -664,7 +665,12 @@ DEFINE_WORK_FUNC(Scene3D, Order)
              << " fraction=" << o.KineticFraction()
              << "  emissivity=" << self.Emissivity()
              << " shed-to-environment=" << self.EmittedToEnvironment()
-             << "  causal-ticks=" << self.CausalTicks()
+             << "\n    row2 pivot (" << o.fx << ", " << o.fy << ", " << o.fz
+             << ", r=" << o.radius << ")  "
+             << (o.IsAggregate() ? "aggregate" : "leaf")
+             << "   row3 axis (" << o.sx << ", " << o.sy << ", " << o.sz
+             << ", theta=" << o.theta << ")"
+             << "\n    causal-ticks=" << self.CausalTicks()
              << "\n    last crossing: row0 (" << self.LastEmission().x << ", "
              << self.LastEmission().y << ", " << self.LastEmission().z
              << ", RID:" << self.LastEmission().rid << ")  row1 ("

@@ -89,6 +89,11 @@ public:
         // Row 0's fourth slot: identity is a coordinate, so it is filled in
         // where the point starts existing rather than derived at each read.
         m_ov.rid = getRID();
+        // Row 2's fourth slot. A box is not a point -- it is already an
+        // aggregate over the volume it occupies -- so its reach is its own
+        // bounding sphere, and it is an aggregate from the moment it exists.
+        // Only a node with no extent is a leaf here.
+        m_ov.radius = std::sqrt(m_half.x * m_half.x + m_half.y * m_half.y + m_half.z * m_half.z);
         this->addTag("active");
         return true;
     }
@@ -200,51 +205,43 @@ public:
  * carries, arriving through the same stream and handled in the same work
  * function (RenderProvider.h's ConsumeInput).
  *
- * Yaw and pitch are held HERE, on the scene, and applied to whichever camera
- * projects it. That reads oddly for a moment -- a scene setting a camera's
- * pose -- and then stops: what the input names is the RELATION between the
- * viewer and the world, which is the same quantity whether you turn the head
- * or turn the room. The scene is what the input is bound to, so the scene is
- * where the relation lives, and the camera is told the answer at the moment it
- * asks for a frame.
+ * The orientation lives on the scene's OWN row 3 (ontology/OrderVector.h) and
+ * is applied to whichever camera projects it. That reads oddly for a moment --
+ * a scene setting a camera's pose -- and then stops: what the input names is
+ * the RELATION between the viewer and the world, which is the same quantity
+ * whether you turn the head or turn the room. The scene is what the input is
+ * bound to, so the scene is where the relation lives, and it lives in the row
+ * that exists to hold an angle.
  *
- * ABSOLUTE ANGLES, not accumulated rotations. Composing a rotation per event
- * drifts and cannot be clamped: pitch has to stop at the poles, and "stop"
- * means an angle exists to compare against. So the deltas move two numbers and
- * the forward vector is rebuilt from them, which is also what makes the view
- * exactly reproducible from two floats.
+ * RECORDED HERE, COMPOSED AT THE OBSERVER. This function only accumulates two
+ * pending angles; the rotation is folded into row 3 in Project, on the frame
+ * thread. Same division as the keys: the input edge records, the observer
+ * integrates, and the only thing crossing threads is a small atomic.
  */
     void PointerDelta(int32_t dx, int32_t dy)
     {
         if (dx == 0 && dy == 0) return;
-        float yaw   = m_yaw.load(std::memory_order_relaxed);
-        float pitch = m_pitch.load(std::memory_order_relaxed);
-
-        // Both inverted: moving the mouse right turns the view right, which
+        const float rad = radiansPerPixel();
+        // Both negated: moving the mouse right turns the view right, which
         // means the WORLD swings left, and this is the world's angle.
-        yaw   -= static_cast<float>(dx) * m_sensitivity;
-        pitch -= static_cast<float>(dy) * m_sensitivity;
-
-        // Just short of the poles. AT the pole the forward vector is parallel
-        // to up and the camera's basis collapses -- buildView refuses it, and
-        // the view would blank for exactly as long as you held the mouse
-        // there. Clamping is what makes looking straight up a limit rather
-        // than a failure.
-        const float limit = 1.5533f;   // ~89 degrees
-        if (pitch >  limit) pitch =  limit;
-        if (pitch < -limit) pitch = -limit;
-
-        m_yaw.store(yaw, std::memory_order_relaxed);
-        m_pitch.store(pitch, std::memory_order_relaxed);
+        addPending(m_pending_yaw,   -static_cast<float>(dx) * rad);
+        addPending(m_pending_pitch, -static_cast<float>(dy) * rad);
         m_look_dirty.store(true, std::memory_order_relaxed);
     }
 
-    // Radians per pixel of pointer movement.
-    void SetSensitivity(float rad_per_px)
-    {
-        if (rad_per_px > 0.0f) m_sensitivity = rad_per_px;
-    }
-    float Sensitivity() const { return m_sensitivity; }
+    /*
+ * Sensitivity as a MULTIPLIER on a calibrated default, not as radians per
+ * pixel.
+ *
+ * The default is two full turns for one pass across the frame -- 4*pi over the
+ * frame's width -- which is a ratio the user can feel and check rather than a
+ * constant that means nothing until you try it. It is also the only form that
+ * survives a resize: radians per pixel is wrong the moment the window changes
+ * size, and every value anyone tunes on one monitor is wrong on the next.
+ */
+    void SetSensitivity(float scale) { if (scale > 0.0f) m_sens_scale = scale; }
+    float Sensitivity() const        { return m_sens_scale; }
+    float RadiansPerPixel() const    { return radiansPerPixel(); }
 
     // Restart the pipeline after a key change. A scene at rest marks nothing,
     // so nothing re-renders, so nothing calls Interact and the first keypress
@@ -416,12 +413,21 @@ public:
         if (bits & MOVE_UP)  up_in    += 1.0f;
         if (bits & MOVE_DWN) up_in    -= 1.0f;
 
-        const float yaw = m_yaw.load(std::memory_order_relaxed);
-        const float sy = std::sin(yaw), cy = std::cos(yaw);
-        // The viewer's ground frame at this yaw: forward, and right = up x
-        // forward -- the same handedness buildView uses, for the same reason.
-        const float fx = sy,  fz = cy;
-        const float rx = cy,  rz = -sy;
+        // The viewer's GROUND frame: the current facing (row 3 applied to the
+        // reference forward) flattened onto the horizontal plane, and right =
+        // up x forward, the same handedness buildView uses.
+        //
+        // Flattened rather than used whole, which is the pitch exclusion made
+        // concrete: looking up should aim the view, not lift the feet. When
+        // the facing is near-vertical the horizontal part vanishes and the
+        // last usable frame is kept, so walking while staring at the sky is
+        // still walking somewhere.
+        float fx = m_ref_fwd.x, fyv = m_ref_fwd.y, fz = m_ref_fwd.z;
+        m_ov.RotateVector(fx, fyv, fz);
+        const float fl = std::sqrt(fx * fx + fz * fz);
+        if (fl > 1e-4f) { fx /= fl; fz /= fl; m_ground_fx = fx; m_ground_fz = fz; }
+        else            { fx = m_ground_fx;   fz = m_ground_fz; }
+        const float rx = fz, rz = -fx;
 
         float dx = -(fx * fwd_in + rx * right_in);
         float dy = -up_in;
@@ -573,6 +579,7 @@ public:
 
         std::vector<Node> nodes;
         collectSubtree(Point3D{0,0,0}, nodes);
+        coverSubtree(nodes);
         for (const Node& n : nodes) rasterBox(*px, v, n);
 
         px->MarkDirty();
@@ -1119,46 +1126,150 @@ private:
     }
 
     /*
- * Point the camera where the look angles say, at the moment it asks for a
- * frame.
+ * Fold the pending look into row 3, and point the camera where it says.
  *
- * SEEDED FROM THE CAMERA, not from zero. The first time this runs it reads
- * the angles out of the pose the script already set with LookAt, so a scene
- * that has never seen a mouse renders exactly what the script asked for and
- * the first pointer delta nudges from there. Starting at zero would snap the
- * view to +z the instant the mouse twitched, which is the kind of thing that
- * looks like a broken camera rather than a missing initialisation.
+ * THE REFERENCE FORWARD IS THE ONE THE SCRIPT SET. Row 3 is a rotation, and a
+ * rotation is only an orientation once there is something to rotate FROM. The
+ * first time through, the direction the script framed with LookAt is captured
+ * as that reference and row 3 is the identity -- so a scene that has never
+ * seen a mouse renders exactly what was asked for, and the first delta nudges
+ * from there rather than snapping to an axis.
  *
- * The distance from eye to target is preserved, so a script that framed its
- * scene keeps its framing and only the direction changes.
+ * YAW ABOUT WORLD UP, PITCH ABOUT THE CURRENT RIGHT. Both composed onto row 3
+ * from the left (OrderVector::RotateBy), which is what makes the two behave
+ * as a head turning rather than as a body rolling: yaw in world space keeps
+ * the horizon level at any pitch, and pitch in the view's own frame is the
+ * one axis that stays meaningful as yaw changes. Euler order and gimbal lock
+ * do not arise, because there are no Euler angles.
+ *
+ * THE PITCH CLAMP IS A REJECTION, not a wrap. A delta that would carry the
+ * forward vector past the pole is dropped and the yaw still applies, so
+ * pushing the mouse up at the top of the arc keeps turning instead of
+ * flipping the world over. At the pole itself the camera basis collapses and
+ * buildView refuses -- the view would blank for as long as the mouse was
+ * held there -- so this is a limit rather than a failure.
  */
     void applyLookTo(Camera_* camera)
     {
         if (!camera) return;
         ViewFrustum v = camera->GetView();
 
-        float fx = v.look_at.x - v.position.x;
-        float fy = v.look_at.y - v.position.y;
-        float fz = v.look_at.z - v.position.z;
-        float dist = std::sqrt(fx * fx + fy * fy + fz * fz);
-        if (!(dist > 0.0f)) dist = 1.0f;
+        float rx = v.look_at.x - v.position.x;
+        float ry = v.look_at.y - v.position.y;
+        float rz = v.look_at.z - v.position.z;
+        float dist = std::sqrt(rx * rx + ry * ry + rz * rz);
+        if (!(dist > 0.0f)) { dist = 1.0f; rz = 1.0f; }
 
         if (!m_look_seeded)
         {
-            m_yaw.store(std::atan2(fx, fz), std::memory_order_relaxed);
-            m_pitch.store(std::asin(fy / dist), std::memory_order_relaxed);
+            m_ref_fwd = Point3D{ rx / dist, ry / dist, rz / dist };
+            // Row 2: what the look turns about is the eye, in the scene's
+            // frame -- a first-person look is a rotation about the viewer, and
+            // that is exactly what a pivot is for.
+            m_ov.SetPivot(v.position.x - m_ov.x, v.position.y - m_ov.y, v.position.z - m_ov.z);
+            m_ov.Orient(0.0f, 0.0f, 0.0f, 0.0f);
             m_look_seeded = true;
-            return;                       // nothing to change yet
+            return;
         }
         if (!m_look_dirty.exchange(false, std::memory_order_relaxed)) return;
 
-        const float yaw   = m_yaw.load(std::memory_order_relaxed);
-        const float pitch = m_pitch.load(std::memory_order_relaxed);
-        const float cp = std::cos(pitch);
-        v.look_at = Point3D{ v.position.x + dist * cp * std::sin(yaw),
-                             v.position.y + dist * std::sin(pitch),
-                             v.position.z + dist * cp * std::cos(yaw) };
+        const float dyaw   = takePending(m_pending_yaw);
+        const float dpitch = takePending(m_pending_pitch);
+
+        if (dyaw != 0.0f) m_ov.RotateBy(0.0f, 1.0f, 0.0f, dyaw);
+
+        if (dpitch != 0.0f)
+        {
+            // The right axis of the CURRENT orientation, which is what pitch
+            // has to turn about for the horizon to stay level.
+            float fwx = m_ref_fwd.x, fwy = m_ref_fwd.y, fwz = m_ref_fwd.z;
+            m_ov.RotateVector(fwx, fwy, fwz);
+            float rgx = fwz, rgy = 0.0f, rgz = -fwx;          // up x forward, flattened
+            const float rl = std::sqrt(rgx * rgx + rgz * rgz);
+            if (rl > 1e-5f)
+            {
+                rgx /= rl; rgz /= rl;
+                OrderVector probe = m_ov;
+                probe.RotateBy(rgx, rgy, rgz, dpitch);
+                float px = m_ref_fwd.x, py = m_ref_fwd.y, pz = m_ref_fwd.z;
+                probe.RotateVector(px, py, pz);
+                if (std::fabs(py) < 0.999f) m_ov = probe;     // else: at the pole, drop it
+            }
+        }
+
+        float fx2 = m_ref_fwd.x, fy2 = m_ref_fwd.y, fz2 = m_ref_fwd.z;
+        m_ov.RotateVector(fx2, fy2, fz2);
+        v.look_at = Point3D{ v.position.x + fx2 * dist,
+                             v.position.y + fy2 * dist,
+                             v.position.z + fz2 * dist };
         camera->SetView(v);
+
+        m_frame_w = cameraWidth(camera);
+    }
+
+    // Two full turns for one pass across the frame, scaled by whatever the
+    // script asked for. Falls back to a nominal width until the first
+    // projection has told us the real one.
+    float radiansPerPixel() const
+    {
+        const uint32_t w = m_frame_w ? m_frame_w : 1024u;
+        return (4.0f * 3.14159265f / static_cast<float>(w)) * m_sens_scale;
+    }
+
+    static uint32_t cameraWidth(Camera_* c)
+    {
+        Drawable2D_* plane = cameraPlane(c);
+        return plane ? plane->Bounds().w : 0u;
+    }
+
+    // Accumulate onto an atomic float. A CAS loop rather than a plain
+    // load/store because two pointer events in the same instant are ordinary
+    // and losing one is a dropped mouse sample -- cheap to do correctly.
+    static void addPending(std::atomic<float>& a, float d)
+    {
+        float cur = a.load(std::memory_order_relaxed);
+        while (!a.compare_exchange_weak(cur, cur + d,
+                                        std::memory_order_relaxed,
+                                        std::memory_order_relaxed)) {}
+    }
+    static float takePending(std::atomic<float>& a)
+    {
+        return a.exchange(0.0f, std::memory_order_relaxed);
+    }
+
+    /*
+ * Bring row 2's radius up to date over the whole subtree.
+ *
+ * Cover rather than Reduce, and that is the distinction the two calls exist
+ * for: this node's POSITION is fixed by the script or by w/a/s/d, and reducing
+ * it would drag the container around every time something inside it moved --
+ * a scene root that follows its own contents is not a container. So the
+ * position stays and only the reach is recomputed.
+ *
+ * PARENT AND CHILD GO THROUGH THE SAME CALL, which is the whole reason the
+ * rows are on OrderVector rather than on an aggregate type: each box's own
+ * radius is its bounding sphere, each container's is the reach over its
+ * members' positions PLUS their radii, and the recursion bottoms out wherever
+ * a radius is zero. A coarse level over a fine one is exact rather than a
+ * bound over bounds that has quietly lost the guarantee.
+ *
+ * What this buys, today: world.Order() reports a reach that means something,
+ * and OrderVector::GapTo between two scenes is a one-comparison proof that
+ * nothing in either could have touched anything in the other.
+ */
+    void coverSubtree(const std::vector<Node>& nodes)
+    {
+        if (nodes.empty()) { m_ov.radius = 0.0f; return; }
+        std::vector<OrderVector> parts;
+        parts.reserve(nodes.size());
+        for (const Node& n : nodes)
+        {
+            OrderVector p;
+            p.x = n.pos.x; p.y = n.pos.y; p.z = n.pos.z;
+            p.radius = std::sqrt(n.half.x * n.half.x + n.half.y * n.half.y + n.half.z * n.half.z);
+            parts.push_back(p);
+        }
+        m_ov.Cover(parts.data(), parts.size());
     }
 
     // Reduce the wide bitset to the six bits the projection reads. Called on
@@ -1199,12 +1310,18 @@ private:
     std::atomic<uint32_t>       m_motion{0};   // the six bits that cross threads
 
     // The look. Atomics for the same reason the motion bits are: written by
-    // the input edge, read by the projection, on different threads.
-    std::atomic<float> m_yaw{0.0f};
-    std::atomic<float> m_pitch{0.0f};
+    // the input edge, read by the projection, on different threads. The
+    // ORIENTATION itself is not here -- it is row 3 of m_ov, where an angle
+    // belongs; these are only the deltas waiting to be folded into it.
+    std::atomic<float> m_pending_yaw{0.0f};
+    std::atomic<float> m_pending_pitch{0.0f};
     std::atomic<bool>  m_look_dirty{false};
     bool               m_look_seeded = false;
-    float              m_sensitivity = 0.0025f;   // radians per pixel
+    Point3D            m_ref_fwd{0.0f, 0.0f, 1.0f};   // what row 3 rotates FROM
+    uint32_t           m_frame_w    = 0;
+    float              m_ground_fx  = 0.0f;   // last usable horizontal facing
+    float              m_ground_fz  = 1.0f;
+    float              m_sens_scale = 1.0f;
 
     std::chrono::steady_clock::time_point m_last_step{};
     bool                                  m_stepped = false;
