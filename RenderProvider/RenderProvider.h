@@ -6,7 +6,9 @@
 #include "../../ontology.h"
 #include "Contract_RenderProvider.h"
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 // RenderProvider -- Vulkan, three tags:
 //
@@ -178,6 +180,105 @@ DEFINE_WORK_FUNC(Surface, Delete)
 {
     (void)ctx; (void)data;
     self.DeleteConcrete();
+}
+
+// ── Surface frame edge ───────────────────────────────────────────────────
+//
+// The frame pump, as a produce/consume pair -- the same shape
+// Window.ProduceEvents/ConsumeEvents already uses for input, applied to
+// output. This is what lets a renderer run somewhere other than the thread
+// that owns the window's poll loop (scripts/render_frames.etcs).
+//
+// THE SPLIT, and why it is this way round: ProduceFrames is a CLOCK and
+// nothing else, ConsumeFrames does every Vulkan call.
+//
+// The tempting split -- acquire on the produce side, record/submit/present
+// on the consume side -- puts two threads on the same VkQueue and
+// VkSwapchainKHR, both of which Vulkan requires the application to
+// externally synchronise. That buys nothing: the goal is only to get frames
+// OFF the poll thread, not to parallelise a single surface's submission. So
+// every queue-touching call stays on the consume thread, which makes this
+// surface single-threaded from Vulkan's point of view, and the edge carries
+// a tick rather than a half-built frame.
+//
+// Where the thread ledger lands (see render_script_streamed.etcs):
+//   produce -> a ThreadPool worker, held for the surface's lifetime
+//   consume -> the detached script thread, blocked on the stream
+//
+// Draws still arrive from whatever thread calls Clear/DrawRect/Blit -- the
+// script's -- so the surface's own state is mutex-guarded and Present works
+// off a snapshot. See VulkanSurface::PresentConcrete.
+struct RenderFrameTick { uint64_t index; };
+
+// Paced rather than free-running: without a sleep this loop would fill the
+// MirrorBuffer as fast as the CPU allows and burn a pool worker doing it,
+// since the consumer's own back-pressure only shows up once the buffer is
+// full. ~60Hz is a placeholder for asking the swapchain about its present
+// mode, which is where real pacing belongs.
+static constexpr auto RENDER_FRAME_INTERVAL = std::chrono::milliseconds(16);
+
+DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
+{
+    (void)data;
+
+    // Same wait ProduceEvents does: the surface is spawned and Create()d by
+    // the script, and detaching the pump before that has finished would
+    // start ticking at a swapchain that does not exist yet.
+    while (!self.IsActive())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) return;
+        std::this_thread::yield();
+    }
+
+    uint64_t index = 0;
+    bool stream_alive = true;
+
+    while (self.IsActive() && stream_alive)
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+
+        RenderFrameTick tick{ index++ };
+        ETCS::Buffer slot;
+        slot.writeRaw(&tick, sizeof(tick));
+
+        if (!stream.writeRaw(slot))
+        {
+            ETCS_LOG("Surface::ProduceFrames", "writeRaw failed -- stream closed at frame " << tick.index);
+            stream_alive = false;
+            break;
+        }
+        std::this_thread::sleep_for(RENDER_FRAME_INTERVAL);
+    }
+
+    if (stream.isOpen())
+        stream.closeWrite();
+
+    ETCS_LOG("Surface::ProduceFrames", "clock stopped after " << index << " ticks.");
+}
+
+DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
+{
+    (void)data;
+
+    uint64_t presented = 0;
+    while (stream.isOpen())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+
+        ETCS::Buffer slot;
+        if (!stream.readRaw(slot)) break;
+
+        RenderFrameTick tick{};
+        slot.readRaw(&tick, sizeof(tick));
+
+        // Everything Vulkan happens here, on this one thread. Present pulls
+        // the current composition itself -- retained, so a script that drew
+        // once keeps being shown rather than blinking out on frame two.
+        self.Present();
+        ++presented;
+    }
+
+    ETCS_LOG("Surface::ConsumeFrames", "stream closed after presenting " << presented << " frames.");
 }
 
 // Manual-verification convenience -- see this file's own header comment.

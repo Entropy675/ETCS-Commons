@@ -10,7 +10,10 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <chrono>
 #include <iostream>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -107,16 +110,27 @@ public:
         return m_swapchain != VK_NULL_HANDLE;
     }
 
+    // Mirrors GLFWWindow::IsActive and VulkanInstance::IsActive -- the
+    // "active" tag is added at the end of Create and removed in teardown,
+    // so this is the one predicate the frame clock (ProduceFrames,
+    // RenderProvider.h) can wait on before ticking at a swapchain that may
+    // not exist yet, and stop on when the surface goes away.
+    bool IsActive() const { return this->hasTag("active"); }
+
     // --- Surface_ dispatch (SurfaceBase.h) ---
 
     void ClearConcrete(float r, float g, float b, float a) override
     {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        beginCompositionIfPresented();
         m_clearColor = { r, g, b, a };
     }
 
     void DrawRectConcrete(int32_t x, int32_t y, uint32_t w, uint32_t h,
                            float r, float g, float b, float a) override
     {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        beginCompositionIfPresented();
         m_pendingDraws.push_back({ PendingDraw::Kind::Rect, x, y, w, h, r, g, b, a, 0 });
     }
 
@@ -132,6 +146,11 @@ public:
                        uint32_t w, uint32_t h, float opacity) override
     {
         if (!source) { ETCS_LOG("VulkanSurface", "Blit called with no source."); return; }
+        // Whole body under the lock, not just the push_back: this mutates
+        // m_textures and writes into mapped staging memory, both of which
+        // the frame consumer reads (ConsumeFrames, RenderProvider.h).
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        beginCompositionIfPresented();
         Pixels_* px = static_cast<Pixels_*>(source->getInterfacePointer(ETCS::Buffer("Pixels")));
         if (!px)
         {
@@ -161,10 +180,28 @@ public:
 
     // --- Presentable_ dispatch (PresentableBase.h) ---
 
+    // Present is the ONLY call here that touches the queue, and with the
+    // frame edge (RenderProvider.h's ProduceFrames/ConsumeFrames) it runs
+    // on a different thread from the Clear/DrawRect/Blit calls feeding it.
+    // So it takes a SNAPSHOT of everything it needs under the state lock and
+    // then does all the Vulkan work without holding it -- vkQueuePresentKHR
+    // can block for most of a frame on a vsync'd present mode, and stalling
+    // the caller's DrawRect for that long would make the lock the slowest
+    // thing in the editor.
     void PresentConcrete() override
     {
         if (!m_swapchain) return;
-        if (m_extent.width == 0 || m_extent.height == 0) { m_pendingDraws.clear(); return; } // minimized
+
+        FrameSnapshot frame;
+        {
+            std::lock_guard<std::mutex> lock(m_stateMutex);
+            if (m_extent.width == 0 || m_extent.height == 0)   // minimized
+            {
+                m_composed = true;
+                return;
+            }
+            takeSnapshotLocked(frame);
+        }
 
         VkFence frameFence = m_inFlight[m_currentFrame];
         vkWaitForFences(m_instance->GetDevice(), 1, &frameFence, VK_TRUE, UINT64_MAX);
@@ -175,13 +212,11 @@ public:
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR)
         {
             recreateSwapchain({ m_extent.width, m_extent.height });
-            m_pendingDraws.clear();
-            return;
+            return;   // snapshot is dropped; the retained composition redraws next tick
         }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
         {
             ETCS_LOG("VulkanSurface", "vkAcquireNextImageKHR failed: " << acquire);
-            m_pendingDraws.clear();
             return;
         }
 
@@ -189,7 +224,7 @@ public:
 
         VkCommandBuffer cmd = m_commandBuffers[m_currentFrame];
         vkResetCommandBuffer(cmd, 0);
-        recordFrame(cmd, imageIndex);
+        recordFrame(cmd, imageIndex, frame);
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit{};
@@ -214,7 +249,6 @@ public:
         if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
             recreateSwapchain({ m_extent.width, m_extent.height });
 
-        m_pendingDraws.clear();
         m_currentFrame = (m_currentFrame + 1) % SURFACE_FRAMES_IN_FLIGHT;
     }
 
@@ -263,6 +297,31 @@ private:
         uint32_t  w, h;
         float     r, g, b, a;   // Rect: colour. Blit: `a` carries opacity.
         ETCS::RID source;       // Blit only; 0 for a rect.
+    };
+
+    // What one frame needs, copied out from under the state lock so the
+    // Vulkan work can run without holding it. Everything here is by value or
+    // a handle whose lifetime the surface owns for the whole frame.
+    struct FrameDraw
+    {
+        PendingDraw::Kind kind;
+        int32_t   x, y;
+        uint32_t  w, h;
+        float     r, g, b, a;
+        VkDescriptorSet set;    // Blit only; resolved while locked
+    };
+    struct UploadJob
+    {
+        VkImage  image;
+        VkBuffer staging;
+        uint32_t w, h;
+        bool     firstUpload;   // UNDEFINED vs SHADER_READ_ONLY as the old layout
+    };
+    struct FrameSnapshot
+    {
+        std::array<float, 4>   clearColor{ 0.0f, 0.0f, 0.0f, 1.0f };
+        std::vector<FrameDraw> draws;
+        std::vector<UploadJob> uploads;
     };
 
     struct RectPushConstants { float rect[4]; float color[4]; };
@@ -320,8 +379,15 @@ private:
     std::array<VkFence, SURFACE_FRAMES_IN_FLIGHT>         m_inFlight{};
     uint32_t m_currentFrame = 0;
 
+    // Guards m_clearColor / m_pendingDraws / m_composed / m_textures and the
+    // mapped staging memory behind them. Held only for CPU work: see
+    // PresentConcrete for why it is never held across a submit or present.
+    std::mutex                m_stateMutex;
     std::array<float, 4>      m_clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
     std::vector<PendingDraw>  m_pendingDraws;
+    // True once a composition has been presented and nothing new has been
+    // drawn since. See beginCompositionIfPresented.
+    bool                      m_composed   = false;
 
     // --- setup helpers ---
 
@@ -511,6 +577,66 @@ private:
     VkShaderModule m_vertShader = VK_NULL_HANDLE;
     VkShaderModule m_fragShader = VK_NULL_HANDLE;
 
+    // --- frame composition ---
+
+    // RETAINED, not immediate. A surface keeps showing its last composition
+    // until something composes a new one, and the first draw call AFTER a
+    // present is what starts that new one.
+    //
+    // This is the rule the frame edge needs to exist at all: with
+    // ProduceFrames/ConsumeFrames the surface presents on its own clock,
+    // and .etcs has no loop construct, so a script issues its draws ONCE and
+    // then blocks in Window.Run. Under immediate-mode semantics every frame
+    // after the first would present an empty screen. It is also just what a
+    // canvas does -- a layer stack does not vanish because a frame went by.
+    //
+    // Callers that DO redraw every frame (RunDemo, or any future render
+    // loop) see no difference: their first draw of each frame clears the
+    // retained list, so nothing accumulates across frames.
+    void beginCompositionIfPresented()
+    {
+        if (!m_composed) return;
+        m_pendingDraws.clear();
+        m_composed = false;
+    }
+
+    // Caller holds m_stateMutex.
+    void takeSnapshotLocked(FrameSnapshot& out)
+    {
+        out.clearColor = m_clearColor;
+
+        out.draws.reserve(m_pendingDraws.size());
+        for (const PendingDraw& d : m_pendingDraws)
+        {
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            if (d.kind == PendingDraw::Kind::Blit)
+            {
+                auto it = m_textures.find(d.source);
+                if (it == m_textures.end()) continue;   // source went away since the Blit call
+                set = it->second.set;
+            }
+            out.draws.push_back({ d.kind, d.x, d.y, d.w, d.h, d.r, d.g, d.b, d.a, set });
+        }
+
+        // Collected here rather than iterated during recording: another
+        // thread's Blit can insert into m_textures at any time, and
+        // rehashing invalidates iterators (references to existing elements
+        // survive, which is why holding the handles below is fine).
+        for (auto& [rid, tex] : m_textures)
+        {
+            (void)rid;
+            if (!tex.needsUpload) continue;
+            out.uploads.push_back({ tex.image, tex.staging, tex.w, tex.h, !tex.everUploaded });
+            tex.needsUpload  = false;
+            tex.everUploaded = true;
+        }
+
+        // The composition stays in m_pendingDraws -- it is retained, not
+        // consumed. Marking it presented is what lets the next draw call
+        // start a new one.
+        m_composed = true;
+    }
+
     // --- blit texture cache ---
 
     bool createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props,
@@ -670,33 +796,30 @@ private:
     // Layout transition + copy, recorded into the frame's own command
     // buffer BEFORE the render pass begins (a copy inside a render pass is
     // illegal). One barrier pair per texture that changed since last frame.
-    void recordPendingUploads(VkCommandBuffer cmd)
+    void recordPendingUploads(VkCommandBuffer cmd, const std::vector<UploadJob>& uploads)
     {
-        for (auto& [rid, tex] : m_textures)
+        for (const UploadJob& job : uploads)
         {
-            if (!tex.needsUpload) continue;
-            (void)rid;
-
             VkImageMemoryBarrier toDst{};
             toDst.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            toDst.oldLayout           = tex.everUploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                                          : VK_IMAGE_LAYOUT_UNDEFINED;
+            toDst.oldLayout           = job.firstUpload ? VK_IMAGE_LAYOUT_UNDEFINED
+                                                         : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             toDst.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toDst.image               = tex.image;
+            toDst.image               = job.image;
             toDst.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-            toDst.srcAccessMask       = tex.everUploaded ? VK_ACCESS_SHADER_READ_BIT : 0;
+            toDst.srcAccessMask       = job.firstUpload ? 0 : VK_ACCESS_SHADER_READ_BIT;
             toDst.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
             vkCmdPipelineBarrier(cmd,
-                                  tex.everUploaded ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
-                                                    : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                  job.firstUpload ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                                   : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
 
             VkBufferImageCopy copy{};
             copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-            copy.imageExtent      = { tex.w, tex.h, 1 };
-            vkCmdCopyBufferToImage(cmd, tex.staging, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            copy.imageExtent      = { job.w, job.h, 1 };
+            vkCmdCopyBufferToImage(cmd, job.staging, job.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
             VkImageMemoryBarrier toRead = toDst;
             toRead.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -705,9 +828,6 @@ private:
             toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                                   0, 0, nullptr, 0, nullptr, 1, &toRead);
-
-            tex.needsUpload  = false;
-            tex.everUploaded = true;
         }
     }
 
@@ -979,17 +1099,17 @@ private:
         return true;
     }
 
-    void recordFrame(VkCommandBuffer cmd, uint32_t imageIndex)
+    void recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const FrameSnapshot& frame)
     {
         VkCommandBufferBeginInfo begin{};
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &begin);
 
         // Before the render pass: a copy command is illegal inside one.
-        recordPendingUploads(cmd);
+        recordPendingUploads(cmd, frame.uploads);
 
         VkClearValue clear{};
-        clear.color = { { m_clearColor[0], m_clearColor[1], m_clearColor[2], m_clearColor[3] } };
+        clear.color = { { frame.clearColor[0], frame.clearColor[1], frame.clearColor[2], frame.clearColor[3] } };
 
         VkRenderPassBeginInfo rpBegin{};
         rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1009,7 +1129,7 @@ private:
         const float fh = static_cast<float>(m_extent.height);
         VkPipeline bound = VK_NULL_HANDLE;
 
-        for (const PendingDraw& d : m_pendingDraws)
+        for (const FrameDraw& d : frame.draws)
         {
             // Pixel rect -> NDC. Same conversion for both kinds.
             const float nx = (static_cast<float>(d.x) / fw) * 2.0f - 1.0f;
@@ -1033,8 +1153,7 @@ private:
             }
             else
             {
-                auto it = m_textures.find(d.source);
-                if (it == m_textures.end()) continue;   // source went away between Blit and Present
+                if (d.set == VK_NULL_HANDLE) continue;   // source went away between Blit and Present
 
                 if (bound != m_blitPipeline)
                 {
@@ -1042,7 +1161,7 @@ private:
                     bound = m_blitPipeline;
                 }
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_blitPipelineLayout,
-                                         0, 1, &it->second.set, 0, nullptr);
+                                         0, 1, &d.set, 0, nullptr);
                 BlitPushConstants pc{};
                 pc.rect[0] = nx; pc.rect[1] = ny; pc.rect[2] = nw; pc.rect[3] = nh;
                 pc.opacity = d.a;
