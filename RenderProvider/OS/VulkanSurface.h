@@ -45,6 +45,12 @@ class VulkanSurface : public SurfaceBase<VulkanSurface>,
                        public DeletableBase<VulkanSurface>
 {
 public:
+    // The ordering every Surface owes (Orderable, composed by SurfaceBase).
+    // Meaningful for a device-side offscreen target sitting in a stack;
+    // degenerate but harmless for a window's swapchain, which is normally
+    // the only surface of its kind in the picture.
+    int32_t m_order = 0;
+    bool operator<(const VulkanSurface& o) const { return m_order < o.m_order; }
     WIRE_TYPE_IDENTITY(VulkanSurface);
 
     VulkanSurface()  = default;

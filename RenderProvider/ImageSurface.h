@@ -36,6 +36,16 @@ class ImageSurface : public SurfaceBase<ImageSurface>,
                       public DeletableBase<ImageSurface>
 {
 public:
+    // The ordering every Surface owes (Orderable, composed by SurfaceBase).
+    // A layer stack is the motivating case: m_order is where a document says
+    // which layer is above which, and the whole comparison set -- >, <=, >=,
+    // ==, != -- is derived from this one operator by OrderableBase.
+    //
+    // Ties are equivalence, not identity: two layers at the same depth
+    // compare equal here and are still two different entities. Identity is
+    // the RID.
+    int32_t m_order = 0;
+    bool operator<(const ImageSurface& o) const { return m_order < o.m_order; }
     WIRE_TYPE_IDENTITY(ImageSurface);
 
     ImageSurface()  = default;
