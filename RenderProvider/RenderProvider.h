@@ -189,16 +189,42 @@ DEFINE_WORK_FUNC(Surface, Delete)
 // off a snapshot. See VulkanSurface::PresentConcrete.
 struct RenderFrameTick { uint64_t index; };
 
-// Paced rather than free-running: without a sleep this loop would fill the
-// MirrorBuffer as fast as the CPU allows and burn a pool worker doing it,
-// since the consumer's own back-pressure only shows up once the buffer is
-// full. ~60Hz is a placeholder for asking the swapchain about its present
-// mode, which is where real pacing belongs.
-static constexpr auto RENDER_FRAME_INTERVAL = std::chrono::milliseconds(16);
+// Default pacing, in milliseconds, when the stream config says nothing.
+// ~60Hz, a placeholder for asking the swapchain about its present mode,
+// which is where real pacing belongs.
+static constexpr uint32_t RENDER_FRAME_INTERVAL_MS = 16;
 
+// ProduceFrames [<interval_ms>] -- the stream's config buffer carries the
+// pacing, and ZERO means unpaced: emit as fast as the edge accepts, and let
+// the consumer's back-pressure set the rate.
+//
+// That mode is the honest way to ask "how fast can this pipeline actually
+// go", because the answer is then measured BY the pipeline rather than by a
+// clock on one of its calls -- writeRaw blocks exactly when the consumer is
+// behind, so ticks completed over an interval IS throughput, with acquire,
+// submit and present all inside it. A fixed sleep here would silently cap
+// any such measurement at its own frequency, which is what 16ms did.
+//
+// Paced stays the default because a normal frame loop should not spin a
+// pool worker at 100% to draw a canvas nobody is editing.
 DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
 {
-    (void)data;
+    uint32_t interval_ms = RENDER_FRAME_INTERVAL_MS;
+    {
+        std::string cfg = data.restAsString();
+        if (!cfg.empty())
+        {
+            try { interval_ms = static_cast<uint32_t>(std::stoul(cfg)); }
+            catch (const std::exception&)
+            {
+                ETCS_LOG("Surface::ProduceFrames", "unreadable interval '" << cfg
+                         << "' -- using the " << RENDER_FRAME_INTERVAL_MS << "ms default.");
+            }
+        }
+    }
+    ETCS_LOG("Surface::ProduceFrames", "clock started at "
+             << (interval_ms == 0 ? std::string("max speed (back-pressure paced)")
+                                   : std::to_string(interval_ms) + "ms"));
 
     // Same wait ProduceEvents does: the surface is spawned and Create()d by
     // the script, and detaching the pump before that has finished would
@@ -226,7 +252,8 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
             stream_alive = false;
             break;
         }
-        std::this_thread::sleep_for(RENDER_FRAME_INTERVAL);
+        if (interval_ms != 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
     }
 
     if (stream.isOpen())
@@ -240,6 +267,12 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
     (void)data;
 
     uint64_t presented = 0;
+    // Timed from the FIRST tick, not from entry: the producer waits for the
+    // surface to go active, so entry-to-first-tick is setup latency, not
+    // frame time, and folding it in would drag the rate down by however
+    // long the script took to get here.
+    std::chrono::steady_clock::time_point first{};
+
     while (stream.isOpen())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) break;
@@ -249,6 +282,7 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
 
         RenderFrameTick tick{};
         slot.readRaw(&tick, sizeof(tick));
+        if (presented == 0) first = std::chrono::steady_clock::now();
 
         // Everything Vulkan happens here, on this one thread. Present pulls
         // the current composition itself -- retained, so a script that drew
@@ -257,7 +291,21 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
         ++presented;
     }
 
-    ETCS_LOG("Surface::ConsumeFrames", "stream closed after presenting " << presented << " frames.");
+    // The throughput number, reported by the side that actually knows it.
+    // With an unpaced producer this IS the pipeline's rate and needs no
+    // external clock on any single call: writeRaw blocks exactly when this
+    // loop falls behind, so frames completed over the interval is what the
+    // whole edge -- acquire, record, submit, present -- sustained. Under a
+    // paced producer it just reports the pacing back, which is the correct
+    // answer to a different question.
+    const double secs = (presented > 1)
+        ? std::chrono::duration<double>(std::chrono::steady_clock::now() - first).count()
+        : 0.0;
+    ETCS_LOG("Surface::ConsumeFrames", "stream closed after presenting " << presented
+             << " frames" << (secs > 0.0
+                 ? " in " + std::to_string(secs) + "s = "
+                   + std::to_string(static_cast<double>(presented) / secs) + " fps"
+                 : "") << ".");
 }
 
 // Manual-verification convenience -- see this file's own header comment.

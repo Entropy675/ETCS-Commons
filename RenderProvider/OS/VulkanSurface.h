@@ -117,10 +117,37 @@ public:
     // not exist yet, and stop on when the surface goes away.
     bool IsActive() const { return this->hasTag("active"); }
 
+    // Every Surface_ entry point goes through this before touching a Vulkan
+    // handle. Create() can fail HALFWAY -- it assigns m_instance early, then
+    // gives up at loadPipeline if the SPIR-V is not where it was told to
+    // look -- which leaves an object that has a device but no pipeline, no
+    // descriptor pool and no swapchain. Present() alone used to check
+    // (m_swapchain), so Clear/DrawRect/Blit walked straight into that state:
+    // Blit reached vkAllocateDescriptorSets with a VK_NULL_HANDLE pool and
+    // the driver dereferenced it. A segfault reachable from a script, from
+    // nothing worse than a wrong working directory.
+    //
+    // Complains ONCE. A frame loop calling a dead surface would otherwise
+    // bury the real error -- the failed Create above it -- under thousands
+    // of identical lines.
+    bool ready(const char* what) const
+    {
+        if (m_swapchain != VK_NULL_HANDLE) return true;
+        if (!m_complained)
+        {
+            m_complained = true;
+            ETCS_LOG("VulkanSurface", what << " on a surface that is not created -- Create() "
+                     "either was never called or failed (look for an earlier error above this "
+                     "one). Ignoring this and every later call on RID:" << getRID() << ".");
+        }
+        return false;
+    }
+
     // --- Surface_ dispatch (SurfaceBase.h) ---
 
     void ClearConcrete(float r, float g, float b, float a) override
     {
+        if (!ready("Clear")) return;
         std::lock_guard<std::mutex> lock(m_stateMutex);
         beginCompositionIfPresented();
         m_clearColor = { r, g, b, a };
@@ -129,6 +156,7 @@ public:
     void DrawRectConcrete(int32_t x, int32_t y, uint32_t w, uint32_t h,
                            float r, float g, float b, float a) override
     {
+        if (!ready("DrawRect")) return;
         std::lock_guard<std::mutex> lock(m_stateMutex);
         beginCompositionIfPresented();
         m_pendingDraws.push_back({ PendingDraw::Kind::Rect, x, y, w, h, r, g, b, a, 0 });
@@ -145,6 +173,7 @@ public:
     void BlitConcrete(Surface_* source, int32_t x, int32_t y,
                        uint32_t w, uint32_t h, float opacity) override
     {
+        if (!ready("Blit")) return;
         if (!source) { ETCS_LOG("VulkanSurface", "Blit called with no source."); return; }
         // Whole body under the lock, not just the push_back: this mutates
         // m_textures and writes into mapped staging memory, both of which
@@ -194,7 +223,7 @@ public:
     // thing in the editor.
     void PresentConcrete() override
     {
-        if (!m_swapchain) return;
+        if (!ready("Present")) return;
 
         FrameSnapshot frame;
         {
@@ -387,6 +416,7 @@ private:
     // mapped staging memory behind them. Held only for CPU work: see
     // PresentConcrete for why it is never held across a submit or present.
     std::mutex                m_stateMutex;
+    mutable bool              m_complained = false;   // ready()'s one-shot
     std::array<float, 4>      m_clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
     std::vector<PendingDraw>  m_pendingDraws;
     // True once a composition has been presented and nothing new has been
