@@ -1,61 +1,1111 @@
 #ifndef VULKAN_SURFACE_H__
 #define VULKAN_SURFACE_H__
 
-// The one platform-conditional seam in RenderProvider: builds a
-// VkSurfaceKHR straight from a Window_'s NativeSurfaceHandle
-// (ontology/Window.h) using Vulkan's own platform-surface extensions --
-// never GLFW. See ontology/Window.h's NativeSurfaceHandle comment and
-// WindowProvider/OS/GLFWWindow.h's populateNativeSurfaceHandle() for why:
-// GLFW is vendored static into WindowProvider.so alone, and a second,
-// independently-linked copy in this module would carry its own
-// never-initialized platform state.
-
 #include "../../../ontology.h"
+#include "VulkanInstance.h"
 #include "VulkanPlatform.h"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <iostream>
+#include <unordered_map>
+#include <vector>
 
-// Returns VK_NULL_HANDLE on failure (bad platform tag, or the Vulkan call
-// itself failing) -- caller logs/handles, this stays a plain function.
-inline VkSurfaceKHR CreateSurfaceFromNativeHandle(VkInstance instance, const NativeSurfaceHandle& native)
+static constexpr uint32_t SURFACE_FRAMES_IN_FLIGHT  = 2;
+// Distinct blit sources one surface can hold GPU textures for at once --
+// a layer stack, in practice. A fixed ceiling rather than a growing pool:
+// overflow logs and drops the blit rather than failing the frame.
+static constexpr uint32_t SURFACE_MAX_BLIT_SOURCES = 64;
+
+// VulkanSurface -- the window-bound, presentable surface:
+// [Surface + Presentable + Resizable + Deletable].
+//
+// Owns the VkSurfaceKHR/swapchain/render-pass/framebuffers, TWO fixed
+// pipelines (solid-colour rects by push constant, and textured quads for
+// Blit), per-frame command buffers + sync objects, and a small cache of
+// GPU textures keyed by the RID of whichever image surface was blitted
+// from. Spawned as a CHILD of an existing WindowProvider::Window
+// (make_typed_child) -- Create() reaches its parent via
+// getInterfacePointer("Window")/("Resizable") for the native surface
+// handle and initial size, and subscribes to the parent's Resizable to
+// recreate the swapchain on resize.
+//
+// Clear/DrawRect/Blit accumulate into ONE ordered list, not three; a
+// layered editor composites back-to-front, so the order calls arrive in
+// is the order they must be recorded in. Present is the only call that
+// touches the queue.
+class VulkanSurface : public SurfaceBase<VulkanSurface>,
+                       public PresentableBase<VulkanSurface>,
+                       public DeletableBase<VulkanSurface>
 {
-#if defined(_WIN32)
-    if (native.platform != NativeSurfacePlatform::Win32)
-    {
-        ETCS_LOG("VulkanSurface", "NativeSurfaceHandle is not Win32 on a Win32 build.");
-        return VK_NULL_HANDLE;
-    }
-    VkWin32SurfaceCreateInfoKHR ci{};
-    ci.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-    ci.hinstance = static_cast<HINSTANCE>(native.win32.hinstance);
-    ci.hwnd      = static_cast<HWND>(native.win32.hwnd);
+public:
+    WIRE_TYPE_IDENTITY(VulkanSurface);
 
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (vkCreateWin32SurfaceKHR(instance, &ci, nullptr, &surface) != VK_SUCCESS)
-    {
-        ETCS_LOG("VulkanSurface", "vkCreateWin32SurfaceKHR failed.");
-        return VK_NULL_HANDLE;
-    }
-    return surface;
-#else
-    if (native.platform != NativeSurfacePlatform::X11)
-    {
-        ETCS_LOG("VulkanSurface", "NativeSurfaceHandle is not X11 on a Linux build.");
-        return VK_NULL_HANDLE;
-    }
-    VkXlibSurfaceCreateInfoKHR ci{};
-    ci.sType  = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-    ci.dpy    = static_cast<Display*>(native.x11.display);
-    ci.window = static_cast<Window>(native.x11.window);
+    VulkanSurface()  = default;
+    ~VulkanSurface() { teardown(); }
 
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (vkCreateXlibSurfaceKHR(instance, &ci, nullptr, &surface) != VK_SUCCESS)
+    // instance: RID of an already-Create()'d VulkanInstance. shader_dir:
+    // cwd-relative directory holding rect.vert.spv/rect.frag.spv (see
+    // RenderProvider.h's own comment on why this isn't self-locating yet).
+    bool Create(VulkanInstance* instance, const std::string& shader_dir)
     {
-        ETCS_LOG("VulkanSurface", "vkCreateXlibSurfaceKHR failed.");
-        return VK_NULL_HANDLE;
+        if (m_swapchain) return true; // idempotent, same convention as Window::CreateWindowConcrete
+        m_instance = instance;
+        if (!m_instance)
+        {
+            ETCS_LOG("VulkanSurface", "Create called with no VulkanInstance.");
+            return false;
+        }
+
+        ETCS::Entity* parent = this->getParent();
+        if (!parent)
+        {
+            ETCS_LOG("VulkanSurface", "Create called with no parent -- must be spawned as a child of a Window.");
+            return false;
+        }
+        void* winRaw = parent->getInterfacePointer(ETCS::Buffer("Window"));
+        Window_* win = static_cast<Window_*>(winRaw);
+        if (!win)
+        {
+            ETCS_LOG("VulkanSurface", "Parent has no Window interface pointer.");
+            return false;
+        }
+        void* resizableRaw = parent->getInterfacePointer(ETCS::Buffer("Resizable"));
+        m_parentResizable = static_cast<Resizable_*>(resizableRaw);
+        if (!m_parentResizable)
+        {
+            ETCS_LOG("VulkanSurface", "Parent has no Resizable interface pointer.");
+            return false;
+        }
+
+        m_surface = CreateSurfaceFromNativeHandle(m_instance->GetInstance(), win->GetNativeSurfaceHandle());
+        if (m_surface == VK_NULL_HANDLE) return false;
+
+        VkBool32 presentSupported = VK_FALSE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(m_instance->GetPhysicalDevice(), m_instance->GetQueueFamily(),
+                                              m_surface, &presentSupported);
+        if (!presentSupported)
+        {
+            ETCS_LOG("VulkanSurface", "Selected queue family cannot present to this surface.");
+            teardown();
+            return false;
+        }
+
+        if (!createShaderPipelineIndependentState()) { teardown(); return false; }
+        if (!loadPipeline(shader_dir)) { teardown(); return false; }
+        if (!createSyncObjects()) { teardown(); return false; }
+
+        // OnResize fires immediately on registration with the CURRENT size
+        // (Resizable_::OnResize's existing semantics) -- this doubles as
+        // the initial swapchain build, so no separate first-build call.
+        m_parentResizable->OnResize([this](WindowSize sz) { this->recreateSwapchain(sz); }, 0);
+
+        this->addTag("active");
+        return m_swapchain != VK_NULL_HANDLE;
     }
-    return surface;
-#endif
-}
+
+    // --- Surface_ dispatch (SurfaceBase.h) ---
+
+    void ClearConcrete(float r, float g, float b, float a) override
+    {
+        m_clearColor = { r, g, b, a };
+    }
+
+    void DrawRectConcrete(int32_t x, int32_t y, uint32_t w, uint32_t h,
+                           float r, float g, float b, float a) override
+    {
+        m_pendingDraws.push_back({ PendingDraw::Kind::Rect, x, y, w, h, r, g, b, a, 0 });
+    }
+
+    // The source is reached as Pixels_ (ontology/Pixels.h), never as a
+    // concrete type -- this is the whole reason Pixels is its own family.
+    // A PintaProvider layer, a test image surface, anything that owns CPU
+    // pixels and registers the interface pointer can be blitted here with
+    // no compile-time relationship to this module.
+    //
+    // w/h of 0 mean "the source's own size", which is what a 1:1 canvas
+    // composite wants and saves every caller restating it.
+    void BlitConcrete(ETCS::Entity* source, int32_t x, int32_t y,
+                       uint32_t w, uint32_t h, float opacity) override
+    {
+        if (!source) { ETCS_LOG("VulkanSurface", "Blit called with no source."); return; }
+        Pixels_* px = static_cast<Pixels_*>(source->getInterfacePointer(ETCS::Buffer("Pixels")));
+        if (!px)
+        {
+            ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
+                     << " has no Pixels interface -- only a CPU-backed surface can be blitted from.");
+            return;
+        }
+        if (px->PixelWidth() == 0 || px->PixelHeight() == 0) return;
+        if (w == 0) w = px->PixelWidth();
+        if (h == 0) h = px->PixelHeight();
+
+        const ETCS::RID rid = source->getRID();
+        if (!ensureTexture(rid, *px)) return;
+
+        // TakeDirty CONSUMES the flag, so a layer blitted twice in one
+        // frame uploads once. everUploaded covers the first blit of an
+        // image whose writer never marked it dirty.
+        BlitTexture& tex = m_textures[rid];
+        if (px->TakeDirty() || !tex.everUploaded)
+        {
+            std::memcpy(tex.stagingMapped, px->PixelData(), px->PixelBytes());
+            tex.needsUpload = true;
+        }
+
+        m_pendingDraws.push_back({ PendingDraw::Kind::Blit, x, y, w, h, 0.0f, 0.0f, 0.0f, opacity, rid });
+    }
+
+    // --- Presentable_ dispatch (PresentableBase.h) ---
+
+    void PresentConcrete() override
+    {
+        if (!m_swapchain) return;
+        if (m_extent.width == 0 || m_extent.height == 0) { m_pendingDraws.clear(); return; } // minimized
+
+        VkFence frameFence = m_inFlight[m_currentFrame];
+        vkWaitForFences(m_instance->GetDevice(), 1, &frameFence, VK_TRUE, UINT64_MAX);
+
+        uint32_t imageIndex = 0;
+        VkResult acquire = vkAcquireNextImageKHR(m_instance->GetDevice(), m_swapchain, UINT64_MAX,
+                                                  m_imageAvailable[m_currentFrame], VK_NULL_HANDLE, &imageIndex);
+        if (acquire == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            recreateSwapchain({ m_extent.width, m_extent.height });
+            m_pendingDraws.clear();
+            return;
+        }
+        if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
+        {
+            ETCS_LOG("VulkanSurface", "vkAcquireNextImageKHR failed: " << acquire);
+            m_pendingDraws.clear();
+            return;
+        }
+
+        vkResetFences(m_instance->GetDevice(), 1, &frameFence);
+
+        VkCommandBuffer cmd = m_commandBuffers[m_currentFrame];
+        vkResetCommandBuffer(cmd, 0);
+        recordFrame(cmd, imageIndex);
+
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo submit{};
+        submit.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.waitSemaphoreCount   = 1;
+        submit.pWaitSemaphores      = &m_imageAvailable[m_currentFrame];
+        submit.pWaitDstStageMask    = &waitStage;
+        submit.commandBufferCount   = 1;
+        submit.pCommandBuffers      = &cmd;
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores    = &m_renderFinished[m_currentFrame];
+        vkQueueSubmit(m_instance->GetQueue(), 1, &submit, frameFence);
+
+        VkPresentInfoKHR present{};
+        present.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present.waitSemaphoreCount = 1;
+        present.pWaitSemaphores    = &m_renderFinished[m_currentFrame];
+        present.swapchainCount     = 1;
+        present.pSwapchains        = &m_swapchain;
+        present.pImageIndices      = &imageIndex;
+        VkResult presentResult = vkQueuePresentKHR(m_instance->GetQueue(), &present);
+        if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
+            recreateSwapchain({ m_extent.width, m_extent.height });
+
+        m_pendingDraws.clear();
+        m_currentFrame = (m_currentFrame + 1) % SURFACE_FRAMES_IN_FLIGHT;
+    }
+
+    // --- Resizable_ dispatch (ResizableBase, composed into SurfaceBase) ---
+
+    WindowSize GetSizeConcrete() override
+    {
+        return { m_extent.width, m_extent.height };
+    }
+
+    // --- Deletable_ dispatch ---
+
+    bool DeleteConcrete() override
+    {
+        std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();
+        ETCS_LOG("VulkanSurface", "firing self-DestroyEvent for RID:" << getRID());
+        return ETCS::DestroyEvent{conjugate_key.c_str(), this}();
+    }
+
+    // Manual-verification convenience ONLY -- not a primitive downstream
+    // modules should call. .etcs scripts have no loop construct today
+    // (see RenderProvider.h's own comment), so a per-frame Clear/DrawRect/
+    // Present cycle has to happen inside one work func for now.
+    void RunDemo(ETCS::Entity* windowEntity, uint32_t frameCount)
+    {
+        Window_* win = static_cast<Window_*>(windowEntity->getInterfacePointer(ETCS::Buffer("Window")));
+        if (!win) { ETCS_LOG("VulkanSurface", "RunDemo: parent has no Window interface pointer."); return; }
+
+        for (uint32_t i = 0; i < frameCount && !win->ShouldClose(); ++i)
+        {
+            win->PollEvents();
+            ClearConcrete(0.05f, 0.05f, 0.08f, 1.0f);
+            DrawRectConcrete(40, 40, 200, 120, 0.85f, 0.2f, 0.2f, 1.0f);
+            DrawRectConcrete(260, 160, 150, 150, 0.2f, 0.7f, 0.3f, 1.0f);
+            PresentConcrete();
+        }
+    }
+
+private:
+    // ONE list for both primitives, in call order -- see this class's own
+    // header comment for why they cannot be two lists.
+    struct PendingDraw
+    {
+        enum class Kind { Rect, Blit } kind;
+        int32_t   x, y;
+        uint32_t  w, h;
+        float     r, g, b, a;   // Rect: colour. Blit: `a` carries opacity.
+        ETCS::RID source;       // Blit only; 0 for a rect.
+    };
+
+    struct RectPushConstants { float rect[4]; float color[4]; };
+    struct BlitPushConstants { float rect[4]; float opacity; float _pad[3]; };
+
+    // GPU-side mirror of one image surface's pixels, kept alive across
+    // frames and reused: uploading a full layer every frame is exactly the
+    // cost the dirty flag exists to avoid. Keyed by the source's RID, which
+    // is stable for that entity's lifetime.
+    struct BlitTexture
+    {
+        VkImage         image        = VK_NULL_HANDLE;
+        VkDeviceMemory  memory       = VK_NULL_HANDLE;
+        VkImageView     view         = VK_NULL_HANDLE;
+        VkBuffer        staging      = VK_NULL_HANDLE;
+        VkDeviceMemory  stagingMem   = VK_NULL_HANDLE;
+        void*           stagingMapped = nullptr;   // persistently mapped
+        VkDescriptorSet set          = VK_NULL_HANDLE;
+        uint32_t        w = 0, h = 0;
+        bool            needsUpload  = false;
+        bool            everUploaded = false;
+    };
+
+    VulkanInstance* m_instance         = nullptr;
+    Resizable_*     m_parentResizable  = nullptr;
+
+    VkSurfaceKHR   m_surface   = VK_NULL_HANDLE;
+    VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
+    VkFormat       m_format    = VK_FORMAT_UNDEFINED;
+    VkExtent2D     m_extent    = { 0, 0 };
+    std::vector<VkImage>       m_images;
+    std::vector<VkImageView>   m_imageViews;
+    std::vector<VkFramebuffer> m_framebuffers;
+
+    VkRenderPass     m_renderPass     = VK_NULL_HANDLE;
+    VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline       m_pipeline       = VK_NULL_HANDLE;
+
+    // Blit path: its own pipeline (same render pass, different shaders and
+    // a descriptor set), plus the sampler/pool/layout it binds through.
+    // The pipeline is swapchain-dependent like the rect one; the layout,
+    // sampler and pool are not, so they live and die with the object.
+    VkPipelineLayout      m_blitPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline            m_blitPipeline       = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_blitSetLayout      = VK_NULL_HANDLE;
+    VkDescriptorPool      m_blitDescriptorPool = VK_NULL_HANDLE;
+    VkSampler             m_blitSampler        = VK_NULL_HANDLE;
+    VkShaderModule        m_blitVertShader     = VK_NULL_HANDLE;
+    VkShaderModule        m_blitFragShader     = VK_NULL_HANDLE;
+    std::unordered_map<ETCS::RID, BlitTexture> m_textures;
+
+    std::array<VkCommandBuffer, SURFACE_FRAMES_IN_FLIGHT> m_commandBuffers{};
+    std::array<VkSemaphore, SURFACE_FRAMES_IN_FLIGHT>     m_imageAvailable{};
+    std::array<VkSemaphore, SURFACE_FRAMES_IN_FLIGHT>     m_renderFinished{};
+    std::array<VkFence, SURFACE_FRAMES_IN_FLIGHT>         m_inFlight{};
+    uint32_t m_currentFrame = 0;
+
+    std::array<float, 4>      m_clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+    std::vector<PendingDraw>  m_pendingDraws;
+
+    // --- setup helpers ---
+
+    // Command pool comes from VulkanInstance -- allocated once here.
+    bool createShaderPipelineIndependentState()
+    {
+        VkCommandBufferAllocateInfo alloc{};
+        alloc.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc.commandPool        = m_instance->GetCommandPool();
+        alloc.level               = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc.commandBufferCount = SURFACE_FRAMES_IN_FLIGHT;
+        if (vkAllocateCommandBuffers(m_instance->GetDevice(), &alloc, m_commandBuffers.data()) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkAllocateCommandBuffers failed.");
+            return false;
+        }
+        return true;
+    }
+
+    bool createSyncObjects()
+    {
+        VkSemaphoreCreateInfo semInfo{};
+        semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+        for (uint32_t i = 0; i < SURFACE_FRAMES_IN_FLIGHT; ++i)
+        {
+            if (vkCreateSemaphore(m_instance->GetDevice(), &semInfo, nullptr, &m_imageAvailable[i]) != VK_SUCCESS ||
+                vkCreateSemaphore(m_instance->GetDevice(), &semInfo, nullptr, &m_renderFinished[i]) != VK_SUCCESS ||
+                vkCreateFence(m_instance->GetDevice(), &fenceInfo, nullptr, &m_inFlight[i]) != VK_SUCCESS)
+            {
+                ETCS_LOG("VulkanSurface", "Sync object creation failed.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static std::vector<uint32_t> readSpirv(const std::string& path)
+    {
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (!f) return {};
+        std::streamsize size = f.tellg();
+        if (size <= 0 || (size % 4) != 0) return {};
+        f.seekg(0);
+        std::vector<uint32_t> buf(static_cast<size_t>(size) / 4);
+        if (!f.read(reinterpret_cast<char*>(buf.data()), size)) return {};
+        return buf;
+    }
+
+    VkShaderModule loadShaderModule(const std::string& path)
+    {
+        std::vector<uint32_t> code = readSpirv(path);
+        if (code.empty())
+        {
+            ETCS_LOG("VulkanSurface", "Failed to read SPIR-V: " << path);
+            return VK_NULL_HANDLE;
+        }
+        VkShaderModuleCreateInfo ci{};
+        ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        ci.codeSize = code.size() * sizeof(uint32_t);
+        ci.pCode    = code.data();
+        VkShaderModule mod = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(m_instance->GetDevice(), &ci, nullptr, &mod) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreateShaderModule failed for " << path);
+            return VK_NULL_HANDLE;
+        }
+        return mod;
+    }
+
+    // Loads the fixed rect pipeline's shaders and pipeline layout -- the
+    // pipeline OBJECT itself is built (and rebuilt) in
+    // buildSwapchainDependentPipeline, since it's tied to the render
+    // pass, which is tied to the swapchain's format/extent.
+    bool loadPipeline(const std::string& shader_dir)
+    {
+        std::string dir = shader_dir.empty() ? "shaders/" : shader_dir;
+        if (dir.back() != '/') dir += '/';
+        m_vertShader = loadShaderModule(dir + "rect.vert.spv");
+        m_fragShader = loadShaderModule(dir + "rect.frag.spv");
+        if (!m_vertShader || !m_fragShader) return false;
+
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushRange.offset     = 0;
+        pushRange.size       = sizeof(RectPushConstants);
+
+        VkPipelineLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges    = &pushRange;
+        if (vkCreatePipelineLayout(m_instance->GetDevice(), &layoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreatePipelineLayout failed.");
+            return false;
+        }
+
+        return loadBlitPipeline(dir);
+    }
+
+    // The Blit path's swapchain-INDEPENDENT half: shaders, descriptor set
+    // layout, sampler, pool, pipeline layout. The pipeline object itself is
+    // built with the rect one in createGraphicsPipeline, since both hang off
+    // the render pass.
+    bool loadBlitPipeline(const std::string& dir)
+    {
+        m_blitVertShader = loadShaderModule(dir + "blit.vert.spv");
+        m_blitFragShader = loadShaderModule(dir + "blit.frag.spv");
+        if (!m_blitVertShader || !m_blitFragShader) return false;
+
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding         = 0;
+        binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binding.descriptorCount = 1;
+        binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo setLayoutInfo{};
+        setLayoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        setLayoutInfo.bindingCount = 1;
+        setLayoutInfo.pBindings    = &binding;
+        if (vkCreateDescriptorSetLayout(m_instance->GetDevice(), &setLayoutInfo, nullptr, &m_blitSetLayout) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreateDescriptorSetLayout failed.");
+            return false;
+        }
+
+        // NEAREST, not LINEAR: this is a pixel editor's canvas. Filtering a
+        // layer on the way to the screen would show the user something
+        // other than the pixels they are editing.
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter    = VK_FILTER_NEAREST;
+        samplerInfo.minFilter    = VK_FILTER_NEAREST;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.borderColor  = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+        samplerInfo.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        if (vkCreateSampler(m_instance->GetDevice(), &samplerInfo, nullptr, &m_blitSampler) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreateSampler failed.");
+            return false;
+        }
+
+        // One set per distinct blit source ever seen by this surface.
+        // SURFACE_MAX_BLIT_SOURCES is a hard ceiling rather than a growing
+        // pool: exceeding it logs and drops the blit instead of failing the
+        // frame, and the number is generous for a layer stack.
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = SURFACE_MAX_BLIT_SOURCES;
+
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.maxSets       = SURFACE_MAX_BLIT_SOURCES;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes    = &poolSize;
+        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        if (vkCreateDescriptorPool(m_instance->GetDevice(), &poolInfo, nullptr, &m_blitDescriptorPool) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreateDescriptorPool failed.");
+            return false;
+        }
+
+        VkPushConstantRange blitPush{};
+        blitPush.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        blitPush.offset     = 0;
+        blitPush.size       = sizeof(BlitPushConstants);
+
+        VkPipelineLayoutCreateInfo blitLayoutInfo{};
+        blitLayoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        blitLayoutInfo.setLayoutCount         = 1;
+        blitLayoutInfo.pSetLayouts            = &m_blitSetLayout;
+        blitLayoutInfo.pushConstantRangeCount = 1;
+        blitLayoutInfo.pPushConstantRanges    = &blitPush;
+        if (vkCreatePipelineLayout(m_instance->GetDevice(), &blitLayoutInfo, nullptr, &m_blitPipelineLayout) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreatePipelineLayout (blit) failed.");
+            return false;
+        }
+        return true;
+    }
+
+    VkShaderModule m_vertShader = VK_NULL_HANDLE;
+    VkShaderModule m_fragShader = VK_NULL_HANDLE;
+
+    // --- blit texture cache ---
+
+    bool createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props,
+                       VkBuffer& outBuf, VkDeviceMemory& outMem)
+    {
+        VkBufferCreateInfo ci{};
+        ci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        ci.size        = size;
+        ci.usage       = usage;
+        ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(m_instance->GetDevice(), &ci, nullptr, &outBuf) != VK_SUCCESS) return false;
+
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(m_instance->GetDevice(), outBuf, &req);
+        uint32_t typeIndex = m_instance->FindMemoryType(req.memoryTypeBits, props);
+        if (typeIndex == UINT32_MAX) return false;
+
+        VkMemoryAllocateInfo alloc{};
+        alloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc.allocationSize  = req.size;
+        alloc.memoryTypeIndex = typeIndex;
+        if (vkAllocateMemory(m_instance->GetDevice(), &alloc, nullptr, &outMem) != VK_SUCCESS) return false;
+        vkBindBufferMemory(m_instance->GetDevice(), outBuf, outMem, 0);
+        return true;
+    }
+
+    // SRGB, not UNORM: the swapchain is an sRGB format, so the hardware
+    // encodes linear->sRGB on write. Sampling an SRGB texture decodes
+    // sRGB->linear on read, and the two cancel -- a pixel handed in as
+    // 0x80 comes out of the display as 0x80. A UNORM texture here would
+    // skip the decode and every blitted layer would come out visibly
+    // brightened.
+    bool ensureTexture(ETCS::RID rid, const Pixels_& px)
+    {
+        auto it = m_textures.find(rid);
+        if (it != m_textures.end())
+        {
+            if (it->second.w == px.PixelWidth() && it->second.h == px.PixelHeight()) return true;
+            destroyTexture(it->second);   // resized -- rebuild against the new dimensions
+            m_textures.erase(it);
+        }
+        if (m_textures.size() >= SURFACE_MAX_BLIT_SOURCES)
+        {
+            ETCS_LOG("VulkanSurface", "blit source cache full (" << SURFACE_MAX_BLIT_SOURCES
+                     << ") -- dropping blit from RID:" << rid);
+            return false;
+        }
+
+        BlitTexture tex{};
+        tex.w = px.PixelWidth();
+        tex.h = px.PixelHeight();
+        const VkDeviceSize bytes = static_cast<VkDeviceSize>(tex.w) * tex.h * 4;
+
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType     = VK_IMAGE_TYPE_2D;
+        imageInfo.format        = VK_FORMAT_R8G8B8A8_SRGB;
+        imageInfo.extent        = { tex.w, tex.h, 1 };
+        imageInfo.mipLevels     = 1;
+        imageInfo.arrayLayers   = 1;
+        imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(m_instance->GetDevice(), &imageInfo, nullptr, &tex.image) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreateImage failed for blit source RID:" << rid);
+            destroyTexture(tex);
+            return false;
+        }
+
+        VkMemoryRequirements req{};
+        vkGetImageMemoryRequirements(m_instance->GetDevice(), tex.image, &req);
+        uint32_t typeIndex = m_instance->FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (typeIndex == UINT32_MAX) { destroyTexture(tex); return false; }
+
+        VkMemoryAllocateInfo alloc{};
+        alloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc.allocationSize  = req.size;
+        alloc.memoryTypeIndex = typeIndex;
+        if (vkAllocateMemory(m_instance->GetDevice(), &alloc, nullptr, &tex.memory) != VK_SUCCESS)
+        {
+            destroyTexture(tex);
+            return false;
+        }
+        vkBindImageMemory(m_instance->GetDevice(), tex.image, tex.memory, 0);
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image            = tex.image;
+        viewInfo.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format           = VK_FORMAT_R8G8B8A8_SRGB;
+        viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(m_instance->GetDevice(), &viewInfo, nullptr, &tex.view) != VK_SUCCESS)
+        {
+            destroyTexture(tex);
+            return false;
+        }
+
+        // Persistently mapped: a layer being painted on is re-uploaded
+        // every time it changes, and map/unmap per frame would be pure
+        // overhead for a buffer that never moves.
+        if (!createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           tex.staging, tex.stagingMem))
+        {
+            ETCS_LOG("VulkanSurface", "staging buffer allocation failed for blit source RID:" << rid);
+            destroyTexture(tex);
+            return false;
+        }
+        vkMapMemory(m_instance->GetDevice(), tex.stagingMem, 0, bytes, 0, &tex.stagingMapped);
+
+        VkDescriptorSetAllocateInfo setAlloc{};
+        setAlloc.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        setAlloc.descriptorPool     = m_blitDescriptorPool;
+        setAlloc.descriptorSetCount = 1;
+        setAlloc.pSetLayouts        = &m_blitSetLayout;
+        if (vkAllocateDescriptorSets(m_instance->GetDevice(), &setAlloc, &tex.set) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkAllocateDescriptorSets failed for blit source RID:" << rid);
+            destroyTexture(tex);
+            return false;
+        }
+
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.sampler     = m_blitSampler;
+        imgInfo.imageView   = tex.view;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = tex.set;
+        write.dstBinding      = 0;
+        write.descriptorCount = 1;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(m_instance->GetDevice(), 1, &write, 0, nullptr);
+
+        m_textures[rid] = tex;
+        return true;
+    }
+
+    void destroyTexture(BlitTexture& tex)
+    {
+        VkDevice dev = m_instance ? m_instance->GetDevice() : VK_NULL_HANDLE;
+        if (!dev) return;
+        if (tex.set)        { vkFreeDescriptorSets(dev, m_blitDescriptorPool, 1, &tex.set); tex.set = VK_NULL_HANDLE; }
+        if (tex.stagingMapped) { vkUnmapMemory(dev, tex.stagingMem); tex.stagingMapped = nullptr; }
+        if (tex.staging)    { vkDestroyBuffer(dev, tex.staging, nullptr);   tex.staging    = VK_NULL_HANDLE; }
+        if (tex.stagingMem) { vkFreeMemory(dev, tex.stagingMem, nullptr);   tex.stagingMem = VK_NULL_HANDLE; }
+        if (tex.view)       { vkDestroyImageView(dev, tex.view, nullptr);   tex.view       = VK_NULL_HANDLE; }
+        if (tex.image)      { vkDestroyImage(dev, tex.image, nullptr);      tex.image      = VK_NULL_HANDLE; }
+        if (tex.memory)     { vkFreeMemory(dev, tex.memory, nullptr);       tex.memory     = VK_NULL_HANDLE; }
+    }
+
+    // Layout transition + copy, recorded into the frame's own command
+    // buffer BEFORE the render pass begins (a copy inside a render pass is
+    // illegal). One barrier pair per texture that changed since last frame.
+    void recordPendingUploads(VkCommandBuffer cmd)
+    {
+        for (auto& [rid, tex] : m_textures)
+        {
+            if (!tex.needsUpload) continue;
+            (void)rid;
+
+            VkImageMemoryBarrier toDst{};
+            toDst.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toDst.oldLayout           = tex.everUploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                          : VK_IMAGE_LAYOUT_UNDEFINED;
+            toDst.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toDst.image               = tex.image;
+            toDst.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            toDst.srcAccessMask       = tex.everUploaded ? VK_ACCESS_SHADER_READ_BIT : 0;
+            toDst.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd,
+                                  tex.everUploaded ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                                                    : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
+
+            VkBufferImageCopy copy{};
+            copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.imageExtent      = { tex.w, tex.h, 1 };
+            vkCmdCopyBufferToImage(cmd, tex.staging, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+            VkImageMemoryBarrier toRead = toDst;
+            toRead.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toRead.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                  0, 0, nullptr, 0, nullptr, 1, &toRead);
+
+            tex.needsUpload  = false;
+            tex.everUploaded = true;
+        }
+    }
+
+    bool chooseSurfaceFormat(VkSurfaceFormatKHR& out)
+    {
+        uint32_t count = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(m_instance->GetPhysicalDevice(), m_surface, &count, nullptr);
+        if (count == 0) return false;
+        std::vector<VkSurfaceFormatKHR> formats(count);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(m_instance->GetPhysicalDevice(), m_surface, &count, formats.data());
+        for (const auto& f : formats)
+            if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            { out = f; return true; }
+        out = formats[0];
+        return true;
+    }
+
+    // Tears down and rebuilds everything downstream of the swapchain
+    // (images/views/render pass/framebuffers/pipeline) -- called on
+    // initial Create (via the immediate OnResize invocation) and on every
+    // real resize thereafter (ontology/Resizable.h's notifyResize fix is
+    // what makes the second case actually fire).
+    void recreateSwapchain(WindowSize sz)
+    {
+        if (!m_instance || m_surface == VK_NULL_HANDLE) return;
+        if (sz.width == 0 || sz.height == 0) { m_extent = { 0, 0 }; return; } // minimized -- wait for next real resize
+
+        vkDeviceWaitIdle(m_instance->GetDevice());
+        destroySwapchainDependents();
+
+        VkSurfaceCapabilitiesKHR caps{};
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_instance->GetPhysicalDevice(), m_surface, &caps);
+
+        VkSurfaceFormatKHR surfaceFormat{};
+        if (!chooseSurfaceFormat(surfaceFormat)) return;
+        m_format = surfaceFormat.format;
+
+        VkExtent2D extent;
+        if (caps.currentExtent.width != UINT32_MAX)
+        {
+            extent = caps.currentExtent;
+        }
+        else
+        {
+            extent.width  = std::clamp(sz.width,  caps.minImageExtent.width,  caps.maxImageExtent.width);
+            extent.height = std::clamp(sz.height, caps.minImageExtent.height, caps.maxImageExtent.height);
+        }
+        m_extent = extent;
+
+        uint32_t imageCount = caps.minImageCount + 1;
+        if (caps.maxImageCount > 0) imageCount = std::min(imageCount, caps.maxImageCount);
+
+        VkSwapchainCreateInfoKHR ci{};
+        ci.sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        ci.surface          = m_surface;
+        ci.minImageCount    = imageCount;
+        ci.imageFormat      = surfaceFormat.format;
+        ci.imageColorSpace  = surfaceFormat.colorSpace;
+        ci.imageExtent      = extent;
+        ci.imageArrayLayers = 1;
+        ci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ci.preTransform     = caps.currentTransform;
+        ci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        ci.presentMode      = VK_PRESENT_MODE_FIFO_KHR; // universally supported, vsync'd -- good enough for V1
+        ci.clipped          = VK_TRUE;
+
+        if (vkCreateSwapchainKHR(m_instance->GetDevice(), &ci, nullptr, &m_swapchain) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreateSwapchainKHR failed.");
+            m_swapchain = VK_NULL_HANDLE;
+            return;
+        }
+
+        uint32_t actualCount = 0;
+        vkGetSwapchainImagesKHR(m_instance->GetDevice(), m_swapchain, &actualCount, nullptr);
+        m_images.resize(actualCount);
+        vkGetSwapchainImagesKHR(m_instance->GetDevice(), m_swapchain, &actualCount, m_images.data());
+
+        m_imageViews.resize(actualCount);
+        for (uint32_t i = 0; i < actualCount; ++i)
+        {
+            VkImageViewCreateInfo viewInfo{};
+            viewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image    = m_images[i];
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format   = m_format;
+            viewInfo.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                     VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+            viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            if (vkCreateImageView(m_instance->GetDevice(), &viewInfo, nullptr, &m_imageViews[i]) != VK_SUCCESS)
+            {
+                ETCS_LOG("VulkanSurface", "vkCreateImageView failed for swapchain image " << i);
+                return;
+            }
+        }
+
+        if (!createRenderPass()) return;
+        if (!createFramebuffers()) return;
+        if (!createGraphicsPipeline()) return;
+
+        // Re-fire on THIS target's own Resizable interface, so anything
+        // subscribed to the target (rather than to the window) -- a future
+        // PintaProvider canvas, say -- hears the new size too.
+        this->notifyResize({ m_extent.width, m_extent.height });
+    }
+
+    bool createRenderPass()
+    {
+        VkAttachmentDescription colorAttachment{};
+        colorAttachment.format         = m_format;
+        colorAttachment.samples        = VK_SAMPLE_COUNT_1_BIT;
+        colorAttachment.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        colorAttachment.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        VkAttachmentReference colorRef{};
+        colorRef.attachment = 0;
+        colorRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments    = &colorRef;
+
+        VkSubpassDependency dep{};
+        dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+        dep.dstSubpass    = 0;
+        dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.srcAccessMask = 0;
+        dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo ci{};
+        ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        ci.attachmentCount = 1;
+        ci.pAttachments    = &colorAttachment;
+        ci.subpassCount    = 1;
+        ci.pSubpasses      = &subpass;
+        ci.dependencyCount = 1;
+        ci.pDependencies   = &dep;
+
+        if (vkCreateRenderPass(m_instance->GetDevice(), &ci, nullptr, &m_renderPass) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreateRenderPass failed.");
+            return false;
+        }
+        return true;
+    }
+
+    bool createFramebuffers()
+    {
+        m_framebuffers.resize(m_imageViews.size());
+        for (size_t i = 0; i < m_imageViews.size(); ++i)
+        {
+            VkImageView attachments[] = { m_imageViews[i] };
+            VkFramebufferCreateInfo ci{};
+            ci.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            ci.renderPass      = m_renderPass;
+            ci.attachmentCount = 1;
+            ci.pAttachments    = attachments;
+            ci.width           = m_extent.width;
+            ci.height          = m_extent.height;
+            ci.layers          = 1;
+            if (vkCreateFramebuffer(m_instance->GetDevice(), &ci, nullptr, &m_framebuffers[i]) != VK_SUCCESS)
+            {
+                ETCS_LOG("VulkanSurface", "vkCreateFramebuffer failed for image " << i);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Both pipelines are identical except for their shaders and layout --
+    // same render pass, same empty vertex input (corners come from
+    // gl_VertexIndex), same alpha blending. Built together because both are
+    // swapchain-dependent: viewport/scissor are baked in, so a resize
+    // rebuilds both.
+    bool createGraphicsPipeline()
+    {
+        if (!buildPipeline(m_vertShader, m_fragShader, m_pipelineLayout, m_pipeline)) return false;
+        if (!buildPipeline(m_blitVertShader, m_blitFragShader, m_blitPipelineLayout, m_blitPipeline)) return false;
+        return true;
+    }
+
+    bool buildPipeline(VkShaderModule vs, VkShaderModule fs, VkPipelineLayout layout, VkPipeline& out)
+    {
+        VkPipelineShaderStageCreateInfo vertStage{};
+        vertStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertStage.stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        vertStage.module = vs;
+        vertStage.pName  = "main";
+
+        VkPipelineShaderStageCreateInfo fragStage{};
+        fragStage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragStage.stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragStage.module = fs;
+        fragStage.pName  = "main";
+
+        VkPipelineShaderStageCreateInfo stages[] = { vertStage, fragStage };
+
+        // No vertex buffers -- the quad's 4 corners come from gl_VertexIndex
+        // in rect.vert (see shaders/rect.vert), so vertex input is empty.
+        VkPipelineVertexInputStateCreateInfo vertexInput{};
+        vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+
+        VkViewport viewport{ 0.0f, 0.0f, static_cast<float>(m_extent.width), static_cast<float>(m_extent.height), 0.0f, 1.0f };
+        VkRect2D scissor{ { 0, 0 }, m_extent };
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.pViewports    = &viewport;
+        viewportState.scissorCount  = 1;
+        viewportState.pScissors     = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo raster{};
+        raster.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode    = VK_CULL_MODE_NONE;
+        raster.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        raster.lineWidth   = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo msaa{};
+        msaa.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineColorBlendAttachmentState blendAttachment{};
+        blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        blendAttachment.blendEnable    = VK_TRUE;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.colorBlendOp        = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blendAttachment.alphaBlendOp        = VK_BLEND_OP_ADD;
+
+        VkPipelineColorBlendStateCreateInfo blend{};
+        blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blend.attachmentCount = 1;
+        blend.pAttachments    = &blendAttachment;
+
+        VkGraphicsPipelineCreateInfo ci{};
+        ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        ci.stageCount          = 2;
+        ci.pStages             = stages;
+        ci.pVertexInputState   = &vertexInput;
+        ci.pInputAssemblyState = &inputAssembly;
+        ci.pViewportState      = &viewportState;
+        ci.pRasterizationState = &raster;
+        ci.pMultisampleState   = &msaa;
+        ci.pColorBlendState    = &blend;
+        ci.layout              = layout;
+        ci.renderPass           = m_renderPass;
+        ci.subpass              = 0;
+
+        if (vkCreateGraphicsPipelines(m_instance->GetDevice(), VK_NULL_HANDLE, 1, &ci, nullptr, &out) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanSurface", "vkCreateGraphicsPipelines failed.");
+            return false;
+        }
+        return true;
+    }
+
+    void recordFrame(VkCommandBuffer cmd, uint32_t imageIndex)
+    {
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        vkBeginCommandBuffer(cmd, &begin);
+
+        // Before the render pass: a copy command is illegal inside one.
+        recordPendingUploads(cmd);
+
+        VkClearValue clear{};
+        clear.color = { { m_clearColor[0], m_clearColor[1], m_clearColor[2], m_clearColor[3] } };
+
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass        = m_renderPass;
+        rpBegin.framebuffer       = m_framebuffers[imageIndex];
+        rpBegin.renderArea.extent = m_extent;
+        rpBegin.clearValueCount   = 1;
+        rpBegin.pClearValues      = &clear;
+        vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+        // In call order, switching pipelines only when the kind changes --
+        // a layer stack is usually one blit after another, so the common
+        // case is a single bind. Order is the correctness requirement here,
+        // not the bind count: compositing back-to-front only works if these
+        // are recorded exactly as they arrived.
+        const float fw = static_cast<float>(m_extent.width);
+        const float fh = static_cast<float>(m_extent.height);
+        VkPipeline bound = VK_NULL_HANDLE;
+
+        for (const PendingDraw& d : m_pendingDraws)
+        {
+            // Pixel rect -> NDC. Same conversion for both kinds.
+            const float nx = (static_cast<float>(d.x) / fw) * 2.0f - 1.0f;
+            const float ny = (static_cast<float>(d.y) / fh) * 2.0f - 1.0f;
+            const float nw = (static_cast<float>(d.w) / fw) * 2.0f;
+            const float nh = (static_cast<float>(d.h) / fh) * 2.0f;
+
+            if (d.kind == PendingDraw::Kind::Rect)
+            {
+                if (bound != m_pipeline)
+                {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
+                    bound = m_pipeline;
+                }
+                RectPushConstants pc{};
+                pc.rect[0] = nx; pc.rect[1] = ny; pc.rect[2] = nw; pc.rect[3] = nh;
+                pc.color[0] = d.r; pc.color[1] = d.g; pc.color[2] = d.b; pc.color[3] = d.a;
+                vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                    0, sizeof(pc), &pc);
+                vkCmdDraw(cmd, 4, 1, 0, 0);
+            }
+            else
+            {
+                auto it = m_textures.find(d.source);
+                if (it == m_textures.end()) continue;   // source went away between Blit and Present
+
+                if (bound != m_blitPipeline)
+                {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_blitPipeline);
+                    bound = m_blitPipeline;
+                }
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_blitPipelineLayout,
+                                         0, 1, &it->second.set, 0, nullptr);
+                BlitPushConstants pc{};
+                pc.rect[0] = nx; pc.rect[1] = ny; pc.rect[2] = nw; pc.rect[3] = nh;
+                pc.opacity = d.a;
+                vkCmdPushConstants(cmd, m_blitPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                    0, sizeof(pc), &pc);
+                vkCmdDraw(cmd, 4, 1, 0, 0);
+            }
+        }
+
+        vkCmdEndRenderPass(cmd);
+        vkEndCommandBuffer(cmd);
+    }
+
+    void destroySwapchainDependents()
+    {
+        VkDevice dev = m_instance ? m_instance->GetDevice() : VK_NULL_HANDLE;
+        if (!dev) return;
+        if (m_pipeline)       { vkDestroyPipeline(dev, m_pipeline, nullptr);             m_pipeline = VK_NULL_HANDLE; }
+        if (m_blitPipeline)   { vkDestroyPipeline(dev, m_blitPipeline, nullptr);         m_blitPipeline = VK_NULL_HANDLE; }
+        for (auto fb : m_framebuffers) vkDestroyFramebuffer(dev, fb, nullptr);
+        m_framebuffers.clear();
+        if (m_renderPass)     { vkDestroyRenderPass(dev, m_renderPass, nullptr);         m_renderPass = VK_NULL_HANDLE; }
+        for (auto view : m_imageViews) vkDestroyImageView(dev, view, nullptr);
+        m_imageViews.clear();
+        m_images.clear();
+        if (m_swapchain)      { vkDestroySwapchainKHR(dev, m_swapchain, nullptr);        m_swapchain = VK_NULL_HANDLE; }
+    }
+
+    void teardown()
+    {
+        if (m_instance && m_instance->GetDevice()) vkDeviceWaitIdle(m_instance->GetDevice());
+        destroySwapchainDependents();
+        VkDevice dev = m_instance ? m_instance->GetDevice() : VK_NULL_HANDLE;
+        if (dev)
+        {
+            // Textures first: their descriptor sets are freed back to the
+            // pool, so the pool has to outlive them.
+            for (auto& [rid, tex] : m_textures) { (void)rid; destroyTexture(tex); }
+            m_textures.clear();
+
+            if (m_pipelineLayout) { vkDestroyPipelineLayout(dev, m_pipelineLayout, nullptr); m_pipelineLayout = VK_NULL_HANDLE; }
+            if (m_vertShader)     { vkDestroyShaderModule(dev, m_vertShader, nullptr);        m_vertShader = VK_NULL_HANDLE; }
+            if (m_fragShader)     { vkDestroyShaderModule(dev, m_fragShader, nullptr);        m_fragShader = VK_NULL_HANDLE; }
+
+            if (m_blitPipelineLayout) { vkDestroyPipelineLayout(dev, m_blitPipelineLayout, nullptr); m_blitPipelineLayout = VK_NULL_HANDLE; }
+            if (m_blitVertShader)     { vkDestroyShaderModule(dev, m_blitVertShader, nullptr);        m_blitVertShader = VK_NULL_HANDLE; }
+            if (m_blitFragShader)     { vkDestroyShaderModule(dev, m_blitFragShader, nullptr);        m_blitFragShader = VK_NULL_HANDLE; }
+            if (m_blitDescriptorPool) { vkDestroyDescriptorPool(dev, m_blitDescriptorPool, nullptr);  m_blitDescriptorPool = VK_NULL_HANDLE; }
+            if (m_blitSetLayout)      { vkDestroyDescriptorSetLayout(dev, m_blitSetLayout, nullptr);  m_blitSetLayout = VK_NULL_HANDLE; }
+            if (m_blitSampler)        { vkDestroySampler(dev, m_blitSampler, nullptr);                m_blitSampler = VK_NULL_HANDLE; }
+            for (uint32_t i = 0; i < SURFACE_FRAMES_IN_FLIGHT; ++i)
+            {
+                if (m_imageAvailable[i]) vkDestroySemaphore(dev, m_imageAvailable[i], nullptr);
+                if (m_renderFinished[i]) vkDestroySemaphore(dev, m_renderFinished[i], nullptr);
+                if (m_inFlight[i])       vkDestroyFence(dev, m_inFlight[i], nullptr);
+            }
+        }
+        m_imageAvailable.fill(VK_NULL_HANDLE);
+        m_renderFinished.fill(VK_NULL_HANDLE);
+        m_inFlight.fill(VK_NULL_HANDLE);
+        if (m_instance && m_surface) { vkDestroySurfaceKHR(m_instance->GetInstance(), m_surface, nullptr); m_surface = VK_NULL_HANDLE; }
+        this->removeTag("active");
+    }
+};
 
 #endif

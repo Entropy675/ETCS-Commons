@@ -10,13 +10,13 @@
 
 // VulkanInstance -- flat tag, no ontology supertype (DeletableBase only):
 // there is exactly one Vulkan backend on the roadmap right now (see the
-// readme TODO), so unlike Window/Target this never needs to be addressed
-// generically by foreign code the way HtmlPage_/Window_/Target_ do. Same
+// readme TODO), so unlike Window/Surface this never needs to be addressed
+// generically by foreign code the way HtmlPage_/Window_/Surface_ do. Same
 // flatness as DatabaseProvider's LocalDatabase.
 //
 // Owns the VkInstance, a single selected physical+logical device pair,
 // one graphics+present-capable queue, and one command pool -- everything
-// a Target needs handed to it (GetDevice/GetQueue/GetCommandPool) to
+// a Surface needs handed to it (GetDevice/GetQueue/GetCommandPool) to
 // build its own swapchain/pipeline against.
 class VulkanInstance : public DeletableBase<VulkanInstance>
 {
@@ -93,6 +93,22 @@ public:
     }
 
     bool IsActive() const { return this->hasTag("active"); }
+
+    // Every allocation in this module goes through here rather than each
+    // surface re-enumerating the device's memory types: the physical
+    // device is this object's to know, and a wrong memory type is a class
+    // of bug that only shows up as a validation error or a corrupt upload.
+    // Returns UINT32_MAX when nothing matches -- callers check.
+    uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags props) const
+    {
+        VkPhysicalDeviceMemoryProperties memProps{};
+        vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
+            if ((typeBits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & props) == props)
+                return i;
+        ETCS_LOG("VulkanInstance", "No memory type matching bits " << typeBits << " with the requested properties.");
+        return UINT32_MAX;
+    }
 
     VkInstance       GetInstance()       const { return m_instance; }
     VkPhysicalDevice GetPhysicalDevice() const { return m_physicalDevice; }
