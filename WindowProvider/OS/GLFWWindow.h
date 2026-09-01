@@ -223,6 +223,12 @@ public:
 #endif
         m_cursorPrimed = false;
         m_mouseCaptured = on;
+        // Logged HERE rather than at the work function, because there are two
+        // ways in -- a script calling CaptureMouse and the user pressing
+        // Ctrl+Tab -- and a mode you cannot see the second route change is a
+        // mode you debug by guessing.
+        ETCS_LOG("GLFWWindow", (on ? "cursor captured -- pointer deltas are unbounded."
+                                   : "cursor released."));
     }
     bool MouseCaptured() const { return m_mouseCaptured; }
 
@@ -285,6 +291,33 @@ void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
 void GLFWWindow::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
+
+    /*
+ * CTRL+TAB IS THE WAY OUT OF CAPTURE, and it is handled here rather than
+ * being forwarded to whoever is consuming input.
+ *
+ * Escaping a captured cursor is a property of the WINDOW, not of what the
+ * input happens to be driving. A scene consuming the stream can be busy, can
+ * be a foreign module, can have crashed -- and in every one of those cases
+ * the user still has to be able to get their pointer back. Routing the
+ * release through the consumer would make the one control that must always
+ * work depend on everything else working.
+ *
+ * It is also why the chord is a chord. Capture has to be MANDATORY for a look
+ * control to be usable at all -- an uncaptured cursor hits the edge of the
+ * screen and stops producing deltas, or warps and produces enormous false
+ * ones, which is the flying camera this replaced -- so the exit cannot be a
+ * key a scene might reasonably want to bind.
+ *
+ * Swallowed rather than forwarded: the consumer never sees the Tab, so
+ * nothing downstream is left holding a key that was never released.
+ */
+    if (handler && key == GLFW_KEY_TAB && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL))
+    {
+        handler->SetMouseCapture(!handler->MouseCaptured());
+        return;
+    }
+
 #ifdef ETCS_VERBOSE_INPUT_EVENTS
     ETCS_LOG("GLFWWindow:Global", "GLFW user callback ptr: " << window << " handler: " << handler << " key: " << key);
 #endif

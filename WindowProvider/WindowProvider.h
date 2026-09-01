@@ -227,9 +227,7 @@ DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
 DEFINE_WORK_FUNC_TYPED(Window, CaptureMouse, (int32_t, on))
 {
     (void)ctx;
-    self.SetMouseCapture(on != 0);
-    ETCS_LOG("CaptureMouse", (on != 0 ? "cursor captured -- pointer deltas are unbounded."
-                                      : "cursor released."));
+    self.SetMouseCapture(on != 0);   // logs the transition itself
 }
 
 DEFINE_WORK_FUNC(Window, PollEvents)
