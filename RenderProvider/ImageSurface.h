@@ -74,7 +74,7 @@ public:
     // textured quad. w/h are accepted for signature parity with the family
     // and ignored: this path does not resample (see Pixels_::Composite for
     // why a layered editor composites 1:1 and lets the device scale).
-    void BlitConcrete(ETCS::Entity* source, int32_t x, int32_t y,
+    void BlitConcrete(Surface_* source, int32_t x, int32_t y,
                        uint32_t w, uint32_t h, float opacity) override
     {
         (void)w; (void)h;
@@ -83,7 +83,7 @@ public:
         if (!px)
         {
             ETCS_LOG("ImageSurface", "Blit source RID:" << source->getRID()
-                     << " has no Pixels interface -- only a CPU-backed surface can be blitted from.");
+                     << " has no Pixels interface -- only a CPU-backed surface can be blitted from yet.");
             return;
         }
         if (px == static_cast<Pixels_*>(this))

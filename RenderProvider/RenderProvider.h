@@ -37,43 +37,22 @@
 //     which point this tag becomes HYBRID -- see RenderProvider.cc.
 //   - resampling on blit (Pixels_::Composite's own comment)
 
-// Resolves a script-supplied RID against THIS module's own registry rows.
+// Source resolution for Blit: a RID in, a Surface_* out, through the
+// ontology family aggregate.
 //
-// It would read better as a lookup in the "Pixels" FAMILY aggregate --
-// ETCS_SUPERTYPE_BASE publishes exactly such a row per family, and Blit
-// wants "whatever entity owns these pixels", not "whichever of my tags it
-// happens to be". That does not work today: those family rows are
-// published but never populated. The only invoke_insert call sites in the
-// runtime (core/Entity.h) are reparenting, an entity's typed_children_, and
-// the module row keyed by T::CONTRACT_TAG -- nothing ever fans an instance
-// INTO its families' aggregates, even though destroyImpl (DynamicLoader.h)
-// already contains the matching fan-OUT and its comment describes fan-in as
-// existing. Verified by hitting it: a spawned ImageSurface is absent from
-// the "Pixels" row while carrying the Pixels type tag.
+// This is the general form -- ETCS::resolve_in_family (core/Entity.h) finds
+// the entity in the "Surface" family list whoever built it, and hands back
+// the correctly-adjusted Surface_* interface pointer. So a script can blit
+// from ANY module's surface, not just one RenderProvider spawned, and this
+// module needs no compile-time knowledge of what the source concretely is.
 //
-// So this scans this module's rows instead: invoke_get returns null for a
-// RID a row does not hold, so the first hit is the owner. The consequence
-// to know about is that a script can only blit from a surface THIS module
-// spawned -- the C++ seam below has no such limit (a caller holding an
-// Entity* passes it straight to Blit, and any module's Pixels_ answers), so
-// PintaProvider reaching in from C++ is unaffected. Making the script path
-// equally general needs the family fan-in, and that needs the interface
-// pointer rather than the Entity* (a Pixels_* and an Entity* for the same
-// object are different addresses under multiple inheritance), which is a
-// core decision rather than something to improvise here.
-static inline ETCS::Entity* rp_resolve_local(ETCS::RID rid)
-{
-    if (rid == 0) return nullptr;
-    for (auto& [key, handle] : ETCS::EventNode::getInstance().ridMap)
-    {
-        (void)key;
-        if (ETCS::Entity* e = handle.invoke_get(rid)) return e;
-    }
-    return nullptr;
-}
+// It replaces a module-local row scan that existed only because the family
+// aggregates were published but never populated -- fixed in core by
+// etcs_supertype_fanout, whose own comment carries the history.
 
-// The one row lookup that IS a single tag: Instance is flat by design, so
-// its tag row is the only place it appears.
+// The one lookup that is a single tag rather than a family: Instance is
+// flat by design (no ontology supertype but Deletable), so its tag row is
+// the only place it appears.
 static inline ETCS::Entity* rp_resolve_tag(const char* tag, ETCS::RID rid)
 {
     if (rid == 0) return nullptr;
@@ -155,16 +134,16 @@ DEFINE_WORK_FUNC_TYPED(Surface, DrawRect, (int32_t, x), (int32_t, y), (uint32_t,
 }
 
 // Blit <source_rid> <x> <y> <w> <h> <opacity> -- w/h of 0 mean the
-// source's own size. Source resolution is module-local for now; see
-// rp_resolve_local's comment for what that costs and why.
+// source's own size. The source is resolved through the Surface family, so
+// it can be any surface from any module.
 DEFINE_WORK_FUNC_TYPED(Surface, Blit, (ETCS::RID, source), (int32_t, x), (int32_t, y),
                                        (uint32_t, w), (uint32_t, h), (float, opacity))
 {
     (void)ctx;
-    ETCS::Entity* src = rp_resolve_local(source);
+    Surface_* src = ETCS::resolve_in_family<Surface_>("Surface", source);
     if (!src)
     {
-        ETCS_LOG("Surface::Blit", "RID:" << source << " is not an entity this module spawned (see rp_resolve_local).");
+        ETCS_LOG("Surface::Blit", "RID:" << source << " is not a Surface.");
         return;
     }
     self.Blit(src, x, y, w, h, opacity);
@@ -322,10 +301,10 @@ DEFINE_WORK_FUNC_TYPED(ImageSurface, Blit, (ETCS::RID, source), (int32_t, x), (i
                                             (uint32_t, w), (uint32_t, h), (float, opacity))
 {
     (void)ctx;
-    ETCS::Entity* src = rp_resolve_local(source);
+    Surface_* src = ETCS::resolve_in_family<Surface_>("Surface", source);
     if (!src)
     {
-        ETCS_LOG("ImageSurface::Blit", "RID:" << source << " is not an entity this module spawned (see rp_resolve_local).");
+        ETCS_LOG("ImageSurface::Blit", "RID:" << source << " is not a Surface.");
         return;
     }
     self.Blit(src, x, y, w, h, opacity);

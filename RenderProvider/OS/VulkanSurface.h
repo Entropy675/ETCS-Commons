@@ -142,7 +142,7 @@ public:
     //
     // w/h of 0 mean "the source's own size", which is what a 1:1 canvas
     // composite wants and saves every caller restating it.
-    void BlitConcrete(ETCS::Entity* source, int32_t x, int32_t y,
+    void BlitConcrete(Surface_* source, int32_t x, int32_t y,
                        uint32_t w, uint32_t h, float opacity) override
     {
         if (!source) { ETCS_LOG("VulkanSurface", "Blit called with no source."); return; }
@@ -151,11 +151,15 @@ public:
         // the frame consumer reads (ConsumeFrames, RenderProvider.h).
         std::lock_guard<std::mutex> lock(m_stateMutex);
         beginCompositionIfPresented();
+        // Every Surface_ is an Entity (virtually), so the source's own
+        // identity and its other interfaces are both reachable from here.
+        // A device-side offscreen source would be read by image copy at this
+        // point instead; today only CPU-backed sources can be uploaded.
         Pixels_* px = static_cast<Pixels_*>(source->getInterfacePointer(ETCS::Buffer("Pixels")));
         if (!px)
         {
             ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
-                     << " has no Pixels interface -- only a CPU-backed surface can be blitted from.");
+                     << " has no Pixels interface -- only a CPU-backed surface can be blitted from yet.");
             return;
         }
         if (px->PixelWidth() == 0 || px->PixelHeight() == 0) return;
