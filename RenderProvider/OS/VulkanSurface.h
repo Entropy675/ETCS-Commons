@@ -45,7 +45,8 @@ static constexpr uint32_t SURFACE_MAX_BLIT_SOURCES = 64;
 // touches the queue.
 class VulkanSurface : public SurfaceBase<VulkanSurface>,
                        public PresentableBase<VulkanSurface>,
-                       public DeletableBase<VulkanSurface>
+                       public DeletableBase<VulkanSurface>,
+                       public LifecycleBase<VulkanSurface>
 {
 public:
     // The ordering every Surface owes (Orderable, composed by SurfaceBase).
@@ -246,6 +247,28 @@ public:
     // nothing is bound -- the retained path -- or when the root has stopped
     // resolving, which is how a deleted scene stops being drawn instead of
     // being dereferenced.
+    /*
+ * Lifecycle_: let go of the tree, whichever way this surface is dying.
+ *
+ * THE COMPOSE ROOT IS THE WHOLE REASON this type claims the family. A bound
+ * root means the frame edge re-walks somebody else's entity tree every tick
+ * -- and when a closure ends, that tree is being reclaimed while the walk is
+ * still running. Unbinding here is the difference between a frame edge that
+ * stops looking and one that is racing the arena for the same nodes.
+ *
+ * Marking it dead as well, so any tick already in flight takes ready()'s
+ * refusal instead of touching a swapchain about to be destroyed. Neither of
+ * these could be done from ~VulkanSurface: by then the frame thread has
+ * already had its chance to be wrong.
+ */
+    void ReleaseConcrete()
+    {
+        ETCS_LOG("VulkanSurface", "release: unbinding the compose root and marking the "
+                 "surface dead before teardown (RID:" << getRID() << ").");
+        SetComposeRoot(0);
+        m_dead = true;
+    }
+
     bool RecomposeBound()
     {
         ETCS::RID root_rid;

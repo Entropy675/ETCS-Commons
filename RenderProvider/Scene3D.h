@@ -56,7 +56,8 @@
 // RenderProvider.h's ConsumeInput for the edge itself.
 // ---------------------------------------------------------------------------
 class Scene3D : public Drawable3DBase<Scene3D>,
-                public DeletableBase<Scene3D>
+                public DeletableBase<Scene3D>,
+                public LifecycleBase<Scene3D>
 {
 public:
     WIRE_TYPE_IDENTITY(Scene3D);
@@ -239,6 +240,11 @@ public:
  *                         ---------------------------
  *                          mouse_dpi * frame_width_px
  *
+ * ONE TURN PER PASS is the standard: dragging the pointer across the width of
+ * the window rotates the view through exactly 2*pi and brings you back where
+ * you started. It is the only ratio with an obvious meaning, and it is what
+ * makes the window itself the unit rather than a number somebody picked.
+ *
  * Read it as a chain of unit conversions and it is obvious. A pointer event
  * carries COUNTS; counts / mouse_dpi is INCHES of hand movement;
  * frame_width_px / screen_dpi is the INCHES the frame occupies on the glass;
@@ -256,8 +262,14 @@ public:
  * MOUSE DPI IS A PARAMETER, NOT A MEASUREMENT, and that is a real limit
  * rather than an omission: neither X11, Wayland, Win32 nor GLFW exposes a
  * pointing device's counts-per-inch. The default is 800 because it is the
- * most common stock setting; a user whose mouse says 1600 on the box halves
- * their turn rate by saying so, which is the whole of the tuning.
+ * most common stock setting.
+ *
+ * IT IS ALSO THE ONE THING THAT CAN STILL MAKE THIS FEEL WRONG, and the error
+ * is exactly linear: a 3200-DPI mouse against an assumed 800 emits four times
+ * the counts for the same movement, so the view turns four times too fast and
+ * nothing else in the chain is at fault. If it overshoots by roughly N, the
+ * mouse is roughly N * 800 DPI -- SetMouseDpi is the whole of the correction,
+ * and setting it right makes every other number here true.
  */
     void SetMouseDpi(float dpi)  { if (dpi  > 0.0f) m_mouse_dpi  = dpi; }
     void SetScreenDpi(float dpi) { if (dpi  > 0.0f) m_screen_dpi = dpi; }
@@ -658,6 +670,23 @@ public:
     // -- so a scene reached through any path reports honestly, not only
     // through the camera that happens to be watching it.
     bool Animating() override { return InMotion(); }
+
+    /*
+ * Lifecycle_: stop being a thing other entities are still pointing at.
+ *
+ * The viewer list is the point. A camera registers itself here when it
+ * projects, and this node marks those cameras dirty whenever it moves -- so a
+ * scene reclaimed by a closure while a frame edge is still running would keep
+ * reaching for cameras that are themselves being torn down. Dropping the list
+ * and coming to rest is how it stops participating, and it has to happen while
+ * the node is still whole enough to do it.
+ */
+    void ReleaseConcrete()
+    {
+        m_viewers.clear();
+        m_ov.Rest();
+        ClearHeld();
+    }
 
     // ── Deletable_ ───────────────────────────────────────────────────────
     bool DeleteConcrete() override
@@ -1353,7 +1382,7 @@ private:
     float              m_sens_scale = 1.0f;
     float              m_mouse_dpi  = 800.0f;   // not discoverable; see SetMouseDpi
     float              m_screen_dpi = 96.0f;    // Window.ScreenDpi reports the real one
-    float              m_turns      = 2.0f;     // full rotations per screen-width pass
+    float              m_turns      = 1.0f;     // full rotations per screen-width pass
 
     std::chrono::steady_clock::time_point m_last_step{};
     bool                                  m_stepped = false;

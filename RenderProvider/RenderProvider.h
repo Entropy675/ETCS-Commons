@@ -580,7 +580,9 @@ static inline void logTurnRate(Scene3D& self)
     ETCS_LOG("Scene3D", "turn rate: " << self.TurnsPerPass() << " turn(s) per screen pass, "
              << "mouse " << self.MouseDpi() << " DPI, screen " << self.ScreenDpi()
              << " DPI, x" << self.Sensitivity() << " -> "
-             << self.RadiansPerCount() << " rad per mouse count.");
+             << self.RadiansPerCount() << " rad per mouse count."
+             << " If it turns about N times too fast, the mouse is about N x "
+             << self.MouseDpi() << " DPI -- SetMouseDpi is the whole fix.");
 }
 
 // ── Scene3D ──────────────────────────────────────────────────────────────
