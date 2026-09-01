@@ -213,6 +213,21 @@ public:
     }
     ETCS::RID ComposeRoot() const { return m_composeRoot; }
 
+    /*
+ * The frame rate this surface is actually sustaining, as a rolling average.
+ *
+ * Sampled at PRESENT, which is the only instant that means anything: it is
+ * the point the frame reached the screen, so the interval between two of them
+ * is a frame, with acquire, record, submit and the walk all inside it. A rate
+ * computed anywhere else is a rate for part of the pipeline.
+ *
+ * Exponential rather than a window, because a window needs a buffer and a
+ * decision about how long it is, and the only consumer is a human reading a
+ * number off the screen. The smoothing constant is what stops it flickering
+ * between two integers while saying nothing about the actual variance.
+ */
+    float Fps() const { return m_fps; }
+
     // Re-walk the bound root into a fresh composition. Returns false when
     // nothing is bound -- the retained path -- or when the root has stopped
     // resolving, which is how a deleted scene stops being drawn instead of
@@ -408,6 +423,7 @@ public:
             recreateSwapchain({ m_extent.width, m_extent.height });
 
         m_currentFrame = (m_currentFrame + 1) % SURFACE_FRAMES_IN_FLIGHT;
+        notePresent();
     }
 
     // --- Resizable_ dispatch (ResizableBase, composed into SurfaceBase) ---
@@ -549,6 +565,28 @@ private:
     bool                      m_composed   = false;
     // Zero means the retained model. See SetComposeRoot.
     ETCS::RID                 m_composeRoot = 0;
+    float                     m_fps = 0.0f;
+    bool                      m_fpsPrimed = false;
+    std::chrono::steady_clock::time_point m_lastPresent{};
+
+    // Called at the end of every present. Not under the state lock: it is
+    // touched by the frame thread only, and a reader getting a stale float is
+    // reading a frame rate.
+    void notePresent()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (m_fpsPrimed)
+        {
+            const float dt = std::chrono::duration<float>(now - m_lastPresent).count();
+            if (dt > 0.0f)
+            {
+                const float inst = 1.0f / dt;
+                m_fps = (m_fps <= 0.0f) ? inst : (m_fps * 0.9f + inst * 0.1f);
+            }
+        }
+        m_lastPresent = now;
+        m_fpsPrimed = true;
+    }
 
     // Resize hand-off: written by the poll thread, acted on by the frame
     // thread. See PresentConcrete.

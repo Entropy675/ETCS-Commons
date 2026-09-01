@@ -6,7 +6,7 @@
 // on why the clock and the Vulkan work sit on the sides they do).
 // Instance and ImageSurface stay BASIC -- neither has anything continuous
 // to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
@@ -61,3 +61,12 @@ ETCS_TAG_BLOCK_HYBRID(Scene3D,
 ETCS_TAG_BLOCK_BASIC(Camera3D,
     Create, SetPosition, SetOrder, SetBackground, LookAt, SetLens, SetScene,
     Render, Draw, Clear, DrawRect, Blit, Delete)
+
+// Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of
+// whatever it labels and needs no drawing code at the call site. Its font is
+// built in (TextLabel.h on why a font file would be four failure modes for a
+// frame counter), and it draws through Surface_::DrawRect, so it lands on a
+// compositor, a camera, an offscreen layer or the device surface identically.
+ETCS_TAG_BLOCK_BASIC(TextLabel,
+    Create, SetText, SetSize, SetPosition, SetOrder, SetColor, SetBackground,
+    SetPadding, BindFps, Measure, Rasterize, Draw, Delete)

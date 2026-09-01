@@ -94,6 +94,9 @@ public:
 
         glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
         if (!glfwInit()) return;
+        // Straight after glfwInit, which is where the display connection
+        // exists and before anything can issue a request against it.
+        install_x_error_handler();
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
@@ -198,6 +201,53 @@ private:
 
 public:
     /*
+ * Stop Xlib from calling exit() on us.
+ *
+ * Xlib's DEFAULT error handler prints and then calls exit() directly -- so a
+ * single X protocol error, of the kind you get when a window is destroyed out
+ * from under a poll loop, terminates the process from wherever the poll
+ * happened to be. Here that is a ThreadPool worker, which means the static
+ * destructors run on a pool thread and the pool tries to join the thread it is
+ * running on; the visible symptom was "Resource deadlock avoided" and an abort
+ * with nothing about X11 anywhere near it.
+ *
+ * A handler that logs and RETURNS makes the error what it actually is: a
+ * request that failed. The window is already gone in that case, so the poll
+ * loop sees ShouldClose on its next pass and the closure ends the ordinary
+ * way. Installed once, process-wide, because that is the granularity Xlib
+ * offers -- there is one error handler per process, not one per display.
+ *
+ * The I/O error handler is deliberately NOT replaced: it fires when the
+ * connection to the server is gone entirely, and it is required not to
+ * return. There is nothing to keep running at that point.
+ */
+#if !defined(_WIN32)
+    // Xlib's own types live in glfw_native (see this file's header comment on
+    // why X11's `Window` typedef is quarantined there), so the handler is
+    // declared in those terms -- there is no second Xlib visible to name.
+    static int x_error_handler(glfw_native::Display* dpy, glfw_native::XErrorEvent* ev)
+    {
+        char buf[256] = {0};
+        glfw_native::XGetErrorText(dpy, ev->error_code, buf, sizeof(buf) - 1);
+        ETCS_LOG("GLFWWindow", "X error (non-fatal): " << buf
+                 << " -- request " << static_cast<int>(ev->request_code)
+                 << "." << static_cast<int>(ev->minor_code)
+                 << ". The window is likely gone; the poll loop will see it close.");
+        return 0;
+    }
+
+    static void install_x_error_handler()
+    {
+        static bool installed = false;
+        if (installed) return;
+        installed = true;
+        glfw_native::XSetErrorHandler(&GLFWWindow::x_error_handler);
+    }
+#else
+    static void install_x_error_handler() {}   // no X server to protect against
+#endif
+
+    /*
  * Mouse capture: hide the cursor and free it from the screen's edges, so
  * pointer deltas keep arriving however far the user keeps moving.
  *
@@ -217,10 +267,29 @@ public:
         if (!GetHandle()) return;
         glfwSetInputMode(GetHandle(), GLFW_CURSOR,
                          on ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-#ifdef GLFW_RAW_MOUSE_MOTION
-        if (glfwRawMouseMotionSupported())
-            glfwSetInputMode(GetHandle(), GLFW_RAW_MOUSE_MOTION, on ? GLFW_TRUE : GLFW_FALSE);
-#endif
+
+        /*
+     * RAW MOTION IS DELIBERATELY NOT REQUESTED, and it was, and that was a
+     * unit bug rather than a preference.
+     *
+     * Raw motion reports DEVICE COUNTS -- what the sensor produced, before
+     * the desktop maps it onto the screen. Those counts are a function of
+     * the mouse's DPI and of nothing else, so a 1600-DPI mouse and a
+     * 400-DPI mouse moving the same distance across the desk report four
+     * times apart. Any calibration stated as "one pass across the screen"
+     * is then meaningless: there is no screen in the number.
+     *
+     * Without it, GLFW reports the virtual cursor's motion in the same
+     * units the screen is measured in, which is what makes 4*pi over the
+     * frame width mean exactly two turns per pass (Scene3D::SetSensitivity).
+     * The cost is that desktop pointer acceleration is in the loop, so a
+     * fast flick turns further than a slow drag of the same length -- which
+     * is the behaviour every other cursor on the machine already has.
+     *
+     * It looked correct under a test harness because a warped pointer on a
+     * bare X server produces deltas that ARE screen pixels: the one setting
+     * where the two units coincide.
+     */
         m_cursorPrimed = false;
         m_mouseCaptured = on;
         // Logged HERE rather than at the work function, because there are two

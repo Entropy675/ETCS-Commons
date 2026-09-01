@@ -35,6 +35,12 @@
 #include "Scene3D.h"
 #include "Camera3D.h"
 
+// The Glyphs leaf. AFTER the surfaces, because a label bound to a frame rate
+// reads it off this platform's concrete Surface -- the rate is a property of
+// the frame loop, not of the Surface family, so the type has to be complete
+// here rather than reachable by family name.
+#include "TextLabel.h"
+
 // auto generated hashes of headers:
 #include "../../ETCS.h"
 #include "module_hashes.h"

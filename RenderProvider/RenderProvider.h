@@ -940,4 +940,117 @@ DEFINE_WORK_FUNC(Camera3D, Delete)
     self.DeleteConcrete();
 }
 
+// ── TextLabel ────────────────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC_TYPED(TextLabel, Create, (uint32_t, size_px))
+{
+    (void)ctx;
+    self.Create(size_px);
+}
+
+// The whole rest of the line is the text, so it may contain spaces and commas
+// without quoting -- restAsString rather than a typed field, the same shape
+// HttpServer's route handlers take a path.
+DEFINE_WORK_FUNC(TextLabel, SetText)
+{
+    (void)ctx;
+    self.SetText(data.restAsString());
+}
+
+DEFINE_WORK_FUNC_TYPED(TextLabel, SetSize, (uint32_t, size_px))
+{
+    (void)ctx;
+    self.SetSize(size_px);
+    ETCS_LOG("TextLabel::SetSize", "cell scale x" << self.Scale()
+             << " (a bitmap font only lands on the grid at whole multiples).");
+}
+
+DEFINE_WORK_FUNC_TYPED(TextLabel, SetPosition, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.SetPosition(x, y);
+}
+
+DEFINE_WORK_FUNC_TYPED(TextLabel, SetOrder, (int32_t, z))
+{
+    (void)ctx;
+    self.SetOrder(z);
+}
+
+DEFINE_WORK_FUNC_TYPED(TextLabel, SetColor, (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetColor(r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(TextLabel, SetBackground,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetBackground(r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(TextLabel, SetPadding, (uint32_t, px))
+{
+    (void)ctx;
+    self.SetPadding(px);
+}
+
+// Show a surface's live frame rate wherever "%f" appears in the text. See
+// TextLabel::BindFps for why the substitution happens at draw time and not
+// through a setter somebody would have to call every frame.
+DEFINE_WORK_FUNC_TYPED(TextLabel, BindFps, (ETCS::RID, surface))
+{
+    (void)ctx;
+    self.BindFps(surface);
+    ETCS_LOG("TextLabel::BindFps", (surface == 0
+             ? "unbound -- back to fixed text."
+             : "bound; '%f' in this label now reads the surface's rate each frame."));
+}
+
+// What the run WOULD occupy, without drawing it. The layout half of the
+// family, exposed because a script placing captions needs it before it can
+// decide where they go.
+DEFINE_WORK_FUNC(TextLabel, Measure)
+{
+    (void)ctx;
+    const std::string run = data.restAsString();
+    const TextExtent e = self.MeasureText(run.empty() ? self.Text().c_str() : run.c_str(),
+                                          0, 0);
+    ETCS_LOG("TextLabel::Measure", "'" << (run.empty() ? self.Text() : run)
+             << "' -> " << e.width << "x" << e.height
+             << " (baseline " << e.baseline << ")");
+}
+
+// Rasterize <target_rid> <x> <y> -- draw this label's text into any surface at
+// a position, without nesting it. The imperative half, for a script that wants
+// one-off text rather than a node that keeps drawing itself.
+DEFINE_WORK_FUNC_TYPED(TextLabel, Rasterize, (ETCS::RID, target), (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.RasterizeText(target, self.Text().c_str(), 0, 0, x, y, 1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+// Draw the label as a node -- background, text, then children. The same verb
+// every other 2D leaf answers, which is what lets a script put a label
+// anywhere a polygon could go.
+DEFINE_WORK_FUNC_TYPED(TextLabel, Draw, (ETCS::RID, target))
+{
+    (void)ctx;
+    Surface_* dst = ETCS::resolve_in_family<Surface_>("Surface", target);
+    if (!dst)
+    {
+        ETCS_LOG("TextLabel::Draw", "target RID:" << target
+                 << " does not resolve as a Surface.");
+        return;
+    }
+    self.DrawInto(dst);
+}
+
+DEFINE_WORK_FUNC(TextLabel, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}
+
 #endif
