@@ -141,6 +141,20 @@ public:
     // of identical lines.
     bool ready(const char* what) const
     {
+        // Dead is checked FIRST and separately from never-created: the two are
+        // different failures with different causes, and a surface that worked
+        // until its window vanished should say so rather than claim Create was
+        // never called.
+        if (m_dead)
+        {
+            if (!m_complained)
+            {
+                m_complained = true;
+                ETCS_LOG("VulkanSurface", what << " on a surface whose window is gone. "
+                         "Ignoring this and every later call on RID:" << getRID() << ".");
+            }
+            return false;
+        }
         if (m_swapchain != VK_NULL_HANDLE) return true;
         if (!m_complained)
         {
@@ -389,7 +403,40 @@ public:
         }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
         {
-            ETCS_LOG("VulkanSurface", "vkAcquireNextImageKHR failed: " << acquire);
+            /*
+     * AN EXPLICIT FAIL STATE, because the alternative is an infinite loop
+     * that looks like a hang.
+     *
+     * VK_ERROR_SURFACE_LOST_KHR means the window this surface was created
+     * from is gone -- destroyed out from under us, or its display
+     * disconnected. Nothing about that recovers: the swapchain cannot be
+     * rebuilt on a surface that no longer exists, so every subsequent
+     * acquire fails the same way. Returning and letting the frame edge tick
+     * again produces exactly what it produced here, several times a second,
+     * for as long as the process lives -- a log filling with one line and a
+     * program that will not exit.
+     *
+     * So the surface goes NOT READY. ready() then refuses every later call
+     * with its own one-shot complaint, the frame edge's Present becomes a
+     * no-op, and the script's own teardown proceeds instead of racing a loop
+     * that will never finish. A dead surface reporting that it is dead is
+     * strictly better than a live one that can never draw.
+     *
+     * Every OTHER acquire failure is left alone: OUT_OF_DATE and SUBOPTIMAL
+     * are handled above as ordinary resizes, and a transient device error is
+     * worth one dropped frame rather than a permanent shutdown.
+     */
+            if (acquire == VK_ERROR_SURFACE_LOST_KHR)
+            {
+                ETCS_LOG("VulkanSurface", "vkAcquireNextImageKHR: SURFACE LOST -- the window "
+                         "this surface was made from is gone. Marking the surface dead; it "
+                         "cannot be rebuilt, and retrying would spin here forever.");
+                m_dead = true;
+                SetComposeRoot(0);
+                return;
+            }
+            ETCS_LOG("VulkanSurface", "vkAcquireNextImageKHR failed: " << acquire
+                     << " -- dropping this frame.");
             return;
         }
 
@@ -558,6 +605,9 @@ private:
     // PresentConcrete for why it is never held across a submit or present.
     std::mutex                m_stateMutex;
     mutable bool              m_complained = false;   // ready()'s one-shot
+    // Set once, never cleared: a lost surface cannot come back, and pretending
+    // it might is what turns one failure into an endless retry loop.
+    bool                      m_dead       = false;
     std::array<float, 4>      m_clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
     std::vector<PendingDraw>  m_pendingDraws;
     // True once a composition has been presented and nothing new has been

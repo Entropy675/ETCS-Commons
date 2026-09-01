@@ -572,6 +572,17 @@ DEFINE_WORK_FUNC(CompositeDrawable2D, Delete)
     self.DeleteConcrete();
 }
 
+// The turn rate, reported the way it is derived: the physical quantities on
+// one side and the radians they produce on the other, so a value that feels
+// wrong can be traced to which input is wrong rather than guessed at.
+static inline void logTurnRate(Scene3D& self)
+{
+    ETCS_LOG("Scene3D", "turn rate: " << self.TurnsPerPass() << " turn(s) per screen pass, "
+             << "mouse " << self.MouseDpi() << " DPI, screen " << self.ScreenDpi()
+             << " DPI, x" << self.Sensitivity() << " -> "
+             << self.RadiansPerCount() << " rad per mouse count.");
+}
+
 // ── Scene3D ──────────────────────────────────────────────────────────────
 
 DEFINE_WORK_FUNC_TYPED(Scene3D, Create, (float, w), (float, h), (float, d))
@@ -623,15 +634,41 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
     self.SetDamping(per_sec);
 }
 
-// A MULTIPLIER on the calibrated default, which is two full turns for one pass
-// across the frame. Stated as a ratio rather than as radians per pixel so it
-// means the same thing at any window size -- see Scene3D::SetSensitivity.
+// The physical inputs to the turn rate. Together with the frame width these
+// fully determine it -- there is no tuned constant (Scene3D::SetMouseDpi).
+//
+//   SetMouseDpi     your mouse's counts per inch. NOT discoverable from any
+//                   platform API, which is why it is here; 800 by default.
+//   SetScreenDpi    the display's pixels per inch. main.ScreenDpi() reports
+//                   the real one, read off the monitor's physical size.
+//   SetTurnsPerPass how many full rotations one pass across the frame is.
+//   SetSensitivity  a plain multiplier on the result, for taste.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetMouseDpi, (float, dpi))
+{
+    (void)ctx;
+    self.SetMouseDpi(dpi);
+    logTurnRate(self);
+}
+
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetScreenDpi, (float, dpi))
+{
+    (void)ctx;
+    self.SetScreenDpi(dpi);
+    logTurnRate(self);
+}
+
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetTurnsPerPass, (float, turns))
+{
+    (void)ctx;
+    self.SetTurnsPerPass(turns);
+    logTurnRate(self);
+}
+
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetSensitivity, (float, scale))
 {
     (void)ctx;
     self.SetSensitivity(scale);
-    ETCS_LOG("Scene3D::SetSensitivity", "x" << self.Sensitivity()
-             << " -> " << self.RadiansPerPixel() << " rad/px at the current frame width.");
+    logTurnRate(self);
 }
 
 // A push, in joules along a direction -- the primitive the input edge drives,
