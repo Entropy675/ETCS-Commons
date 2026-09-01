@@ -465,3 +465,87 @@ DEFINE_WORK_FUNC(PolygonDrawable2D, Delete)
 
 
 #endif
+
+// ── CompositeDrawable2D ──────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, Create, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    self.Create(w, h);
+}
+
+// Where this buffer sits in its parent's space. Its CONTENTS do not move with
+// it -- children are stated in this node's own space, so moving the compositor
+// moves the whole merged result and nothing inside it is recomputed.
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPosition, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.SetPosition(x, y);
+}
+
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetOrder, (int32_t, z))
+{
+    (void)ctx;
+    self.SetOrder(z);
+}
+
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetBackground,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetBackground(r, g, b, a);
+}
+
+// Recompose if anything beneath changed, then blit once. The same verb
+// PolygonDrawable2D answers, doing the same job -- which is what lets a script
+// swap one for the other without knowing which it has.
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, Draw, (ETCS::RID, target))
+{
+    (void)ctx;
+    Surface_* dst = ETCS::resolve_in_family<Surface_>("Surface", target);
+    if (!dst)
+    {
+        ETCS_LOG("CompositeDrawable2D::Draw", "target RID:" << target
+                 << " does not resolve as a Surface.");
+        return;
+    }
+    self.DrawInto(dst);
+    ETCS_LOG("CompositeDrawable2D::Draw", "recompositions so far: "
+             << self.Recompositions());
+}
+
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, Clear,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.Clear(r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, DrawRect,
+                       (int32_t, x), (int32_t, y), (uint32_t, w), (uint32_t, h),
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.DrawRect(x, y, w, h, r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, Blit, (ETCS::RID, source),
+                       (int32_t, x), (int32_t, y), (uint32_t, w), (uint32_t, h),
+                       (float, opacity))
+{
+    (void)ctx;
+    Surface_* src = ETCS::resolve_in_family<Surface_>("Surface", source);
+    if (!src)
+    {
+        ETCS_LOG("CompositeDrawable2D::Blit", "source RID:" << source
+                 << " does not resolve as a Surface.");
+        return;
+    }
+    self.Blit(src, x, y, w, h, opacity);
+}
+
+DEFINE_WORK_FUNC(CompositeDrawable2D, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}

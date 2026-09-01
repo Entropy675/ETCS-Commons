@@ -87,10 +87,11 @@ public:
         return true;
     }
 
-    void AddPoint(int32_t x, int32_t y) { m_points.push_back(Vertex{x, y}); }
-    void ClearPoints()                  { m_points.clear(); m_ops.clear(); }
-    void SetFill(float r, float g, float b, float a) { m_fill = {r, g, b, a}; m_filled = true; }
-    void SetOrder(int32_t z)            { m_order = z; Reorder(); }
+    void AddPoint(int32_t x, int32_t y) { m_points.push_back(Vertex{x, y}); markCompositorsDirty(); }
+    void ClearPoints()                  { m_points.clear(); m_ops.clear(); markCompositorsDirty(); }
+    void SetFill(float r, float g, float b, float a)
+    { m_fill = {r, g, b, a}; m_filled = true; markCompositorsDirty(); }
+    void SetOrder(int32_t z)            { m_order = z; Reorder(); markCompositorsDirty(); }
 
     // ── Drawable2D_ dispatch ─────────────────────────────────────────────
 
@@ -151,12 +152,14 @@ public:
         m_fill   = {r, g, b, a};
         m_filled = true;
         m_ops.clear();          // Clear is a new composition, as everywhere else
+        markCompositorsDirty();
     }
 
     void DrawRectConcrete(int32_t x, int32_t y, uint32_t w, uint32_t h,
                           float r, float g, float b, float a) override
     {
         m_ops.push_back(Op{Op::Kind::Rect, x, y, w, h, r, g, b, a, 0, 1.0f});
+        markCompositorsDirty();
     }
 
     // Placed in this polygon's space and clipped to its BOUNDING BOX, not to
@@ -172,6 +175,7 @@ public:
         if (!source) return;
         m_ops.push_back(Op{Op::Kind::Blit, x, y, w, h, 0, 0, 0, 0,
                            source->getRID(), opacity});
+        markCompositorsDirty();
     }
 
     // ── Drawable_ dispatch: realise onto a destination ───────────────────
@@ -260,6 +264,15 @@ private:
  * exactly "the outermost drawable", which is the node whose coordinates are
  * the destination's own.
  *
+ * AND AT THE FIRST ANCESTOR THAT OWNS PIXELS, without adding its origin. A
+ * node with a buffer is a COORDINATE ORIGIN: its children state their points
+ * in its space, and its buffer IS that space, so the offset between them is
+ * zero. Whatever that node is nested inside is its own problem, resolved
+ * once, when it is blitted (CompositeDrawable2D). Without this rule a
+ * composited subtree would be drawn at its screen position inside a buffer
+ * that starts at its own top-left, which is the same picture translated by
+ * however deep the tree happened to be.
+ *
  * Walked per draw rather than cached. It is O(depth) on a chain that is
  * three or four deep in practice, and a cached transform is a second copy
  * of the answer -- the thing this whole arrangement exists to not have.
@@ -271,11 +284,40 @@ private:
         {
             void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
             if (!d2) break;
+            if (node->getInterfacePointer(ETCS::Buffer("Pixels"))) break;   // origin
             const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
             acc.x += pb.x;
             acc.y += pb.y;
         }
         return acc;
+    }
+
+    /*
+ * Tell every pixel-owning ancestor that its composition is stale.
+ *
+ * This is the upward half of the dirty flag, and it is why a compositor can
+ * skip a whole subtree safely: a node that changes is responsible for saying
+ * so, and it says so to exactly the nodes that cached it -- the compositors
+ * on the path from here to the root. Nothing else is touched, so a change
+ * deep in one branch does not invalidate a sibling branch's cache.
+ *
+ * Reached through the family interface pointer, so this file needs no
+ * knowledge of CompositeDrawable2D whatsoever: it marks anything that owns
+ * pixels, which is exactly the set of things that could have cached it.
+ *
+ * Walks past a compositor rather than stopping at it -- a compositor nested
+ * in a compositor caches this node too, transitively, and both must be told.
+ * That is the difference between this walk and the coordinate one above,
+ * which stops at the first: coordinates are relative to the NEAREST origin,
+ * staleness propagates to EVERY cache.
+ */
+    void markCompositorsDirty()
+    {
+        for (ETCS::Entity* node = getParent(); node; node = node->getParent())
+        {
+            void* px = node->getInterfacePointer(ETCS::Buffer("Pixels"));
+            if (px) static_cast<Pixels_*>(px)->MarkDirty();
+        }
     }
 
     // Even-odd scanline crossings for one row, in PARENT space, sorted.

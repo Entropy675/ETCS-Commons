@@ -6,7 +6,7 @@
 // on why the clock and the Vulkan work sit on the sides they do).
 // Instance and ImageSurface stay BASIC -- neither has anything continuous
 // to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
@@ -35,3 +35,11 @@ ETCS_TAG_BLOCK_BASIC(ImageSurface,
 // entity tree buys over one living in a script.
 ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
     Create, AddPoint, ClearPoints, SetFill, SetOrder, Draw, Clear, DrawRect, Blit, Delete)
+
+// The merge point: a Drawable2D that owns pixels, so everything nested under
+// it renders into its buffer and reaches the destination as one Blit. Drawing
+// it when nothing beneath it changed costs that one blit and no subtree walk
+// at all -- see CompositeDrawable2D.h on how Pixels_'s own dirty flag ends up
+// serving both this and the device upload, in sequence.
+ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
+    Create, SetPosition, SetOrder, SetBackground, Draw, Clear, DrawRect, Blit, Delete)

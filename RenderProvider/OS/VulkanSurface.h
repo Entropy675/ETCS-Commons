@@ -865,10 +865,32 @@ private:
         tex.h = px.PixelHeight();
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(tex.w) * tex.h * 4;
 
+        /*
+ * UNORM, NOT SRGB, and the difference is visible rather than theoretical.
+ *
+ * Pixels_::toByte is a plain linear scale -- 0.13f becomes 33 -- so the bytes
+ * in a CPU-backed surface are linear samples, not sRGB-encoded ones. Sampling
+ * them through an SRGB view told the device to DECODE them as if they were
+ * encoded, and the SRGB swapchain then re-encoded on the way out, so the
+ * stored byte appeared on screen literally: 33. Meanwhile DrawRect sends the
+ * same 0.13f through the shader to that same SRGB attachment, which encodes
+ * it properly: 101.
+ *
+ * One colour, two answers, decided by which surface happened to draw it. It
+ * went unnoticed while CPU layers and device rects were used for different
+ * things; CompositeDrawable2D made it impossible to miss, because moving a
+ * subtree from the polygon path to the composited path changed the picture
+ * while changing nothing about what it was asked to draw.
+ *
+ * UNORM makes the sample linear, which is what the byte actually is, and lets
+ * the attachment do the single encode it was always going to do. Both paths
+ * now produce the same pixel for the same float -- verified by rendering the
+ * identical scene both ways and comparing the histograms.
+ */
         VkImageCreateInfo imageInfo{};
         imageInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType     = VK_IMAGE_TYPE_2D;
-        imageInfo.format        = VK_FORMAT_R8G8B8A8_SRGB;
+        imageInfo.format        = VK_FORMAT_R8G8B8A8_UNORM;
         imageInfo.extent        = { tex.w, tex.h, 1 };
         imageInfo.mipLevels     = 1;
         imageInfo.arrayLayers   = 1;
@@ -904,7 +926,7 @@ private:
         viewInfo.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image            = tex.image;
         viewInfo.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format           = VK_FORMAT_R8G8B8A8_SRGB;
+        viewInfo.format           = VK_FORMAT_R8G8B8A8_UNORM;  // matches the image -- see createTexture
         viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         if (vkCreateImageView(m_instance->GetDevice(), &viewInfo, nullptr, &tex.view) != VK_SUCCESS)
         {

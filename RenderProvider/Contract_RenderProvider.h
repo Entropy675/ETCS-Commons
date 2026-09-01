@@ -23,6 +23,7 @@
 // same way ChessProvider's OS-invariant types are.
 #include "ImageSurface.h"
 #include "PolygonDrawable2D.h"
+#include "CompositeDrawable2D.h"
 
 // auto generated hashes of headers:
 #include "../../ETCS.h"
