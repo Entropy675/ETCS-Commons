@@ -15,6 +15,8 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <dlfcn.h>
+#include <fstream>
 #include <atomic>
 #include <vector>
 
@@ -566,10 +568,89 @@ private:
     // pipeline OBJECT itself is built (and rebuilt) in
     // buildSwapchainDependentPipeline, since it's tied to the render
     // pass, which is tied to the swapchain's format/extent.
+    /*
+ * WHERE THE SHADERS ARE, decided by the module rather than by the caller's
+ * working directory.
+ *
+ * The shader path used to be whatever the script passed, resolved against the
+ * process's cwd -- so `view.Create(@gpu, modules/RenderProvider/shaders/)`
+ * worked from the ETCS root and failed from anywhere else, including from
+ * bin/. And it failed QUIETLY, in the sense that matters: two "Failed to read
+ * SPIR-V" lines scroll past during startup, Create returns false, ready()
+ * then suppresses every later call on the surface, nothing is ever presented,
+ * and what the user sees is a window that never gets painted -- black under a
+ * bare X server, WHITE under a compositor. Reproduced exactly that way, and
+ * it is the single most likely explanation for a "blank window" report.
+ *
+ * A module's shaders ship with the module, so the module can find them.
+ * dladdr gives this .so's own path at runtime; the candidates below are that
+ * directory and the two layouts this repo actually uses, with the caller's
+ * argument kept as a first-choice override for a deployment that puts them
+ * somewhere else entirely.
+ *
+ * Loud either way: the chosen directory is logged, and a total miss lists
+ * every path tried rather than leaving the reader to guess which cwd it
+ * wanted.
+ */
+    static bool shader_dir_has_pipeline(const std::string& dir)
+    {
+        std::ifstream probe(dir + "rect.vert.spv", std::ios::binary);
+        return probe.good();
+    }
+
+    static std::string own_module_dir()
+    {
+        Dl_info info{};
+        // Any symbol defined in THIS shared object will do; a static member
+        // function of this class is one that certainly is.
+        if (dladdr(reinterpret_cast<const void*>(&VulkanSurface::own_module_dir), &info) == 0
+            || info.dli_fname == nullptr)
+            return "";
+        std::string path = info.dli_fname;
+        const size_t slash = path.find_last_of('/');
+        return (slash == std::string::npos) ? "" : path.substr(0, slash + 1);
+    }
+
+    static std::string resolve_shader_dir(const std::string& requested)
+    {
+        std::vector<std::string> tried;
+        auto consider = [&tried](std::string dir) -> std::string
+        {
+            if (dir.empty()) return "";
+            if (dir.back() != '/') dir += '/';
+            tried.push_back(dir);
+            return shader_dir_has_pipeline(dir) ? dir : std::string();
+        };
+
+        const std::string so_dir = own_module_dir();
+        for (const std::string& candidate : {
+                 requested,                                        // the caller's override
+                 so_dir + "shaders",                               // beside the .so
+                 so_dir + "../modules/RenderProvider/shaders",     // bin/ -> repo layout
+                 std::string("modules/RenderProvider/shaders"),    // cwd = ETCS root
+                 std::string("../modules/RenderProvider/shaders")  // cwd = bin/
+             })
+        {
+            const std::string hit = consider(candidate);
+            if (!hit.empty())
+            {
+                ETCS_LOG("VulkanSurface", "shaders: " << hit);
+                return hit;
+            }
+        }
+
+        std::string all;
+        for (const std::string& t : tried) { all += "\n    "; all += t; }
+        ETCS_LOG("VulkanSurface", "no SPIR-V found. Tried:" << all
+                 << "\n  The surface will not be created, and nothing will be "
+                    "presented into its window.");
+        return "";
+    }
+
     bool loadPipeline(const std::string& shader_dir)
     {
-        std::string dir = shader_dir.empty() ? "shaders/" : shader_dir;
-        if (dir.back() != '/') dir += '/';
+        const std::string dir = resolve_shader_dir(shader_dir);
+        if (dir.empty()) return false;
         m_vertShader = loadShaderModule(dir + "rect.vert.spv");
         m_fragShader = loadShaderModule(dir + "rect.frag.spv");
         if (!m_vertShader || !m_fragShader) return false;
