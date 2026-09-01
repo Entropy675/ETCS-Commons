@@ -623,6 +623,16 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
     self.SetDamping(per_sec);
 }
 
+// Radians of view rotation per pixel of pointer movement. The look arrives on
+// the same stream as the keys and is applied to whichever camera projects this
+// scene -- see Scene3D::PointerDelta on why the angle lives here rather than
+// on the camera.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSensitivity, (float, rad_per_px))
+{
+    (void)ctx;
+    self.SetSensitivity(rad_per_px);
+}
+
 // A push, in joules along a direction -- the primitive the input edge drives,
 // exposed because a script nudging a scene should go through the same energy
 // accounting the keys do rather than around it.
@@ -654,7 +664,16 @@ DEFINE_WORK_FUNC(Scene3D, Order)
              << " fraction=" << o.KineticFraction()
              << "  emissivity=" << self.Emissivity()
              << " shed-to-environment=" << self.EmittedToEnvironment()
-             << "  causal-ticks=" << self.CausalTicks());
+             << "  causal-ticks=" << self.CausalTicks()
+             << "\n    last crossing: row0 (" << self.LastEmission().x << ", "
+             << self.LastEmission().y << ", " << self.LastEmission().z
+             << ", RID:" << self.LastEmission().rid << ")  row1 ("
+             << self.LastEmission().ox << ", " << self.LastEmission().oy << ", "
+             << self.LastEmission().oz << ", E=" << self.LastEmission().energy << ")"
+             << "  heat=" << self.LastEmission().Heat()
+             << " interval=" << self.LastEmission().interval
+             << " uncertainty=" << std::hex << self.LastEmission().uncertainty
+             << std::dec);
 }
 
 // How fast this node sheds heat into whatever contains it, per second. Drag
@@ -740,7 +759,7 @@ DEFINE_STREAM_FUNC_CONSUME(Scene3D, ConsumeInput)
     (void)data;
 
     ETCS_LOG("Scene3D::ConsumeInput", "WASD edge open on RID:" << self.getRID()
-             << " (W/S depth, A/D lateral, Q/E vertical, "
+             << " (W/S forward, A/D strafe, Q/E vertical, mouse looks, "
              << self.Speed() << " u/s terminal, damping " << self.Damping() << "/s)");
 
     // Blocking, and doing nothing but recording. The one thing this loop must
@@ -764,10 +783,21 @@ DEFINE_STREAM_FUNC_CONSUME(Scene3D, ConsumeInput)
 
         InputEvent ev{};
         slot.readRaw(&ev, sizeof(InputEvent));
-        if (ev.key == 0 && ev.action == 0) continue;
 
-        if (ev.action == 1) self.KeyDown(ev.key);
-        else                self.KeyUp(ev.key);
+        // Both kinds, one stream, one handler -- which is the reason they
+        // share a record (ontology/InputSource.h). A look and a step that
+        // arrived together are one intent, and two streams would let them
+        // separate by however much two consumers happened to drift.
+        if (ev.action == INPUT_MOTION)
+        {
+            self.PointerDelta(ev.dx, ev.dy);
+        }
+        else
+        {
+            if (ev.key == 0) continue;
+            if (ev.action == INPUT_DOWN) self.KeyDown(ev.key);
+            else                         self.KeyUp(ev.key);
+        }
 
         // One mark per key change, and no polling anywhere: it restarts a
         // pipeline that had gone quiet, and once moving, the motion marks

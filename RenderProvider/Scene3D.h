@@ -131,6 +131,11 @@ public:
     // nothing left to shed stops ticking, which is the right answer for a
     // thing to which nothing is happening.
     uint64_t CausalTicks() const { return m_ticks; }
+
+    // The most recent crossing, as the OrderVector it is. What a guard nesting
+    // a generator capture inside this node's emission would read -- reserved,
+    // and readable from the shell today (Scene3D.Order).
+    const OrderVector& LastEmission() const { return m_last_emission; }
     void SetColor(float r, float g, float b, float a)
     {
         m_color[0] = r; m_color[1] = g; m_color[2] = b; m_color[3] = a;
@@ -190,6 +195,57 @@ public:
     }
     void ClearHeld() { m_held.clear(); publishMotionBits(); }
 
+    /*
+ * THE LOOK, from pointer deltas -- the other half of what the input edge
+ * carries, arriving through the same stream and handled in the same work
+ * function (RenderProvider.h's ConsumeInput).
+ *
+ * Yaw and pitch are held HERE, on the scene, and applied to whichever camera
+ * projects it. That reads oddly for a moment -- a scene setting a camera's
+ * pose -- and then stops: what the input names is the RELATION between the
+ * viewer and the world, which is the same quantity whether you turn the head
+ * or turn the room. The scene is what the input is bound to, so the scene is
+ * where the relation lives, and the camera is told the answer at the moment it
+ * asks for a frame.
+ *
+ * ABSOLUTE ANGLES, not accumulated rotations. Composing a rotation per event
+ * drifts and cannot be clamped: pitch has to stop at the poles, and "stop"
+ * means an angle exists to compare against. So the deltas move two numbers and
+ * the forward vector is rebuilt from them, which is also what makes the view
+ * exactly reproducible from two floats.
+ */
+    void PointerDelta(int32_t dx, int32_t dy)
+    {
+        if (dx == 0 && dy == 0) return;
+        float yaw   = m_yaw.load(std::memory_order_relaxed);
+        float pitch = m_pitch.load(std::memory_order_relaxed);
+
+        // Both inverted: moving the mouse right turns the view right, which
+        // means the WORLD swings left, and this is the world's angle.
+        yaw   -= static_cast<float>(dx) * m_sensitivity;
+        pitch -= static_cast<float>(dy) * m_sensitivity;
+
+        // Just short of the poles. AT the pole the forward vector is parallel
+        // to up and the camera's basis collapses -- buildView refuses it, and
+        // the view would blank for exactly as long as you held the mouse
+        // there. Clamping is what makes looking straight up a limit rather
+        // than a failure.
+        const float limit = 1.5533f;   // ~89 degrees
+        if (pitch >  limit) pitch =  limit;
+        if (pitch < -limit) pitch = -limit;
+
+        m_yaw.store(yaw, std::memory_order_relaxed);
+        m_pitch.store(pitch, std::memory_order_relaxed);
+        m_look_dirty.store(true, std::memory_order_relaxed);
+    }
+
+    // Radians per pixel of pointer movement.
+    void SetSensitivity(float rad_per_px)
+    {
+        if (rad_per_px > 0.0f) m_sensitivity = rad_per_px;
+    }
+    float Sensitivity() const { return m_sensitivity; }
+
     // Restart the pipeline after a key change. A scene at rest marks nothing,
     // so nothing re-renders, so nothing calls Interact and the first keypress
     // would never take effect -- one mark is what closes that loop back up.
@@ -215,6 +271,7 @@ public:
     bool InMotion() const
     {
         return m_motion.load(std::memory_order_relaxed) != 0
+            || m_look_dirty.load(std::memory_order_relaxed)
             || m_ov.KineticEnergy() > 0.0f;
     }
 
@@ -333,14 +390,42 @@ public:
     {
         if (!(dt > 0.0f)) return false;
 
+        /*
+     * THE SCENE MOVES OPPOSITE THE VIEWER, and that sign is the whole of
+     * what W means. W is "the viewer goes forward", so the scene goes
+     * BACKWARD along the view -- things get closer and larger. Written the
+     * other way it looks equally plausible and is immediately wrong on
+     * screen, which is how the two were found swapped: holding W made the
+     * world recede.
+     *
+     * RELATIVE TO THE FACING, not to the world axes. Once the mouse can
+     * turn the view, a fixed-axis W walks sideways the moment you look
+     * anywhere but down +z. So the input is built in the viewer's own frame
+     * and rotated by yaw into the scene's.
+     *
+     * YAW ONLY, deliberately: looking up should not make W climb. Pitch
+     * aims the view; the feet stay on the plane, which is what every ground
+     * control does and the reason Q/E exist for the axis it leaves out.
+     */
         const uint32_t bits = m_motion.load(std::memory_order_relaxed);
-        float dx = 0.0f, dy = 0.0f, dz = 0.0f;
-        if (bits & MOVE_FWD) dz += 1.0f;
-        if (bits & MOVE_BCK) dz -= 1.0f;
-        if (bits & MOVE_LFT) dx += 1.0f;
-        if (bits & MOVE_RGT) dx -= 1.0f;
-        if (bits & MOVE_DWN) dy -= 1.0f;
-        if (bits & MOVE_UP)  dy += 1.0f;
+        float fwd_in = 0.0f, right_in = 0.0f, up_in = 0.0f;
+        if (bits & MOVE_FWD) fwd_in   += 1.0f;
+        if (bits & MOVE_BCK) fwd_in   -= 1.0f;
+        if (bits & MOVE_RGT) right_in += 1.0f;
+        if (bits & MOVE_LFT) right_in -= 1.0f;
+        if (bits & MOVE_UP)  up_in    += 1.0f;
+        if (bits & MOVE_DWN) up_in    -= 1.0f;
+
+        const float yaw = m_yaw.load(std::memory_order_relaxed);
+        const float sy = std::sin(yaw), cy = std::cos(yaw);
+        // The viewer's ground frame at this yaw: forward, and right = up x
+        // forward -- the same handedness buildView uses, for the same reason.
+        const float fx = sy,  fz = cy;
+        const float rx = cy,  rz = -sy;
+
+        float dx = -(fx * fwd_in + rx * right_in);
+        float dy = -up_in;
+        float dz = -(fz * fwd_in + rz * right_in);
 
         const float mag = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (mag > 0.0f)
@@ -467,6 +552,7 @@ public:
  */
     Drawable2D_* ProjectConcrete(Camera_* camera) override
     {
+        applyLookTo(camera);
         Interact();
 
         View v;
@@ -992,8 +1078,21 @@ private:
         m_last_interaction = now;
         if (dt > 1.0f) dt = 1.0f;   // same cap, same reason, as the motion step
 
-        const float q = m_ov.Emit(m_ov.EmissionOver(dt, m_emissivity));
-        if (!(q > 0.0f)) return;
+        // The EVENT, and it is an OrderVector like any other: where it left,
+        // whose boundary it crossed, how much energy, all of it unordered
+        // (ontology/OrderVector.h). Kept as the node's last crossing so a
+        // guard capturing a generator during this step has it to read.
+        const OrderVector e = m_ov.EmitEvent(m_ov.EmissionOver(dt, m_emissivity), dt);
+        if (!(e.energy > 0.0f)) return;
+        m_last_emission = e;
+
+        // The emitter keeps its own step's meta: the span it just settled and
+        // the uncertainty of the crossing it just made. Not a copy of the
+        // emission -- the emission is what LEFT, these are the current state
+        // of the thing that emitted it, and they are what an entity is asked
+        // for when something wants to know where its causality is now.
+        m_ov.interval    = e.interval;
+        m_ov.uncertainty = e.uncertainty;
 
         // The tick. Counted on emissions that ACTUALLY happened, never on
         // interactions that found nothing owed -- a node with no heat to shed
@@ -1002,8 +1101,10 @@ private:
         // clock and not this node's.
         ++m_ticks;
 
-        if (Scene3D* env = ownParent()) env->m_ov.Absorb(q);
-        else                            m_emitted_out += q;
+        // The whole vector moves: heat lands as heat, and anything ordered it
+        // carried would land as an impulse. One transfer, no conversion.
+        if (Scene3D* env = ownParent()) env->m_ov.Absorb(e);
+        else                            m_emitted_out += e.energy;
     }
 
     // The containing node, when there is one of this module's own leaves
@@ -1015,6 +1116,49 @@ private:
         ETCS::Entity* p = getParent();
         if (!p || !isOwnLeaf(p)) return nullptr;
         return static_cast<Scene3D*>(p->getTrueType());
+    }
+
+    /*
+ * Point the camera where the look angles say, at the moment it asks for a
+ * frame.
+ *
+ * SEEDED FROM THE CAMERA, not from zero. The first time this runs it reads
+ * the angles out of the pose the script already set with LookAt, so a scene
+ * that has never seen a mouse renders exactly what the script asked for and
+ * the first pointer delta nudges from there. Starting at zero would snap the
+ * view to +z the instant the mouse twitched, which is the kind of thing that
+ * looks like a broken camera rather than a missing initialisation.
+ *
+ * The distance from eye to target is preserved, so a script that framed its
+ * scene keeps its framing and only the direction changes.
+ */
+    void applyLookTo(Camera_* camera)
+    {
+        if (!camera) return;
+        ViewFrustum v = camera->GetView();
+
+        float fx = v.look_at.x - v.position.x;
+        float fy = v.look_at.y - v.position.y;
+        float fz = v.look_at.z - v.position.z;
+        float dist = std::sqrt(fx * fx + fy * fy + fz * fz);
+        if (!(dist > 0.0f)) dist = 1.0f;
+
+        if (!m_look_seeded)
+        {
+            m_yaw.store(std::atan2(fx, fz), std::memory_order_relaxed);
+            m_pitch.store(std::asin(fy / dist), std::memory_order_relaxed);
+            m_look_seeded = true;
+            return;                       // nothing to change yet
+        }
+        if (!m_look_dirty.exchange(false, std::memory_order_relaxed)) return;
+
+        const float yaw   = m_yaw.load(std::memory_order_relaxed);
+        const float pitch = m_pitch.load(std::memory_order_relaxed);
+        const float cp = std::cos(pitch);
+        v.look_at = Point3D{ v.position.x + dist * cp * std::sin(yaw),
+                             v.position.y + dist * std::sin(pitch),
+                             v.position.z + dist * cp * std::cos(yaw) };
+        camera->SetView(v);
     }
 
     // Reduce the wide bitset to the six bits the projection reads. Called on
@@ -1054,6 +1198,14 @@ private:
     ETCS::TBuffer<NUM_KEYS / 8> m_held;   // one bit per key in the spectrum
     std::atomic<uint32_t>       m_motion{0};   // the six bits that cross threads
 
+    // The look. Atomics for the same reason the motion bits are: written by
+    // the input edge, read by the projection, on different threads.
+    std::atomic<float> m_yaw{0.0f};
+    std::atomic<float> m_pitch{0.0f};
+    std::atomic<bool>  m_look_dirty{false};
+    bool               m_look_seeded = false;
+    float              m_sensitivity = 0.0025f;   // radians per pixel
+
     std::chrono::steady_clock::time_point m_last_step{};
     bool                                  m_stepped = false;
 
@@ -1064,6 +1216,7 @@ private:
     float                                 m_emissivity  = 0.5f;
     float                                 m_emitted_out = 0.0f;
     uint64_t                              m_ticks       = 0;
+    OrderVector                           m_last_emission{};
 
     std::vector<float>     m_depth;
     uint32_t               m_depth_w   = 0;
