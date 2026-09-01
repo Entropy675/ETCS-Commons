@@ -83,6 +83,40 @@ DEFINE_WORK_FUNC_TYPED(Window, Create, (uint32_t, x), (uint32_t, y), (std::strin
     if (!x || !y) return;
     ETCS_LOG("Create", "Window.Create got size: (" << x << "," << y << ") " << word);
     self.CreateWindow(word.c_str(), x, y);
+
+    if (!self.IsActive())
+    {
+        ETCS_LOG("Create", "Window creation failed.");
+        ctx.raiseClosureInterrupt();
+    }
+}
+
+DEFINE_WORK_FUNC_TYPED(Window, Run, (uint32_t, x), (uint32_t, y), (std::string, title))
+{
+    if (!x || !y) { ETCS_LOG("Run", "Invalid window size."); return; }
+
+    ETCS_LOG("Run", "Creating window: " << title << " (" << x << "x" << y << ")");
+    self.CreateWindow(title.c_str(), x, y);
+
+    if (!self.IsActive())
+    {
+        ETCS_LOG("Run", "Window creation failed.");
+        ctx.raiseClosureInterrupt();
+        return;
+    }
+
+    ETCS_LOG("Run", "Window active, blocking execution thread."); 
+
+    // Block the script execution thread while the detached stream edge (ProduceEvents)
+    // handles the OS message pump and input events.
+    while (self.IsActive())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60fps idle sleep
+    }
+
+    self.CloseWindow();
+    ETCS_LOG("Run", "Window closed, execution resumed.");
 }
 
 DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
@@ -106,13 +140,21 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) break;
 
+        // Drive the OS message pump here so the ring buffer gets populated
+        self.PollEvents();
+        if (self.ShouldClose())
+        {
+            window_closed(self, ctx, "ProduceEvents: window close requested");
+            break;
+        }
+
         bool emitted = false;
         while (self.ReadNextRingEvent(id, slot))
         {
             InputEvent ev{};
             slot.readRaw(&ev, sizeof(InputEvent));
             ETCS_LOG("ProduceEvents", "Emitting: key=" << ev.key 
-                        << " action=" << (int)ev.action);
+                                  << " action=" << (int)ev.action);
 
             if (!stream.writeRaw(slot))
             {
@@ -165,41 +207,6 @@ DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
     }
     
     ETCS_LOG("ConsumeEvents", "Stream is closed.");
-}
-
-DEFINE_WORK_FUNC_TYPED(Window, Run, (uint32_t, x), (uint32_t, y), (std::string, title))
-{
-    if (!x || !y) { ETCS_LOG("Run", "Invalid window size."); return; }
-
-    ETCS_LOG("Run", "Creating window: " << title << " (" << x << "x" << y << ")");
-    self.CreateWindow(title.c_str(), x, y);
-
-    if (!self.IsActive())
-    {
-        ETCS_LOG("Run", "Window creation failed.");
-        ctx.raiseClosureInterrupt();
-        return;
-    }
-
-    ETCS_LOG("Run", "Entering poll loop on calling thread.");
-
-    while (self.IsActive())
-    {
-        if (ctx.isInterrupted() || ctx.isTerminated()) break;
-
-        self.PollEvents();
-
-        if (self.ShouldClose())
-        {
-            window_closed(self, ctx, "Run: window close requested");
-            break;
-        }
-    }
-
-    // Idempotent -- CloseWindow already ran above on the close path; this
-    // covers the loop exiting on the signal instead.
-    self.CloseWindow();
-    ETCS_LOG("Run", "Poll loop exited, window closed.");
 }
 
 DEFINE_WORK_FUNC(Window, PollEvents)
