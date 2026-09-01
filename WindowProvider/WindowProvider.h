@@ -11,6 +11,28 @@
 #include <chrono>
 #include <thread>
 
+// ONE place decides what closing a window means, because there are four ways
+// to arrive here -- the cross (seen by PollEvents or by Run), an explicit
+// Close(), and a failed create -- and they did not agree. Only the two poll
+// paths signalled at all, and what they raised was `*ctx.interrupt`, which is
+// this CALL's scope flag (Scope::registerContext, Bundles.h): it dies with
+// the call, so nothing the script detached ever heard it. Close() signalled
+// nothing whatsoever, which is why a script could close its window and then
+// delete entities a detached frame edge was still presenting through.
+//
+// A window closing ends the closure that opened it -- every RID that closure
+// granted stops being valid together -- so the raise goes to the closure, not
+// to the frame. run_script drains on it before the next line (CommandExecutor.h).
+template <typename W>
+static void window_closed(W& self, const ETCS::SignalContext& ctx, const char* why)
+{
+    ETCS_LOG("Window", why << " -- ending the closure that opened it.");
+    if (!ctx.raiseClosureInterrupt())
+        ETCS_LOG("Window", "nothing on the active chain holds interrupt authority -- "
+                 "the close was not observable by anything outside this call.");
+    self.CloseWindow();
+}
+
 // Simple position setter
 DEFINE_WORK_FUNC_TYPED(Window, SetPosition, (int32_t, x), (int32_t, y))
 {
@@ -155,7 +177,7 @@ DEFINE_WORK_FUNC_TYPED(Window, Run, (uint32_t, x), (uint32_t, y), (std::string, 
     if (!self.IsActive())
     {
         ETCS_LOG("Run", "Window creation failed.");
-        if (ctx.interrupt) *ctx.interrupt = 1;
+        ctx.raiseClosureInterrupt();
         return;
     }
 
@@ -169,12 +191,13 @@ DEFINE_WORK_FUNC_TYPED(Window, Run, (uint32_t, x), (uint32_t, y), (std::string, 
 
         if (self.ShouldClose())
         {
-            ETCS_LOG("Run", "Window close requested -- signalling interrupt.");
-            if (ctx.interrupt) *ctx.interrupt = 1;
+            window_closed(self, ctx, "Run: window close requested");
             break;
         }
     }
 
+    // Idempotent -- CloseWindow already ran above on the close path; this
+    // covers the loop exiting on the signal instead.
     self.CloseWindow();
     ETCS_LOG("Run", "Poll loop exited, window closed.");
 }
@@ -184,17 +207,13 @@ DEFINE_WORK_FUNC(Window, PollEvents)
     (void)data;
     self.PollEvents();
     if (self.ShouldClose())
-    {
-        if (ctx.interrupt) *ctx.interrupt = 1;
-        self.CloseWindow();
-    }
+        window_closed(self, ctx, "PollEvents: window close requested");
 }
 
 DEFINE_WORK_FUNC(Window, Close)
 {
     (void)data;
-    (void)ctx;
-    self.CloseWindow();
+    window_closed(self, ctx, "Close: closed by the script");
 }
 
 DEFINE_WORK_FUNC(Window, Delete)
