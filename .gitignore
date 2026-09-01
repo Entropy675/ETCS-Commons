@@ -1,5 +1,7 @@
 /ETCS
 .etcs_history
-.d
-.o
+.ace_build_x86_64
+*.d
+*.o
+*_hashes.h
 Makefile
