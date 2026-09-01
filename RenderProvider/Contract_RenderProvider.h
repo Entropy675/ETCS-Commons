@@ -25,6 +25,16 @@
 #include "PolygonDrawable2D.h"
 #include "CompositeDrawable2D.h"
 
+// The 3D pair, and CPU-only for the same reason ImageSurface is: the
+// projection is arithmetic and a depth test, with no device object anywhere in
+// it. Scene3D fills a camera's Pixels_ and Camera3D owns those pixels, so the
+// result reaches the GPU by the route every other CPU-side surface already
+// takes -- one Blit into a VulkanSurface. A device-side renderer would be a
+// second concrete Drawable3D under OS/, selected here; it would not change a
+// line of either header, which is the point of the seam being Project.
+#include "Scene3D.h"
+#include "Camera3D.h"
+
 // auto generated hashes of headers:
 #include "../../ETCS.h"
 #include "module_hashes.h"

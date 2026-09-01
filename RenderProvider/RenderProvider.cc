@@ -6,7 +6,7 @@
 // on why the clock and the Vulkan work sit on the sides they do).
 // Instance and ImageSurface stay BASIC -- neither has anything continuous
 // to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
@@ -19,7 +19,7 @@ ETCS_TAG_BLOCK_BASIC(Instance,
 // GPU queue, and ProduceFrames/ConsumeFrames is that same Present driven by
 // a clock on another thread.
 ETCS_TAG_BLOCK_HYBRID(Surface,
-    (Create, Clear, DrawRect, Blit, Present, Delete, RunDemo),
+    (Create, Clear, DrawRect, Blit, Compose, Present, Delete, RunDemo),
     (ProduceFrames, ConsumeFrames))
 
 // An offscreen CPU-backed surface -- a layer. Same drawing verbs, no
@@ -43,3 +43,21 @@ ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
 // serving both this and the device upload, in sequence.
 ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
     Create, SetPosition, SetOrder, SetBackground, Draw, Clear, DrawRect, Blit, Delete)
+
+// The 3D scene node: a box, self-similar with its children, which projects its
+// whole subtree into a camera against one depth buffer. HYBRID because of the
+// input edge -- ConsumeInput is a stream consumer fed by a window's event
+// producer, which is how w/a/s/d reaches the scene without this module knowing
+// what a window is.
+ETCS_TAG_BLOCK_HYBRID(Scene3D,
+    (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping,
+     Impulse, Halt, Order, SetEmissivity, SetVisible, Project, DepthAt, Delete),
+    (ConsumeInput))
+
+// The camera: a Drawable2D that owns pixels, filled by a scene rather than by
+// its children. Everything downstream treats it as an ordinary 2D node, which
+// is what lets a 3D view nest under a compositor, carry UI children, or blit
+// into a window with no case anywhere for "this one is 3D".
+ETCS_TAG_BLOCK_BASIC(Camera3D,
+    Create, SetPosition, SetOrder, SetBackground, LookAt, SetLens, SetScene,
+    Render, Draw, Clear, DrawRect, Blit, Delete)

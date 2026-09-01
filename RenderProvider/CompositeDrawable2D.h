@@ -176,7 +176,14 @@ public:
  * the compositors on the path from that node to the root recompose;
  * everything else is a blit.
  */
-        if (TakeDirty())
+        // Two questions, not one. TakeDirty covers every discrete change --
+        // a child moved, a colour was set, a node was spawned. Animating
+        // covers what a flag structurally cannot: a node that changes DURING
+        // the walk, whose mark this frame's own upload then consumes (see
+        // ontology/Drawable.h). Asking costs one virtual call per child on a
+        // settled tree and is what lets a moving one schedule its own next
+        // frame.
+        if (TakeDirty() || anyChildAnimating())
             recompose();
 
         const Point2D base = parentAbsoluteOrigin();
@@ -200,7 +207,21 @@ public:
     // this class makes and the thing a test has to be able to check.
     uint64_t Recompositions() const { return m_recompositions; }
 
+    // A compositor animates when anything under it does -- so an outer
+    // compositor asking this one gets the whole subtree's answer, and the
+    // recursion terminates at leaves that inherit the family's default of no.
+    bool Animating() override { return anyChildAnimating(); }
+
 private:
+    bool anyChildAnimating()
+    {
+        std::vector<Drawable_*> ordered;
+        collectDrawableChildren(ordered);
+        for (Drawable_* child : ordered)
+            if (child->Animating()) return true;
+        return false;
+    }
+
     /*
  * Rebuild the buffer from the subtree: reset, clip to our own extent, draw
  * every Drawable child into OURSELVES, unclip.

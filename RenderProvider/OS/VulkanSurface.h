@@ -183,6 +183,68 @@ public:
         m_clearColor = { r, g, b, a };
     }
 
+    /*
+ * COMPOSE ROOT -- the other half of the retained model, for trees that move.
+ *
+ * Retained composition answers "a script draws once and blocks in Run", and
+ * it is right for that: the picture stays up rather than blinking out on
+ * frame two. What it cannot answer is a tree that CHANGES, because retaining
+ * the draw calls is not the same as re-walking the thing that produced them.
+ * A camera whose scene moved has a new image to make, and nothing in a list
+ * of past calls will ask it to.
+ *
+ * So a surface may instead be handed the RID of a Drawable root, and the
+ * frame edge re-walks it per frame (ConsumeFrames, RenderProvider.h). That is
+ * not the expensive option it sounds like: the walk is exactly where every
+ * dirty flag in this system finally pays off. A settled tree costs one
+ * DrawInto per node, no recomposition, no projection, and BlitConcrete's own
+ * TakeDirty declines the upload -- so a still frame is a snapshot of
+ * unchanged descriptor sets, and a frame where one node moved re-walks only
+ * the path that node marked.
+ *
+ * The two modes are exclusive by construction rather than by a flag: binding
+ * a root means every frame starts with Clear, so anything a script retained
+ * is discarded on the next tick. Bind zero to go back to retained.
+ */
+    void SetComposeRoot(ETCS::RID root)
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        m_composeRoot = root;
+    }
+    ETCS::RID ComposeRoot() const { return m_composeRoot; }
+
+    // Re-walk the bound root into a fresh composition. Returns false when
+    // nothing is bound -- the retained path -- or when the root has stopped
+    // resolving, which is how a deleted scene stops being drawn instead of
+    // being dereferenced.
+    bool RecomposeBound()
+    {
+        ETCS::RID root_rid;
+        std::array<float, 4> clear;
+        {
+            std::lock_guard<std::mutex> lock(m_stateMutex);
+            root_rid = m_composeRoot;
+            clear    = m_clearColor;
+        }
+        if (root_rid == 0) return false;
+
+        Drawable_* root = ETCS::resolve_in_family<Drawable_>("Drawable", root_rid);
+        if (!root)
+        {
+            ETCS_LOG("VulkanSurface", "compose root RID:" << root_rid
+                     << " no longer resolves -- unbinding.");
+            SetComposeRoot(0);
+            return false;
+        }
+
+        // Clear first, and through the ordinary call: it is the composition
+        // boundary (see ClearConcrete), so starting the frame with it is what
+        // makes this a new picture rather than an append to the last one.
+        ClearConcrete(clear[0], clear[1], clear[2], clear[3]);
+        root->DrawInto(this);
+        return true;
+    }
+
     void DrawRectConcrete(int32_t x, int32_t y, uint32_t w, uint32_t h,
                            float r, float g, float b, float a) override
     {
@@ -485,6 +547,8 @@ private:
     // True once a composition has been presented and nothing new has been
     // drawn since. See ClearConcrete for what starts a composition.
     bool                      m_composed   = false;
+    // Zero means the retained model. See SetComposeRoot.
+    ETCS::RID                 m_composeRoot = 0;
 
     // Resize hand-off: written by the poll thread, acted on by the frame
     // thread. See PresentConcrete.

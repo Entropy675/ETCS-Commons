@@ -149,6 +149,24 @@ DEFINE_WORK_FUNC_TYPED(Surface, Blit, (ETCS::RID, source), (int32_t, x), (int32_
     self.Blit(src, x, y, w, h, opacity);
 }
 
+// Compose <drawable_rid> -- bind a Drawable root that the frame edge re-walks
+// every tick, instead of replaying whatever the script last drew. Zero unbinds
+// and returns the surface to the retained model. See
+// VulkanSurface::SetComposeRoot for why a tree that moves needs the other one.
+DEFINE_WORK_FUNC_TYPED(Surface, Compose, (ETCS::RID, root))
+{
+    (void)ctx;
+    if (root != 0 && !ETCS::resolve_in_family<Drawable_>("Drawable", root))
+    {
+        ETCS_LOG("Surface::Compose", "RID:" << root << " does not resolve as a Drawable.");
+        return;
+    }
+    self.SetComposeRoot(root);
+    ETCS_LOG("Surface::Compose", (root == 0
+             ? "unbound -- back to the retained composition."
+             : "bound; the frame edge now re-walks this tree each tick."));
+}
+
 DEFINE_WORK_FUNC(Surface, Present)
 {
     (void)ctx; (void)data;
@@ -287,6 +305,13 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
         // Everything Vulkan happens here, on this one thread. Present pulls
         // the current composition itself -- retained, so a script that drew
         // once keeps being shown rather than blinking out on frame two.
+        //
+        // Unless a root is bound (Surface.Compose), in which case the tree is
+        // re-walked first and the retained list is what that walk produces.
+        // The walk is on THIS thread rather than the producer's for the same
+        // reason every other Vulkan call is: Blit uploads into mapped staging
+        // memory, and that is frame state.
+        self.RecomposeBound();
         self.Present();
         ++presented;
     }
@@ -463,9 +488,6 @@ DEFINE_WORK_FUNC(PolygonDrawable2D, Delete)
     self.DeleteConcrete();
 }
 
-
-#endif
-
 // ── CompositeDrawable2D ──────────────────────────────────────────────────
 
 DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, Create, (uint32_t, w), (uint32_t, h))
@@ -549,3 +571,337 @@ DEFINE_WORK_FUNC(CompositeDrawable2D, Delete)
     (void)data; (void)ctx;
     self.DeleteConcrete();
 }
+
+// ── Scene3D ──────────────────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC_TYPED(Scene3D, Create, (float, w), (float, h), (float, d))
+{
+    (void)ctx;
+    self.Create(w, h, d);
+}
+
+// The CENTRE of this box, in its parent's space. On the root of a scene this
+// is also the whole scene's position -- which is what makes WASD one
+// translation rather than a walk (Scene3D.h).
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetPosition, (float, x), (float, y), (float, z))
+{
+    (void)ctx;
+    self.SetPosition(x, y, z);
+}
+
+DEFINE_WORK_FUNC_TYPED(Scene3D, Move, (float, dx), (float, dy), (float, dz))
+{
+    (void)ctx;
+    self.Move(dx, dy, dz);
+}
+
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetColor, (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetColor(r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetOrder, (int32_t, z))
+{
+    (void)ctx;
+    self.SetOrder(z);
+}
+
+// Terminal speed in scene units per SECOND, and how fast motion bleeds off.
+// Held keys are an acceleration, not a displacement, so these two are the whole
+// of the feel: terminal speed is where impulse and drag balance, and damping
+// sets how quickly it gets there and how long it coasts after release.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSpeed, (float, units_per_sec))
+{
+    (void)ctx;
+    self.SetSpeed(units_per_sec);
+}
+
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
+{
+    (void)ctx;
+    self.SetDamping(per_sec);
+}
+
+// A push, in joules along a direction -- the primitive the input edge drives,
+// exposed because a script nudging a scene should go through the same energy
+// accounting the keys do rather than around it.
+DEFINE_WORK_FUNC_TYPED(Scene3D, Impulse, (float, dx), (float, dy), (float, dz),
+                                          (float, joules))
+{
+    (void)ctx;
+    self.Impulse(dx, dy, dz, joules);
+}
+
+// All kinetic energy to heat, at once. What a collision with something
+// immovable does; the energy stays on the point, it just stops being motion.
+DEFINE_WORK_FUNC(Scene3D, Halt)
+{
+    (void)data; (void)ctx;
+    self.Halt();
+}
+
+// Read the order vector back: both rows, and the three quantities the relation
+// between them defines. The shell's window into what a point is carrying.
+DEFINE_WORK_FUNC(Scene3D, Order)
+{
+    (void)data; (void)ctx;
+    const OrderVector& o = self.Order4();
+    ETCS_LOG("Scene3D::Order",
+             "row0 (" << o.x << ", " << o.y << ", " << o.z << ", RID:" << o.rid << ")  "
+             "row1 (" << o.ox << ", " << o.oy << ", " << o.oz << ", E=" << o.energy << ")  "
+             "kinetic=" << o.KineticEnergy() << " heat=" << o.Heat()
+             << " fraction=" << o.KineticFraction()
+             << "  emissivity=" << self.Emissivity()
+             << " shed-to-environment=" << self.EmittedToEnvironment()
+             << "  causal-ticks=" << self.CausalTicks());
+}
+
+// How fast this node sheds heat into whatever contains it, per second. Drag
+// turns motion into heat; this is where the heat goes. Zero is a perfect
+// insulator and a legitimate thing to be.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetEmissivity, (float, per_sec))
+{
+    (void)ctx;
+    self.SetEmissivity(per_sec);
+}
+
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetVisible, (int32_t, on))
+{
+    (void)ctx;
+    self.SetVisible(on != 0);
+}
+
+// Project into a camera on demand -- the same verb the frame path calls, so a
+// script can force one view without a frame edge running at all. Useful in the
+// shell: move the scene, Render, look at it.
+DEFINE_WORK_FUNC_TYPED(Scene3D, Project, (ETCS::RID, camera))
+{
+    (void)ctx;
+    Camera_* cam = ETCS::resolve_in_family<Camera_>("Camera", camera);
+    if (!cam)
+    {
+        ETCS_LOG("Scene3D::Project", "camera RID:" << camera
+                 << " does not resolve as a Camera.");
+        return;
+    }
+    self.Project(cam);
+    ETCS_LOG("Scene3D::Project", "projections so far: " << self.Projections());
+}
+
+// Depth read-back, per pixel of a camera's frame, in scene units. The family's
+// answer made reachable from a script -- negative means nothing of this scene
+// is visible there (ontology/Drawable3D.h).
+DEFINE_WORK_FUNC_TYPED(Scene3D, DepthAt, (ETCS::RID, camera), (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    Camera_* cam = ETCS::resolve_in_family<Camera_>("Camera", camera);
+    if (!cam)
+    {
+        ETCS_LOG("Scene3D::DepthAt", "camera RID:" << camera
+                 << " does not resolve as a Camera.");
+        return;
+    }
+    ETCS_LOG("Scene3D::DepthAt", "(" << x << "," << y << ") = " << self.DepthAt(cam, x, y));
+}
+
+/*
+ * ConsumeInput -- the WASD edge.
+ *
+ * A stream CONSUMER on the scene, fed by the window's own event producer:
+ *
+ *     window.ProduceEvents() -> scene.ConsumeInput()
+ *
+ * The two ends live on different entities in different modules, which is a
+ * property of what a stream pair IS here (CommandExecutor.h builds the pair on
+ * the consumer and hands the producer in) and not an arrangement this module
+ * had to negotiate. WindowProvider does not know a renderer exists; this file
+ * does not know GLFW exists. What crosses is an InputEvent, which belongs to
+ * neither -- it is the ontology's (ontology/InputSource.h).
+ *
+ * WHY A BITSET AND A TICK, rather than moving once per event. An event says a
+ * key CHANGED; motion depends on what is currently HELD, and those are
+ * different questions. Draining every pending event into the bitset and then
+ * integrating once per tick answers the second from the first, gives a rate
+ * that is the tick's rather than the OS key-repeat's, and makes two keys held
+ * at once a diagonal instead of a race between two repeat timers.
+ *
+ * hasData() is what makes that possible without a second thread: it is a
+ * non-advancing liveness check (MirrorBuffer.h), so the drain takes what is
+ * there and returns, where readRaw alone would block until the next keypress
+ * and freeze the scene mid-stride the moment a key stopped repeating.
+ *
+ * The edge ends when the stream closes -- which the window does when it is
+ * closed -- or when the closure is signalled. Nothing here polls the window
+ * or touches GLFW; the producer already owns that.
+ */
+DEFINE_STREAM_FUNC_CONSUME(Scene3D, ConsumeInput)
+{
+    (void)data;
+
+    ETCS_LOG("Scene3D::ConsumeInput", "WASD edge open on RID:" << self.getRID()
+             << " (W/S depth, A/D lateral, Q/E vertical, "
+             << self.Speed() << " u/s terminal, damping " << self.Damping() << "/s)");
+
+    // Blocking, and doing nothing but recording. The one thing this loop must
+    // not do is integrate: motion is advanced where it is OBSERVED, in
+    // Scene3D::Project, on the interval since the last projection (Scene3D.h
+    // on why that is the interpolation rather than an approximation of it).
+    //
+    // Which is also why hasData() is not used here. A cross-tag stream pair
+    // resolves to StrategyPipe (core/Entity.h), whose consumer fd is blocking,
+    // so hasData is a non-advancing check on the LMAX side and a blocking read
+    // on this one -- a drain loop built on it stalls a same-module pair and
+    // spins a cross-module one. Blocking readRaw is the shape every consumer
+    // in this codebase already uses, and with the integration moved to the
+    // observer there is nothing left for a tick here to do.
+    while (stream.isOpen())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+
+        ETCS::Buffer slot;
+        if (!stream.readRaw(slot)) break;
+
+        InputEvent ev{};
+        slot.readRaw(&ev, sizeof(InputEvent));
+        if (ev.key == 0 && ev.action == 0) continue;
+
+        if (ev.action == 1) self.KeyDown(ev.key);
+        else                self.KeyUp(ev.key);
+
+        // One mark per key change, and no polling anywhere: it restarts a
+        // pipeline that had gone quiet, and once moving, the motion marks
+        // itself at every projection until it settles.
+        self.WakeObservers();
+    }
+
+    // Held keys are a fact about a stream that no longer exists. Clearing them
+    // is what stops a scene drifting forever because the window closed between
+    // a key going down and coming up.
+    self.ClearHeld();
+    ETCS_LOG("Scene3D::ConsumeInput", "input stream closed.");
+}
+
+DEFINE_WORK_FUNC(Scene3D, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}
+
+// ── Camera3D ─────────────────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, Create, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    self.Create(w, h);
+}
+
+// Where the VIEW sits in its parent's 2D space -- the camera is a Drawable2D
+// like any other, so this is the same call a compositor takes and means the
+// same thing.
+DEFINE_WORK_FUNC_TYPED(Camera3D, SetPosition, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.SetPosition(x, y);
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, SetOrder, (int32_t, z))
+{
+    (void)ctx;
+    self.SetOrder(z);
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, SetBackground,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetBackground(r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, LookAt, (float, ex), (float, ey), (float, ez),
+                                          (float, tx), (float, ty), (float, tz))
+{
+    (void)ctx;
+    self.LookAt(ex, ey, ez, tx, ty, tz);
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, SetLens, (float, fov_degrees),
+                                           (float, near_plane), (float, far_plane))
+{
+    (void)ctx;
+    self.SetLens(fov_degrees, near_plane, far_plane);
+}
+
+// Bind what this camera looks at. By RID, and resolved per render, so the
+// scene may be deleted, replaced, or live in another module entirely.
+DEFINE_WORK_FUNC_TYPED(Camera3D, SetScene, (ETCS::RID, scene))
+{
+    (void)ctx;
+    if (!ETCS::resolve_in_family<Drawable3D_>("Drawable3D", scene))
+        ETCS_LOG("Camera3D::SetScene", "RID:" << scene << " does not resolve as a "
+                 "Drawable3D today -- bound anyway, it is resolved per render.");
+    self.SetScene(scene);
+}
+
+DEFINE_WORK_FUNC(Camera3D, Render)
+{
+    (void)data; (void)ctx;
+    if (!self.Render())
+        ETCS_LOG("Camera3D::Render", "no view produced -- no scene bound, a scene "
+                 "that no longer resolves, or a degenerate frustum.");
+}
+
+// Render if stale, then blit once. The same verb, with the same meaning, that
+// PolygonDrawable2D and CompositeDrawable2D answer -- which is what lets a
+// script put a camera anywhere either of those could go.
+DEFINE_WORK_FUNC_TYPED(Camera3D, Draw, (ETCS::RID, target))
+{
+    (void)ctx;
+    Surface_* dst = ETCS::resolve_in_family<Surface_>("Surface", target);
+    if (!dst)
+    {
+        ETCS_LOG("Camera3D::Draw", "target RID:" << target
+                 << " does not resolve as a Surface.");
+        return;
+    }
+    self.DrawInto(dst);
+    ETCS_LOG("Camera3D::Draw", "renders so far: " << self.Renders());
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, Clear,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.Clear(r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, DrawRect,
+                       (int32_t, x), (int32_t, y), (uint32_t, w), (uint32_t, h),
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.DrawRect(x, y, w, h, r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, Blit, (ETCS::RID, source),
+                       (int32_t, x), (int32_t, y), (uint32_t, w), (uint32_t, h),
+                       (float, opacity))
+{
+    (void)ctx;
+    Surface_* src = ETCS::resolve_in_family<Surface_>("Surface", source);
+    if (!src)
+    {
+        ETCS_LOG("Camera3D::Blit", "source RID:" << source
+                 << " does not resolve as a Surface.");
+        return;
+    }
+    self.Blit(src, x, y, w, h, opacity);
+}
+
+DEFINE_WORK_FUNC(Camera3D, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}
+
+#endif
