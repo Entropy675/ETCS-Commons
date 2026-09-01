@@ -9,7 +9,7 @@ ETCS_MODULE_EXPORT_MAIN(WindowProvider, "Window")
 ETCS_TAG_BLOCK_HYBRID(
     Window, 
     (Create, Delete, PollEvents, Close, Run, SetPosition, MoveBy, CenterOnMonitor,
-     CaptureMouse), 
+     CaptureMouse, ScreenDpi), 
     (ProduceEvents, ConsumeEvents)
 )
 

@@ -230,6 +230,21 @@ DEFINE_WORK_FUNC_TYPED(Window, CaptureMouse, (int32_t, on))
     self.SetMouseCapture(on != 0);   // logs the transition itself
 }
 
+// Report the display's real pixel density, read off the monitor's physical
+// size. Half of what turns mouse counts into a view angle -- the other half is
+// the mouse's own DPI, which no platform exposes (Scene3D::SetMouseDpi).
+DEFINE_WORK_FUNC(Window, ScreenDpi)
+{
+    (void)data; (void)ctx;
+    const float dpi = self.GetScreenDpi();
+    if (dpi > 0.0f)
+        ETCS_LOG("ScreenDpi", "display is " << dpi << " DPI -- pass this to a scene with "
+                 "SetScreenDpi to make its turn rate physical.");
+    else
+        ETCS_LOG("ScreenDpi", "no monitor to measure (headless or no EDID); a scene's "
+                 "default of 96 DPI is the fallback.");
+}
+
 DEFINE_WORK_FUNC(Window, PollEvents)
 {
     (void)data;

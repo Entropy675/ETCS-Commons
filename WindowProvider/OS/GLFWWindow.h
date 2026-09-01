@@ -194,6 +194,28 @@ public:
 
     GLFWwindow* GetHandle() { return static_cast<GLFWwindow*>(m_window); }
 
+    /*
+ * The screen's real pixel density, from the monitor's physical size.
+ *
+ * Half of what turns mouse counts into an angle: counts/DPI is how far the
+ * hand moved, and pixels/screen-DPI is how far that should carry across the
+ * frame. GLFW knows this one because the EDID carries it.
+ *
+ * Zero when there is no monitor to ask -- a headless server, an unplugged
+ * display -- and zero is the honest answer rather than a plausible default,
+ * so a caller can tell "I could not find out" from "it is 96".
+ */
+    float GetScreenDpi()
+    {
+        GLFWmonitor* mon = glfwGetPrimaryMonitor();
+        if (!mon) return 0.0f;
+        int mm_w = 0, mm_h = 0;
+        glfwGetMonitorPhysicalSize(mon, &mm_w, &mm_h);
+        const GLFWvidmode* mode = glfwGetVideoMode(mon);
+        if (!mode || mm_w <= 0) return 0.0f;
+        return static_cast<float>(mode->width) / (static_cast<float>(mm_w) / 25.4f);
+    }
+
 private:
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
     static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -267,28 +289,33 @@ public:
         if (!GetHandle()) return;
         glfwSetInputMode(GetHandle(), GLFW_CURSOR,
                          on ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+#ifdef GLFW_RAW_MOUSE_MOTION
+        if (glfwRawMouseMotionSupported())
+            glfwSetInputMode(GetHandle(), GLFW_RAW_MOUSE_MOTION, on ? GLFW_TRUE : GLFW_FALSE);
+        else
+            ETCS_LOG("GLFWWindow", "raw mouse motion unsupported here -- deltas carry the "
+                     "desktop's acceleration, so a DPI-derived turn rate will be too fast.");
+#endif
 
         /*
-     * RAW MOTION IS DELIBERATELY NOT REQUESTED, and it was, and that was a
-     * unit bug rather than a preference.
+     * RAW MOTION IS REQUESTED, and the unit it reports is the whole reason.
      *
-     * Raw motion reports DEVICE COUNTS -- what the sensor produced, before
-     * the desktop maps it onto the screen. Those counts are a function of
-     * the mouse's DPI and of nothing else, so a 1600-DPI mouse and a
-     * 400-DPI mouse moving the same distance across the desk report four
-     * times apart. Any calibration stated as "one pass across the screen"
-     * is then meaningless: there is no screen in the number.
+     * Raw motion gives DEVICE COUNTS -- what the sensor produced, before the
+     * desktop's pointer-acceleration curve touches it. That is the only
+     * measurement with a knowable relationship to how far the hand actually
+     * moved: counts / DPI is inches, exactly, on every mouse.
      *
-     * Without it, GLFW reports the virtual cursor's motion in the same
-     * units the screen is measured in, which is what makes 4*pi over the
-     * frame width mean exactly two turns per pass (Scene3D::SetSensitivity).
-     * The cost is that desktop pointer acceleration is in the loop, so a
-     * fast flick turns further than a slow drag of the same length -- which
-     * is the behaviour every other cursor on the machine already has.
+     * Accelerated deltas have no such relationship. They are screen units,
+     * but the number of them a given physical movement produces depends on
+     * an acceleration curve the application cannot see, so "a pass across
+     * the screen" is not a quantity you can convert to. That is what made
+     * the first two attempts here too fast: with acceleration in the loop, a
+     * few inches of hand movement produces many screen widths of delta.
      *
-     * It looked correct under a test harness because a warped pointer on a
-     * bare X server produces deltas that ARE screen pixels: the one setting
-     * where the two units coincide.
+     * So the deltas are counts, and the angle is derived from them with the
+     * mouse's DPI and the screen's (Scene3D::SetMouseDpi). The one thing
+     * neither X11 nor GLFW can tell us is the mouse's DPI, which is why that
+     * one is a parameter rather than a measurement.
      */
         m_cursorPrimed = false;
         m_mouseCaptured = on;
