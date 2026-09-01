@@ -1105,6 +1105,7 @@ DEFINE_WORK_FUNC(FileHtmlPage, SetDefaultExtension)
     // Optional path-extension fallback for this tree: when a request path
     // segment is not found as written, try it once with this suffix. Empty
     // string clears the fallback (exact-name only). Leading '.' is optional.
+    (void)ctx;
     ETCS::Buffer ext;
     data >> ext;
     self.SetDefaultExtension(ext.toString());

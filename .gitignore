@@ -1,2 +1,5 @@
 /ETCS
 .etcs_history
+.d
+.o
+Makefile

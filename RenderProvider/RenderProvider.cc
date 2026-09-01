@@ -6,7 +6,7 @@
 // on why the clock and the Vulkan work sit on the sides they do).
 // Instance and ImageSurface stay BASIC -- neither has anything continuous
 // to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
@@ -27,3 +27,11 @@ ETCS_TAG_BLOCK_HYBRID(Surface,
 // its bytes are reachable as Pixels_ by anything holding its RID.
 ETCS_TAG_BLOCK_BASIC(ImageSurface,
     Create, Clear, DrawRect, Blit, Delete)
+
+// The scene-graph leaf: an arbitrary polygon, nested in another polygon's
+// space. Owns no pixels -- it draws through whatever Surface it is realised
+// onto, so the same tree lands on the window or on a CPU layer unchanged.
+// Draw is the whole subtree in one call, which is what a scene living in the
+// entity tree buys over one living in a script.
+ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
+    Create, AddPoint, ClearPoints, SetFill, SetOrder, Draw, Clear, DrawRect, Blit, Delete)

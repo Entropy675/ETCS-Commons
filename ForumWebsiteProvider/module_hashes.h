@@ -1,5 +1,0 @@
-// Generated Registration - do not edit
-inline const bool _reg_ForumWebsiteProvider_h = []() { ETCS::FlatMap<ETCS::Buffer, ETCS::Buffer>::setArena(&ETCS::MemoryArena::getInstance()); ETCS::Entity::getManifest()["ForumWebsiteProvider.h"] = "e7173e7754f137e950572abcbc90297d4aa95c38ee010a157065ad6d5edbbdf8"; return true; }();
-inline const bool _reg_ForumNode_h = []() { ETCS::FlatMap<ETCS::Buffer, ETCS::Buffer>::setArena(&ETCS::MemoryArena::getInstance()); ETCS::Entity::getManifest()["ForumNode.h"] = "12b01c5cd44cc4db70c69864354091b410cb45573193c48435fa1c20417aafe3"; return true; }();
-inline const bool _reg_ForumSelf_h = []() { ETCS::FlatMap<ETCS::Buffer, ETCS::Buffer>::setArena(&ETCS::MemoryArena::getInstance()); ETCS::Entity::getManifest()["ForumSelf.h"] = "236ee25222385c38e0ce990c27f1d56c41af018e29b044295201065df5afed88"; return true; }();
-inline const bool _reg_ForumThread_h = []() { ETCS::FlatMap<ETCS::Buffer, ETCS::Buffer>::setArena(&ETCS::MemoryArena::getInstance()); ETCS::Entity::getManifest()["ForumThread.h"] = "ede8137bc38d1af48da6ad41ec94503e5294a046398941e5e505403766060181"; return true; }();

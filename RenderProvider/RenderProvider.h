@@ -364,4 +364,104 @@ DEFINE_WORK_FUNC(ImageSurface, Delete)
     self.DeleteConcrete();
 }
 
+// ── PolygonDrawable2D ────────────────────────────────────────────────────
+//
+// The scene-graph leaf. A script builds a shape out of corner points stated
+// in the PARENT's space, nests more of them inside it, and realises the whole
+// tree onto any Surface with one call.
+
+DEFINE_WORK_FUNC(PolygonDrawable2D, Create)
+{
+    (void)ctx; (void)data;
+    self.Create();
+}
+
+// Corner points, in the parent's coordinate space -- which is what makes the
+// child's own space a consequence of where you put it rather than a second
+// thing to configure.
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, AddPoint, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.AddPoint(x, y);
+}
+
+DEFINE_WORK_FUNC(PolygonDrawable2D, ClearPoints)
+{
+    (void)ctx; (void)data;
+    self.ClearPoints();
+}
+
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, SetFill,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetFill(r, g, b, a);
+}
+
+// Restacks among siblings and tells the parent's list its ordering is stale
+// -- the explicit seam, since the key moved without membership changing
+// (ontology/Orderable.h).
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, SetOrder, (int32_t, z))
+{
+    (void)ctx;
+    self.SetOrder(z);
+}
+
+// Realise this node and EVERYTHING NESTED UNDER IT onto a surface. One call
+// per frame for a whole scene -- the downward half of the contract, which is
+// what removes the restatement a script-held scene needs.
+//
+// The target is resolved through the family aggregate, so it can be this
+// module's window surface, its CPU layer, or any Surface a future provider
+// registers: this work function has no idea which it got.
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, Draw, (ETCS::RID, target))
+{
+    (void)ctx;
+    Surface_* dst = ETCS::resolve_in_family<Surface_>("Surface", target);
+    if (!dst)
+    {
+        ETCS_LOG("PolygonDrawable2D::Draw", "target RID:" << target
+                 << " does not resolve as a Surface.");
+        return;
+    }
+    self.DrawInto(dst);
+}
+
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, Clear,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.Clear(r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, DrawRect,
+                       (int32_t, x), (int32_t, y), (uint32_t, w), (uint32_t, h),
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.DrawRect(x, y, w, h, r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, Blit, (ETCS::RID, source),
+                       (int32_t, x), (int32_t, y), (uint32_t, w), (uint32_t, h),
+                       (float, opacity))
+{
+    (void)ctx;
+    Surface_* src = ETCS::resolve_in_family<Surface_>("Surface", source);
+    if (!src)
+    {
+        ETCS_LOG("PolygonDrawable2D::Blit", "source RID:" << source
+                 << " does not resolve as a Surface.");
+        return;
+    }
+    self.Blit(src, x, y, w, h, opacity);
+}
+
+DEFINE_WORK_FUNC(PolygonDrawable2D, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}
+
+
 #endif

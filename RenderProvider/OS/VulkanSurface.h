@@ -15,6 +15,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <atomic>
 #include <vector>
 
 static constexpr uint32_t SURFACE_FRAMES_IN_FLIGHT  = 2;
@@ -110,7 +111,7 @@ public:
         // OnResize fires immediately on registration with the CURRENT size
         // (Resizable_::OnResize's existing semantics) -- this doubles as
         // the initial swapchain build, so no separate first-build call.
-        m_parentResizable->OnResize([this](WindowSize sz) { this->recreateSwapchain(sz); }, 0);
+        m_parentResizable->OnResize([this](WindowSize sz) { this->queueResize(sz); }, 0);
 
         this->addTag("active");
         return m_swapchain != VK_NULL_HANDLE;
@@ -151,11 +152,32 @@ public:
 
     // --- Surface_ dispatch (SurfaceBase.h) ---
 
+    // CLEAR IS THE COMPOSITION BOUNDARY, and it is the only one.
+    //
+    // It used to be that ANY draw call restarted the composition if the last
+    // one had been presented -- Clear, DrawRect and Blit alike. That is fine
+    // while a composition is one or two calls, and wrong the moment it is
+    // hundreds: a Present landing mid-batch marks the composition presented,
+    // and the very next DrawRect in the SAME batch then throws away
+    // everything emitted before it. What reaches the screen is the tail of
+    // the batch, cut at a different point every frame -- shapes that appear
+    // for the frame that proposed them and are gone by the next.
+    //
+    // Reproduced as soon as PolygonDrawable2D arrived, because a scanline
+    // fill emits one DrawRect per row and a scene is easily a thousand calls
+    // against a 60Hz presenter on another thread.
+    //
+    // So the boundary is explicit and it is this call. Clear starts a
+    // picture; DrawRect and Blit only ever APPEND to it; Present snapshots
+    // whatever is there. A caller that wants a fresh picture says so, which
+    // it was already saying, and a batch can now take as long as it likes
+    // without a concurrent presenter being able to truncate it.
     void ClearConcrete(float r, float g, float b, float a) override
     {
         if (!ready("Clear")) return;
         std::lock_guard<std::mutex> lock(m_stateMutex);
-        beginCompositionIfPresented();
+        m_pendingDraws.clear();
+        m_composed   = false;
         m_clearColor = { r, g, b, a };
     }
 
@@ -164,7 +186,7 @@ public:
     {
         if (!ready("DrawRect")) return;
         std::lock_guard<std::mutex> lock(m_stateMutex);
-        beginCompositionIfPresented();
+        m_composed = false;          // appends only -- see ClearConcrete
         m_pendingDraws.push_back({ PendingDraw::Kind::Rect, x, y, w, h, r, g, b, a, 0 });
     }
 
@@ -185,7 +207,7 @@ public:
         // m_textures and writes into mapped staging memory, both of which
         // the frame consumer reads (ConsumeFrames, RenderProvider.h).
         std::lock_guard<std::mutex> lock(m_stateMutex);
-        beginCompositionIfPresented();
+        m_composed = false;          // appends only -- see ClearConcrete
         // Every Surface_ is an Entity (virtually), so the source's own
         // identity and its other interfaces are both reachable from here.
         // A device-side offscreen source would be read by image copy at this
@@ -230,6 +252,39 @@ public:
     void PresentConcrete() override
     {
         if (!ready("Present")) return;
+
+        /*
+ * THE RESIZE LANDS HERE, on this thread, and that is the whole point.
+ *
+ * The resize callback used to call recreateSwapchain directly -- which
+ * meant vkDeviceWaitIdle, destroying the swapchain, its image views and
+ * its framebuffers, all running on the POLL thread while this thread was
+ * mid-frame using them. It contradicts this file's own stated invariant
+ * three lines above ("Present is the ONLY call here that touches the
+ * queue"), and it only ever fires when something actually delivers resize
+ * events: a window manager mapping, focusing or resizing the window. A
+ * headless Xvfb with no WM never sends one, which is exactly why it
+ * survived every test here and shows up on a real desktop as a picture
+ * that will not stay on screen, or a segfault out of a script that polls.
+ *
+ * So the callback now records the extent and this thread acts on it, at a
+ * frame boundary, where no command buffer is in flight. Every Vulkan call
+ * on this surface is back on one thread, which is what the design said it
+ * wanted.
+ *
+ * A surface with no presenter never processes a resize -- correct, and not
+ * a gap: a surface nothing presents is showing nothing to resize.
+ */
+        if (m_resizePending.exchange(false, std::memory_order_acquire))
+        {
+            WindowSize sz;
+            {
+                std::lock_guard<std::mutex> lock(m_stateMutex);
+                sz = m_pendingExtent;
+            }
+            recreateSwapchain(sz);
+            if (m_swapchain == VK_NULL_HANDLE) return;
+        }
 
         FrameSnapshot frame;
         {
@@ -426,8 +481,14 @@ private:
     std::array<float, 4>      m_clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
     std::vector<PendingDraw>  m_pendingDraws;
     // True once a composition has been presented and nothing new has been
-    // drawn since. See beginCompositionIfPresented.
+    // drawn since. See ClearConcrete for what starts a composition.
     bool                      m_composed   = false;
+
+    // Resize hand-off: written by the poll thread, acted on by the frame
+    // thread. See PresentConcrete.
+    std::atomic<bool>         m_resizePending{false};
+    WindowSize                m_pendingExtent{0, 0};   // guarded by m_stateMutex
+    bool                      m_builtOnce  = false;
 
     // --- setup helpers ---
 
@@ -633,13 +694,6 @@ private:
     // Callers that DO redraw every frame (RunDemo, or any future render
     // loop) see no difference: their first draw of each frame clears the
     // retained list, so nothing accumulates across frames.
-    void beginCompositionIfPresented()
-    {
-        if (!m_composed) return;
-        m_pendingDraws.clear();
-        m_composed = false;
-    }
-
     // Caller holds m_stateMutex.
     void takeSnapshotLocked(FrameSnapshot& out)
     {
@@ -890,6 +944,31 @@ private:
     // initial Create (via the immediate OnResize invocation) and on every
     // real resize thereafter (ontology/Resizable.h's notifyResize fix is
     // what makes the second case actually fire).
+    /*
+ * Called from the resize callback, on whatever thread polls the window.
+ * Records and returns -- see PresentConcrete for why the recreation itself
+ * belongs to the frame thread.
+ *
+ * The FIRST call is different and is taken synchronously: OnResize fires
+ * immediately on registration with the current size, and that call IS the
+ * initial swapchain build, on the creating thread, before any presenter
+ * exists. Create's own return value depends on it having happened.
+ */
+    void queueResize(WindowSize sz)
+    {
+        if (!m_builtOnce)
+        {
+            m_builtOnce = true;
+            recreateSwapchain(sz);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_stateMutex);
+            m_pendingExtent = sz;
+        }
+        m_resizePending.store(true, std::memory_order_release);
+    }
+
     void recreateSwapchain(WindowSize sz)
     {
         if (!m_instance || m_surface == VK_NULL_HANDLE) return;

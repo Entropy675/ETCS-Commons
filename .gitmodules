@@ -13,3 +13,6 @@
 [submodule "WindowProvider/glfw"]
 	path = WindowProvider/glfw
 	url = https://github.com/glfw/glfw.git
+[submodule "RenderProvider/vulkan-headers"]
+	path = RenderProvider/vulkan-headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git

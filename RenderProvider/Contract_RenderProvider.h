@@ -22,6 +22,7 @@
 // type to select between -- the class IS the tag type on every platform, the
 // same way ChessProvider's OS-invariant types are.
 #include "ImageSurface.h"
+#include "PolygonDrawable2D.h"
 
 // auto generated hashes of headers:
 #include "../../ETCS.h"
