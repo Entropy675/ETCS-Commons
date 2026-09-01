@@ -107,6 +107,7 @@ public:
             glfwSetWindowUserPointer(GetHandle(), this);
             glfwSetFramebufferSizeCallback(GetHandle(), framebuffer_size_callback);
             glfwSetKeyCallback(GetHandle(), key_callback);
+            glfwSetCursorPosCallback(GetHandle(), cursor_callback);
             glfwSetWindowPosCallback(GetHandle(), window_pos_callback);
             populateNativeSurfaceHandle();
             this->addTag("active");
@@ -193,6 +194,59 @@ public:
 private:
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
     static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
+    static void cursor_callback(GLFWwindow* window, double xpos, double ypos);
+
+public:
+    /*
+ * Mouse capture: hide the cursor and free it from the screen's edges, so
+ * pointer deltas keep arriving however far the user keeps moving.
+ *
+ * It is a MODE, not a a per-event decision, which is why it is a call rather
+ * than a flag on the events: the cursor either has a position on screen or it
+ * does not, and a look control needs it not to. Raw motion is requested where
+ * the platform has it -- it is the unaccelerated delta, which is what a view
+ * angle wants, as against the pointer-ballistics curve a desktop cursor wants.
+ *
+ * The first delta after capture is DISCARDED (m_cursorPrimed). Enabling
+ * capture warps the cursor, so the first callback reports the jump from
+ * wherever it was to the centre -- a large bogus delta that would snap the
+ * view a quarter turn on the first frame. Found immediately on trying it.
+ */
+    void SetMouseCapture(bool on)
+    {
+        if (!GetHandle()) return;
+        glfwSetInputMode(GetHandle(), GLFW_CURSOR,
+                         on ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+#ifdef GLFW_RAW_MOUSE_MOTION
+        if (glfwRawMouseMotionSupported())
+            glfwSetInputMode(GetHandle(), GLFW_RAW_MOUSE_MOTION, on ? GLFW_TRUE : GLFW_FALSE);
+#endif
+        m_cursorPrimed = false;
+        m_mouseCaptured = on;
+    }
+    bool MouseCaptured() const { return m_mouseCaptured; }
+
+    // Deltas are derived here rather than by the callback so the "no previous
+    // position yet" case lives in one place with the state it concerns.
+    void noteCursor(double x, double y)
+    {
+        if (!m_cursorPrimed)
+        {
+            m_cursorX = x; m_cursorY = y; m_cursorPrimed = true;
+            return;
+        }
+        const double dx = x - m_cursorX;
+        const double dy = y - m_cursorY;
+        m_cursorX = x; m_cursorY = y;
+        pushPointerDelta(static_cast<int>(dx), static_cast<int>(dy));
+    }
+
+private:
+    double m_cursorX = 0.0;
+    double m_cursorY = 0.0;
+    bool   m_cursorPrimed  = false;
+    bool   m_mouseCaptured = false;
+public:
 
     // Runs inside WindowProvider.so, against the GLFW copy that called
     // glfwInit() above -- see ontology/Window.h's NativeSurfaceHandle
@@ -219,6 +273,13 @@ void GLFWWindow::framebuffer_size_callback(GLFWwindow* window, int width, int he
     if (handler) {
         handler->notifyResize({ static_cast<uint32_t>(width), static_cast<uint32_t>(height) });
     }
+}
+
+void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
+{
+    auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
+    if (!handler) return;
+    handler->noteCursor(xpos, ypos);
 }
 
 void GLFWWindow::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)

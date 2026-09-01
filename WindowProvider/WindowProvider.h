@@ -153,8 +153,13 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
         {
             InputEvent ev{};
             slot.readRaw(&ev, sizeof(InputEvent));
-            ETCS_LOG("ProduceEvents", "Emitting: key=" << ev.key 
-                                  << " action=" << (int)ev.action);
+#ifdef ETCS_VERBOSE_INPUT_EVENTS
+            if (ev.action == INPUT_MOTION)
+                ETCS_LOG("ProduceEvents", "Emitting: motion (" << ev.dx << "," << ev.dy << ")");
+            else
+                ETCS_LOG("ProduceEvents", "Emitting: key=" << ev.key
+                                      << " action=" << (int)ev.action);
+#endif
 
             if (!stream.writeRaw(slot))
             {
@@ -192,9 +197,15 @@ DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
 
         InputEvent ev{};
         slot.readRaw(&ev, sizeof(InputEvent));
-        if (ev.key == 0 && ev.action == 0) continue;
 
-        if (ev.action == 1)
+        if (ev.action == INPUT_MOTION)
+        {
+            ETCS_LOG("ConsumeEvents", "MOTION:   (" << ev.dx << ", " << ev.dy << ")");
+            continue;
+        }
+        if (ev.key == 0) continue;
+
+        if (ev.action == INPUT_DOWN)
         {
             ETCS_LOG("ConsumeEvents", "KEY DOWN: " << ev.key 
                         << " (" << (char)ev.key << ")");
@@ -207,6 +218,18 @@ DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
     }
     
     ETCS_LOG("ConsumeEvents", "Stream is closed.");
+}
+
+// CaptureMouse <0|1> -- hide the cursor and unbind it from the screen, so
+// pointer deltas keep arriving however far the user moves. What a look control
+// needs, and a mode rather than a per-event choice: the cursor either has a
+// screen position or it does not.
+DEFINE_WORK_FUNC_TYPED(Window, CaptureMouse, (int32_t, on))
+{
+    (void)ctx;
+    self.SetMouseCapture(on != 0);
+    ETCS_LOG("CaptureMouse", (on != 0 ? "cursor captured -- pointer deltas are unbounded."
+                                      : "cursor released."));
 }
 
 DEFINE_WORK_FUNC(Window, PollEvents)
