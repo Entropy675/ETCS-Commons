@@ -1,0 +1,59 @@
+#!/usr/bin/env etcs
+# Minimal PaintProvider smoke test: a window with a paint document and a
+# brush-driven input edge. Same pattern as the scene input examples: the
+# window's event stream is produced on the OS-thread side and consumed by
+# PaintInput on the first thread (event-pump affinity).
+#
+# Requires: RenderProvider, WindowProvider, PaintProvider modules loaded.
+#
+# Pointer position is ABSOLUTE (InputEvent x/y, content-area relative), so the
+# brush is under the cursor from the first sample -- there is no accumulator to
+# seed and nothing to drift. Move the pointer over the window and hold any key
+# or button to stroke. Live stamps go to the view Surface; the layer's CPU
+# pixels are updated in parallel for a later RenderToSurface composite.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn WindowProvider::Window main
+main.Create(960, 720, 'ETCS Paint Editor')
+
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+view.Clear(1.0, 1.0, 1.0, 1.0)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(12.0)
+brush.SetColor(1.0, 0.25, 0.25, 1.0)
+
+spawn PaintProvider::PaintLayer layer
+layer.Create(960, 720)
+layer.Clear(1.0, 1.0, 1.0, 1.0)
+
+spawn PaintProvider::PaintDocument doc
+doc.Create(960, 720, 'editor')
+doc.AddLayer(@layer)
+doc.SetActiveLayer(@layer)
+
+spawn PaintProvider::PaintSurface editor_surface
+editor_surface.Create(@view)
+editor_surface.AttachDocument(@doc)
+editor_surface.Render()
+
+spawn PaintProvider::PaintInput input
+input.Create(@doc, @brush, @editor_surface)
+input.SetBrush(12.0, 1.0, 0.25, 0.25, 1.0)
+
+# THE FRAME PUMP, and this script draws nothing without it. A Surface is
+# RETAINED, not immediate: Clear/DrawRect/Blit build a composition and something
+# has to present it. Nothing here calls Present, so without this the window
+# comes up, the input edge opens, strokes accumulate into the layer -- and the
+# screen stays blank, which reads as "painting is broken" rather than as
+# "nobody asked for a frame".
+detach render_frames.etcs view=view
+
+# Standing control-thread edge: OS poll loop -> paint stroke state machine.
+# Returns when the window closes.
+main.ProduceEvents() -> input.ConsumeInput()
+
+main.Close()
