@@ -111,6 +111,11 @@ public:
             glfwSetFramebufferSizeCallback(GetHandle(), framebuffer_size_callback);
             glfwSetKeyCallback(GetHandle(), key_callback);
             glfwSetCursorPosCallback(GetHandle(), cursor_callback);
+            // Both exist ONLY to re-prime the delta base -- see primeCursor.
+            // Neither reports anything; they mark the moments at which the
+            // cursor's position changes without the user having moved it.
+            glfwSetCursorEnterCallback(GetHandle(), cursor_enter_callback);
+            glfwSetWindowFocusCallback(GetHandle(), window_focus_callback);
             glfwSetWindowPosCallback(GetHandle(), window_pos_callback);
             populateNativeSurfaceHandle();
             this->addTag("active");
@@ -159,9 +164,23 @@ public:
         return glfwWindowShouldClose(static_cast<GLFWwindow*>(m_window)) == GL_TRUE;
     }
 
+    /*
+ * The pump, and the only place motion becomes an event.
+ *
+ * glfwPollEvents runs every pending callback, so a burst of pointer movement
+ * arrives as a burst of noteCursor calls that only ACCUMULATE. Flushing after
+ * the pump turns however many the OS had queued into the one delta they sum
+ * to -- the sampling rate becomes the rate something can actually consume,
+ * rather than the rate the hardware reports.
+ *
+ * The flush is AFTER, not inside, because a delta is only complete once the
+ * queue is drained; flushing per callback would be the uncoalesced behaviour
+ * with extra steps.
+ */
     void PollEventsConcrete() override
     {
         glfwPollEvents();
+        flushPointerDelta();
     }
 
     WindowPosition GetPositionConcrete() override
@@ -220,6 +239,8 @@ private:
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
     static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void cursor_callback(GLFWwindow* window, double xpos, double ypos);
+    static void cursor_enter_callback(GLFWwindow* window, int entered);
+    static void window_focus_callback(GLFWwindow* window, int focused);
 
 public:
     /*
@@ -290,34 +311,34 @@ public:
         glfwSetInputMode(GetHandle(), GLFW_CURSOR,
                          on ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 #ifdef GLFW_RAW_MOUSE_MOTION
-        if (glfwRawMouseMotionSupported())
-            glfwSetInputMode(GetHandle(), GLFW_RAW_MOUSE_MOTION, on ? GLFW_TRUE : GLFW_FALSE);
-        else
-            ETCS_LOG("GLFWWindow", "raw mouse motion unsupported here -- deltas carry the "
-                     "desktop's acceleration, so a DPI-derived turn rate will be too fast.");
+        // Explicitly OFF, not merely unrequested: GLFW leaves the mode as it
+        // found it, so a previous capture that enabled it would otherwise
+        // persist and silently switch the units under the turn rate.
+        glfwSetInputMode(GetHandle(), GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
 #endif
 
         /*
-     * RAW MOTION IS REQUESTED, and the unit it reports is the whole reason.
+     * RAW MOTION IS DELIBERATELY NOT REQUESTED, and this is the settled
+     * answer after getting it wrong in both directions.
      *
-     * Raw motion gives DEVICE COUNTS -- what the sensor produced, before the
-     * desktop's pointer-acceleration curve touches it. That is the only
-     * measurement with a knowable relationship to how far the hand actually
-     * moved: counts / DPI is inches, exactly, on every mouse.
+     * Raw motion reports DEVICE COUNTS. Counts are a function of the mouse's
+     * DPI, which no platform exposes, so any angle derived from them needs a
+     * number the application has to be told -- and worse, DPI is a setting the
+     * user changes to make their mouse faster or slower. Dividing it back out
+     * cancels exactly the thing they adjusted it for.
      *
-     * Accelerated deltas have no such relationship. They are screen units,
-     * but the number of them a given physical movement produces depends on
-     * an acceleration curve the application cannot see, so "a pass across
-     * the screen" is not a quantity you can convert to. That is what made
-     * the first two attempts here too fast: with acceleration in the loop, a
-     * few inches of hand movement produces many screen widths of delta.
+     * Without raw motion the deltas are VIRTUAL SCREEN UNITS: the same units
+     * the window's width is measured in, already through whatever
+     * acceleration curve the desktop applies. That is the right unit, because
+     * the thing being calibrated is "how far across the window did the pointer
+     * travel" -- a question with an exact answer in screen units and no answer
+     * at all in counts without knowing the hardware.
      *
-     * So the deltas are counts, and the angle is derived from them with the
-     * mouse's DPI and the screen's (Scene3D::SetMouseDpi). The one thing
-     * neither X11 nor GLFW can tell us is the mouse's DPI, which is why that
-     * one is a parameter rather than a measurement.
+     * So DPI leaves the model entirely: the turn rate is 2*pi * turns divided
+     * by the frame width, in the frame's own units, and a faster mouse is
+     * simply a faster mouse (Scene3D::SetTurnsPerPass).
      */
-        m_cursorPrimed = false;
+        primeCursor("capture toggled");
         m_mouseCaptured = on;
         // Logged HERE rather than at the work function, because there are two
         // ways in -- a script calling CaptureMouse and the user pressing
@@ -328,8 +349,21 @@ public:
     }
     bool MouseCaptured() const { return m_mouseCaptured; }
 
-    // Deltas are derived here rather than by the callback so the "no previous
-    // position yet" case lives in one place with the state it concerns.
+    /*
+ * Deltas are derived here rather than by the callback so the "no previous
+ * position yet" case lives in one place with the state it concerns.
+ *
+ * ACCUMULATES RATHER THAN PUSHES. This runs inside glfwPollEvents, once per
+ * queued movement, and the pump flushes the sum once the queue is drained
+ * (PollEventsConcrete) -- so a thousand reports a second become one event per
+ * pass with the same total displacement.
+ *
+ * m_cursorX/m_cursorY AND THE ACCUMULATOR ARE UNSYNCHRONISED, deliberately:
+ * both are touched only from inside glfwPollEvents and the flush that follows
+ * it, which is one thread by construction -- the OS event queue has exactly
+ * one pump (Window.ProduceEvents), and every windowing backend requires that
+ * anyway.
+ */
     void noteCursor(double x, double y)
     {
         if (!m_cursorPrimed)
@@ -340,10 +374,77 @@ public:
         const double dx = x - m_cursorX;
         const double dy = y - m_cursorY;
         m_cursorX = x; m_cursorY = y;
-        pushPointerDelta(static_cast<int>(dx), static_cast<int>(dy));
+
+        // THE FAIL STATE, not a filter -- see warpRejected.
+        if (warpRejected(dx, dy)) return;
+
+        accumulatePointerDelta(static_cast<int>(dx), static_cast<int>(dy));
+    }
+
+    /*
+ * A WARP IS NOT A MOVEMENT, and telling the two apart is the whole of this.
+ *
+ * The cursor's position changes for two unrelated reasons: the user moved the
+ * mouse, and something moved the cursor. Only the first is input. The second
+ * happens on capture toggling, on the window taking or losing focus, on the
+ * pointer re-entering the window, and -- the one that is invisible from here
+ * -- on the platform recentring a disabled cursor to keep its virtual
+ * position in range. Every one of those produces a position that is
+ * discontinuous with the last, and subtracting the last position from it
+ * yields a delta that is arithmetically correct and physically meaningless.
+ *
+ * It is the single worst input this path can produce. A flood of small deltas
+ * makes the view feel over-sensitive; ONE warp snaps it somewhere else
+ * entirely, in a single frame, and it reads as the control being broken
+ * rather than fast. In a log it is unmistakable next to its neighbours --
+ * (-29, -150) between two (1, 0)s -- and unmistakable is the point: it does
+ * not average out, so no amount of tuning the turn rate touches it.
+ */
+    void primeCursor(const char* why)
+    {
+        if (!m_cursorPrimed) return;    // already waiting for a fresh base
+        m_cursorPrimed = false;
+        ETCS_LOG("GLFWWindow", "pointer delta base dropped (" << why
+                 << ") -- the next report re-bases instead of reporting.");
     }
 
 private:
+    /*
+ * The backstop for a warp that arrives with no callback to announce it, which
+ * is what a platform-side recentre does.
+ *
+ * THE BOUND IS THE FRAME'S OWN WIDTH, and it is derived rather than tuned: a
+ * pass across the frame is the full rotation the look control is defined
+ * against (Scene3D::radiansPerPixel), so a single report claiming more than
+ * that is claiming the user crossed their whole screen between two samples of
+ * a device that reports hundreds of times a second. There is no hand movement
+ * on the other side of that line, only a warp -- which is why a threshold is
+ * admissible here and would not be at any smaller value.
+ *
+ * REJECTED LOUDLY AND WITH A RE-PRIME. Loudly, because a silently dropped
+ * input event is indistinguishable from a bug in everything downstream. With
+ * a re-prime, because whatever moved the cursor has left m_cursorX stale, so
+ * the NEXT delta would be wrong too -- dropping only the first would turn one
+ * bad sample into two.
+ */
+    bool warpRejected(double dx, double dy)
+    {
+        const WindowSize sz = GetSize();
+        const double limit = (sz.width > 0)
+            ? static_cast<double>(sz.width)
+            : 4096.0;   // no extent yet: fall back to something no hand crosses
+
+        if (dx > -limit && dx < limit && dy > -limit && dy < limit)
+            return false;
+
+        ETCS_LOG("GLFWWindow", "pointer delta (" << dx << ", " << dy
+                 << ") exceeds the frame's " << limit << " unit width in one report"
+                 " -- that is a cursor warp, not a movement. Dropped, and the delta"
+                 " base re-primed.");
+        m_cursorPrimed = false;
+        return true;
+    }
+
     double m_cursorX = 0.0;
     double m_cursorY = 0.0;
     bool   m_cursorPrimed  = false;
@@ -382,6 +483,26 @@ void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
     handler->noteCursor(xpos, ypos);
+}
+
+// Leaving is as important as entering: the cursor moves while it is away, and
+// the first report after it comes back would otherwise measure against where
+// it was when it left. Both edges re-prime for the same reason.
+void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
+{
+    auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
+    if (!handler) return;
+    handler->primeCursor(entered ? "cursor entered the window" : "cursor left the window");
+}
+
+// Focus is the one that bites under capture: losing focus releases the
+// pointer, and regaining it re-grabs and recentres -- a position change with
+// no movement behind it, arriving as one large delta.
+void GLFWWindow::window_focus_callback(GLFWwindow* window, int focused)
+{
+    auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
+    if (!handler) return;
+    handler->primeCursor(focused ? "window regained focus" : "window lost focus");
 }
 
 void GLFWWindow::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)

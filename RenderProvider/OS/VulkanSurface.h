@@ -269,8 +269,39 @@ public:
         m_dead = true;
     }
 
+    // Has this surface stopped being a thing worth walking a tree for? The
+    // question the frame edge asks BEFORE the walk, as against ready(), which
+    // asks whether a Vulkan call may proceed. Released is the graph answer and
+    // dead is the window answer; a walk is invalid under either.
+    bool Retired() const { return m_dead || Released(); }
+
     bool RecomposeBound()
     {
+        /*
+     * REFUSED ONCE THE SURFACE IS RETIRED, and this is a crash guard rather
+     * than an optimisation.
+     *
+     * Recomposing resolves a root RID and dispatches virtuals down somebody
+     * else's entity tree. That is only meaningful while the graph is intact,
+     * and on the teardown paths it is not: an X connection dropping calls
+     * exit() from wherever the error surfaced, static destructors then run --
+     * on a POOL WORKER, since that is where the exit came from -- and the
+     * frame edge is still going round while the objects underneath it come
+     * apart. The symptom is "pure virtual method called": a dispatch that
+     * reached an object whose derived part has already been destroyed.
+     *
+     * Checking here rather than only in Present is the point. Present was
+     * already guarded (ready(), m_dead) and it was not enough, because the
+     * walk happens FIRST and it is the walk that touches other entities.
+     *
+     * This closes the window between a surface being retired and the frame
+     * edge noticing. It does not close the general case -- nothing can stop a
+     * body mid-walk, which is exactly the gap IWireThread::Halt is declared
+     * for (core/InterfaceWire.h) -- so this is a guard at one known site, not
+     * the shutdown ordering the pool still lacks.
+     */
+        if (Retired()) return false;
+
         ETCS::RID root_rid;
         std::array<float, 4> clear;
         {

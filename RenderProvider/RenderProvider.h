@@ -302,6 +302,21 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
         slot.readRaw(&tick, sizeof(tick));
         if (presented == 0) first = std::chrono::steady_clock::now();
 
+        // THE EDGE ENDS WHEN THE SURFACE DOES, and it has to be asked here
+        // rather than left to the stream closing. A surface goes retired for
+        // reasons the stream knows nothing about -- its window's connection
+        // dropped, or the arena released it -- and in the moments between that
+        // and the closure ending, this loop is the thing still walking a tree
+        // that is being torn down. Ending on the surface's own answer makes
+        // the frame edge outlive nothing it draws through.
+        if (self.Retired())
+        {
+            ETCS_LOG("Surface::ConsumeFrames", "surface retired after " << presented
+                     << " frames -- ending the frame edge rather than drawing "
+                     "through a torn-down graph.");
+            break;
+        }
+
         // Everything Vulkan happens here, on this one thread. Present pulls
         // the current composition itself -- retained, so a script that drew
         // once keeps being shown rather than blinking out on frame two.
@@ -577,12 +592,12 @@ DEFINE_WORK_FUNC(CompositeDrawable2D, Delete)
 // wrong can be traced to which input is wrong rather than guessed at.
 static inline void logTurnRate(Scene3D& self)
 {
-    ETCS_LOG("Scene3D", "turn rate: " << self.TurnsPerPass() << " turn(s) per screen pass, "
-             << "mouse " << self.MouseDpi() << " DPI, screen " << self.ScreenDpi()
-             << " DPI, x" << self.Sensitivity() << " -> "
-             << self.RadiansPerCount() << " rad per mouse count."
-             << " If it turns about N times too fast, the mouse is about N x "
-             << self.MouseDpi() << " DPI -- SetMouseDpi is the whole fix.");
+    ETCS_LOG("Scene3D", "turn rate: " << self.TurnsPerPass() << " turn(s) per pass across "
+             << self.FrameWidth() << " frame units, x" << self.Sensitivity()
+             << " -> " << self.RadiansPerUnit() << " rad per unit. "
+             << "Half that width is " << self.TurnsPerPass() * 0.5f << " turn(s). "
+             << "Too fast? lower SetTurnsPerPass or SetSensitivity -- both are knobs, "
+                "smaller is slower.");
 }
 
 // ── Scene3D ──────────────────────────────────────────────────────────────
@@ -636,29 +651,15 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
     self.SetDamping(per_sec);
 }
 
-// The physical inputs to the turn rate. Together with the frame width these
-// fully determine it -- there is no tuned constant (Scene3D::SetMouseDpi).
+// The two inputs to the turn rate, and there are no others: the frame's width
+// is the axis and these say how much rotation it spans.
 //
-//   SetMouseDpi     your mouse's counts per inch. NOT discoverable from any
-//                   platform API, which is why it is here; 800 by default.
-//   SetScreenDpi    the display's pixels per inch. main.ScreenDpi() reports
-//                   the real one, read off the monitor's physical size.
-//   SetTurnsPerPass how many full rotations one pass across the frame is.
-//   SetSensitivity  a plain multiplier on the result, for taste.
-DEFINE_WORK_FUNC_TYPED(Scene3D, SetMouseDpi, (float, dpi))
-{
-    (void)ctx;
-    self.SetMouseDpi(dpi);
-    logTurnRate(self);
-}
-
-DEFINE_WORK_FUNC_TYPED(Scene3D, SetScreenDpi, (float, dpi))
-{
-    (void)ctx;
-    self.SetScreenDpi(dpi);
-    logTurnRate(self);
-}
-
+//   SetTurnsPerPass  full rotations per pass across the frame's width.
+//   SetSensitivity   a plain multiplier on the result, for taste.
+//
+// Both behave the way a knob should -- smaller is slower. Mouse DPI is
+// deliberately absent; see Scene3D::SetTurnsPerPass for why compensating for it
+// cancelled the very adjustment it was meant to respect.
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetTurnsPerPass, (float, turns))
 {
     (void)ctx;

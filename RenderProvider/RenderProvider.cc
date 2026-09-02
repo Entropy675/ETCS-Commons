@@ -50,7 +50,7 @@ ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
 // producer, which is how w/a/s/d reaches the scene without this module knowing
 // what a window is.
 ETCS_TAG_BLOCK_HYBRID(Scene3D,
-    (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetSensitivity, SetMouseDpi, SetScreenDpi, SetTurnsPerPass,
+    (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetSensitivity, SetTurnsPerPass,
      Impulse, Halt, Order, SetEmissivity, SetVisible, Project, DepthAt, Delete),
     (ConsumeInput))
 

@@ -231,56 +231,41 @@ public:
     }
 
     /*
- * SENSITIVITY AS A PHYSICAL RATIO, which is what the first two attempts got
- * wrong.
+ * THE WINDOW IS THE AXIS. The pointer's travel across the frame's width maps
+ * onto rotation about the camera, as a plain proportion:
  *
- * The turn rate is derived, not chosen:
+ *     radians per unit = 2*pi * turns / frame_width_px
  *
- *     radians per count = 2*pi * turns * screen_dpi
- *                         ---------------------------
- *                          mouse_dpi * frame_width_px
+ * so a pointer that has moved the full width of the frame has turned the view
+ * through `turns` full rotations, and half the width is half of that. Nothing
+ * else is in it -- no hardware constant, no measurement, no assumption.
  *
- * ONE TURN PER PASS is the standard: dragging the pointer across the width of
- * the window rotates the view through exactly 2*pi and brings you back where
- * you started. It is the only ratio with an obvious meaning, and it is what
- * makes the window itself the unit rather than a number somebody picked.
+ * WHY DPI IS GONE, having been in here twice. Deriving the rate from mouse
+ * counts-per-inch was solving the wrong problem in the wrong units. DPI is
+ * not a property to be compensated for, it is the SETTING A USER CHANGES to
+ * make their mouse faster or slower -- so dividing it back out cancels
+ * precisely the adjustment they made, and a 3200-DPI mouse ends up behaving
+ * like an 800-DPI one. Worse, no platform reports it, so the number had to be
+ * supplied and was wrong by default.
  *
- * Read it as a chain of unit conversions and it is obvious. A pointer event
- * carries COUNTS; counts / mouse_dpi is INCHES of hand movement;
- * frame_width_px / screen_dpi is the INCHES the frame occupies on the glass;
- * so the fraction is "what share of a screen-width did the hand travel", and
- * multiplying by turns gives the angle. Nothing in it is a tuned constant.
+ * Without raw motion the deltas arrive in the same virtual screen units the
+ * frame's width is measured in (GLFWWindow::SetMouseCapture), which is what
+ * makes the proportion above exact rather than approximate. A faster mouse
+ * covers the width in less hand movement, which is what a faster mouse is
+ * for.
  *
- * WHY THE EARLIER FORMS WERE TOO FAST. "4*pi / frame_width" treats one
- * DELTA UNIT as one screen pixel. That is true only if the deltas are
- * unaccelerated screen units at the screen's own scale -- which they are
- * not: with acceleration they are several times larger, and with raw motion
- * they are counts, of which a 1600-DPI mouse emits sixteen hundred per inch
- * against a screen's ninety-six. Either way the hand crosses the screen in a
- * small fraction of a screen-width's worth of units, and the view spins.
- *
- * MOUSE DPI IS A PARAMETER, NOT A MEASUREMENT, and that is a real limit
- * rather than an omission: neither X11, Wayland, Win32 nor GLFW exposes a
- * pointing device's counts-per-inch. The default is 800 because it is the
- * most common stock setting.
- *
- * IT IS ALSO THE ONE THING THAT CAN STILL MAKE THIS FEEL WRONG, and the error
- * is exactly linear: a 3200-DPI mouse against an assumed 800 emits four times
- * the counts for the same movement, so the view turns four times too fast and
- * nothing else in the chain is at fault. If it overshoots by roughly N, the
- * mouse is roughly N * 800 DPI -- SetMouseDpi is the whole of the correction,
- * and setting it right makes every other number here true.
+ * BOTH AXES SHARE THE RATE, so a diagonal movement turns yaw and pitch
+ * through the same angle -- the pointer is moving in one plane and the view
+ * should follow it uniformly. Pitch reaches its limit far sooner only because
+ * its range is a quarter turn rather than unbounded.
  */
-    void SetMouseDpi(float dpi)  { if (dpi  > 0.0f) m_mouse_dpi  = dpi; }
-    void SetScreenDpi(float dpi) { if (dpi  > 0.0f) m_screen_dpi = dpi; }
-    void SetTurnsPerPass(float t){ if (t    > 0.0f) m_turns      = t; }
+    void SetTurnsPerPass(float t)    { if (t     > 0.0f) m_turns      = t; }
     void SetSensitivity(float scale) { if (scale > 0.0f) m_sens_scale = scale; }
 
-    float MouseDpi() const        { return m_mouse_dpi; }
-    float ScreenDpi() const       { return m_screen_dpi; }
-    float TurnsPerPass() const    { return m_turns; }
-    float Sensitivity() const     { return m_sens_scale; }
-    float RadiansPerCount() const { return radiansPerPixel(); }
+    float TurnsPerPass() const   { return m_turns; }
+    float Sensitivity() const    { return m_sens_scale; }
+    float RadiansPerUnit() const { return radiansPerPixel(); }
+    uint32_t FrameWidth() const  { return m_frame_w ? m_frame_w : 1024u; }
 
     // Restart the pipeline after a key change. A scene at rest marks nothing,
     // so nothing re-renders, so nothing calls Interact and the first keypress
@@ -1263,15 +1248,13 @@ private:
         m_frame_w = cameraWidth(camera);
     }
 
-    // The conversion chain in SetMouseDpi's comment, applied. Falls back to a
+    // The proportion in SetTurnsPerPass's comment, applied. Falls back to a
     // nominal width until the first projection has told us the real one.
     float radiansPerPixel() const
     {
         const float w = static_cast<float>(m_frame_w ? m_frame_w : 1024u);
-        const float screen_inches = w / m_screen_dpi;
-        const float counts_per_pass = m_mouse_dpi * screen_inches;
-        if (!(counts_per_pass > 0.0f)) return 0.0f;
-        return (2.0f * 3.14159265f * m_turns / counts_per_pass) * m_sens_scale;
+        if (!(w > 0.0f)) return 0.0f;
+        return (2.0f * 3.14159265f * m_turns / w) * m_sens_scale;
     }
 
     static uint32_t cameraWidth(Camera_* c)
@@ -1380,9 +1363,7 @@ private:
     float              m_ground_fx  = 0.0f;   // last usable horizontal facing
     float              m_ground_fz  = 1.0f;
     float              m_sens_scale = 1.0f;
-    float              m_mouse_dpi  = 800.0f;   // not discoverable; see SetMouseDpi
-    float              m_screen_dpi = 96.0f;    // Window.ScreenDpi reports the real one
-    float              m_turns      = 1.0f;     // full rotations per screen-width pass
+    float              m_turns      = 2.0f;     // full rotations per frame-width pass
 
     std::chrono::steady_clock::time_point m_last_step{};
     bool                                  m_stepped = false;
