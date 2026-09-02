@@ -162,11 +162,11 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
  * TWO CHANGES HOLD THE INVARIANT, and they are deliberately at different
  * levels:
  *
- *   AT THE SOURCE, motion is coalesced per poll pass, so what arrives here is
- *   one delta rather than the hundred that summed to it
- *   (InputSource_::accumulatePointerDelta). This is the real fix: it removes
- *   the flood instead of coping with it, and it is lossless because deltas
- *   add.
+ *   AT THE SOURCE, pointer reports are coalesced per poll pass, so what
+ *   arrives here is one position rather than the hundred it superseded
+ *   (InputSource_::notePointerAt). This is the real fix: it removes the flood
+ *   instead of coping with it, and it is lossless because the latest position
+ *   is the whole answer.
  *
  *   HERE, the drain is bounded to what was in the ring at the top of the pass
  *   rather than looping until empty. Unbounded, a producer that refills as
@@ -192,7 +192,7 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
             slot.readRaw(&ev, sizeof(InputEvent));
 #ifdef ETCS_VERBOSE_INPUT_EVENTS
             if (ev.action == INPUT_MOTION)
-                ETCS_LOG("ProduceEvents", "Emitting: motion (" << ev.dx << "," << ev.dy << ")");
+                ETCS_LOG("ProduceEvents", "Emitting: pointer at (" << ev.x << "," << ev.y << ")");
             else
                 ETCS_LOG("ProduceEvents", "Emitting: key=" << ev.key
                                       << " action=" << (int)ev.action);
@@ -237,7 +237,7 @@ DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
     // the INPUT_MOTION branch for why that is a correctness matter here and
     // not a tidiness one.
     uint64_t motion_count = 0;
-    long     motion_dx = 0, motion_dy = 0;
+    int      motion_x = 0, motion_y = 0;
     auto     motion_reported = std::chrono::steady_clock::now();
 
     while (stream.isOpen())
@@ -251,8 +251,8 @@ DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
         slot.readRaw(&ev, sizeof(InputEvent));
 
         /*
-     * MOTION IS COUNTED, NOT PRINTED, and that asymmetry with keys below is
-     * the point rather than an inconsistency.
+     * POSITIONS ARE COUNTED AND SAMPLED, NOT PRINTED, and that asymmetry with
+     * keys below is the point rather than an inconsistency.
      *
      * A log line per event is a fine thing to do to a keyboard and a
      * pathological thing to do to a pointer: the reader becomes formatted I/O
@@ -271,19 +271,22 @@ DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
         if (ev.action == INPUT_MOTION)
         {
 #ifdef ETCS_VERBOSE_INPUT_EVENTS
-            ETCS_LOG("ConsumeEvents", "MOTION:   (" << ev.dx << ", " << ev.dy << ")");
+            ETCS_LOG("ConsumeEvents", "POINTER:  (" << ev.x << ", " << ev.y << ")");
 #endif
             ++motion_count;
-            motion_dx += ev.dx;
-            motion_dy += ev.dy;
+            motion_x = ev.x;
+            motion_y = ev.y;
 
             const auto now = std::chrono::steady_clock::now();
             if (now - motion_reported >= std::chrono::seconds(1))
             {
-                ETCS_LOG("ConsumeEvents", "MOTION:   " << motion_count
-                         << " events, net (" << motion_dx << ", " << motion_dy
-                         << ") in the last second.");
-                motion_count = 0; motion_dx = 0; motion_dy = 0;
+                // The LAST position, not a sum: these are positions, and the
+                // latest one supersedes the rest. The count is still worth
+                // printing because it says how hard the pointer is reporting.
+                ETCS_LOG("ConsumeEvents", "POINTER:  " << motion_count
+                         << " reports in the last second, now at ("
+                         << motion_x << ", " << motion_y << ").");
+                motion_count = 0;
                 motion_reported = now;
             }
             continue;

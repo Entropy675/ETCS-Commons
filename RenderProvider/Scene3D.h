@@ -202,118 +202,86 @@ public:
     void ClearHeld() { m_held.clear(); publishMotionBits(); }
 
     /*
- * THE LOOK, from pointer deltas -- the other half of what the input edge
- * carries, arriving through the same stream and handled in the same work
- * function (RenderProvider.h's ConsumeInput).
+ * THE LOOK, from the pointer's POSITION -- absolute, not accumulated.
  *
- * The orientation lives on the scene's OWN row 3 (ontology/OrderVector.h) and
- * is applied to whichever camera projects it. That reads oddly for a moment --
- * a scene setting a camera's pose -- and then stops: what the input names is
- * the RELATION between the viewer and the world, which is the same quantity
- * whether you turn the head or turn the room. The scene is what the input is
- * bound to, so the scene is where the relation lives, and it lives in the row
- * that exists to hold an angle.
+ * THE MODEL. The camera's frame is the plane bisecting its view cone, so the
+ * frame's bounding box IS the field of view. Where the pointer sits on that
+ * box therefore names a direction, directly: its offset from the frame centre
+ * is a position on a rotational axis, one per dimension. Across the width that
+ * axis is the full circle -- 2*pi, so the left edge is half a turn one way and
+ * the right edge half a turn the other. Across the height it is the same
+ * construction with a limited range, because up is not a circle you come back
+ * around (clampPitch).
  *
- * RECORDED HERE, COMPOSED AT THE OBSERVER. This function only accumulates two
- * pending angles; the rotation is folded into row 3 in Project, on the frame
- * thread. Same division as the keys: the input edge records, the observer
- * integrates, and the only thing crossing threads is a small atomic.
+ * NOTHING ACCUMULATES. The angle is a function of where the pointer is, so it
+ * is right the moment it is read and cannot drift, lag or double-count. Put
+ * the pointer back where it was and the view is exactly back where it was.
+ * There is no state to re-prime and nothing that can be one event behind.
+ *
+ * WHY THIS AND NOT DELTAS. A relative look needs the pointer to have somewhere
+ * to keep going, so it needs the pointer LOCKED -- hidden, and teleported back
+ * to the centre as it strays. That is a request the display may refuse: Qubes
+ * proxies windows from another domain, XWayland answers to a compositor,
+ * remote X has no local pointer to move. A refused warp does not degrade, it
+ * INVERTS THE MEANING of the input: the toolkit sets its own last-position to
+ * the centre before warping, so when the warp does not land the next report
+ * yields "distance from the centre" where a delta should be. The screen
+ * silently becomes a joystick -- enormous apparent gain, and a view that keeps
+ * turning after the hand stops, which is what read as inertia.
+ *
+ * Asking for no warping makes that unreachable rather than handled. The cost
+ * is honest and small: one frame width is one full turn, so a fast spin is a
+ * flick to the edge rather than an unbounded sweep.
+ *
+ * The orientation still lives on the scene's OWN row 3 (ontology/OrderVector.h)
+ * and is applied to whichever camera projects it -- what the input names is the
+ * RELATION between viewer and world, the same quantity whether you turn the
+ * head or turn the room.
+ *
+ * RECORDED HERE, COMPOSED AT THE OBSERVER, as before: this stores a position,
+ * Project turns it into row 3 on the frame thread, and what crosses threads is
+ * two relaxed atomics.
  */
-    void PointerDelta(int32_t dx, int32_t dy)
+    void PointerPosition(int32_t x, int32_t y)
     {
-        if (dx == 0 && dy == 0) return;
-        const float rad = radiansPerPixel();
-
-        /*
-     * NOT NEGATED, and the comment that used to sit here justifying the
-     * negation was the bug.
-     *
-     * It argued that row 3 is "the world's angle", so turning the view right
-     * means swinging the world left, so the sign flips. The premise is false:
-     * applyLookTo rotates m_ref_fwd and writes the result to the CAMERA's
-     * look_at. Row 3 is the viewer's facing, not the world's. Rotating the
-     * viewer right and rotating the world right are opposite operations, and
-     * the sign was correct for the one this does not do.
-     *
-     * MEASURED, because a sign argued from a comment is how this got here.
-     * Forty pixels of pointer travel, and where the image went:
-     *
-     *     mouse right -> scene moved RIGHT   was 40 px, must be -40
-     *     mouse down  -> scene moved DOWN    was 40 px, must be -40
-     *
-     * Turning your head right slides the world left; that is what a look
-     * control is. Positive yaw about world up carries forward toward +X, and
-     * +X is right (up x forward, SurfaceBase's basis), so a rightward delta is
-     * a POSITIVE yaw. Pitch follows the same reasoning about the reference
-     * right axis.
-     *
-     * It is also, I suspect, most of what read as inertia: with both axes
-     * inverted, every correction goes further wrong before it comes back, and
-     * a control that fights the hand feels like a control with momentum.
-     */
-        addPending(m_pending_yaw,   static_cast<float>(dx) * rad);
-        addPending(m_pending_pitch, static_cast<float>(dy) * rad);
+        m_ptr_x.store(x, std::memory_order_relaxed);
+        m_ptr_y.store(y, std::memory_order_relaxed);
+        m_ptr_seen.store(true, std::memory_order_relaxed);
         m_look_dirty.store(true, std::memory_order_relaxed);
     }
 
+
     /*
-/*
- * SENSITIVITY IS A PIXEL RATIO: how many pixels the scene slides across the
- * camera for each pixel the pointer travels. One means the world tracks the
- * cursor exactly -- drag by forty pixels, the image moves forty pixels.
+    /*
+ * SENSITIVITY IS A SPAN MULTIPLIER: how much of each axis the frame covers.
+ * 1.0 means the frame's width is exactly one full turn of yaw and its height
+ * is exactly the full pitch range, so the pointer's position over the view
+ * names a direction on the sphere around the camera and every direction is
+ * reachable without the pointer leaving the frame.
  *
- * THAT IS THE UNIT because it is the only one both ends of this share. A mouse
- * delta arrives in screen pixels; a camera renders pixels. Every other framing
- * of "sensitivity" has to invent a bridge between them and then defend the
- * bridge -- and the two this replaced are worth naming, because each was
- * discarded for a different reason and only one of them was wrong.
+ * IT IS A RANGE, NOT A RATE, and that distinction is what makes it tunable at
+ * last. Nothing accumulates in an absolute control, so this cannot compound,
+ * cannot drift, and means the same thing after an hour as in the first second.
+ * Above 1.0 the axis is compressed -- you reach a half turn before the pointer
+ * reaches the edge, and the outer part of the frame is past the stop; below
+ * 1.0 it is stretched, and the frame's edge is less than a half turn.
  *
- *   DPI was wrong. Deriving the rate from counts-per-inch solves the wrong
- *   problem in the wrong units: DPI is not a property to compensate for, it is
- *   the SETTING A USER CHANGES to make their mouse faster, so dividing it back
- *   out cancels precisely the adjustment they made. No platform reports it
- *   either, so the number had to be supplied and was wrong by default.
+ * WHAT THIS UNIT REPLACES, twice, and why both failed. Turns-per-pass and then
+ * view-pixels-per-pointer-pixel were both RATES, multiplying a delta, and a
+ * rate is only meaningful if the deltas are trustworthy -- which they were not
+ * on a display that refuses to move a pointer (see PointerPosition). Worse, a
+ * rate has no natural value: turns-per-pass ignored the lens, and the pixel
+ * ratio needed the lens measured to mean anything. A span has an obvious one.
+ * The frame covering exactly one turn is the setting a first-person view
+ * wants, and every other value is a stated preference against it.
  *
- *   TURNS-PER-PASS was not wrong, it was UNANCHORED. "A pass across the frame
- *   is N revolutions" is exact, resize-stable, and says nothing about how fast
- *   that feels, because it never consults the lens. At 60 degrees it was four
- *   times faster than the hand; at 20 degrees the same setting would be twelve
- *   times faster -- the same number, a different control. A rate that changes
- *   meaning when the lens changes is not a rate, and picking a value for it was
- *   guesswork by construction.
- *
- * THE RATE, WHICH IS THE CAMERA'S OWN. Perspective puts a point at
- * x = (W/2) * tan(phi) / tan(fov_x/2), so near the view centre one pixel
- * subtends
- *
- *     radians per view pixel = 2 * tan(fov_y / 2) / frame_height_px
- *
- * and the rotation for a delta is that, times the sensitivity, times the
- * delta. It falls out of the projection rather than being fitted to it, which
- * is why it needs no constant: change the lens and the control keeps the same
- * feel, because the feel was defined against the lens.
- *
- * IT IS EXACT AT THE CENTRE AND SLIGHTLY UNDER AT THE EDGES -- the tangent is
- * not linear, so a feature at the rim of a 75-degree view moves a few percent
- * more than one at the middle. Measured at 2.3% across two thirds of the
- * frame. Linearising at the centre is the right call: the centre is where a
- * first-person view is aimed, and the alternative is a rate that varies with
- * where you happen to be looking, which is a worse control than one that is
- * slightly generous at the corners.
- *
- * BOTH AXES SHARE IT, and here that is an identity rather than a choice: the
- * expression above contains only fov_y and the frame HEIGHT, which is exactly
- * what the vertical projection is built from too. So a diagonal drag moves the
- * scene diagonally by the same number of pixels it moved the pointer. Pitch
- * still reaches its limit far sooner, because its range is 170 degrees rather
- * than unbounded.
- *
- * The deltas themselves are already in the right units -- raw motion is off,
- * so they arrive in the same virtual screen pixels the frame is measured in
- * (GLFWWindow::SetMouseCapture). A faster mouse covers the frame in less hand
- * movement, which is what a faster mouse is for.
+ * The lens does not enter this at all any more, which is the right outcome
+ * rather than a loss: field of view decides how much of the world the frame
+ * SHOWS, and the span decides how much of it the frame REACHES. They were
+ * conflated while the rate was derived from tan(fov/2), and separating them is
+ * why changing SetLens no longer changes how far a movement turns you.
  */
-    void SetSensitivity(float px)    { if (px    > 0.0f) m_sens_scale = px; }
+    void SetSensitivity(float span)  { if (span  > 0.0f) m_sens_scale = span; }
 
     // The look's state, as the two angles it actually is. Reported rather than
     // inferred: the previous limit was a rejection test on a rotated vector's
@@ -324,21 +292,14 @@ public:
     float Pitch() const { return m_pitch; }
 
     float Sensitivity() const    { return m_sens_scale; }
-    float RadiansPerUnit() const { return radiansPerPixel(); }
     uint32_t FrameWidth() const  { return m_frame_w ? m_frame_w : NOMINAL_FRAME_W; }
     uint32_t FrameHeight() const { return m_frame_h ? m_frame_h : NOMINAL_FRAME_H; }
 
-    // Derived, not stored: how many full revolutions one pass across the
-    // frame's width now amounts to. Kept because it is the intuition the old
-    // knob was built on and a useful thing to read back -- but it is a
-    // CONSEQUENCE of the sensitivity and the lens now, not a setting, which is
-    // the whole change. Asking for a particular number here means choosing a
-    // sensitivity and a field of view that produce it.
-    float TurnsPerPass() const
-    {
-        const float r = radiansPerPixel();
-        return r > 0.0f ? (r * static_cast<float>(FrameWidth())) / 6.28318530718f : 0.0f;
-    }
+    // What the frame's two axes cover, which is the whole of the mapping.
+    // Reported rather than stored: both are the sensitivity applied to a fixed
+    // span, so there is one setting and these are its two consequences.
+    float YawSpanTurns()  const { return m_sens_scale; }
+    float PitchSpanDeg()  const { return 2.0f * PITCH_LIMIT_RAD * m_sens_scale * 57.2957795f; }
 
     // Restart the pipeline after a key change. A scene at rest marks nothing,
     // so nothing re-renders, so nothing calls Interact and the first keypress
@@ -1337,10 +1298,27 @@ private:
             m_look_seeded = true;
             return;
         }
+        if (!m_ptr_seen.load(std::memory_order_relaxed)) return;
         if (!m_look_dirty.exchange(false, std::memory_order_relaxed)) return;
 
-        m_yaw   = wrapAngle(m_yaw   + takePending(m_pending_yaw));
-        m_pitch = clampPitch(m_pitch + takePending(m_pending_pitch));
+        /*
+     * THE ANGLES ARE READ, NOT INTEGRATED. Offset from the frame centre, as a
+     * fraction of the frame, scaled onto each axis's range.
+     *
+     * Yaw needs no wrap and pitch needs no clamp applied afterwards: the
+     * pointer cannot leave the frame, so the fractions are bounded, so the
+     * angles are bounded by construction. clampPitch is still called because
+     * it is where the limit is DEFINED -- the span below is stated in terms of
+     * it -- and a value that is already inside a range costs nothing to check.
+     */
+        const float w = static_cast<float>(m_frame_w ? m_frame_w : NOMINAL_FRAME_W);
+        const float h = static_cast<float>(m_frame_h ? m_frame_h : NOMINAL_FRAME_H);
+        const float fx = (static_cast<float>(m_ptr_x.load(std::memory_order_relaxed)) / w) - 0.5f;
+        const float fy = (static_cast<float>(m_ptr_y.load(std::memory_order_relaxed)) / h) - 0.5f;
+
+        m_yaw   = wrapAngle(fx * 6.28318530718f * m_sens_scale);
+        // Negated: screen y grows downward, and the top of the frame is up.
+        m_pitch = clampPitch(-fy * 2.0f * PITCH_LIMIT_RAD * m_sens_scale);
 
         // Rebuilt from the two angles, never accumulated onto. RotateBy
         // composes from the left, so the pitch written first is applied first
@@ -1359,41 +1337,21 @@ private:
                              v.position.z + fz2 * dist };
         camera->SetView(v);
 
-        // The lens is only reachable here, and it can change under us --
-        // SetLens, or a resize of the camera's plane -- so it is re-measured
-        // every look rather than sampled once at seeding.
+        // The frame's extent is what the mapping is stated against, and it can
+        // change under us (a resize of the camera's plane), so it is
+        // re-measured every look rather than sampled once at seeding.
         m_frame_w = cameraWidth(camera);
         m_frame_h = cameraHeight(camera);
-        const float rpp = radPerViewPixel(v, m_frame_h);
-        if (rpp > 0.0f) m_rad_per_view_px.store(rpp, std::memory_order_relaxed);
     }
 
     /*
- * SetSensitivity's ratio, converted to an angle. See its comment for the
- * derivation; this is that expression and nothing else.
- *
- * m_rad_per_view_px is measured off the CAMERA and cached by applyLookTo,
- * because this is called from the input edge where there is no camera to ask.
- * Until the first look has run there is no lens to measure, so it falls back
- * to the nominal 60 degrees over 768 -- which is a starting value, not a
- * constant the model depends on: the first frame replaces it with the real
- * one.
+ * THE LENS NO LONGER FEEDS THE LOOK, and radiansPerPixel/radPerViewPixel are
+ * gone with it. An absolute mapping is stated against the FRAME, not against
+ * what the frame shows: the pointer's position over the box is the angle, and
+ * how wide a cone that box represents is a separate question. Deriving the
+ * rate from tan(fov/2) conflated the two, which is why changing SetLens used
+ * to change how far a movement turned you.
  */
-    float radiansPerPixel() const
-    {
-        const float base = m_rad_per_view_px.load(std::memory_order_relaxed);
-        return (base > 0.0f ? base : NOMINAL_RAD_PER_PX) * m_sens_scale;
-    }
-
-    // The lens, as one number: radians subtended by one pixel at the view
-    // centre. Only fov_y and the height appear, which is why yaw and pitch
-    // share it exactly -- see SetSensitivity.
-    static float radPerViewPixel(const ViewFrustum& v, uint32_t height_px)
-    {
-        if (!height_px) return 0.0f;
-        if (!(v.fov_y_radians > 0.0f) || v.fov_y_radians >= 3.14159265f) return 0.0f;
-        return 2.0f * std::tan(v.fov_y_radians * 0.5f) / static_cast<float>(height_px);
-    }
 
     static uint32_t cameraWidth(Camera_* c)
     {
@@ -1451,31 +1409,23 @@ private:
  * band. Five degrees is a margin you can state, and one that leaves the sky
  * and the floor both comfortably in view.
  */
+    // 85 degrees. sin(85 deg) = 0.9962, so the forward vector keeps a
+    // horizontal component of ~0.087 -- small, but two orders of magnitude
+    // clear of the zero that collapses the basis. At class scope because the
+    // vertical axis's SPAN is stated in terms of it (applyLookTo): the frame's
+    // height maps onto exactly this range, so the limit and the mapping cannot
+    // drift apart.
+    static constexpr float PITCH_LIMIT_RAD = 1.48353f;
+
     static float clampPitch(float p)
     {
-        // 85 degrees. sin(85 deg) = 0.9962, so the forward vector keeps a
-        // horizontal component of ~0.087 -- small, but two orders of magnitude
-        // clear of the zero that collapses the basis.
-        constexpr float PITCH_LIMIT_RAD = 1.48353f;
         if (p >  PITCH_LIMIT_RAD) return  PITCH_LIMIT_RAD;
         if (p < -PITCH_LIMIT_RAD) return -PITCH_LIMIT_RAD;
         return p;
     }
 
-    // Accumulate onto an atomic float. A CAS loop rather than a plain
-    // load/store because two pointer events in the same instant are ordinary
-    // and losing one is a dropped mouse sample -- cheap to do correctly.
-    static void addPending(std::atomic<float>& a, float d)
-    {
-        float cur = a.load(std::memory_order_relaxed);
-        while (!a.compare_exchange_weak(cur, cur + d,
-                                        std::memory_order_relaxed,
-                                        std::memory_order_relaxed)) {}
-    }
-    static float takePending(std::atomic<float>& a)
-    {
-        return a.exchange(0.0f, std::memory_order_relaxed);
-    }
+    // (addPending/takePending are gone: an absolute look accumulates nothing,
+    // so there is no pending angle to add onto or take away.)
 
     /*
  * Bring row 2's radius up to date over the whole subtree.
@@ -1553,8 +1503,17 @@ private:
     // the input edge, read by the projection, on different threads. The
     // ORIENTATION itself is not here -- it is row 3 of m_ov, where an angle
     // belongs; these are only the deltas waiting to be folded into it.
-    std::atomic<float> m_pending_yaw{0.0f};
-    std::atomic<float> m_pending_pitch{0.0f};
+    // Where the pointer is, in the camera frame's own pixels. Written by the
+    // input edge, read by the frame thread. Relaxed on both sides: the two
+    // components are read one frame at a time and a mismatched pair would be
+    // a sub-pixel disagreement in a value that is about to be turned into an
+    // angle, which is not a hazard worth a fence.
+    std::atomic<int32_t> m_ptr_x{0};
+    std::atomic<int32_t> m_ptr_y{0};
+    // Until the pointer has been seen once, the look holds whatever LookAt
+    // set -- so a scene renders as authored rather than snapping to whatever
+    // corner the cursor happens to be in.
+    std::atomic<bool>  m_ptr_seen{false};
     std::atomic<bool>  m_look_dirty{false};
     bool               m_look_seeded = false;
     Point3D            m_ref_fwd{0.0f, 0.0f, 1.0f};   // what row 3 rotates FROM
@@ -1573,17 +1532,10 @@ private:
     // replaces it, so nothing in the model rests on these.
     static constexpr uint32_t NOMINAL_FRAME_W    = 1024u;
     static constexpr uint32_t NOMINAL_FRAME_H    = 768u;
-    static constexpr float    NOMINAL_RAD_PER_PX = 0.00150350f;  // 60 deg over 768
 
     uint32_t           m_frame_w    = 0;
     uint32_t           m_frame_h    = 0;
 
-    // Written by the frame thread from the camera's lens, read by the input
-    // edge. Atomic because those are different threads and this is the one
-    // value that crosses between them outside the pending-angle handoff;
-    // relaxed because a rate that is one frame stale is indistinguishable
-    // from one that is not.
-    std::atomic<float> m_rad_per_view_px{0.0f};
     float              m_ground_fx  = 0.0f;   // last usable horizontal facing
     float              m_ground_fz  = 1.0f;
     /*

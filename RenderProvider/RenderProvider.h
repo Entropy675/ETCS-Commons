@@ -598,11 +598,12 @@ DEFINE_WORK_FUNC(CompositeDrawable2D, Delete)
 // upstream of the other.
 static inline void logTurnRate(Scene3D& self)
 {
-    ETCS_LOG("Scene3D", "turn rate: sensitivity " << self.Sensitivity()
-             << " view px per pointer px, against a " << self.FrameWidth() << "x"
-             << self.FrameHeight() << " frame -> " << self.RadiansPerUnit() << " rad per px"
-             << " (= " << self.TurnsPerPass() << " turn(s) for a full pass across the width). "
-             << "1.0 makes the scene track the pointer exactly; smaller is slower.");
+    ETCS_LOG("Scene3D", "look mapping: the " << self.FrameWidth() << "x" << self.FrameHeight()
+             << " frame spans " << self.YawSpanTurns() << " full turn(s) of yaw across its width "
+             << "and " << self.PitchSpanDeg() << " degrees of pitch down its height "
+             << "(sensitivity " << self.Sensitivity() << "). The pointer's position over the "
+             << "frame IS the direction -- nothing accumulates, so putting it back where it was "
+             << "puts the view back exactly.");
 }
 
 // ── Scene3D ──────────────────────────────────────────────────────────────
@@ -657,22 +658,17 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
 }
 
 /*
- * SetSensitivity <view_px_per_pointer_px> -- the ONE knob, and its unit is a
- * pixel ratio: how far the scene slides across the camera for each pixel the
- * pointer travels. 1.0 means the world tracks the cursor exactly. Smaller is
- * slower, as a knob should be.
+ * SetSensitivity <span> -- the ONE knob, and its unit is a SPAN: how much of
+ * each rotational axis the camera's frame covers. 1.0 means the width is one
+ * full turn of yaw and the height is the full pitch range, so every direction
+ * is reachable without the pointer leaving the view.
  *
- * IT REPLACES SetTurnsPerPass, which is gone rather than deprecated because
- * two knobs onto one rate is how you get a control nobody can predict. That
- * one expressed the rate as revolutions per pass across the frame -- exact,
- * resize-stable, and silent about the lens, so the same setting was four times
- * faster at 60 degrees than it would be at 20. A rate whose meaning moves when
- * the field of view moves cannot be tuned once, which is what made picking a
- * value for it guesswork.
- *
- * The base rate now comes off the camera itself (Scene3D::radPerViewPixel), so
- * this is a preference stated against something real. Turns-per-pass is still
- * reported -- see logTurnRate -- as the consequence it now is.
+ * A RANGE, NOT A RATE, and that is why it can finally be tuned once. Nothing
+ * accumulates in an absolute mapping, so this cannot compound or drift, and it
+ * means the same thing after an hour as in the first second. The two rates it
+ * replaces both failed for the same underlying reason -- see
+ * Scene3D::SetSensitivity, and PointerPosition for why deltas were the wrong
+ * primitive on a display that will not move a pointer.
  */
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetSensitivity, (float, scale))
 {
@@ -714,13 +710,12 @@ DEFINE_WORK_FUNC(Scene3D, Look)
              "yaw=" << self.Yaw() << " rad (" << self.Yaw() * DEG << " deg), wrapped to [-pi, pi)"
              "   pitch=" << self.Pitch() << " rad (" << self.Pitch() * DEG << " deg), "
              "clamped to +/-85 deg"
-             "\n    sensitivity " << self.Sensitivity() << " view px per pointer px -> "
-             << self.RadiansPerUnit() << " rad per px, measured off this camera's lens "
-             "over a " << self.FrameWidth() << "x" << self.FrameHeight() << " frame"
-             "\n    which works out to " << self.TurnsPerPass()
-             << " full turn(s) for one pass across the frame's width -- a consequence of "
-             "the sensitivity and the field of view, not a setting. Too fast? "
-             "SetSensitivity(0.5) halves it; 1.0 makes the scene track the pointer exactly.");
+             "\n    the " << self.FrameWidth() << "x" << self.FrameHeight() << " frame spans "
+             << self.YawSpanTurns() << " turn(s) of yaw across its width and "
+             << self.PitchSpanDeg() << " degrees of pitch down its height (sensitivity "
+             << self.Sensitivity() << "). Absolute: the pointer's position over the frame is "
+             "the direction, so nothing accumulates and nothing drifts. "
+             "SetSensitivity(0.5) halves both spans.");
 }
 
 DEFINE_WORK_FUNC(Scene3D, Order)
@@ -865,7 +860,7 @@ DEFINE_STREAM_FUNC_CONSUME(Scene3D, ConsumeInput)
         // separate by however much two consumers happened to drift.
         if (ev.action == INPUT_MOTION)
         {
-            self.PointerDelta(ev.dx, ev.dy);
+            self.PointerPosition(ev.x, ev.y);
         }
         else
         {

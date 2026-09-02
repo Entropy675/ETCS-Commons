@@ -31,20 +31,20 @@ namespace glfw_native {
 
 #include <iostream>
 #include <cstdlib>
+#include <cmath>
 
 class GLFWWindow :
     public WindowBase<GLFWWindow>, public InputSourceBase<GLFWWindow>,
     public ResizableBase<GLFWWindow>, public DeletableBase<GLFWWindow>
 {
 private:
-    // Not merely a notification: the position it carries is half of the frame
-    // pointer deltas are measured in. See noteWindowOrigin.
+    // Position changes matter to nothing here any more -- see noteCursor --
+    // but the window's own placement is still worth logging.
     static void window_pos_callback(GLFWwindow* window, int x, int y)
     {
         auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
         if (handler) {
             ETCS_LOG("WindowPos", "Position changed: " << x << ", " << y);
-            handler->noteWindowOrigin(x, y);
         }
     }
 
@@ -114,18 +114,11 @@ public:
             glfwSetFramebufferSizeCallback(GetHandle(), framebuffer_size_callback);
             glfwSetKeyCallback(GetHandle(), key_callback);
             glfwSetCursorPosCallback(GetHandle(), cursor_callback);
-            // Both exist ONLY to re-prime the delta base -- see primeCursor.
-            // Neither reports anything; they mark the moments at which the
-            // cursor's position changes without the user having moved it.
+            // Focus is tracked so capture can be re-applied on regaining it;
+            // enter/leave only reports whether the pointer is over the frame.
             glfwSetCursorEnterCallback(GetHandle(), cursor_enter_callback);
             glfwSetWindowFocusCallback(GetHandle(), window_focus_callback);
             glfwSetWindowPosCallback(GetHandle(), window_pos_callback);
-            {
-                // Seed the origin: the pos callback fires on changes only.
-                int wx = 0, wy = 0;
-                glfwGetWindowPos(GetHandle(), &wx, &wy);
-                noteWindowOrigin(wx, wy);
-            }
             populateNativeSurfaceHandle();
             this->addTag("active");
             ETCS_LOG("Window active! Instance: " << this->getRID() << ".");
@@ -189,9 +182,9 @@ public:
     void PollEventsConcrete() override
     {
         glfwPollEvents();
-        flushPointerDelta();
+        flushPointerPosition();
         // After the poll, so the window has had every chance to become
-        // viewable and focused before the grab is attempted. See
+        // viewable and focused before the mode is applied. See
         // SetMouseCapture for why this cannot be done where it is requested.
         applyMouseCapture();
     }
@@ -313,42 +306,30 @@ public:
  * the platform has it -- it is the unaccelerated delta, which is what a view
  * angle wants, as against the pointer-ballistics curve a desktop cursor wants.
  *
- * The first delta after capture is DISCARDED (m_cursorPrimed). Enabling
- * capture warps the cursor, so the first callback reports the jump from
- * wherever it was to the centre -- a large bogus delta that would snap the
- * view a quarter turn on the first frame. Found immediately on trying it.
+ * Nothing has to be discarded on the transition: a position is valid the
+ * moment it is read, whatever the cursor was doing before.
  */
     /*
- * CAPTURE IS AN INTENT, RE-ASSERTED BY THE PUMP, not a call that either works
- * or does not.
+ * CAPTURE IS AN INTENT, APPLIED BY THE PUMP, and what it means is narrower
+ * than it sounds: hide the cursor, and take responsibility for recycling it
+ * It is deliberately NOT "ask the platform to lock the pointer" -- see
+ * applyMouseCapture for why that mode cannot be used even where it works.
  *
- * WHY IT SILENTLY FAILED. A script calls this immediately after Create, which
- * is the only sensible place to put it, and at that moment three things are
- * true at once: the window has been asked to map but is not yet VIEWABLE,
- * because the server and the window manager have not got to it; no
- * glfwPollEvents has run yet, because the pump is detached later in the
- * script; and this is running on the SCRIPT thread while the pump will run on
- * a pool worker. Disabling the cursor means grabbing the pointer, a grab on a
- * non-viewable window fails with GrabNotViewable, and nothing returns that
- * failure to anybody -- so the mode was set, the log said "cursor captured",
- * and the pointer was never grabbed.
+ * WHY THE PUMP AND NOT HERE. A script calls this immediately after Create,
+ * which is the only sensible place to put it, and at that moment the window
+ * has been asked to map but is not yet viewable, no glfwPollEvents has run
+ * because the pump is detached later in the script, and this is the SCRIPT
+ * thread while the pump will run on a pool worker. Input modes belong to
+ * whichever thread pumps the event queue, and they are set on a window the
+ * server has had a chance to map. So m_capture_want is what the script asked
+ * for and never changes underneath anyone, m_capture_dirty says the platform
+ * has not been told yet, and PollEventsConcrete carries it out. Focus changes
+ * re-raise it: a window manager handing focus over later is the ordinary case
+ * rather than an edge one.
  *
- * It works with no window manager and fails with one, which is exactly the
- * shape of bug that survives being tested.
- *
- * SO THE STATE IS THE INTENT AND THE PUMP CARRIES IT OUT. m_capture_want is
- * what the script asked for and never changes underneath anyone;
- * m_capture_dirty says the platform has not been told yet. PollEventsConcrete
- * applies it after glfwPollEvents -- on the pump thread, which is the only
- * thread allowed to touch this, and at a point where the window has had a
- * chance to become viewable. Focus changes re-raise it, because a window
- * manager taking focus later is the ordinary case rather than an edge one, and
- * because losing focus drops a grab that has to be retaken.
- *
- * m_mouseCaptured now tracks what was actually APPLIED, not what was asked.
- * That distinction matters beyond bookkeeping: noteCursor picks its coordinate
- * frame from it (see noteWindowOrigin), so believing an unapplied capture
- * would use the wrong origin and reintroduce the window-position bug.
+ * m_mouseCaptured tracks what was actually APPLIED, not what was asked. The
+ * distinction is kept because a mode believed-but-not-applied is exactly the
+ * kind of state that produces a control nobody can explain.
  */
     void SetMouseCapture(bool on)
     {
@@ -387,8 +368,42 @@ public:
     {
         if (!m_capture_dirty || !GetHandle()) return;
 
+        /*
+     * GLFW_CURSOR_HIDDEN, NOT GLFW_CURSOR_DISABLED, and this is the whole of
+     * the Qubes fix.
+     *
+     * DISABLED asks GLFW to confine the pointer, which it implements by
+     * warping the cursor back to the window centre after every poll and
+     * reporting a VIRTUAL position it accumulates itself. Look at what that
+     * accumulation assumes (x11_window.c): GLFW sets its own lastCursorPos to
+     * the centre and THEN issues the warp. If the warp does not land, the next
+     * motion event reports the real position and GLFW computes
+     *
+     *     dx = real_position - window_centre
+     *
+     * which is an OFFSET, not a delta. Every event then contributes the
+     * pointer's distance from the centre, so holding the pointer off-centre
+     * turns the view continuously and moving it a little near the edge turns
+     * the view a lot. The entire screen becomes a joystick, the gain looks
+     * enormous, and the camera keeps turning after the hand stops -- which is
+     * what "inertia" was.
+     *
+     * The warp not landing is not exotic. A compositor that proxies windows
+     * from another domain (Qubes), XWayland, and remote displays all decline
+     * to teleport a pointer on a client's say-so. There is no way to ask
+     * whether it worked, and the failure mode is not degraded input, it is
+     * input that means something else entirely.
+     *
+     * HIDDEN asks for none of that: no warping, no virtual accumulator, and
+     * glfwGetCursorPos reports the true content-area position. The deltas are
+     * then OURS, differenced in noteCursor from positions we can trust, and
+     * they stay correct whether or not the platform will move a pointer.
+     * And with an ABSOLUTE control there is nothing left to confine: the
+     * pointer's position over the frame is the angle, so it never needs to
+     * keep going past an edge. Hiding it is the whole of what capture does.
+     */
         glfwSetInputMode(GetHandle(), GLFW_CURSOR,
-                         m_capture_want ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+                         m_capture_want ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
 #ifdef GLFW_RAW_MOUSE_MOTION
         // Explicitly OFF, not merely unrequested: GLFW leaves the mode as it
         // found it, so a previous capture that enabled it would otherwise
@@ -419,7 +434,6 @@ public:
         const bool was = m_mouseCaptured;
         m_mouseCaptured = m_capture_want;
         m_capture_dirty = false;
-        primeCursor("capture applied");
 
         if (was != m_mouseCaptured)
             ETCS_LOG("GLFWWindow", (m_mouseCaptured
@@ -429,188 +443,56 @@ public:
 
     bool MouseCaptured() const { return m_mouseCaptured; }
 
-    // Ask the pump to re-issue the current intent. For the moments when a grab
-    // is known to have been dropped or to have become possible: focus changes.
+    // Ask the pump to re-issue the current intent, for the moments when the
+    // mode is known to have been dropped or to have become settable.
     void RequestCaptureReapply() { m_capture_dirty = true; }
 
-    // Rate-limited to the first few, because if the grab is being refused
-    // outright this fires on every pass across the window border and the log
-    // becomes the problem instead of the record of it.
-    void noteCaptureEscaped()
-    {
-        if (m_escapes_logged >= 3) { ++m_escapes_logged; return; }
-        ++m_escapes_logged;
-        ETCS_LOG("GLFWWindow", "CAPTURE NOT IN EFFECT: the cursor left the window while "
-                 "capture was believed to hold, which a grabbed pointer cannot do. The grab "
-                 "was refused and no platform reports that. Retrying on the next poll. "
-                 "(occurrence " << m_escapes_logged << (m_escapes_logged == 3
-                     ? " -- further occurrences will not be logged)" : ")"));
-    }
+    /*
+ * NOTHING RECENTRES THE POINTER, and that is a decision rather than a gap. An
+ * absolute control has no reason to move the cursor: the position IS the
+ * angle, so there is nowhere it needs to "keep going" to. Gone with the
+ * recentring is the warp, the check that the warp landed, the fallback for
+ * when it did not, and the whole failure mode where a declined warp turns
+ * offsets into deltas.
+ */
 
     /*
- * Deltas are derived here rather than by the callback so the "no previous
- * position yet" case lives in one place with the state it concerns.
+ * The pointer's position, recorded and nothing else -- no differencing, no
+ * state to keep consistent across a warp, a focus change or a window move.
+ * See the block below on what that removes, and ontology/InputSource.h on why
+ * the primitive changed.
  *
- * ACCUMULATES RATHER THAN PUSHES. This runs inside glfwPollEvents, once per
- * queued movement, and the pump flushes the sum once the queue is drained
- * (PollEventsConcrete) -- so a thousand reports a second become one event per
- * pass with the same total displacement.
- *
- * m_cursorX/m_cursorY AND THE ACCUMULATOR ARE UNSYNCHRONISED, deliberately:
- * both are touched only from inside glfwPollEvents and the flush that follows
- * it, which is one thread by construction -- the OS event queue has exactly
- * one pump (Window.ProduceEvents), and every windowing backend requires that
- * anyway.
+ * Window-relative is exactly the frame the angle wants: the look is defined
+ * against the camera's own frame (Scene3D::PointerPosition), so a window that
+ * moves changes nothing.
  */
     void noteCursor(double x, double y)
     {
-        const double sx = x + originX();
-        const double sy = y + originY();
-
-        if (!m_cursorPrimed)
-        {
-            m_cursorX = sx; m_cursorY = sy; m_cursorPrimed = true;
-            return;
-        }
-        const double dx = sx - m_cursorX;
-        const double dy = sy - m_cursorY;
-        m_cursorX = sx; m_cursorY = sy;
-
-        // THE FAIL STATE, not a filter -- see warpRejected.
-        if (warpRejected(dx, dy)) return;
-
-        accumulatePointerDelta(static_cast<int>(dx), static_cast<int>(dy));
+        notePointerAt(static_cast<int>(x), static_cast<int>(y));
     }
 
     /*
- * THE FRAME A DELTA IS MEASURED IN MUST NOT ITSELF MOVE, and this is the whole
- * of what these two do.
+ * GONE WITH THE DELTA: primeCursor, warpRejected, noteWindowOrigin and the
+ * originX/originY pair.
  *
- * GLFW reports the cursor position RELATIVE TO THE WINDOW'S CONTENT AREA. That
- * is the right answer to "where in the window is the pointer" and the wrong
- * origin to subtract two samples in, because the content area moves. Drag the
- * window and the reported position changes by exactly minus the displacement
- * with the mouse sitting perfectly still -- so the next real report
- * differences a new-frame position against an old-frame base and emits the
- * window's travel as though it were the user's.
+ * Every one of them existed to keep a DIFFERENCE trustworthy. A delta is the
+ * gap between two positions, so any position change that was not the user's
+ * hand had to be found and suppressed -- a capture toggle, a focus change,
+ * the cursor re-entering, the window being dragged (which shifts a
+ * content-area reading by the whole displacement), the platform recentring.
+ * Five different routes to the same wrongness, each needing its own detector.
  *
- * Measured, before this existed: window moved by (+300, +200), mouse nudged
- * one pixel right, delta reported as (-299, -200). It is the whole window
- * displacement, sign-flipped, delivered as input. At two full turns per frame
- * width that is most of a rotation from moving a window.
- *
- * IT EXPLAINS THE ONE-OFF SPIKES rather than the flood -- the (-29, -150)
- * kind, arriving between ordinary single-pixel reports. A window that the WM
- * places, then repositions after mapping, injects one of these per
- * reposition, and no amount of tuning the turn rate touches it because it is
- * not a rate.
- *
- * SO THE FIX IS AN ORIGIN, NOT A FILTER. Adding the window's own position back
- * puts both samples in the screen's frame, which does not move, and the
- * displacement cancels identically -- no dropped sample, no threshold, no
- * guess about what a plausible movement is. A filter would have had to
- * distinguish a 300px window drag from a 300px flick, which is not a
- * distinction the data contains.
- *
- * ZERO WHEN THE CURSOR IS CAPTURED, deliberately. Under GLFW_CURSOR_DISABLED
- * the reported position is a VIRTUAL one, unbounded and not tied to the
- * window's content area at all -- it is already in a frame that does not move,
- * so adding an origin to it would introduce the very error this removes.
- * SetMouseCapture re-primes on the transition, which is what makes switching
- * frames safe.
+ * A position needs none of it. It is where the pointer is, whatever put it
+ * there. The window can move, focus can change, the cursor can leave and come
+ * back, and the reading is still exactly the angle the user is asking for.
  */
-    void noteWindowOrigin(int x, int y)
-    {
-        m_winX = static_cast<double>(x);
-        m_winY = static_cast<double>(y);
-    }
-
 private:
-    double originX() const { return m_mouseCaptured ? 0.0 : m_winX; }
-    double originY() const { return m_mouseCaptured ? 0.0 : m_winY; }
-public:
-
-    /*
- * A WARP IS NOT A MOVEMENT, and telling the two apart is the whole of this.
- *
- * The cursor's position changes for two unrelated reasons: the user moved the
- * mouse, and something moved the cursor. Only the first is input. The second
- * happens on capture toggling, on the window taking or losing focus, on the
- * pointer re-entering the window, and -- the one that is invisible from here
- * -- on the platform recentring a disabled cursor to keep its virtual
- * position in range. Every one of those produces a position that is
- * discontinuous with the last, and subtracting the last position from it
- * yields a delta that is arithmetically correct and physically meaningless.
- *
- * It is the single worst input this path can produce. A flood of small deltas
- * makes the view feel over-sensitive; ONE warp snaps it somewhere else
- * entirely, in a single frame, and it reads as the control being broken
- * rather than fast. In a log it is unmistakable next to its neighbours --
- * (-29, -150) between two (1, 0)s -- and unmistakable is the point: it does
- * not average out, so no amount of tuning the turn rate touches it.
- */
-    void primeCursor(const char* why)
-    {
-        if (!m_cursorPrimed) return;    // already waiting for a fresh base
-        m_cursorPrimed = false;
-        ETCS_LOG("GLFWWindow", "pointer delta base dropped (" << why
-                 << ") -- the next report re-bases instead of reporting.");
-    }
-
-private:
-    /*
- * The backstop for a warp that arrives with no callback to announce it, which
- * is what a platform-side recentre does.
- *
- * THE BOUND IS THE FRAME'S OWN WIDTH, and it is derived rather than tuned: a
- * pass across the frame is the full rotation the look control is defined
- * against (Scene3D::radiansPerPixel), so a single report claiming more than
- * that is claiming the user crossed their whole screen between two samples of
- * a device that reports hundreds of times a second. There is no hand movement
- * on the other side of that line, only a warp -- which is why a threshold is
- * admissible here and would not be at any smaller value.
- *
- * REJECTED LOUDLY AND WITH A RE-PRIME. Loudly, because a silently dropped
- * input event is indistinguishable from a bug in everything downstream. With
- * a re-prime, because whatever moved the cursor has left m_cursorX stale, so
- * the NEXT delta would be wrong too -- dropping only the first would turn one
- * bad sample into two.
- */
-    bool warpRejected(double dx, double dy)
-    {
-        const WindowSize sz = GetSize();
-        const double limit = (sz.width > 0)
-            ? static_cast<double>(sz.width)
-            : 4096.0;   // no extent yet: fall back to something no hand crosses
-
-        if (dx > -limit && dx < limit && dy > -limit && dy < limit)
-            return false;
-
-        ETCS_LOG("GLFWWindow", "pointer delta (" << dx << ", " << dy
-                 << ") exceeds the frame's " << limit << " unit width in one report"
-                 " -- that is a cursor warp, not a movement. Dropped, and the delta"
-                 " base re-primed.");
-        m_cursorPrimed = false;
-        return true;
-    }
-
-    double m_cursorX = 0.0;
-    double m_cursorY = 0.0;
     // What was ASKED for, and whether the platform has been told yet. Kept
     // apart from m_mouseCaptured, which is what actually took -- see
     // SetMouseCapture.
-    bool   m_capture_want  = false;
-    bool   m_capture_dirty = false;
-    int    m_escapes_logged = 0;
-    // The window's own position, kept current by window_pos_callback and
-    // seeded at creation because that callback only fires on CHANGES -- the
-    // placement the window is born with never produces one, and a first
-    // sample taken against an origin of (0,0) that is really (0, 540) is the
-    // same bug arriving once instead of per move.
-    double m_winX = 0.0;
-    double m_winY = 0.0;
-    bool   m_cursorPrimed  = false;
-    bool   m_mouseCaptured = false;
+    bool   m_capture_want   = false;
+    bool   m_capture_dirty  = false;
+    bool   m_mouseCaptured  = false;
 public:
 
     // Runs inside WindowProvider.so, against the GLFW copy that called
@@ -654,31 +536,12 @@ void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
-    handler->primeCursor(entered ? "cursor entered the window" : "cursor left the window");
 
-    /*
- * A CAPTURED CURSOR CANNOT LEAVE THE WINDOW. That is what capturing one means,
- * so a leave event while we believe we hold it is proof that we do not -- and
- * it is the only proof available, because no platform reports a failed grab.
- * glfwSetInputMode returns void, glfwGetInputMode returns the mode GLFW was
- * ASKED for rather than the one in effect, and X refuses a grab on a
- * non-viewable window or one another client already holds without telling the
- * application anything.
- *
- * So the check is behavioural: the invariant is observable even though the
- * state is not. Report it once and re-raise the request, because whatever
- * blocked the grab -- a window not yet mapped, a compositor holding the
- * pointer through an animation -- is usually gone by the next poll.
- *
- * This does not MAKE capture work where the platform refuses it. It converts a
- * silent failure into a logged one that retries, which is the difference
- * between "the mouse feels wrong" and a line saying which of the two it was.
- */
-    if (!entered && handler->MouseCaptured())
-    {
-        handler->noteCaptureEscaped();
-        handler->RequestCaptureReapply();
-    }
+    // NOTHING TO CHECK HERE ANY MORE. A pointer leaving the window used to be
+    // evidence that a grab had been refused, because a relative control depends
+    // on the pointer being confined. An absolute one does not: the angle simply
+    // holds at the last position inside the frame, which is the correct answer
+    // to "the pointer is not over the view". Leaving is now ordinary.
 }
 
 // Focus is the one that bites under capture: losing focus releases the
@@ -688,7 +551,6 @@ void GLFWWindow::window_focus_callback(GLFWwindow* window, int focused)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
-    handler->primeCursor(focused ? "window regained focus" : "window lost focus");
     // A grab does not survive losing focus, and a window manager handing focus
     // over is usually the FIRST moment the grab could have succeeded -- so
     // both edges re-raise the request rather than only the one that looks like
