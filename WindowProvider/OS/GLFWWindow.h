@@ -36,12 +36,14 @@ class GLFWWindow :
     public ResizableBase<GLFWWindow>, public DeletableBase<GLFWWindow>
 {
 private:
+    // Not merely a notification: the position it carries is half of the frame
+    // pointer deltas are measured in. See noteWindowOrigin.
     static void window_pos_callback(GLFWwindow* window, int x, int y)
     {
         auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
         if (handler) {
             ETCS_LOG("WindowPos", "Position changed: " << x << ", " << y);
-            // Could store or notify observers here (local event node likely?)
+            handler->noteWindowOrigin(x, y);
         }
     }
 
@@ -117,6 +119,12 @@ public:
             glfwSetCursorEnterCallback(GetHandle(), cursor_enter_callback);
             glfwSetWindowFocusCallback(GetHandle(), window_focus_callback);
             glfwSetWindowPosCallback(GetHandle(), window_pos_callback);
+            {
+                // Seed the origin: the pos callback fires on changes only.
+                int wx = 0, wy = 0;
+                glfwGetWindowPos(GetHandle(), &wx, &wy);
+                noteWindowOrigin(wx, wy);
+            }
             populateNativeSurfaceHandle();
             this->addTag("active");
             ETCS_LOG("Window active! Instance: " << this->getRID() << ".");
@@ -366,20 +374,71 @@ public:
  */
     void noteCursor(double x, double y)
     {
+        const double sx = x + originX();
+        const double sy = y + originY();
+
         if (!m_cursorPrimed)
         {
-            m_cursorX = x; m_cursorY = y; m_cursorPrimed = true;
+            m_cursorX = sx; m_cursorY = sy; m_cursorPrimed = true;
             return;
         }
-        const double dx = x - m_cursorX;
-        const double dy = y - m_cursorY;
-        m_cursorX = x; m_cursorY = y;
+        const double dx = sx - m_cursorX;
+        const double dy = sy - m_cursorY;
+        m_cursorX = sx; m_cursorY = sy;
 
         // THE FAIL STATE, not a filter -- see warpRejected.
         if (warpRejected(dx, dy)) return;
 
         accumulatePointerDelta(static_cast<int>(dx), static_cast<int>(dy));
     }
+
+    /*
+ * THE FRAME A DELTA IS MEASURED IN MUST NOT ITSELF MOVE, and this is the whole
+ * of what these two do.
+ *
+ * GLFW reports the cursor position RELATIVE TO THE WINDOW'S CONTENT AREA. That
+ * is the right answer to "where in the window is the pointer" and the wrong
+ * origin to subtract two samples in, because the content area moves. Drag the
+ * window and the reported position changes by exactly minus the displacement
+ * with the mouse sitting perfectly still -- so the next real report
+ * differences a new-frame position against an old-frame base and emits the
+ * window's travel as though it were the user's.
+ *
+ * Measured, before this existed: window moved by (+300, +200), mouse nudged
+ * one pixel right, delta reported as (-299, -200). It is the whole window
+ * displacement, sign-flipped, delivered as input. At two full turns per frame
+ * width that is most of a rotation from moving a window.
+ *
+ * IT EXPLAINS THE ONE-OFF SPIKES rather than the flood -- the (-29, -150)
+ * kind, arriving between ordinary single-pixel reports. A window that the WM
+ * places, then repositions after mapping, injects one of these per
+ * reposition, and no amount of tuning the turn rate touches it because it is
+ * not a rate.
+ *
+ * SO THE FIX IS AN ORIGIN, NOT A FILTER. Adding the window's own position back
+ * puts both samples in the screen's frame, which does not move, and the
+ * displacement cancels identically -- no dropped sample, no threshold, no
+ * guess about what a plausible movement is. A filter would have had to
+ * distinguish a 300px window drag from a 300px flick, which is not a
+ * distinction the data contains.
+ *
+ * ZERO WHEN THE CURSOR IS CAPTURED, deliberately. Under GLFW_CURSOR_DISABLED
+ * the reported position is a VIRTUAL one, unbounded and not tied to the
+ * window's content area at all -- it is already in a frame that does not move,
+ * so adding an origin to it would introduce the very error this removes.
+ * SetMouseCapture re-primes on the transition, which is what makes switching
+ * frames safe.
+ */
+    void noteWindowOrigin(int x, int y)
+    {
+        m_winX = static_cast<double>(x);
+        m_winY = static_cast<double>(y);
+    }
+
+private:
+    double originX() const { return m_mouseCaptured ? 0.0 : m_winX; }
+    double originY() const { return m_mouseCaptured ? 0.0 : m_winY; }
+public:
 
     /*
  * A WARP IS NOT A MOVEMENT, and telling the two apart is the whole of this.
@@ -447,6 +506,13 @@ private:
 
     double m_cursorX = 0.0;
     double m_cursorY = 0.0;
+    // The window's own position, kept current by window_pos_callback and
+    // seeded at creation because that callback only fires on CHANGES -- the
+    // placement the window is born with never produces one, and a first
+    // sample taken against an origin of (0,0) that is really (0, 540) is the
+    // same bug arriving once instead of per move.
+    double m_winX = 0.0;
+    double m_winY = 0.0;
     bool   m_cursorPrimed  = false;
     bool   m_mouseCaptured = false;
 public:
