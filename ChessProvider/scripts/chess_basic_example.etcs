@@ -1,0 +1,33 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# Smoke test: spawn a board, read it, play a few legal moves, prove an
+# illegal one is refused. Move echoes the resulting FEN, or "ILLEGAL".
+# Routes through two distinct selves to properly satisfy seat enforcement.
+
+spawn ChessProvider::ChessNode game
+game.Mount(game)
+
+# starting position, and whose turn it is
+# (Querying as 'white' doesn't claim the seat -- claiming only happens on a move)
+game.Request(game/white/board/fen)
+game.Request(game/white/board/status)
+
+# 1. e4 e5  2. Nf3 Nc6
+game.Request(game/white/board/move/e2e4)
+game.Request(game/black/board/move/e7e5)
+game.Request(game/white/board/move/g1f3)
+game.Request(game/black/board/move/b8c6)
+game.Request(game/white/board/fen)
+# r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3
+
+# refused: the rook on a1 is boxed in, and it is white's move anyway.
+# This is the anti-cheat surface -- rejection is the only outcome, there is
+# no path into the engine that skips it.
+game.Request(game/white/board/move/a1a5)
+# -> ILLEGAL
+game.Request(game/black/board/move/e7e6)
+# -> ILLEGAL (white to move)
+
+# Reset comes from EphemeralBase, not a work function -- back to move 1
+game.Request(game/white/board/reset)
+game.Request(game/white/board/fen)

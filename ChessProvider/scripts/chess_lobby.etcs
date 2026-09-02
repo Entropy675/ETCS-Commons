@@ -1,0 +1,6 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+spawn ChessProvider::ChessNode node
+node.Mount(game)
+detach NetworkProvider/scripts/chess_web.etcs game=node

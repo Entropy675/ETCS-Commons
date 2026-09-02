@@ -119,6 +119,21 @@ DEFINE_WORK_FUNC_TYPED(Window, Run, (uint32_t, x), (uint32_t, y), (std::string, 
     ETCS_LOG("Run", "Window closed, execution resumed.");
 }
 
+/*
+ * THIS BODY IS THE WINDOW'S ONLY EVENT PUMP. Window.Run does not poll -- it
+ * sleeps on IsActive -- so if this loop stops going round the window stops
+ * being serviced entirely: no input, no resize, no close, and on X11 no
+ * presentation either, because a client that does not drain its connection
+ * stalls its own swapchain.
+ *
+ * SO NOTHING BETWEEN TWO POLLS MAY WAIT ON A CONSUMER. writeRaw blocks when the
+ * reader is behind, so an unbounded drain lets a fast producer keep this loop
+ * from ever reaching the next poll. The drain is bounded to what was in the
+ * ring at the top of the pass.
+ *
+ * KEYS ONLY. Pointer traffic has its own ring and its own edge
+ * (ProducePointer), so a keystroke never waits behind a burst of positions.
+ */
 DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
 {
     (void)data;
@@ -129,50 +144,13 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
         std::this_thread::yield();
     }
 
-    uint8_t id = self.RegisterObserver();
-    ETCS_LOG("ProduceEvents", "Registered observer id: " << (int)id);
+    uint8_t id = self.RegisterKeyObserver();
+    ETCS_LOG("ProduceEvents", "key edge open, observer " << (int)id);
     if (id == INPUT_INVALID_OBSERVER) return;
 
     ETCS::Buffer slot;
     bool stream_alive = true;
 
-    /*
- * THIS BODY IS THE WINDOW'S ONLY EVENT PUMP, which is the fact that makes
- * everything below it delicate. Window.Run does not poll -- it sleeps on
- * IsActive -- so if this loop stops going round, the window stops being
- * serviced entirely: no input, no resize, no close, and on X11 no
- * presentation either, because a client that does not drain its connection
- * stalls its own swapchain.
- *
- * SO THE INVARIANT IS: NOTHING BETWEEN TWO POLLS MAY WAIT ON A CONSUMER.
- * writeRaw blocks when the reader is behind (the pipe strategy's consumer fd
- * is blocking, core/Entity.h's strategy selection), and that block is inside
- * the drain below -- so a slow ConsumeEvents did not merely fall behind, it
- * reached back and switched the pump off. That is the whole shape of the bug
- * this was reported as: move the mouse, and the frame rate and the input both
- * freeze together and then arrive in a burst once the reader catches up. Both
- * halves of that are one cause, which is why they stopped at the same instant.
- *
- * The freeze needed a producer fast enough to outrun its reader, and pointer
- * motion is the only input that is: a mouse reports hundreds of times a second
- * where a keyboard reports twice. text_demo.etcs was the worst case for the
- * plainest reason -- its ConsumeEvents does nothing BUT log, so the reader was
- * doing formatted I/O per event against a producer running at hardware rate.
- *
- * TWO CHANGES HOLD THE INVARIANT, and they are deliberately at different
- * levels:
- *
- *   AT THE SOURCE, pointer reports are coalesced per poll pass, so what
- *   arrives here is one position rather than the hundred it superseded
- *   (InputSource_::notePointerAt). This is the real fix: it removes the flood
- *   instead of coping with it, and it is lossless because the latest position
- *   is the whole answer.
- *
- *   HERE, the drain is bounded to what was in the ring at the top of the pass
- *   rather than looping until empty. Unbounded, a producer that refills as
- *   fast as this drains never lets the loop back round to a poll -- the ring
- *   would be doing the pipe's blocking for it.
- */
     while (self.IsActive() && stream_alive)
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) break;
@@ -185,60 +163,79 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
         }
 
         bool emitted = false;
-        uint32_t budget = INPUT_RING_CAP;
-        while (budget-- && self.ReadNextRingEvent(id, slot))
+        uint32_t budget = 128;
+        while (budget-- && self.ReadNextKeyEvent(id, slot))
         {
-            InputEvent ev{};
-            slot.readRaw(&ev, sizeof(InputEvent));
-#ifdef ETCS_VERBOSE_INPUT_EVENTS
-            if (ev.action == INPUT_MOTION)
-                ETCS_LOG("ProduceEvents", "Emitting: pointer at (" << ev.x << "," << ev.y << ")");
-            else
-                ETCS_LOG("ProduceEvents", "Emitting: key=" << ev.key
-                                      << " action=" << (int)ev.action);
-#endif
-
-            if (!stream.writeRaw(slot))
-            {
-                ETCS_LOG("ProduceEvents", "writeRaw failed — stream closed");
-                stream_alive = false;
-                break;
-            }
+            if (!stream.writeRaw(slot)) { stream_alive = false; break; }
             emitted = true;
         }
 
-        if (id == INPUT_INVALID_OBSERVER)
-            id = self.RegisterObserver();
+        if (id == INPUT_INVALID_OBSERVER) id = self.RegisterKeyObserver();
 
-        // SLEEP RATHER THAN YIELD when the pass was empty, and the
-        // millisecond is chosen against the frame rather than against the
-        // mouse: input is applied once per frame, which cannot tell 1ms of
-        // latency from 0, and yield leaves this at 100% of a core for the
-        // window's whole life. This body HOLDS a pool worker rather than
-        // borrowing one (render_script_streamed.etcs's thread ledger), so on a
-        // small pool that spin comes straight out of the frame edge -- the
-        // same symptom by a quieter route, present even when nothing moves.
-        if (!emitted)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // Sleep, not yield: input is applied once per frame and cannot tell 1ms
+        // from 0, while a yield loop holds a pool worker at 100% for the
+        // window's whole life -- taken straight out of the frame edge.
+        if (!emitted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    if (stream.isOpen())
-        stream.closeWrite();
-
-    self.UnregisterObserver(id);
+    if (stream.isOpen()) stream.closeWrite();
+    self.UnregisterKeyObserver(id);
 }
 
-DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
+/*
+ * The pointer's own edge. Positions only, and it does NOT pump -- ProduceEvents
+ * owns the poll loop, because two threads calling into the platform's event
+ * queue is undefined on every backend worth supporting.
+ *
+ * A consumer that wants both channels binds both. That is the cost of not
+ * making a keystroke queue behind a thousand positions, and it is the right
+ * trade: correlation between the two is needed only where a press means
+ * "at the current position", and an absolute position answers that from the
+ * last sample without any ordering guarantee at all.
+ */
+DEFINE_STREAM_FUNC_PRODUCE(Window, ProducePointer)
 {
     (void)data;
-    (void)self;
 
-    // Motion is summarised once a second rather than printed per event -- see
-    // the INPUT_MOTION branch for why that is a correctness matter here and
-    // not a tidiness one.
-    uint64_t motion_count = 0;
-    int      motion_x = 0, motion_y = 0;
-    auto     motion_reported = std::chrono::steady_clock::now();
+    while (!self.IsActive())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) return;
+        std::this_thread::yield();
+    }
+
+    uint8_t id = self.RegisterPointerObserver();
+    ETCS_LOG("ProducePointer", "pointer edge open, observer " << (int)id);
+    if (id == INPUT_INVALID_OBSERVER) return;
+
+    ETCS::Buffer slot;
+    bool stream_alive = true;
+
+    while (self.IsActive() && stream_alive)
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+
+        bool emitted = false;
+        uint32_t budget = 16;
+        while (budget-- && self.ReadNextPointerEvent(id, slot))
+        {
+            if (!stream.writeRaw(slot)) { stream_alive = false; break; }
+            emitted = true;
+        }
+
+        if (id == INPUT_INVALID_OBSERVER) id = self.RegisterPointerObserver();
+        if (!emitted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    if (stream.isOpen()) stream.closeWrite();
+    self.UnregisterPointerObserver(id);
+}
+
+// Demo consumers. Keys are printed per event because a keyboard is slow enough
+// to read; positions are counted and sampled because a pointer is not, and
+// per-event formatted I/O on that channel makes the reader the bottleneck.
+DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
+{
+    (void)data; (void)self;
 
     while (stream.isOpen())
     {
@@ -249,63 +246,52 @@ DEFINE_STREAM_FUNC_CONSUME(Window, ConsumeEvents)
 
         InputEvent ev{};
         slot.readRaw(&ev, sizeof(InputEvent));
-
-        /*
-     * POSITIONS ARE COUNTED AND SAMPLED, NOT PRINTED, and that asymmetry with
-     * keys below is the point rather than an inconsistency.
-     *
-     * A log line per event is a fine thing to do to a keyboard and a
-     * pathological thing to do to a pointer: the reader becomes formatted I/O
-     * at hardware rate, falls behind, and back-pressures the producer -- which
-     * is this window's only OS event pump. This demo edge was the loudest case
-     * of exactly that, because logging is ALL it does, so there was nothing
-     * else in the loop to make the cost look like anything but "input is
-     * slow". Printing a delta the user cannot read at that rate is not
-     * information anyway; a periodic count is.
-     *
-     * The individual deltas are still available -- define
-     * ETCS_VERBOSE_INPUT_EVENTS -- which is where a per-event view belongs:
-     * behind a switch you throw while you are looking, not on by default in
-     * the path everything else waits behind.
-     */
-        if (ev.action == INPUT_MOTION)
-        {
-#ifdef ETCS_VERBOSE_INPUT_EVENTS
-            ETCS_LOG("ConsumeEvents", "POINTER:  (" << ev.x << ", " << ev.y << ")");
-#endif
-            ++motion_count;
-            motion_x = ev.x;
-            motion_y = ev.y;
-
-            const auto now = std::chrono::steady_clock::now();
-            if (now - motion_reported >= std::chrono::seconds(1))
-            {
-                // The LAST position, not a sum: these are positions, and the
-                // latest one supersedes the rest. The count is still worth
-                // printing because it says how hard the pointer is reporting.
-                ETCS_LOG("ConsumeEvents", "POINTER:  " << motion_count
-                         << " reports in the last second, now at ("
-                         << motion_x << ", " << motion_y << ").");
-                motion_count = 0;
-                motion_reported = now;
-            }
-            continue;
-        }
         if (ev.key == 0) continue;
 
-        if (ev.action == INPUT_DOWN)
+        ETCS_LOG("ConsumeEvents", (ev.action == INPUT_DOWN ? "KEY DOWN: " : "KEY UP:   ")
+                 << ev.key << " (" << (char)ev.key << ")");
+    }
+
+    ETCS_LOG("ConsumeEvents", "key edge closed.");
+}
+
+DEFINE_STREAM_FUNC_CONSUME(Window, ConsumePointer)
+{
+    (void)data; (void)self;
+
+    uint64_t count = 0;
+    int      last_x = 0, last_y = 0;
+    auto     reported = std::chrono::steady_clock::now();
+
+    while (stream.isOpen())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+
+        ETCS::Buffer slot;
+        if (!stream.readRaw(slot)) break;
+
+        InputEvent ev{};
+        slot.readRaw(&ev, sizeof(InputEvent));
+        if (ev.action != INPUT_MOTION) continue;
+
+#ifdef ETCS_VERBOSE_INPUT_EVENTS
+        ETCS_LOG("ConsumePointer", "POINTER:  (" << ev.x << ", " << ev.y << ")");
+#endif
+        ++count; last_x = ev.x; last_y = ev.y;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - reported >= std::chrono::seconds(1))
         {
-            ETCS_LOG("ConsumeEvents", "KEY DOWN: " << ev.key 
-                        << " (" << (char)ev.key << ")");
-        }
-        else
-        {
-            ETCS_LOG("ConsumeEvents", "KEY UP:   " << ev.key 
-                        << " (" << (char)ev.key << ")");
+            // The LAST position, not a sum: these are positions and the latest
+            // supersedes the rest. The count says how hard the pointer reports.
+            ETCS_LOG("ConsumePointer", count << " reports in the last second, now at ("
+                     << last_x << ", " << last_y << ").");
+            count = 0;
+            reported = now;
         }
     }
-    
-    ETCS_LOG("ConsumeEvents", "Stream is closed.");
+
+    ETCS_LOG("ConsumePointer", "pointer edge closed.");
 }
 
 // CaptureMouse <0|1> -- hide the cursor and unbind it from the screen, so

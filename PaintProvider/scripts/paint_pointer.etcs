@@ -1,0 +1,10 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# The pointer channel for a paint session, on its own thread. Positions place
+# the brush; presses arrive on the other edge (paint_smoke.etcs).
+
+requires window [Window]
+requires input [PaintInput]
+
+window.ProducePointer() -> input.ConsumePointer()

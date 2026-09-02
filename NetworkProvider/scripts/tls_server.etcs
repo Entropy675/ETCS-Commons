@@ -1,0 +1,55 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Server-side TLS termination, minimal. Run it directly -- nothing here
+# blocks, so the trace completes and hands the shell straight back while the
+# gate keeps running. The server outlives this script because the ENTITY
+# holds the accept scope, not because the trace is still executing.
+#
+# For the full site over TLS -- landing page, file tree, chess and forum
+# lobbies -- see run_tls_website.etcs. This file is the smoke test: the
+# smallest trace that proves termination works, plus the checks worth
+# running against it.
+#
+# The point of this trace is what it DOESN'T say. There is exactly one TLS
+# line in it. The page, the tree and the routing are byte-identical to
+# run_website.etcs -- HttpServer::Serve and every other subscriber keep
+# receiving plaintext and never learn a handshake happened. If serving a
+# page over TLS required teaching the page about TLS, the change would be
+# in the wrong layer.
+#
+# Generate a self-signed cert first. The -addext line is not optional
+# padding: without a subjectAltName, modern clients reject the cert on
+# hostname grounds ALONE, before ever considering the issuer -- which would
+# make check 3 below pass for the wrong reason.
+#
+#   openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+#     -keyout /tmp/etcs-key.pem -out /tmp/etcs-cert.pem \
+#     -subj "/CN=localhost" \
+#     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+#
+# OpenSSL 3.x writes the key as PKCS#8 ("BEGIN PRIVATE KEY"), which
+# mbedtls_pk_parse_keyfile reads without help.
+
+spawn NetworkProvider::HttpServer web
+web.SetPort(8443)
+
+# BEFORE Start, and that is load-bearing rather than stylistic. Start mints
+# the ConnectionManager and Opens it in one step, and Open begins accepting
+# immediately -- so there is no later point in this trace at which the gate
+# exists but has not yet taken a connection. Enabling TLS afterwards would
+# always race the first client. This line only stores the paths; Start is
+# what hands them to the gate, and Start REFUSES to come up if either file
+# fails to load rather than falling back to plaintext on a port that was
+# asked to be TLS.
+web.EnableTLS(/tmp/etcs-cert.pem, /tmp/etcs-key.pem)
+
+web.spawn(NetworkProvider::StaticHtmlPage landing)
+landing.SetHtmlFromFile(./www/index.html)
+
+web.spawn(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(./www)
+tree.ListPaths()
+
+web.Start()
+web.IsStarted()

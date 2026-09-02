@@ -52,7 +52,7 @@ ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
 ETCS_TAG_BLOCK_HYBRID(Scene3D,
     (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetSensitivity,
      Impulse, Halt, Order, Look, SetEmissivity, SetVisible, Project, DepthAt, Delete),
-    (ConsumeInput))
+    (ConsumeInput, ConsumeLook))
 
 // The camera: a Drawable2D that owns pixels, filled by a scene rather than by
 // its children. Everything downstream treats it as an ordinary 2D node, which

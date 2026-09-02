@@ -1,0 +1,27 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# The frame pump, as a stream edge -- the exact shape window_events.etcs
+# already uses for input, applied to output.
+#
+# REQUIRES a module change that is not on main yet: Surface must become
+# ETCS_TAG_BLOCK_HYBRID with a ProduceFrames/ConsumeFrames pair. Until then
+# use render_script.etcs, which drives frames from Surface.RunDemo on the
+# script's own thread instead.
+#
+# The split is the same one the input edge makes, read in the other
+# direction. ProduceFrames owns TIMING and acquisition: it acquires the next
+# swapchain image and emits one frame token per acquire, non-blocking, on a
+# pool worker. ConsumeFrames owns RECORDING: it takes each token, records
+# clear + pending draws into that frame's command buffer, submits, presents,
+# and blocks holding the edge open for as long as the surface lives.
+#
+# Neither side touches PollEvents -- that stays with whoever created the
+# window (render_script_streamed.etcs's own thread). This is the whole point
+# of moving the frame loop here: Vulkan is happy to submit and present from
+# a thread that did not create the window, GLFW is not happy to be polled
+# from one that did not.
+
+requires view [Surface]
+
+view.ProduceFrames() -> view.ConsumeFrames()

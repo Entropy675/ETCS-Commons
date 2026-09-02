@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+requires window [Window]
+
+# One channel per thread: keys and pointer are separate rings and separate
+# streams, and an edge blocks the thread that states it, so the pointer half is
+# detached and this thread keeps the keys.
+detach window_pointer.etcs window=window
+
+window.ProduceEvents() -> window.ConsumeEvents()
+window.Close()

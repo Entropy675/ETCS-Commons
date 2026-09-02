@@ -10,7 +10,7 @@ ETCS_TAG_BLOCK_HYBRID(
     Window, 
     (Create, Delete, PollEvents, Close, Run, SetPosition, MoveBy, CenterOnMonitor,
      CaptureMouse), 
-    (ProduceEvents, ConsumeEvents)
+    (ProduceEvents, ConsumeEvents, ProducePointer, ConsumePointer)
 )
 
 

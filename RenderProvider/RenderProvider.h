@@ -824,26 +824,24 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, DepthAt, (ETCS::RID, camera), (int32_t, x), (int
  * closed -- or when the closure is signalled. Nothing here polls the window
  * or touches GLFW; the producer already owns that.
  */
+/*
+ * The keyboard edge: W/S forward, A/D strafe, Q/E vertical.
+ *
+ * Blocking, and doing nothing but recording. It must not integrate -- motion is
+ * advanced where it is OBSERVED, in Scene3D::Project, over the interval since
+ * the last projection.
+ *
+ * hasData() is not used: a cross-tag pair resolves to StrategyPipe, whose
+ * consumer fd is blocking, so a drain loop built on it spins here and stalls a
+ * same-module pair. Blocking readRaw is what every consumer here does.
+ */
 DEFINE_STREAM_FUNC_CONSUME(Scene3D, ConsumeInput)
 {
     (void)data;
 
-    ETCS_LOG("Scene3D::ConsumeInput", "WASD edge open on RID:" << self.getRID()
-             << " (W/S forward, A/D strafe, Q/E vertical, mouse looks, "
-             << self.Speed() << " u/s terminal, damping " << self.Damping() << "/s)");
+    ETCS_LOG("Scene3D::ConsumeInput", "key edge open on RID:" << self.getRID()
+             << " (" << self.Speed() << " u/s terminal, damping " << self.Damping() << "/s)");
 
-    // Blocking, and doing nothing but recording. The one thing this loop must
-    // not do is integrate: motion is advanced where it is OBSERVED, in
-    // Scene3D::Project, on the interval since the last projection (Scene3D.h
-    // on why that is the interpolation rather than an approximation of it).
-    //
-    // Which is also why hasData() is not used here. A cross-tag stream pair
-    // resolves to StrategyPipe (core/Entity.h), whose consumer fd is blocking,
-    // so hasData is a non-advancing check on the LMAX side and a blocking read
-    // on this one -- a drain loop built on it stalls a same-module pair and
-    // spins a cross-module one. Blocking readRaw is the shape every consumer
-    // in this codebase already uses, and with the integration moved to the
-    // observer there is nothing left for a tick here to do.
     while (stream.isOpen())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) break;
@@ -853,33 +851,50 @@ DEFINE_STREAM_FUNC_CONSUME(Scene3D, ConsumeInput)
 
         InputEvent ev{};
         slot.readRaw(&ev, sizeof(InputEvent));
+        if (ev.action == INPUT_MOTION || ev.key == 0) continue;
 
-        // Both kinds, one stream, one handler -- which is the reason they
-        // share a record (ontology/InputSource.h). A look and a step that
-        // arrived together are one intent, and two streams would let them
-        // separate by however much two consumers happened to drift.
-        if (ev.action == INPUT_MOTION)
-        {
-            self.PointerPosition(ev.x, ev.y);
-        }
-        else
-        {
-            if (ev.key == 0) continue;
-            if (ev.action == INPUT_DOWN) self.KeyDown(ev.key);
-            else                         self.KeyUp(ev.key);
-        }
+        if (ev.action == INPUT_DOWN) self.KeyDown(ev.key);
+        else                         self.KeyUp(ev.key);
 
-        // One mark per key change, and no polling anywhere: it restarts a
-        // pipeline that had gone quiet, and once moving, the motion marks
-        // itself at every projection until it settles.
+        // One mark per key change, no polling: it restarts a settled pipeline,
+        // and motion sustains its own frames after that.
         self.WakeObservers();
     }
 
-    // Held keys are a fact about a stream that no longer exists. Clearing them
-    // is what stops a scene drifting forever because the window closed between
-    // a key going down and coming up.
-    self.ClearHeld();
-    ETCS_LOG("Scene3D::ConsumeInput", "input stream closed.");
+    ETCS_LOG("Scene3D::ConsumeInput", "key edge closed.");
+}
+
+/*
+ * The pointer edge: absolute position in, look angle out.
+ *
+ * SEPARATE FROM THE KEYS on purpose. The two channels have nothing to
+ * synchronise -- the look is a function of where the pointer is, and a step is a
+ * function of which keys are held -- so sharing a stream would only let each
+ * queue behind the other's bursts. See ontology/InputSource.h.
+ */
+DEFINE_STREAM_FUNC_CONSUME(Scene3D, ConsumeLook)
+{
+    (void)data;
+
+    ETCS_LOG("Scene3D::ConsumeLook", "pointer edge open on RID:" << self.getRID()
+             << " -- the pointer's position over the frame IS the direction.");
+
+    while (stream.isOpen())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+
+        ETCS::Buffer slot;
+        if (!stream.readRaw(slot)) break;
+
+        InputEvent ev{};
+        slot.readRaw(&ev, sizeof(InputEvent));
+        if (ev.action != INPUT_MOTION) continue;
+
+        self.PointerPosition(ev.x, ev.y);
+        self.WakeObservers();
+    }
+
+    ETCS_LOG("Scene3D::ConsumeLook", "pointer edge closed.");
 }
 
 DEFINE_WORK_FUNC(Scene3D, Delete)

@@ -1,0 +1,38 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Nest one more shape into the live scene and redraw the tree.
+#
+#     Root> scripts/polygon_add.etcs scene=<scene RID> view=<view RID>
+#
+# The contrast with scene_layer.etcs is the whole point: there, adding a layer
+# meant restating every earlier blit, because the surface held a flat list. Here
+# the scene is the tree, so this spawns a child and replays the scene. Nothing
+# that was already there is mentioned.
+# NOT named `root`: the shell reserves that name (a detached script binds its
+# own Root under it), and an injection argument called `root` is refused before
+# the script starts. Worth knowing before you name a parameter after the thing
+# it obviously is.
+requires scene [Drawable2D]
+requires view [Surface]
+
+scene.spawn(RenderProvider::PolygonDrawable2D star)
+star.Create()
+star.AddPoint(700, 90)
+star.AddPoint(760, 200)
+star.AddPoint(880, 210)
+star.AddPoint(790, 290)
+star.AddPoint(820, 410)
+star.AddPoint(700, 350)
+star.AddPoint(580, 410)
+star.AddPoint(610, 290)
+star.AddPoint(520, 210)
+star.AddPoint(640, 200)
+star.SetFill(0.95, 0.90, 0.35, 1.0)
+star.SetOrder(3)
+
+# Clear delimits the composition: it starts a fresh picture, and DrawRect and
+# Blit only ever append to it. Without this the tree would be appended to the
+# previous statement of itself every time.
+view.Clear(0.02, 0.02, 0.03, 1.0)
+scene.Draw(@view)

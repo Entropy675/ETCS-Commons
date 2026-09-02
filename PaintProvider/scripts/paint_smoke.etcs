@@ -54,6 +54,10 @@ detach render_frames.etcs view=view
 
 # Standing control-thread edge: OS poll loop -> paint stroke state machine.
 # Returns when the window closes.
+# Pointer on its own thread, keys on this one -- an edge blocks the thread that
+# states it, and the two channels are deliberately independent.
+detach paint_pointer.etcs window=main input=input
+
 main.ProduceEvents() -> input.ConsumeInput()
 
 main.Close()

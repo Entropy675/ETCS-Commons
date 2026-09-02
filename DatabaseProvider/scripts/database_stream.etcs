@@ -1,0 +1,34 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# ETCS Causal Stream Demo: Cross-Instance Database Teleportation
+# This script demonstrates moving structured data across isolated SQLite instances
+# strictly through the LMAX causal buffer, with zero serializers or variables.
+#
+# LIFETIME NOTE: 'source' and 'target' are injected by the caller
+# (gdata_server.etcs), which spawns and Connects both before this
+# script ever runs. This script borrows them — it must never Connect,
+# Disconnect, or Close either one; the caller owns their lifetime
+# start to finish. As a consequence, this script is no longer safe to
+# run standalone with unbound roles (see accompanying note).
+
+requires source
+requires target
+
+# --- Phase 1: Use the already-open source connection ---
+source.ExecuteRaw(PRAGMA journal_mode=WAL;)
+source.InitializeSchema(CREATE TABLE IF NOT EXISTS players(id INTEGER PRIMARY KEY, name TEXT, level INTEGER);)
+source.ExecuteTransaction(DELETE FROM players;INSERT INTO players (name, level) VALUES('Lux', 99), ('Sibte', 100), ('Entropy', 0);)
+source.ExecuteRaw(PRAGMA wal_checkpoint(FULL);)
+
+# --- Phase 2: Use the already-open target connection ---
+target.ExecuteRaw(PRAGMA journal_mode=WAL;)
+# Notice we DO NOT initialize the 'players' table here.
+# The causal stream will instantiate the schema on the target automatically.
+
+# --- Phase 3: The Causal Stream ---
+# Produce rows from source directly into the target's consumer.
+source.QueryProduce(SELECT * FROM players) -> target.RowConsume()
+
+# --- Phase 4: intentionally no-op ---
+# source/target stay open and connected. The caller (gdata_server.etcs)
+# disconnects and closes both, once, after every borrower is finished.

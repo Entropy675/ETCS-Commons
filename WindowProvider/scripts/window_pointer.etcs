@@ -1,0 +1,8 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# The pointer channel, on its own thread. See window_events.etcs.
+
+requires window [Window]
+
+window.ProducePointer() -> window.ConsumePointer()

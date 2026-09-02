@@ -1,0 +1,7 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+requires from
+requires to
+
+from.QueryProduce(SELECT * FROM users) -> to.RowConsume()

@@ -1,0 +1,7 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+requires db
+
+db.ExecuteTransaction(DELETE FROM audit;INSERT INTO audit (event) VALUES('user_sync_complete');)
+db.ExecuteRaw(PRAGMA wal_checkpoint(FULL);)

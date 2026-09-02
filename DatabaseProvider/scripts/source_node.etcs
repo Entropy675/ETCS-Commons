@@ -1,0 +1,10 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+requires db
+
+db.Connect(source.db)
+db.ExecuteRaw(PRAGMA journal_mode=WAL;)
+db.InitializeSchema(CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT, role TEXT);)
+db.ExecuteTransaction(DELETE FROM users;INSERT INTO users (name, role) VALUES('Sibte', 'architect'), ('Lux', 'capital');)
+db.ExecuteRaw(PRAGMA wal_checkpoint(FULL);)

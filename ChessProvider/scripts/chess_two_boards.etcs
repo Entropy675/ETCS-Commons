@@ -1,0 +1,23 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# Two independent games in one trace: separate nodes, separate state.
+# Mount() sets a prefix that gets stripped. The remaining path is parsed as:
+# <lobby>/<match>/<action>/<args>
+
+spawn ChessProvider::ChessNode white_node
+white_node.Mount(white)
+
+spawn ChessProvider::ChessNode black_node
+black_node.Mount(black)
+
+# After stripping "white/" and "black/", the parser sees:
+# lobby/game/move/e2e4  ->  lobby: "lobby", match: "game", action: "move", arg: "e2e4"
+white_node.Request(white/lobby/game/move/e2e4)
+black_node.Request(black/lobby/game/move/d2d4)
+
+# Request the FENs to prove the boards are independent
+white_node.Request(white/lobby/game/fen)
+black_node.Request(black/lobby/game/fen)
+
+white_node.Delete()
+black_node.Delete()

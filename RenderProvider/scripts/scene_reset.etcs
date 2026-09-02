@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Back to the base composition. Same injection and same restatement rule as
+# scene_layer.etcs.
+#
+#     Root> scripts/scene_reset.etcs view=<RID> backdrop=<RID>
+requires view     [Surface]
+requires backdrop [Pixels]
+
+view.Clear(0.03, 0.03, 0.05, 1.0)
+view.Blit(@backdrop, 80, 60, 864, 648, 1.0)

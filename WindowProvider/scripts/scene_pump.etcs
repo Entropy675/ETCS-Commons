@@ -1,0 +1,16 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Service the window's event queue once, from thread 1.
+#
+#     Root> scripts/scene_pump.etcs main=<RID>
+#
+# The shell runs a script on its own thread, which is the thread that created
+# the window -- so this is the one place a poll is legal while the prompt holds
+# thread 1. Keystrokes buffered since the last pump arrive on the input edge
+# (thread 3 prints them), and if the close button was clicked, PollEvents
+# raises the CLOSURE interrupt rather than just this call's, which winds up
+# both detached edges and leaves the shell running.
+requires main [Window]
+
+main.PollEvents()

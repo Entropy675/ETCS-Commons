@@ -1,0 +1,15 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+spawn DatabaseProvider::LocalDatabase db
+db.Connect(test2122.db)
+db.ExecuteRaw(PRAGMA journal_mode=WAL;)
+db.ExecuteRaw(PRAGMA synchronous=NORMAL;)
+db.InitializeSchema(CREATE TABLE IF NOT EXISTS ace_test(id INTEGER PRIMARY KEY, val TEXT);)
+db.ExecuteTransaction(DELETE FROM ace_test;INSERT INTO ace_test (val) VALUES('Luke'), ('Sibte'), ('Test123'), ('Test3');)
+db.ExecuteRaw(PRAGMA wal_checkpoint(FULL);)
+
+# QueryProduce is a stream producer, so we pipe it directly into RowConsume
+db.QueryProduce(SELECT * FROM ace_test) -> db.RowConsume()
+
+db.Disconnect()

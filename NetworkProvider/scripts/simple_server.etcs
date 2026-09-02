@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+spawn NetworkProvider::HttpServer server
+server.SetPort(8080)
+
+server.spawn(NetworkProvider::StaticHtmlPage page)
+page.SetHtmlRaw('Hello from ETCS!')
+
+server.AddHandler(@server Serve)
+server.Start()
+server.IsStarted()

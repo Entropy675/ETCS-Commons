@@ -1,0 +1,18 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Chess over HTTP, a default provided by ChessProvider.
+# ChessGame is now an internal detail of ChessNode; matches are created 
+# on-demand by the URL path, so explicit Key/Fen setup is replaced by 
+# hitting the desired match path to instantiate it.
+
+spawn ChessProvider::ChessNode game
+game.Mount(game)
+
+# Trigger the creation of the 'demo' match and print its starting FEN.
+# Mount() strips "game/", leaving "lobby/demo/fen" for the router.
+game.Request(game/lobby/demo/fen)
+
+# Hand the node to the web tier. Detached rather than run: the server outlives
+# this script, lives as long as the detached thread.
+detach NetworkProvider/scripts/chess_web.etcs game=game

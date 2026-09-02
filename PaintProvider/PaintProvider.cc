@@ -23,4 +23,4 @@ ETCS_TAG_BLOCK_BASIC(PaintSurface,
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
      Pointer, Press, Release, Report, Delete),
-    (ConsumeInput))
+    (ConsumeInput, ConsumePointer))

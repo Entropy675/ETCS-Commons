@@ -1,0 +1,34 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A second reusable scene: three bars across the top of whatever it is given.
+# Same contract as scene_emblem.etcs -- points in the anchor's space, no
+# drawing, no assumption about what else is on the surface.
+requires anchor [Drawable2D]
+
+anchor.spawn(RenderProvider::PolygonDrawable2D bar_a)
+bar_a.Create()
+bar_a.AddPoint(40, 24)
+bar_a.AddPoint(320, 24)
+bar_a.AddPoint(320, 60)
+bar_a.AddPoint(40, 60)
+bar_a.SetFill(0.20, 0.65, 0.85, 1.0)
+bar_a.SetOrder(0)
+
+anchor.spawn(RenderProvider::PolygonDrawable2D bar_b)
+bar_b.Create()
+bar_b.AddPoint(360, 24)
+bar_b.AddPoint(640, 24)
+bar_b.AddPoint(640, 60)
+bar_b.AddPoint(360, 60)
+bar_b.SetFill(0.25, 0.75, 0.55, 1.0)
+bar_b.SetOrder(0)
+
+anchor.spawn(RenderProvider::PolygonDrawable2D bar_c)
+bar_c.Create()
+bar_c.AddPoint(680, 24)
+bar_c.AddPoint(960, 24)
+bar_c.AddPoint(960, 60)
+bar_c.AddPoint(680, 60)
+bar_c.SetFill(0.75, 0.45, 0.85, 1.0)
+bar_c.SetOrder(0)

@@ -1,0 +1,8 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+requires db
+
+db.Connect(archive.db)
+db.ExecuteRaw(PRAGMA journal_mode=WAL;)
+db.InitializeSchema(CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, event TEXT);)

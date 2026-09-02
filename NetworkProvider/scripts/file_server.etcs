@@ -1,0 +1,16 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+spawn NetworkProvider::HttpServer server
+server.SetPort(8080)
+
+server.spawn(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(./www)
+tree.ListPaths()
+
+server.AddHandler(@server Serve)
+server.Start()
+server.IsStarted()
+
+# Start() blocks until interrupted (Ctrl+C). No explicit Delete needed—
+# the REPL catches the signal and tears down the scope automatically.

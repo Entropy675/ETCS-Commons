@@ -175,9 +175,12 @@ MODULE_HEADERS := $(sort $(LOCAL_HEADERS) $(ALL_PLATFORM_HEADERS) $(TARGET_BASE_
 COMPILE_HEADERS := $(sort $(LOCAL_HEADERS) $(PLATFORM_LOCAL_HEADERS) $(TARGET_BASE_NAME).h)
 MODULE_DEPS := $(SRC_MODULE) $(COMPILE_HEADERS) $(GLOBAL_HEADERS)
 
-.PHONY: all clean
+.PHONY: all clean install_assets
 all: $(FINAL_TARGET)
 	@echo "✓ Built $(FINAL_TARGET) for $(UNAME_S) ($(ARCH))"
+
+install_assets:
+	@:
 
 $(BUILD_STAMP):
 	@rm -f .ace_build_*

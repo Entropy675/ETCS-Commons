@@ -1,0 +1,42 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A reusable scene: a diamond with a gem inside it, built inside whatever
+# region it is handed.
+#
+#     run scene_emblem.etcs anchor=<some Drawable2D>
+#
+# THIS SCRIPT NAMES NO ABSOLUTE POSITION. Every point below is stated in the
+# ANCHOR's space, so the same file produces the same emblem wherever the
+# anchor happens to be -- run it against two different anchors and you get two
+# emblems in two places, from one description. That is the upward half of the
+# Drawable contract being useful rather than merely true: a subtree is
+# relocatable because its coordinates were never absolute to begin with.
+#
+# IT ALSO DOES NOT DRAW. Building structure and stating a picture are two
+# different jobs, and mixing them is what forces every caller to know what
+# every other caller already put on the surface. The composer clears once and
+# draws the tree once (streamed_scenes.etcs); everything here just exists.
+requires anchor [Drawable2D]
+
+# The diamond. 400x400 of the anchor's own space, whatever that space is.
+anchor.spawn(RenderProvider::PolygonDrawable2D body)
+body.Create()
+body.AddPoint(200, 20)
+body.AddPoint(380, 200)
+body.AddPoint(200, 380)
+body.AddPoint(20, 200)
+body.SetFill(0.85, 0.72, 0.20, 1.0)
+body.SetOrder(1)
+
+# The gem, nested in the DIAMOND -- one level deeper, and stated in the
+# diamond's space rather than the anchor's. Move the diamond and this moves;
+# move the anchor and both move.
+body.spawn(RenderProvider::PolygonDrawable2D gem)
+gem.Create()
+gem.AddPoint(180, 120)
+gem.AddPoint(240, 170)
+gem.AddPoint(180, 240)
+gem.AddPoint(120, 170)
+gem.SetFill(0.90, 0.25, 0.35, 1.0)
+gem.SetOrder(2)

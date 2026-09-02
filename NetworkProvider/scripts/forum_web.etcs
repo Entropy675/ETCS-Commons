@@ -1,0 +1,14 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+requires forum
+ensure NetworkProvider::HttpServer web
+web.SetPort(8080)
+
+web.ensure(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(./www)
+tree.ListPaths()
+
+web.AddRoute(@forum Request @forum Filter)
+web.Start()
+web.IsStarted()

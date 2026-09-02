@@ -1,0 +1,68 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A reusable 3D scene: a ground slab, three towers at different depths, and a
+# near block that occludes one of them.
+#
+#     run scene3d.etcs anchor=<some Drawable3D>
+#
+# THIS SCRIPT NAMES NO ABSOLUTE POSITION, exactly as scene_emblem.etcs names
+# none in 2D. Every box below is stated in the ANCHOR's space, so the same
+# file produces the same arrangement wherever the anchor is -- and moving the
+# anchor moves the whole thing with nothing here recomputed. That is the
+# parent-relative rule one dimension up, and it is the entire mechanism behind
+# w/a/s/d: the input edge translates the anchor, and this scene comes along.
+#
+# IT ALSO DOES NOT DRAW, for the same reason the 2D scene scripts do not.
+# Building structure and producing an image are different jobs; a camera makes
+# the image, and it does so from whatever this left behind.
+#
+# WHAT TO WATCH: the near block sits in FRONT of the middle tower without being
+# related to it in the tree -- different subtrees, no shared parent but the
+# root. Nothing in the graph says which is in front. The depth buffer does
+# (ontology/Drawable3D.h), and that is the whole reason depth is a family
+# constraint rather than a renderer's private array.
+requires anchor [Drawable3D]
+
+# The ground. Wide and thin -- a box is the only primitive here, so a floor is
+# a box that is not tall, which is the same self-similarity the 2D tree has
+# between the screen-sized root rectangle and a triangle three levels down.
+anchor.spawn(RenderProvider::Scene3D ground)
+ground.Create(30.0, 0.5, 30.0)
+ground.SetPosition(0.0, -2.0, 0.0)
+ground.SetColor(0.20, 0.24, 0.30, 1.0)
+
+# Three towers, receding. Same size, placed at increasing z, so the projection
+# has something to be checked against by eye: they should shrink with distance
+# in a straight ratio, and their tops should converge.
+anchor.spawn(RenderProvider::Scene3D tower_near)
+tower_near.Create(1.6, 4.0, 1.6)
+tower_near.SetPosition(-4.0, 0.0, 0.0)
+tower_near.SetColor(0.85, 0.35, 0.30, 1.0)
+
+anchor.spawn(RenderProvider::Scene3D tower_mid)
+tower_mid.Create(1.6, 4.0, 1.6)
+tower_mid.SetPosition(0.0, 0.0, 6.0)
+tower_mid.SetColor(0.35, 0.75, 0.55, 1.0)
+
+anchor.spawn(RenderProvider::Scene3D tower_far)
+tower_far.Create(1.6, 4.0, 1.6)
+tower_far.SetPosition(4.0, 0.0, 12.0)
+tower_far.SetColor(0.40, 0.55, 0.90, 1.0)
+
+# A cap NESTED IN the near tower, one level deeper, stated in the tower's own
+# space -- so it is at the tower's top, not at the world's. Move the tower and
+# the cap goes with it; move the anchor and all of it goes. Same contract the
+# gem has with the diamond in scene_emblem.etcs.
+tower_near.spawn(RenderProvider::Scene3D cap)
+cap.Create(2.2, 0.4, 2.2)
+cap.SetPosition(0.0, 2.2, 0.0)
+cap.SetColor(0.95, 0.80, 0.30, 1.0)
+
+# The occluder: near the camera, in front of the middle tower, and a sibling of
+# it rather than an ancestor or a child. The tree has nothing to say about
+# which of the two is visible where they overlap.
+anchor.spawn(RenderProvider::Scene3D block)
+block.Create(2.0, 2.0, 2.0)
+block.SetPosition(0.6, -0.5, 2.0)
+block.SetColor(0.75, 0.45, 0.85, 1.0)

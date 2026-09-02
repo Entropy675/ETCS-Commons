@@ -1,0 +1,41 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Run from the `Root>` prompt after scene_demo.etcs, handing it the RIDs the
+# navigator shows you:
+#
+#     Root> RenderProvider                       # read the names + RIDs
+#     Root> scripts/scene_layer.etcs view=<RID> backdrop=<RID>
+#
+# WHY INJECTION AND NOT attach. A script started from the prompt is a ROOT
+# script, and preflight scopes a root script against NO globals on purpose --
+# a root is the thing that CREATES the globals, so resolving its own names
+# against a previous root's would make two independent trees silently share a
+# namespace. The refusal is correct; it just means the reaching-in has to be
+# explicit, which is what an injected RID is. `requires` below is the
+# receiving half of that: it states what this script must be handed, and the
+# family it must belong to, and is checked before line one runs.
+requires view     [Surface]
+requires backdrop [Pixels]
+
+# A new layer, spawned into the live runtime.
+spawn RenderProvider::ImageSurface note
+note.Create(220, 120)
+note.Clear(0.05, 0.35, 0.20, 0.90)
+note.DrawRect(10, 10, 200, 30, 0.95, 0.95, 0.90, 1.0)
+
+# WHY THE WHOLE SCENE IS RESTATED, and not just the new layer.
+#
+# A surface's composition is RETAINED until it is presented, and the first
+# draw call after a present starts a NEW one (VulkanSurface::
+# beginCompositionIfPresented). So a lone Blit here would not add a layer to
+# the picture -- it would REPLACE the picture with one layer. An edit batch is
+# a whole composition, always.
+#
+# That is the honest shape of a scene that lives in a script rather than in
+# the entity tree, and it is the clearest argument for the Drawable families:
+# once the scene IS the tree, adding a layer is a spawn under a parent and
+# DrawInto replays the tree, with nothing to restate.
+view.Clear(0.03, 0.03, 0.05, 1.0)
+view.Blit(@backdrop, 80, 60, 864, 648, 1.0)
+view.Blit(@note, 620, 480, 0, 0, 1.0)

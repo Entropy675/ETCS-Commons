@@ -777,27 +777,17 @@ DEFINE_WORK_FUNC_TYPED(PaintInput, SetBrush,
 }
 
 /*
- * The standing input edge. Blocking, one event at a time, the same shape
- * Scene3D::ConsumeInput uses -- and it has to read `stream`, not `data`.
+ * The keyboard edge: presses begin and end strokes.
  *
- * `data` in a stream function is the CONFIG buffer: whatever the script wrote
- * after the verb, delivered once when the edge opens. The events arrive on
- * `stream`. Reading data here parses the (empty) configuration as though it
- * were an input record and then never looks again, so the edge sits open
- * having consumed nothing -- which reads as "input does not work" rather than
- * as a mistake in the wiring.
- *
- * hasData() is deliberately not used: a cross-tag pair resolves to
- * StrategyPipe, whose consumer fd is blocking, so a drain loop built on it
- * spins here and stalls on a same-module pair. Blocking readRaw is what every
- * consumer in this codebase does.
+ * `stream`, not `data` -- `data` is the config buffer delivered once when the
+ * edge opens, and the events arrive on the stream. Blocking readRaw, because a
+ * cross-tag pair is a pipe with a blocking consumer fd.
  */
 DEFINE_STREAM_FUNC_CONSUME(PaintInput, ConsumeInput)
 {
     (void)data;
 
-    ETCS_LOG("PaintInput::ConsumeInput", "paint edge open on RID:" << self.getRID()
-             << " -- pointer position places the brush, any key or button strokes.");
+    ETCS_LOG("PaintInput::ConsumeInput", "key edge open on RID:" << self.getRID());
 
     while (stream.isOpen())
     {
@@ -808,10 +798,44 @@ DEFINE_STREAM_FUNC_CONSUME(PaintInput, ConsumeInput)
 
         InputEvent ev{};
         slot.readRaw(&ev, sizeof(InputEvent));
+        if (ev.action == INPUT_MOTION) continue;
         self.HandleEvent(ev);
     }
 
-    ETCS_LOG("PaintInput::ConsumeInput", "paint edge closed.");
+    ETCS_LOG("PaintInput::ConsumeInput", "key edge closed.");
+}
+
+/*
+ * The pointer edge: positions place the brush.
+ *
+ * TWO EDGES, and the correlation cost is nil because the position is ABSOLUTE.
+ * A press means "begin a stroke where the pointer is", and the pointer's
+ * position is already known from the last sample -- it does not have to arrive
+ * in the same stream, or in any particular order relative to the press. The
+ * worst a split costs is that a press lands on a position one sample old, which
+ * at pointer rates is invisible; what it buys is that a keystroke never queues
+ * behind a burst of motion.
+ */
+DEFINE_STREAM_FUNC_CONSUME(PaintInput, ConsumePointer)
+{
+    (void)data;
+
+    ETCS_LOG("PaintInput::ConsumePointer", "pointer edge open on RID:" << self.getRID());
+
+    while (stream.isOpen())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+
+        ETCS::Buffer slot;
+        if (!stream.readRaw(slot)) break;
+
+        InputEvent ev{};
+        slot.readRaw(&ev, sizeof(InputEvent));
+        if (ev.action != INPUT_MOTION) continue;
+        self.HandleEvent(ev);
+    }
+
+    ETCS_LOG("PaintInput::ConsumePointer", "pointer edge closed.");
 }
 
 // Pointer <x> <y> / Press / Release -- a stroke without a device. See

@@ -1,0 +1,23 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# 3-Node Causal DAG: Source -> Processing -> Archive
+# Orchestrator only — no direct DB actions here, just role wiring.
+
+spawn DatabaseProvider::LocalDatabase source
+run source_node.etcs db=source
+
+spawn DatabaseProvider::LocalDatabase processing
+run processing_node.etcs db=processing
+
+run mirror_users.etcs from=source to=processing
+run processing_derive.etcs db=processing
+
+spawn DatabaseProvider::LocalDatabase archive
+run archive_node.etcs db=archive
+
+run mirror_audit.etcs from=processing to=archive
+
+# Reverse dependency shutdown
+archive.Disconnect()
+processing.Disconnect()
+source.Disconnect()

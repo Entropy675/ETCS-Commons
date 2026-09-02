@@ -1,0 +1,13 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+spawn NetworkProvider::HttpServer web
+web.SetPort(8080)
+
+web.spawn(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(./www)
+tree.ListPaths()
+
+web.AddHandler(@web Serve)
+web.Start()
+web.IsStarted()

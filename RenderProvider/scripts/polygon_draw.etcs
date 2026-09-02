@@ -1,0 +1,22 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Replay the tree onto the surface, as it currently stands.
+#
+#     Root> scripts/polygon_draw.etcs scene=<scene RID> view=<view RID>
+#
+# Useful after changing anything -- a SetOrder, a SetFill, a delete. The
+# composition on a Surface is retained until presented and restarted by the
+# next draw, so one Draw of the scene is a whole, fresh statement of the scene.
+# NOT named `root`: the shell reserves that name (a detached script binds its
+# own Root under it), and an injection argument called `root` is refused before
+# the script starts. Worth knowing before you name a parameter after the thing
+# it obviously is.
+requires scene [Drawable2D]
+requires view [Surface]
+
+# Clear delimits the composition: it starts a fresh picture, and DrawRect and
+# Blit only ever append to it. Without this the tree would be appended to the
+# previous statement of itself every time.
+view.Clear(0.02, 0.02, 0.03, 1.0)
+scene.Draw(@view)

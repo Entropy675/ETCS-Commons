@@ -1,0 +1,17 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+requires game
+ensure NetworkProvider::HttpServer web
+web.SetPort(8080)
+
+web.spawn(NetworkProvider::StaticHtmlPage board_page)
+board_page.SetHtmlFromFile(./www/static/chess.html)
+
+web.ensure(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(./www)
+tree.ListPaths()
+
+web.AddRoute(@game Request @game Filter)
+web.Start()
+web.IsStarted()
