@@ -694,6 +694,24 @@ DEFINE_WORK_FUNC(Scene3D, Halt)
 
 // Read the order vector back: both rows, and the three quantities the relation
 // between them defines. The shell's window into what a point is carrying.
+// Where the look is pointing, in the two angles it is made of, plus the
+// bounds each is held to. Both limits are invariants of applyLookTo and
+// neither was observable before -- so a yaw that had quietly grown to 40,000
+// radians and a pitch sitting on the pole looked identical from outside to
+// ones that had not.
+DEFINE_WORK_FUNC(Scene3D, Look)
+{
+    (void)data; (void)ctx;
+    constexpr float DEG = 57.2957795f;
+    ETCS_LOG("Scene3D::Look",
+             "yaw=" << self.Yaw() << " rad (" << self.Yaw() * DEG << " deg), wrapped to [-pi, pi)"
+             "   pitch=" << self.Pitch() << " rad (" << self.Pitch() * DEG << " deg), "
+             "clamped to +/-85 deg"
+             "\n    turn rate " << self.TurnsPerPass() << " turn(s) per pass across "
+             << self.FrameWidth() << " frame units, x" << self.Sensitivity()
+             << " -> " << self.RadiansPerUnit() << " rad per unit");
+}
+
 DEFINE_WORK_FUNC(Scene3D, Order)
 {
     (void)data; (void)ctx;

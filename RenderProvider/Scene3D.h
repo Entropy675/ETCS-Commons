@@ -262,6 +262,14 @@ public:
     void SetTurnsPerPass(float t)    { if (t     > 0.0f) m_turns      = t; }
     void SetSensitivity(float scale) { if (scale > 0.0f) m_sens_scale = scale; }
 
+    // The look's state, as the two angles it actually is. Reported rather than
+    // inferred: the previous limit was a rejection test on a rotated vector's
+    // y component, so "how far up is this looking" had no answer anywhere and
+    // the only way to check a bound was to look at the screen and guess. A
+    // constraint nothing can read is a constraint nothing can test.
+    float Yaw() const   { return m_yaw; }
+    float Pitch() const { return m_pitch; }
+
     float TurnsPerPass() const   { return m_turns; }
     float Sensitivity() const    { return m_sens_scale; }
     float RadiansPerUnit() const { return radiansPerPixel(); }
@@ -1183,12 +1191,43 @@ private:
  * one axis that stays meaningful as yaw changes. Euler order and gimbal lock
  * do not arise, because there are no Euler angles.
  *
- * THE PITCH CLAMP IS A REJECTION, not a wrap. A delta that would carry the
- * forward vector past the pole is dropped and the yaw still applies, so
- * pushing the mouse up at the top of the arc keeps turning instead of
- * flipping the world over. At the pole itself the camera basis collapses and
- * buildView refuses -- the view would blank for as long as the mouse was
- * held there -- so this is a limit rather than a failure.
+ * THE STATE IS TWO ANGLES, AND ROW 3 IS REBUILT FROM THEM. Not composed onto
+ * -- rebuilt, every time, from a yaw and a pitch this type owns. That is the
+ * change that makes both of the limits below expressible at all, and it is
+ * worth being explicit about why the incremental version could not have them.
+ *
+ * Composing each delta onto row 3 leaves the accumulated angles nowhere. The
+ * orientation is a quaternion, which is a fine thing to hold a rotation in and
+ * a useless thing to ask "how far up is this looking" -- so a pitch limit had
+ * to be enforced by ROTATING FIRST AND INSPECTING THE RESULT, dropping the
+ * whole delta if the answer came out past the pole. Two costs followed. The
+ * limit was a cliff: near the top, a delta the size of an ordinary flick was
+ * discarded entire, so the view stopped dead rather than easing into the stop.
+ * And yaw had no bounded representation anywhere, so nothing could wrap it.
+ *
+ * With the angles held, both are arithmetic:
+ *
+ *   YAW WRAPS. It is an angle on a circle, so its range is the circle:
+ *   accumulated and folded back into [-pi, pi). Turning right forever is the
+ *   same few numbers recurring rather than a float32 growing without bound --
+ *   which is not merely untidy, it is a loss of precision that shows up as the
+ *   view getting coarser the longer you play, since a float carries far fewer
+ *   fractional bits at 40,000 radians than at 3.
+ *
+ *   PITCH CLAMPS, and does not reach the axis. Up and down are NOT a circle:
+ *   looking past straight up does not continue, it inverts the world. So pitch
+ *   saturates at PITCH_LIMIT_RAD, short of the pole by a real margin rather
+ *   than by an epsilon -- at the pole the forward vector is parallel to world
+ *   up, the camera's right is undefined, and buildView correctly refuses to
+ *   produce a basis, which is a blank frame. Clamping the scalar also DISCARDS
+ *   the surplus, so holding the mouse up at the stop and then pulling down
+ *   moves immediately, instead of first unwinding an invisible debt.
+ *
+ * YAW ABOUT WORLD UP, PITCH ABOUT THE REFERENCE RIGHT, applied pitch-then-yaw.
+ * That order is what makes the two behave as a head turning rather than a body
+ * rolling: the horizon stays level at any pitch, and pitch stays meaningful as
+ * yaw changes. Euler order and gimbal lock do not arise -- there are two
+ * angles and one composition, not a chain of three.
  */
     void applyLookTo(Camera_* camera)
     {
@@ -1204,39 +1243,49 @@ private:
         if (!m_look_seeded)
         {
             m_ref_fwd = Point3D{ rx / dist, ry / dist, rz / dist };
+
+            // The axis pitch turns about, fixed at seeding rather than
+            // recomputed per delta: it is the reference frame's right, and the
+            // reference frame does not move. Flattened (y dropped) because
+            // pitch about anything with a vertical component is roll.
+            float rgx = m_ref_fwd.z, rgz = -m_ref_fwd.x;
+            const float rl = std::sqrt(rgx * rgx + rgz * rgz);
+            if (rl > 1e-5f) { m_ref_right = Point3D{ rgx / rl, 0.0f, rgz / rl }; }
+            else
+            {
+                // The scene was pointed straight up or down to begin with, so
+                // "right" is not determined by the look direction. Any
+                // horizontal axis is as good as any other; naming one beats
+                // leaving the first pitch undefined.
+                m_ref_right = Point3D{ 1.0f, 0.0f, 0.0f };
+                ETCS_LOG("Scene3D", "initial look is vertical -- pitch axis defaulted to "
+                         "world +X. Point the camera off the pole to choose it.");
+            }
+
             // Row 2: what the look turns about is the eye, in the scene's
             // frame -- a first-person look is a rotation about the viewer, and
             // that is exactly what a pivot is for.
             m_ov.SetPivot(v.position.x - m_ov.x, v.position.y - m_ov.y, v.position.z - m_ov.z);
             m_ov.Orient(0.0f, 0.0f, 0.0f, 0.0f);
+            m_yaw = 0.0f;
+            m_pitch = 0.0f;
             m_look_seeded = true;
             return;
         }
         if (!m_look_dirty.exchange(false, std::memory_order_relaxed)) return;
 
-        const float dyaw   = takePending(m_pending_yaw);
-        const float dpitch = takePending(m_pending_pitch);
+        m_yaw   = wrapAngle(m_yaw   + takePending(m_pending_yaw));
+        m_pitch = clampPitch(m_pitch + takePending(m_pending_pitch));
 
-        if (dyaw != 0.0f) m_ov.RotateBy(0.0f, 1.0f, 0.0f, dyaw);
-
-        if (dpitch != 0.0f)
-        {
-            // The right axis of the CURRENT orientation, which is what pitch
-            // has to turn about for the horizon to stay level.
-            float fwx = m_ref_fwd.x, fwy = m_ref_fwd.y, fwz = m_ref_fwd.z;
-            m_ov.RotateVector(fwx, fwy, fwz);
-            float rgx = fwz, rgy = 0.0f, rgz = -fwx;          // up x forward, flattened
-            const float rl = std::sqrt(rgx * rgx + rgz * rgz);
-            if (rl > 1e-5f)
-            {
-                rgx /= rl; rgz /= rl;
-                OrderVector probe = m_ov;
-                probe.RotateBy(rgx, rgy, rgz, dpitch);
-                float px = m_ref_fwd.x, py = m_ref_fwd.y, pz = m_ref_fwd.z;
-                probe.RotateVector(px, py, pz);
-                if (std::fabs(py) < 0.999f) m_ov = probe;     // else: at the pole, drop it
-            }
-        }
+        // Rebuilt from the two angles, never accumulated onto. RotateBy
+        // composes from the left, so the pitch written first is applied first
+        // and the yaw written second wraps around it -- pitch in the reference
+        // frame, yaw in the world's, which is the level-horizon order.
+        m_ov.Orient(0.0f, 0.0f, 0.0f, 0.0f);
+        if (m_pitch != 0.0f)
+            m_ov.RotateBy(m_ref_right.x, m_ref_right.y, m_ref_right.z, m_pitch);
+        if (m_yaw != 0.0f)
+            m_ov.RotateBy(0.0f, 1.0f, 0.0f, m_yaw);
 
         float fx2 = m_ref_fwd.x, fy2 = m_ref_fwd.y, fz2 = m_ref_fwd.z;
         m_ov.RotateVector(fx2, fy2, fz2);
@@ -1261,6 +1310,61 @@ private:
     {
         Drawable2D_* plane = cameraPlane(c);
         return plane ? plane->Bounds().w : 0u;
+    }
+
+    /*
+ * Fold an angle back onto the circle, into [-pi, pi).
+ *
+ * SUBTRACTING MULTIPLES RATHER THAN fmod-ing ONCE, because the input is an
+ * accumulated angle plus one frame's worth of delta -- so it is already in
+ * range or a single turn outside it, and a loop that almost never runs beats a
+ * division. The bound on iterations is the caller's: no single frame's pending
+ * yaw is more than a few turns.
+ *
+ * The range is half-open on purpose. Exactly -pi and exactly +pi are the same
+ * direction, and letting both exist means a value that is arithmetically
+ * bounded but still has two spellings -- which is the sort of thing that reads
+ * as a flicker when something compares them.
+ */
+    static float wrapAngle(float a)
+    {
+        constexpr float TWO_PI = 6.28318530718f;
+        constexpr float PI     = 3.14159265359f;
+        while (a >= PI)  a -= TWO_PI;
+        while (a < -PI)  a += TWO_PI;
+        return a;
+    }
+
+    /*
+ * Saturate pitch short of the pole. See applyLookTo's header for why this is a
+ * clamp and yaw is a wrap -- up is not a circle you come back around.
+ *
+ * THE MARGIN IS FIVE DEGREES, not an epsilon, and the size of it is the whole
+ * decision. What fails at the pole is not the arithmetic, it is the BASIS:
+ * forward becomes parallel to world up, their cross product goes to zero, and
+ * the camera has no right vector to build a view from. Approaching that, the
+ * basis does not fail so much as become badly CONDITIONED -- the horizon's
+ * direction is decided by an ever-smaller cross product, so it swings further
+ * and further for the same tiny movement. The last couple of degrees are
+ * visibly unstable well before anything actually breaks, which is why a limit
+ * set just shy of the singularity does not feel like a limit at all, it feels
+ * like the control coming apart at the top of its range.
+ *
+ * The previous limit was 87.4 degrees, and it was expressed as a rejection
+ * test on the forward vector's y (|y| < 0.999) rather than as an angle -- so
+ * what it actually bounded was hard to see, and it sat inside the unstable
+ * band. Five degrees is a margin you can state, and one that leaves the sky
+ * and the floor both comfortably in view.
+ */
+    static float clampPitch(float p)
+    {
+        // 85 degrees. sin(85 deg) = 0.9962, so the forward vector keeps a
+        // horizontal component of ~0.087 -- small, but two orders of magnitude
+        // clear of the zero that collapses the basis.
+        constexpr float PITCH_LIMIT_RAD = 1.48353f;
+        if (p >  PITCH_LIMIT_RAD) return  PITCH_LIMIT_RAD;
+        if (p < -PITCH_LIMIT_RAD) return -PITCH_LIMIT_RAD;
+        return p;
     }
 
     // Accumulate onto an atomic float. A CAS loop rather than a plain
@@ -1359,11 +1463,43 @@ private:
     std::atomic<bool>  m_look_dirty{false};
     bool               m_look_seeded = false;
     Point3D            m_ref_fwd{0.0f, 0.0f, 1.0f};   // what row 3 rotates FROM
+    Point3D            m_ref_right{1.0f, 0.0f, 0.0f}; // and what pitch turns about
+
+    // THE LOOK'S ACTUAL STATE. Row 3 is derived from these every time, not the
+    // other way round -- see applyLookTo. Held here rather than read back out
+    // of the quaternion because a bounded yaw and a clamped pitch are
+    // questions a quaternion cannot answer without being taken apart.
+    // Frame-thread only, like the rest of applyLookTo; the atomics above are
+    // the input edge's side of the handoff.
+    float              m_yaw   = 0.0f;   // wrapped to [-pi, pi)
+    float              m_pitch = 0.0f;   // clamped short of the pole
     uint32_t           m_frame_w    = 0;
     float              m_ground_fx  = 0.0f;   // last usable horizontal facing
     float              m_ground_fz  = 1.0f;
     float              m_sens_scale = 1.0f;
-    float              m_turns      = 2.0f;     // full rotations per frame-width pass
+
+    /*
+ * ONE full rotation per pass across the frame, not two.
+ *
+ * THE SPEC IT SETTLES had two halves that disagreed by exactly this factor:
+ * "half way across the screen is a full pi rotation" and "the entire breadth
+ * rotates the camera twice". Half a pass being pi makes a whole pass 2pi,
+ * which is ONE turn -- so the first half of that sentence and the second half
+ * cannot both hold, and shipping 2.0 honoured the half that reads as a count
+ * over the half that names an angle.
+ *
+ * Naming an angle is the more precise statement, and it is also the one the
+ * hand agrees with: at 2.0 the view has gone right round before the pointer
+ * reaches the middle of the window, which is what "excessively high" is
+ * describing. 1.0 makes the frame's width one revolution and its half-width a
+ * half revolution, so a movement to the edge of the frame turns the view to
+ * what was behind you -- which is the proportion a look control is usually
+ * reaching for.
+ *
+ * SetTurnsPerPass(2.0) restores the old feel exactly; nothing about it was
+ * wrong except which half of the sentence it believed.
+ */
+    float              m_turns      = 1.0f;     // full rotations per frame-width pass
 
     std::chrono::steady_clock::time_point m_last_step{};
     bool                                  m_stepped = false;
