@@ -1551,7 +1551,26 @@ private:
  * render_scene3d.etcs uses, worked out to 4.08 in these units. Measured
  * directly -- 40 pixels of pointer travel slid the image 167 pixels.
  */
-    float              m_sens_scale = 1.0f;
+/*
+ * TWO full turns across the frame's width, not one.
+ *
+ * One turn is the tidier number and the worse control. It puts a half turn --
+ * the commonest thing anybody asks a look for, turning to face behind them --
+ * at the very edge of the frame, so the pointer spends its time at the borders.
+ * Two turns puts a half turn at a QUARTER of the width from centre, which keeps
+ * ordinary use in the middle of the frame with room either side.
+ *
+ * The axis is compressed rather than clipped: every direction is still
+ * reachable, twice over, and the frame's own edges both land back at the
+ * starting direction. Nothing is lost by it.
+ *
+ * PITCH IS COMPRESSED BY THE SAME FACTOR, so its stops arrive a quarter of the
+ * way up and down from centre. That follows the same reasoning, and it is why
+ * one knob scales both: a diagonal drag should not change meaning halfway
+ * through. Decoupling them is a one-line change if the wasted vertical band
+ * turns out to matter more than the uniformity.
+ */
+    float              m_sens_scale = 2.0f;
 
     std::chrono::steady_clock::time_point m_last_step{};
     bool                                  m_stepped = false;
