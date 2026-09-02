@@ -30,6 +30,7 @@ namespace glfw_native {
 }
 
 #include <iostream>
+#include <cstdlib>
 
 class GLFWWindow :
     public WindowBase<GLFWWindow>, public InputSourceBase<GLFWWindow>,
@@ -189,6 +190,10 @@ public:
     {
         glfwPollEvents();
         flushPointerDelta();
+        // After the poll, so the window has had every chance to become
+        // viewable and focused before the grab is attempted. See
+        // SetMouseCapture for why this cannot be done where it is requested.
+        applyMouseCapture();
     }
 
     WindowPosition GetPositionConcrete() override
@@ -313,11 +318,77 @@ public:
  * wherever it was to the centre -- a large bogus delta that would snap the
  * view a quarter turn on the first frame. Found immediately on trying it.
  */
+    /*
+ * CAPTURE IS AN INTENT, RE-ASSERTED BY THE PUMP, not a call that either works
+ * or does not.
+ *
+ * WHY IT SILENTLY FAILED. A script calls this immediately after Create, which
+ * is the only sensible place to put it, and at that moment three things are
+ * true at once: the window has been asked to map but is not yet VIEWABLE,
+ * because the server and the window manager have not got to it; no
+ * glfwPollEvents has run yet, because the pump is detached later in the
+ * script; and this is running on the SCRIPT thread while the pump will run on
+ * a pool worker. Disabling the cursor means grabbing the pointer, a grab on a
+ * non-viewable window fails with GrabNotViewable, and nothing returns that
+ * failure to anybody -- so the mode was set, the log said "cursor captured",
+ * and the pointer was never grabbed.
+ *
+ * It works with no window manager and fails with one, which is exactly the
+ * shape of bug that survives being tested.
+ *
+ * SO THE STATE IS THE INTENT AND THE PUMP CARRIES IT OUT. m_capture_want is
+ * what the script asked for and never changes underneath anyone;
+ * m_capture_dirty says the platform has not been told yet. PollEventsConcrete
+ * applies it after glfwPollEvents -- on the pump thread, which is the only
+ * thread allowed to touch this, and at a point where the window has had a
+ * chance to become viewable. Focus changes re-raise it, because a window
+ * manager taking focus later is the ordinary case rather than an edge one, and
+ * because losing focus drops a grab that has to be retaken.
+ *
+ * m_mouseCaptured now tracks what was actually APPLIED, not what was asked.
+ * That distinction matters beyond bookkeeping: noteCursor picks its coordinate
+ * frame from it (see noteWindowOrigin), so believing an unapplied capture
+ * would use the wrong origin and reintroduce the window-position bug.
+ */
     void SetMouseCapture(bool on)
     {
-        if (!GetHandle()) return;
+        m_capture_want  = on;
+        m_capture_dirty = true;
+        if (on)
+        {
+            /*
+         * THE SESSION IS LOGGED WITH THE REQUEST because it is the first
+         * thing worth knowing when a capture does not take, and it cannot be
+         * asked for after the fact.
+         *
+         * This module pins GLFW to X11 (glfwInitHint above), so on a Wayland
+         * desktop everything here runs through XWayland -- where a pointer
+         * grab is subject to the compositor rather than to the X server, and
+         * confining a cursor by warping it is exactly the operation XWayland
+         * restricts. A capture that works on X11 and silently does nothing on
+         * XWayland is not a bug in this code, but it IS indistinguishable
+         * from one in a log that does not say which it was on.
+         */
+            const char* wl = std::getenv("WAYLAND_DISPLAY");
+            ETCS_LOG("GLFWWindow", "cursor capture requested -- the pump applies it once the "
+                     "window is viewable. Session: "
+                     << (wl && *wl ? "WAYLAND detected (WAYLAND_DISPLAY set) -- this module "
+                                     "pins GLFW to X11, so the grab goes through XWayland, "
+                                     "which may refuse to confine the pointer"
+                                   : "X11"));
+        }
+        else
+            ETCS_LOG("GLFWWindow", "cursor release requested.");
+        applyMouseCapture();   // may be too early; the pump will retry
+    }
+
+    // The only place the platform is actually told. Called from the pump.
+    void applyMouseCapture()
+    {
+        if (!m_capture_dirty || !GetHandle()) return;
+
         glfwSetInputMode(GetHandle(), GLFW_CURSOR,
-                         on ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+                         m_capture_want ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 #ifdef GLFW_RAW_MOUSE_MOTION
         // Explicitly OFF, not merely unrequested: GLFW leaves the mode as it
         // found it, so a previous capture that enabled it would otherwise
@@ -336,26 +407,45 @@ public:
      * cancels exactly the thing they adjusted it for.
      *
      * Without raw motion the deltas are VIRTUAL SCREEN UNITS: the same units
-     * the window's width is measured in, already through whatever
-     * acceleration curve the desktop applies. That is the right unit, because
-     * the thing being calibrated is "how far across the window did the pointer
-     * travel" -- a question with an exact answer in screen units and no answer
-     * at all in counts without knowing the hardware.
-     *
-     * So DPI leaves the model entirely: the turn rate is 2*pi * turns divided
-     * by the frame width, in the frame's own units, and a faster mouse is
-     * simply a faster mouse (Scene3D::SetTurnsPerPass).
+     * the camera's frame is measured in, already through whatever acceleration
+     * curve the desktop applies. That is the right unit, because the rate is
+     * defined as view pixels per pointer pixel (Scene3D::SetSensitivity) --
+     * a question with an exact answer in screen units and no answer at all in
+     * counts without knowing the hardware.
      */
-        primeCursor("capture toggled");
-        m_mouseCaptured = on;
-        // Logged HERE rather than at the work function, because there are two
-        // ways in -- a script calling CaptureMouse and the user pressing
-        // Ctrl+Tab -- and a mode you cannot see the second route change is a
-        // mode you debug by guessing.
-        ETCS_LOG("GLFWWindow", (on ? "cursor captured -- pointer deltas are unbounded."
-                                   : "cursor released."));
+
+        // Only now is it true. The frame noteCursor measures in follows this
+        // flag, so it must mean "applied", never "asked for".
+        const bool was = m_mouseCaptured;
+        m_mouseCaptured = m_capture_want;
+        m_capture_dirty = false;
+        primeCursor("capture applied");
+
+        if (was != m_mouseCaptured)
+            ETCS_LOG("GLFWWindow", (m_mouseCaptured
+                     ? "cursor captured -- pointer deltas are unbounded."
+                     : "cursor released."));
     }
+
     bool MouseCaptured() const { return m_mouseCaptured; }
+
+    // Ask the pump to re-issue the current intent. For the moments when a grab
+    // is known to have been dropped or to have become possible: focus changes.
+    void RequestCaptureReapply() { m_capture_dirty = true; }
+
+    // Rate-limited to the first few, because if the grab is being refused
+    // outright this fires on every pass across the window border and the log
+    // becomes the problem instead of the record of it.
+    void noteCaptureEscaped()
+    {
+        if (m_escapes_logged >= 3) { ++m_escapes_logged; return; }
+        ++m_escapes_logged;
+        ETCS_LOG("GLFWWindow", "CAPTURE NOT IN EFFECT: the cursor left the window while "
+                 "capture was believed to hold, which a grabbed pointer cannot do. The grab "
+                 "was refused and no platform reports that. Retrying on the next poll. "
+                 "(occurrence " << m_escapes_logged << (m_escapes_logged == 3
+                     ? " -- further occurrences will not be logged)" : ")"));
+    }
 
     /*
  * Deltas are derived here rather than by the callback so the "no previous
@@ -506,6 +596,12 @@ private:
 
     double m_cursorX = 0.0;
     double m_cursorY = 0.0;
+    // What was ASKED for, and whether the platform has been told yet. Kept
+    // apart from m_mouseCaptured, which is what actually took -- see
+    // SetMouseCapture.
+    bool   m_capture_want  = false;
+    bool   m_capture_dirty = false;
+    int    m_escapes_logged = 0;
     // The window's own position, kept current by window_pos_callback and
     // seeded at creation because that callback only fires on CHANGES -- the
     // placement the window is born with never produces one, and a first
@@ -559,6 +655,30 @@ void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
     handler->primeCursor(entered ? "cursor entered the window" : "cursor left the window");
+
+    /*
+ * A CAPTURED CURSOR CANNOT LEAVE THE WINDOW. That is what capturing one means,
+ * so a leave event while we believe we hold it is proof that we do not -- and
+ * it is the only proof available, because no platform reports a failed grab.
+ * glfwSetInputMode returns void, glfwGetInputMode returns the mode GLFW was
+ * ASKED for rather than the one in effect, and X refuses a grab on a
+ * non-viewable window or one another client already holds without telling the
+ * application anything.
+ *
+ * So the check is behavioural: the invariant is observable even though the
+ * state is not. Report it once and re-raise the request, because whatever
+ * blocked the grab -- a window not yet mapped, a compositor holding the
+ * pointer through an animation -- is usually gone by the next poll.
+ *
+ * This does not MAKE capture work where the platform refuses it. It converts a
+ * silent failure into a logged one that retries, which is the difference
+ * between "the mouse feels wrong" and a line saying which of the two it was.
+ */
+    if (!entered && handler->MouseCaptured())
+    {
+        handler->noteCaptureEscaped();
+        handler->RequestCaptureReapply();
+    }
 }
 
 // Focus is the one that bites under capture: losing focus releases the
@@ -569,6 +689,11 @@ void GLFWWindow::window_focus_callback(GLFWwindow* window, int focused)
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
     handler->primeCursor(focused ? "window regained focus" : "window lost focus");
+    // A grab does not survive losing focus, and a window manager handing focus
+    // over is usually the FIRST moment the grab could have succeeded -- so
+    // both edges re-raise the request rather than only the one that looks like
+    // a recovery.
+    handler->RequestCaptureReapply();
 }
 
 void GLFWWindow::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)

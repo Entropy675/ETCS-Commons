@@ -587,17 +587,22 @@ DEFINE_WORK_FUNC(CompositeDrawable2D, Delete)
     self.DeleteConcrete();
 }
 
-// The turn rate, reported the way it is derived: the physical quantities on
-// one side and the radians they produce on the other, so a value that feels
-// wrong can be traced to which input is wrong rather than guessed at.
+// The turn rate, reported the way it is derived: the setting on one side, the
+// lens it is measured against in the middle, and the radians that come out --
+// so a value that feels wrong can be traced to which input is wrong rather
+// than guessed at.
+//
+// The turns-per-pass line stays because it is the intuition people carry, but
+// it reads as a CONSEQUENCE now. It used to be the setting, and printing it
+// next to the sensitivity is the clearest way to say which of the two is
+// upstream of the other.
 static inline void logTurnRate(Scene3D& self)
 {
-    ETCS_LOG("Scene3D", "turn rate: " << self.TurnsPerPass() << " turn(s) per pass across "
-             << self.FrameWidth() << " frame units, x" << self.Sensitivity()
-             << " -> " << self.RadiansPerUnit() << " rad per unit. "
-             << "Half that width is " << self.TurnsPerPass() * 0.5f << " turn(s). "
-             << "Too fast? lower SetTurnsPerPass or SetSensitivity -- both are knobs, "
-                "smaller is slower.");
+    ETCS_LOG("Scene3D", "turn rate: sensitivity " << self.Sensitivity()
+             << " view px per pointer px, against a " << self.FrameWidth() << "x"
+             << self.FrameHeight() << " frame -> " << self.RadiansPerUnit() << " rad per px"
+             << " (= " << self.TurnsPerPass() << " turn(s) for a full pass across the width). "
+             << "1.0 makes the scene track the pointer exactly; smaller is slower.");
 }
 
 // ── Scene3D ──────────────────────────────────────────────────────────────
@@ -651,22 +656,24 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
     self.SetDamping(per_sec);
 }
 
-// The two inputs to the turn rate, and there are no others: the frame's width
-// is the axis and these say how much rotation it spans.
-//
-//   SetTurnsPerPass  full rotations per pass across the frame's width.
-//   SetSensitivity   a plain multiplier on the result, for taste.
-//
-// Both behave the way a knob should -- smaller is slower. Mouse DPI is
-// deliberately absent; see Scene3D::SetTurnsPerPass for why compensating for it
-// cancelled the very adjustment it was meant to respect.
-DEFINE_WORK_FUNC_TYPED(Scene3D, SetTurnsPerPass, (float, turns))
-{
-    (void)ctx;
-    self.SetTurnsPerPass(turns);
-    logTurnRate(self);
-}
-
+/*
+ * SetSensitivity <view_px_per_pointer_px> -- the ONE knob, and its unit is a
+ * pixel ratio: how far the scene slides across the camera for each pixel the
+ * pointer travels. 1.0 means the world tracks the cursor exactly. Smaller is
+ * slower, as a knob should be.
+ *
+ * IT REPLACES SetTurnsPerPass, which is gone rather than deprecated because
+ * two knobs onto one rate is how you get a control nobody can predict. That
+ * one expressed the rate as revolutions per pass across the frame -- exact,
+ * resize-stable, and silent about the lens, so the same setting was four times
+ * faster at 60 degrees than it would be at 20. A rate whose meaning moves when
+ * the field of view moves cannot be tuned once, which is what made picking a
+ * value for it guesswork.
+ *
+ * The base rate now comes off the camera itself (Scene3D::radPerViewPixel), so
+ * this is a preference stated against something real. Turns-per-pass is still
+ * reported -- see logTurnRate -- as the consequence it now is.
+ */
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetSensitivity, (float, scale))
 {
     (void)ctx;
@@ -694,11 +701,11 @@ DEFINE_WORK_FUNC(Scene3D, Halt)
 
 // Read the order vector back: both rows, and the three quantities the relation
 // between them defines. The shell's window into what a point is carrying.
-// Where the look is pointing, in the two angles it is made of, plus the
-// bounds each is held to. Both limits are invariants of applyLookTo and
-// neither was observable before -- so a yaw that had quietly grown to 40,000
-// radians and a pitch sitting on the pole looked identical from outside to
-// ones that had not.
+// Where the look is pointing and how fast it gets there. Both angles carry
+// bounds that applyLookTo enforces and nothing could previously read, and the
+// rate is now derived from the camera's lens rather than set -- so all four of
+// these are answers rather than settings, and this is the only place to see
+// them.
 DEFINE_WORK_FUNC(Scene3D, Look)
 {
     (void)data; (void)ctx;
@@ -707,9 +714,13 @@ DEFINE_WORK_FUNC(Scene3D, Look)
              "yaw=" << self.Yaw() << " rad (" << self.Yaw() * DEG << " deg), wrapped to [-pi, pi)"
              "   pitch=" << self.Pitch() << " rad (" << self.Pitch() * DEG << " deg), "
              "clamped to +/-85 deg"
-             "\n    turn rate " << self.TurnsPerPass() << " turn(s) per pass across "
-             << self.FrameWidth() << " frame units, x" << self.Sensitivity()
-             << " -> " << self.RadiansPerUnit() << " rad per unit");
+             "\n    sensitivity " << self.Sensitivity() << " view px per pointer px -> "
+             << self.RadiansPerUnit() << " rad per px, measured off this camera's lens "
+             "over a " << self.FrameWidth() << "x" << self.FrameHeight() << " frame"
+             "\n    which works out to " << self.TurnsPerPass()
+             << " full turn(s) for one pass across the frame's width -- a consequence of "
+             "the sensitivity and the field of view, not a setting. Too fast? "
+             "SetSensitivity(0.5) halves it; 1.0 makes the scene track the pointer exactly.");
 }
 
 DEFINE_WORK_FUNC(Scene3D, Order)

@@ -223,44 +223,97 @@ public:
     {
         if (dx == 0 && dy == 0) return;
         const float rad = radiansPerPixel();
-        // Both negated: moving the mouse right turns the view right, which
-        // means the WORLD swings left, and this is the world's angle.
-        addPending(m_pending_yaw,   -static_cast<float>(dx) * rad);
-        addPending(m_pending_pitch, -static_cast<float>(dy) * rad);
+
+        /*
+     * NOT NEGATED, and the comment that used to sit here justifying the
+     * negation was the bug.
+     *
+     * It argued that row 3 is "the world's angle", so turning the view right
+     * means swinging the world left, so the sign flips. The premise is false:
+     * applyLookTo rotates m_ref_fwd and writes the result to the CAMERA's
+     * look_at. Row 3 is the viewer's facing, not the world's. Rotating the
+     * viewer right and rotating the world right are opposite operations, and
+     * the sign was correct for the one this does not do.
+     *
+     * MEASURED, because a sign argued from a comment is how this got here.
+     * Forty pixels of pointer travel, and where the image went:
+     *
+     *     mouse right -> scene moved RIGHT   was 40 px, must be -40
+     *     mouse down  -> scene moved DOWN    was 40 px, must be -40
+     *
+     * Turning your head right slides the world left; that is what a look
+     * control is. Positive yaw about world up carries forward toward +X, and
+     * +X is right (up x forward, SurfaceBase's basis), so a rightward delta is
+     * a POSITIVE yaw. Pitch follows the same reasoning about the reference
+     * right axis.
+     *
+     * It is also, I suspect, most of what read as inertia: with both axes
+     * inverted, every correction goes further wrong before it comes back, and
+     * a control that fights the hand feels like a control with momentum.
+     */
+        addPending(m_pending_yaw,   static_cast<float>(dx) * rad);
+        addPending(m_pending_pitch, static_cast<float>(dy) * rad);
         m_look_dirty.store(true, std::memory_order_relaxed);
     }
 
     /*
- * THE WINDOW IS THE AXIS. The pointer's travel across the frame's width maps
- * onto rotation about the camera, as a plain proportion:
+/*
+ * SENSITIVITY IS A PIXEL RATIO: how many pixels the scene slides across the
+ * camera for each pixel the pointer travels. One means the world tracks the
+ * cursor exactly -- drag by forty pixels, the image moves forty pixels.
  *
- *     radians per unit = 2*pi * turns / frame_width_px
+ * THAT IS THE UNIT because it is the only one both ends of this share. A mouse
+ * delta arrives in screen pixels; a camera renders pixels. Every other framing
+ * of "sensitivity" has to invent a bridge between them and then defend the
+ * bridge -- and the two this replaced are worth naming, because each was
+ * discarded for a different reason and only one of them was wrong.
  *
- * so a pointer that has moved the full width of the frame has turned the view
- * through `turns` full rotations, and half the width is half of that. Nothing
- * else is in it -- no hardware constant, no measurement, no assumption.
+ *   DPI was wrong. Deriving the rate from counts-per-inch solves the wrong
+ *   problem in the wrong units: DPI is not a property to compensate for, it is
+ *   the SETTING A USER CHANGES to make their mouse faster, so dividing it back
+ *   out cancels precisely the adjustment they made. No platform reports it
+ *   either, so the number had to be supplied and was wrong by default.
  *
- * WHY DPI IS GONE, having been in here twice. Deriving the rate from mouse
- * counts-per-inch was solving the wrong problem in the wrong units. DPI is
- * not a property to be compensated for, it is the SETTING A USER CHANGES to
- * make their mouse faster or slower -- so dividing it back out cancels
- * precisely the adjustment they made, and a 3200-DPI mouse ends up behaving
- * like an 800-DPI one. Worse, no platform reports it, so the number had to be
- * supplied and was wrong by default.
+ *   TURNS-PER-PASS was not wrong, it was UNANCHORED. "A pass across the frame
+ *   is N revolutions" is exact, resize-stable, and says nothing about how fast
+ *   that feels, because it never consults the lens. At 60 degrees it was four
+ *   times faster than the hand; at 20 degrees the same setting would be twelve
+ *   times faster -- the same number, a different control. A rate that changes
+ *   meaning when the lens changes is not a rate, and picking a value for it was
+ *   guesswork by construction.
  *
- * Without raw motion the deltas arrive in the same virtual screen units the
- * frame's width is measured in (GLFWWindow::SetMouseCapture), which is what
- * makes the proportion above exact rather than approximate. A faster mouse
- * covers the width in less hand movement, which is what a faster mouse is
- * for.
+ * THE RATE, WHICH IS THE CAMERA'S OWN. Perspective puts a point at
+ * x = (W/2) * tan(phi) / tan(fov_x/2), so near the view centre one pixel
+ * subtends
  *
- * BOTH AXES SHARE THE RATE, so a diagonal movement turns yaw and pitch
- * through the same angle -- the pointer is moving in one plane and the view
- * should follow it uniformly. Pitch reaches its limit far sooner only because
- * its range is a quarter turn rather than unbounded.
+ *     radians per view pixel = 2 * tan(fov_y / 2) / frame_height_px
+ *
+ * and the rotation for a delta is that, times the sensitivity, times the
+ * delta. It falls out of the projection rather than being fitted to it, which
+ * is why it needs no constant: change the lens and the control keeps the same
+ * feel, because the feel was defined against the lens.
+ *
+ * IT IS EXACT AT THE CENTRE AND SLIGHTLY UNDER AT THE EDGES -- the tangent is
+ * not linear, so a feature at the rim of a 75-degree view moves a few percent
+ * more than one at the middle. Measured at 2.3% across two thirds of the
+ * frame. Linearising at the centre is the right call: the centre is where a
+ * first-person view is aimed, and the alternative is a rate that varies with
+ * where you happen to be looking, which is a worse control than one that is
+ * slightly generous at the corners.
+ *
+ * BOTH AXES SHARE IT, and here that is an identity rather than a choice: the
+ * expression above contains only fov_y and the frame HEIGHT, which is exactly
+ * what the vertical projection is built from too. So a diagonal drag moves the
+ * scene diagonally by the same number of pixels it moved the pointer. Pitch
+ * still reaches its limit far sooner, because its range is 170 degrees rather
+ * than unbounded.
+ *
+ * The deltas themselves are already in the right units -- raw motion is off,
+ * so they arrive in the same virtual screen pixels the frame is measured in
+ * (GLFWWindow::SetMouseCapture). A faster mouse covers the frame in less hand
+ * movement, which is what a faster mouse is for.
  */
-    void SetTurnsPerPass(float t)    { if (t     > 0.0f) m_turns      = t; }
-    void SetSensitivity(float scale) { if (scale > 0.0f) m_sens_scale = scale; }
+    void SetSensitivity(float px)    { if (px    > 0.0f) m_sens_scale = px; }
 
     // The look's state, as the two angles it actually is. Reported rather than
     // inferred: the previous limit was a rejection test on a rotated vector's
@@ -270,10 +323,22 @@ public:
     float Yaw() const   { return m_yaw; }
     float Pitch() const { return m_pitch; }
 
-    float TurnsPerPass() const   { return m_turns; }
     float Sensitivity() const    { return m_sens_scale; }
     float RadiansPerUnit() const { return radiansPerPixel(); }
-    uint32_t FrameWidth() const  { return m_frame_w ? m_frame_w : 1024u; }
+    uint32_t FrameWidth() const  { return m_frame_w ? m_frame_w : NOMINAL_FRAME_W; }
+    uint32_t FrameHeight() const { return m_frame_h ? m_frame_h : NOMINAL_FRAME_H; }
+
+    // Derived, not stored: how many full revolutions one pass across the
+    // frame's width now amounts to. Kept because it is the intuition the old
+    // knob was built on and a useful thing to read back -- but it is a
+    // CONSEQUENCE of the sensitivity and the lens now, not a setting, which is
+    // the whole change. Asking for a particular number here means choosing a
+    // sensitivity and a field of view that produce it.
+    float TurnsPerPass() const
+    {
+        const float r = radiansPerPixel();
+        return r > 0.0f ? (r * static_cast<float>(FrameWidth())) / 6.28318530718f : 0.0f;
+    }
 
     // Restart the pipeline after a key change. A scene at rest marks nothing,
     // so nothing re-renders, so nothing calls Interact and the first keypress
@@ -1294,22 +1359,52 @@ private:
                              v.position.z + fz2 * dist };
         camera->SetView(v);
 
+        // The lens is only reachable here, and it can change under us --
+        // SetLens, or a resize of the camera's plane -- so it is re-measured
+        // every look rather than sampled once at seeding.
         m_frame_w = cameraWidth(camera);
+        m_frame_h = cameraHeight(camera);
+        const float rpp = radPerViewPixel(v, m_frame_h);
+        if (rpp > 0.0f) m_rad_per_view_px.store(rpp, std::memory_order_relaxed);
     }
 
-    // The proportion in SetTurnsPerPass's comment, applied. Falls back to a
-    // nominal width until the first projection has told us the real one.
+    /*
+ * SetSensitivity's ratio, converted to an angle. See its comment for the
+ * derivation; this is that expression and nothing else.
+ *
+ * m_rad_per_view_px is measured off the CAMERA and cached by applyLookTo,
+ * because this is called from the input edge where there is no camera to ask.
+ * Until the first look has run there is no lens to measure, so it falls back
+ * to the nominal 60 degrees over 768 -- which is a starting value, not a
+ * constant the model depends on: the first frame replaces it with the real
+ * one.
+ */
     float radiansPerPixel() const
     {
-        const float w = static_cast<float>(m_frame_w ? m_frame_w : 1024u);
-        if (!(w > 0.0f)) return 0.0f;
-        return (2.0f * 3.14159265f * m_turns / w) * m_sens_scale;
+        const float base = m_rad_per_view_px.load(std::memory_order_relaxed);
+        return (base > 0.0f ? base : NOMINAL_RAD_PER_PX) * m_sens_scale;
+    }
+
+    // The lens, as one number: radians subtended by one pixel at the view
+    // centre. Only fov_y and the height appear, which is why yaw and pitch
+    // share it exactly -- see SetSensitivity.
+    static float radPerViewPixel(const ViewFrustum& v, uint32_t height_px)
+    {
+        if (!height_px) return 0.0f;
+        if (!(v.fov_y_radians > 0.0f) || v.fov_y_radians >= 3.14159265f) return 0.0f;
+        return 2.0f * std::tan(v.fov_y_radians * 0.5f) / static_cast<float>(height_px);
     }
 
     static uint32_t cameraWidth(Camera_* c)
     {
         Drawable2D_* plane = cameraPlane(c);
         return plane ? plane->Bounds().w : 0u;
+    }
+
+    static uint32_t cameraHeight(Camera_* c)
+    {
+        Drawable2D_* plane = cameraPlane(c);
+        return plane ? plane->Bounds().h : 0u;
     }
 
     /*
@@ -1473,33 +1568,38 @@ private:
     // the input edge's side of the handoff.
     float              m_yaw   = 0.0f;   // wrapped to [-pi, pi)
     float              m_pitch = 0.0f;   // clamped short of the pole
+    // What the rate falls back to before any camera has been looked through.
+    // A starting value only: the first frame measures the real lens and
+    // replaces it, so nothing in the model rests on these.
+    static constexpr uint32_t NOMINAL_FRAME_W    = 1024u;
+    static constexpr uint32_t NOMINAL_FRAME_H    = 768u;
+    static constexpr float    NOMINAL_RAD_PER_PX = 0.00150350f;  // 60 deg over 768
+
     uint32_t           m_frame_w    = 0;
+    uint32_t           m_frame_h    = 0;
+
+    // Written by the frame thread from the camera's lens, read by the input
+    // edge. Atomic because those are different threads and this is the one
+    // value that crosses between them outside the pending-angle handoff;
+    // relaxed because a rate that is one frame stale is indistinguishable
+    // from one that is not.
+    std::atomic<float> m_rad_per_view_px{0.0f};
     float              m_ground_fx  = 0.0f;   // last usable horizontal facing
     float              m_ground_fz  = 1.0f;
-    float              m_sens_scale = 1.0f;
-
     /*
- * ONE full rotation per pass across the frame, not two.
+ * ONE view pixel of scene movement per pixel of pointer movement.
  *
- * THE SPEC IT SETTLES had two halves that disagreed by exactly this factor:
- * "half way across the screen is a full pi rotation" and "the entire breadth
- * rotates the camera twice". Half a pass being pi makes a whole pass 2pi,
- * which is ONE turn -- so the first half of that sentence and the second half
- * cannot both hold, and shipping 2.0 honoured the half that reads as a count
- * over the half that names an angle.
+ * The default is 1.0 because 1.0 is the only value in this unit that means
+ * something on its own: the world tracks the cursor. Every other number is a
+ * preference stated as a multiple of that, which is what makes this a knob
+ * worth handing over -- 0.5 is "half as fast as my hand", and that is a
+ * sentence, where "0.5 turns per pass" was a measurement of the wrong thing.
  *
- * Naming an angle is the more precise statement, and it is also the one the
- * hand agrees with: at 2.0 the view has gone right round before the pointer
- * reaches the middle of the window, which is what "excessively high" is
- * describing. 1.0 makes the frame's width one revolution and its half-width a
- * half revolution, so a movement to the edge of the frame turns the view to
- * what was behind you -- which is the proportion a look control is usually
- * reaching for.
- *
- * SetTurnsPerPass(2.0) restores the old feel exactly; nothing about it was
- * wrong except which half of the sentence it believed.
+ * For scale against what this replaces: the old rate, at the 60-degree lens
+ * render_scene3d.etcs uses, worked out to 4.08 in these units. Measured
+ * directly -- 40 pixels of pointer travel slid the image 167 pixels.
  */
-    float              m_turns      = 1.0f;     // full rotations per frame-width pass
+    float              m_sens_scale = 1.0f;
 
     std::chrono::steady_clock::time_point m_last_step{};
     bool                                  m_stepped = false;
