@@ -88,27 +88,24 @@ static inline ETCS::Entity* paint_resolve_tag(const char* tag, ETCS::RID rid)
 /*
  * EVERY PIXEL OWNER ABOVE THE TARGET NOW HOLDS A STALE COPY.
  *
- * The same walk Camera3D::markPath, PolygonDrawable2D::markCompositorsDirty
- * and Scene3D::markPixelPath make, and the same rule: whoever holds a merged
- * copy of what just changed is out of date, and every pixel owner above you
- * holds one. Those three walk it because a node in the TREE changed. This one
- * walks it because a brush wrote into a node's buffer from OUTSIDE the tree,
- * which nothing else in the walk can notice.
+ * The walk and the rule are ontology/Pixels.h's; what is specific here is the
+ * reason for taking it. Every other caller marks because a node in the TREE
+ * changed. This one marks because a brush wrote into a node's buffer from
+ * OUTSIDE the tree, which nothing in the tree can notice.
  *
- * It is the whole reason strokes were landing and never appearing. The canvas
- * buffer had the paint in it from the first stamp; the compositor above it had
- * blitted a copy before any of that happened, was never told otherwise, and
- * correctly re-presented its snapshot 900 times.
+ * That is the whole reason strokes were landing and never appearing: the
+ * canvas buffer had the paint in it from the first stamp; the compositor
+ * above it had blitted a copy before any of that happened, was never told
+ * otherwise, and correctly re-presented its snapshot 900 times.
+ *
+ * By RID and held, because the target belongs to another module and may be
+ * deleted between two points of one stroke.
  */
 static inline void paint_mark_pixel_path(ETCS::RID target)
 {
     ETCS::Held<Surface_> held = ETCS::resolve_held<Surface_>("Surface", target);
     if (!held) return;
-    for (ETCS::Entity* n = static_cast<ETCS::Entity*>(held.get()); n; n = n->getParent())
-    {
-        void* p = n->getInterfacePointer(ETCS::Buffer("Pixels"));
-        if (p) static_cast<Pixels_*>(p)->MarkDirty();
-    }
+    etcs_mark_pixel_path(static_cast<ETCS::Entity*>(held.get()));
 }
 
 static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,

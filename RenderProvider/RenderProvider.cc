@@ -6,7 +6,7 @@
 // on why the clock and the Vulkan work sit on the sides they do).
 // Instance and ImageSurface stay BASIC -- neither has anything continuous
 // to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel ClayLayout")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
@@ -42,8 +42,15 @@ ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
 // at all -- see CompositeDrawable2D.h on how Pixels_'s own dirty flag ends up
 // serving both this and the device upload, in sequence.
 ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
-    Create, SetPosition, SetOrder, SetBackground, SetRetain,
+    Create, SetPosition, SetOrder, SetBackground, SetRetain, MoveTo, ResizeTo,
     Draw, Clear, DrawRect, Blit, Delete)
+
+// The layout solver. Declared once, re-solved on every size change, and not a
+// drawable at all -- it writes its answers back through MoveTo/ResizeTo, so it
+// arranges nodes from any module without knowing what any of them are.
+ETCS_TAG_BLOCK_BASIC(ClayLayout,
+    Create, AddBox, SetDirection, SetPadding, SetGap,
+    Solve, FollowResize, Report, Delete)
 
 // The 3D scene node: a box, self-similar with its children, which projects its
 // whole subtree into a camera against one depth buffer. HYBRID because of the
@@ -60,7 +67,8 @@ ETCS_TAG_BLOCK_HYBRID(Scene3D,
 // is what lets a 3D view nest under a compositor, carry UI children, or blit
 // into a window with no case anywhere for "this one is 3D".
 ETCS_TAG_BLOCK_BASIC(Camera3D,
-    Create, SetPosition, SetOrder, SetBackground, LookAt, SetLens, SetScene,
+    Create, SetPosition, SetOrder, SetBackground, MoveTo, ResizeTo,
+    LookAt, SetLens, SetScene,
     Render, Draw, Clear, DrawRect, Blit, Delete)
 
 // Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of

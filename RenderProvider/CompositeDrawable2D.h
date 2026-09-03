@@ -88,6 +88,68 @@ public:
     void SetPosition(int32_t x, int32_t y) { m_x = x; m_y = y; MarkDirty(); }
     void SetOrder(int32_t z)               { m_order = z; Reorder(); MarkDirty(); }
 
+    /*
+     * The two family verbs (ontology/Drawable2D.h, ontology/Resizable.h), so
+     * a layout solver can place and size this without knowing what it is.
+     *
+     * ResizeTo REALLOCATES, which is the reason it belongs here rather than
+     * being synthesised from SetPosition and a width field: a compositor's
+     * size IS its buffer, and Allocate zero-fills.
+     *
+     * The retained case is where that shows. A canvas's pixels are the
+     * picture, so they are put back: background first, then the old bytes
+     * into the top-left. Cropping on shrink and fresh background on grow is
+     * the only answer that needs no resampling policy -- a paint program that
+     * silently resampled the picture on every drag of a window corner would
+     * be worse than one that does not.
+     *
+     * THE BACKGROUND FILL IS NOT COSMETIC. Skipping it leaves the grown
+     * margin at alpha 0, so the compositor ABOVE shows through and a widened
+     * white canvas grows a band of window-chrome grey down its side, which
+     * reads as the layout being wrong rather than the buffer being empty.
+     *
+     * Both verbs mark the pixel path: everything above holds a merged copy of
+     * a child that just moved or changed shape.
+     */
+    bool MoveTo(Point2D p) override
+    {
+        if (p.x == m_x && p.y == m_y) return true;
+        m_x = p.x; m_y = p.y;
+        MarkDirty();
+        etcs_mark_pixel_path(this);
+        return true;
+    }
+
+    bool ResizeTo(WindowSize s) override
+    {
+        if (s.width == 0 || s.height == 0) return false;
+        if (s.width == m_w && s.height == m_h) return true;
+
+        std::vector<uint8_t> old;
+        uint32_t ow = m_w, oh = m_h;
+        if (m_retain && PixelData())
+            old.assign(PixelData(), PixelData() + PixelBytes());
+
+        m_w = s.width;
+        m_h = s.height;
+        Allocate(m_w, m_h);
+
+        if (!old.empty())
+        {
+            ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            const uint32_t cw = ow < m_w ? ow : m_w;
+            const uint32_t ch = oh < m_h ? oh : m_h;
+            for (uint32_t y = 0; y < ch; ++y)
+                std::memcpy(PixelData() + static_cast<size_t>(y) * m_w * 4,
+                            old.data()  + static_cast<size_t>(y) * ow   * 4,
+                            static_cast<size_t>(cw) * 4);
+        }
+
+        MarkDirty();
+        etcs_mark_pixel_path(this);
+        return true;
+    }
+
     // The colour the buffer is reset to at the start of every recomposition.
     // Transparent by default, which is what a layer wants -- an opaque
     // default would make every compositor a rectangle you cannot see past.

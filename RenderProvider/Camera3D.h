@@ -77,6 +77,23 @@ public:
     void SetPosition(int32_t x, int32_t y) { m_x = x; m_y = y; markPath(); }
     void SetOrder(int32_t z)               { m_order = z; Reorder(); markPath(); }
 
+    // The family verbs -- a camera is an ordinary 2D node and lays out as one.
+    // Nothing is preserved across a resize because a camera's buffer is
+    // derived: the next projection fills it completely, so copying the old
+    // frame forward would only show one stale image for one frame.
+    bool MoveTo(Point2D p) override
+    { if (p.x != m_x || p.y != m_y) { m_x = p.x; m_y = p.y; markPath(); } return true; }
+
+    bool ResizeTo(WindowSize s) override
+    {
+        if (s.width == 0 || s.height == 0) return false;
+        if (s.width == m_w && s.height == m_h) return true;
+        m_w = s.width; m_h = s.height;
+        Allocate(m_w, m_h);
+        markPath();
+        return true;
+    }
+
     // What the frame is cleared to before the scene is drawn into it. The sky,
     // in other words -- and transparent by default, so a camera nested over
     // other 2D content shows it through wherever no geometry landed.
@@ -274,27 +291,10 @@ private:
         return static_cast<Scene3D*>(scene->getTrueType())->InMotion();
     }
 
-    /*
- * Mark this frame stale, AND every pixel-owning ancestor with it.
- *
- * MarkDirty alone marks the camera, which is not enough and fails silently:
- * a camera nested in a compositor is only redrawn when that compositor
- * recomposes, and a compositor recomposes only when IT is dirty -- so a
- * stale view sits inside a clean parent and is blitted, correctly, forever.
- * Found by moving a scene and watching a perfectly good frame not change.
- *
- * Same walk PolygonDrawable2D::markCompositorsDirty and Scene3D's own
- * markPixelPath make. Three nodes, one rule: whoever holds a merged copy of
- * what changed is out of date, and every pixel owner above you holds one.
- */
-    void markPath()
-    {
-        for (ETCS::Entity* n = this; n; n = n->getParent())
-        {
-            void* p = n->getInterfacePointer(ETCS::Buffer("Pixels"));
-            if (p) static_cast<Pixels_*>(p)->MarkDirty();
-        }
-    }
+    // Mark this frame stale AND every pixel-owning ancestor with it: MarkDirty
+    // alone leaves a stale view inside a clean parent, which is blitted,
+    // correctly, forever. The rule and the walk live in ontology/Pixels.h.
+    void markPath() { etcs_mark_pixel_path(this); }
 
     // 2D children draw over the projected frame, in the camera's own space.
     // Run after Render inside the same dirty window, so an overlay never

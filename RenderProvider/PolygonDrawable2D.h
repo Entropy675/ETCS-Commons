@@ -292,33 +292,12 @@ private:
         return acc;
     }
 
-    /*
- * Tell every pixel-owning ancestor that its composition is stale.
- *
- * This is the upward half of the dirty flag, and it is why a compositor can
- * skip a whole subtree safely: a node that changes is responsible for saying
- * so, and it says so to exactly the nodes that cached it -- the compositors
- * on the path from here to the root. Nothing else is touched, so a change
- * deep in one branch does not invalidate a sibling branch's cache.
- *
- * Reached through the family interface pointer, so this file needs no
- * knowledge of CompositeDrawable2D whatsoever: it marks anything that owns
- * pixels, which is exactly the set of things that could have cached it.
- *
- * Walks past a compositor rather than stopping at it -- a compositor nested
- * in a compositor caches this node too, transitively, and both must be told.
- * That is the difference between this walk and the coordinate one above,
- * which stops at the first: coordinates are relative to the NEAREST origin,
- * staleness propagates to EVERY cache.
- */
-    void markCompositorsDirty()
-    {
-        for (ETCS::Entity* node = getParent(); node; node = node->getParent())
-        {
-            void* px = node->getInterfacePointer(ETCS::Buffer("Pixels"));
-            if (px) static_cast<Pixels_*>(px)->MarkDirty();
-        }
-    }
+    // Every pixel-owning ancestor cached this node, so every one of them is
+    // stale (ontology/Pixels.h). From the PARENT up: this leaf owns no pixels
+    // of its own, so there is nothing here to mark. Note it does NOT stop at
+    // the first, unlike the coordinate walk above -- coordinates are relative
+    // to the nearest origin, staleness propagates to every cache.
+    void markCompositorsDirty() { etcs_mark_pixel_path(getParent()); }
 
     // Even-odd scanline crossings for one row, in PARENT space, sorted.
     void rowSpans(int32_t y, std::vector<int32_t>& xs) const

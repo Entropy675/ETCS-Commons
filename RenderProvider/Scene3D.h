@@ -908,29 +908,10 @@ private:
         }
     }
 
-    /*
- * Mark this node and every pixel-owning ancestor of it.
- *
- * The camera alone is not enough, and the frame that did not change is how
- * you find that out: a camera nested in a compositor is drawn by that
- * compositor's recomposition, and a compositor recomposes only when IT is
- * dirty. Marking the camera and stopping leaves a stale image sitting in a
- * clean parent, which is drawn, correctly, forever.
- *
- * So the walk is the same one PolygonDrawable2D::markCompositorsDirty
- * makes, for the same reason, and it stops at nothing: EVERY pixel owner up
- * the chain holds a merged copy of what changed, so every one of them is
- * out of date. Reached as Entity, since the chain crosses families -- a
- * camera's parent is a compositor, whose parent may be anything.
- */
-    static void markPixelPath(ETCS::Entity* node)
-    {
-        for (; node; node = node->getParent())
-        {
-            void* p = node->getInterfacePointer(ETCS::Buffer("Pixels"));
-            if (p) static_cast<Pixels_*>(p)->MarkDirty();
-        }
-    }
+    // Mark a camera and every pixel owner above it (ontology/Pixels.h). Taken
+    // as Entity because the chain crosses families: a camera's parent is a
+    // compositor, whose parent may be anything at all.
+    static void markPixelPath(ETCS::Entity* node) { etcs_mark_pixel_path(node); }
 
     // ── geometry helpers ─────────────────────────────────────────────────
 

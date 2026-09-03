@@ -543,6 +543,32 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetRetain, (int32_t, on))
                                                     : "OFF -- the buffer is derived from the tree"));
 }
 
+/*
+ * MoveTo / ResizeTo -- the FAMILY verbs, exposed so a script can drive by hand
+ * exactly what a layout drives automatically.
+ *
+ * MoveTo does the same work as SetPosition and both stay: SetPosition is what a
+ * compositor has always been told, MoveTo is what the family asks of anything
+ * placeable (ontology/Drawable2D.h). Naming them apart rather than aliasing one
+ * to the other keeps a script that never heard of layout reading the way it
+ * always did.
+ *
+ * ResizeTo REALLOCATES the buffer -- see CompositeDrawable2D.h on what happens
+ * to a retained canvas's pixels when it does.
+ */
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, MoveTo, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.MoveTo(Point2D{ x, y });
+}
+
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, ResizeTo, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    if (!self.ResizeTo(WindowSize{ w, h }))
+        ETCS_LOG("CompositeDrawable2D::ResizeTo", "refused " << w << "x" << h << ".");
+}
+
 // Recompose if anything beneath changed, then blit once. The same verb
 // PolygonDrawable2D answers, doing the same job -- which is what lets a script
 // swap one for the other without knowing which it has.
@@ -614,6 +640,100 @@ static inline void logTurnRate(Scene3D& self)
              << "(sensitivity " << self.Sensitivity() << "). The pointer's position over the "
              << "frame IS the direction -- nothing accumulates, so putting it back where it was "
              << "puts the view back exactly.");
+}
+
+// ── ClayLayout ───────────────────────────────────────────────────────────
+//
+// A layout is DECLARED once and re-solved whenever the size changes, so these
+// are setup verbs plus one trigger. ClayLayout.h has the reasoning on why it
+// is not a node in the tree it arranges.
+
+DEFINE_WORK_FUNC_TYPED(ClayLayout, Create, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    if (!self.Create(w, h))
+        ETCS_LOG("ClayLayout::Create", "layout not created.");
+}
+
+/*
+ * AddBox <node> <parent> <w_kind> <w_value> <h_kind> <h_value>
+ *
+ * kinds: 0 fit, 1 grow, 2 fixed, 3 percent. Numbers rather than four verbs
+ * that differ in one word, and a script says which it means in a comment
+ * beside the call -- see scripts/paint_editor.etcs for the shape of that.
+ *
+ * parent 0 means "this is the root of the layout".
+ */
+DEFINE_WORK_FUNC_TYPED(ClayLayout, AddBox,
+    (ETCS::RID, node), (ETCS::RID, parent),
+    (int32_t, w_kind), (float, w_value),
+    (int32_t, h_kind), (float, h_value))
+{
+    (void)ctx;
+    self.AddBox(node, parent,
+                static_cast<ClayLayout::Sizing>(w_kind), w_value,
+                static_cast<ClayLayout::Sizing>(h_kind), h_value);
+}
+
+// SetDirection <node> <0 row | 1 column>
+DEFINE_WORK_FUNC_TYPED(ClayLayout, SetDirection, (ETCS::RID, node), (int32_t, dir))
+{
+    (void)ctx;
+    self.SetDirection(node, dir != 0);
+}
+
+DEFINE_WORK_FUNC_TYPED(ClayLayout, SetPadding, (ETCS::RID, node), (float, px))
+{
+    (void)ctx;
+    self.SetPadding(node, px);
+}
+
+DEFINE_WORK_FUNC_TYPED(ClayLayout, SetGap, (ETCS::RID, node), (float, px))
+{
+    (void)ctx;
+    self.SetGap(node, px);
+}
+
+// Solve once, now -- for the first pass, and for a script that has just
+// changed the declaration. FollowResize does this on every size change.
+DEFINE_WORK_FUNC(ClayLayout, Solve)
+{
+    (void)ctx; (void)data;
+    self.Solve();
+}
+
+/*
+ * FollowResize <rid> -- track another Resizable and re-solve on every change.
+ *
+ * The whole type in one line: `layout.FollowResize(@main)` and every box it
+ * owns follows the window from then on, with the re-solve happening where the
+ * size arrives rather than on a frame tick. The follower is resolved by RID at
+ * fire time (ontology/Resizable.h), so deleting the layout mid-drag is fine.
+ */
+DEFINE_WORK_FUNC_TYPED(ClayLayout, FollowResize, (ETCS::RID, source))
+{
+    (void)ctx;
+    ETCS::Held<Resizable_> src = ETCS::resolve_held<Resizable_>("Resizable", source);
+    if (!src)
+    {
+        ETCS_LOG("ClayLayout::FollowResize", "RID:" << source
+                 << " is not a live Resizable -- nothing to follow.");
+        return;
+    }
+    self.FollowResize(src.get());
+    ETCS_LOG("ClayLayout::FollowResize", "now tracking RID:" << source << ".");
+}
+
+DEFINE_WORK_FUNC(ClayLayout, Report)
+{
+    (void)ctx; (void)data;
+    self.Report();
+}
+
+DEFINE_WORK_FUNC(ClayLayout, Delete)
+{
+    (void)ctx; (void)data;
+    self.DeleteConcrete();
 }
 
 // ── Scene3D ──────────────────────────────────────────────────────────────
@@ -932,6 +1052,22 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, SetPosition, (int32_t, x), (int32_t, y))
 {
     (void)ctx;
     self.SetPosition(x, y);
+}
+
+// The family verbs, same pair as CompositeDrawable2D's and here for the same
+// reason -- a 3D view in a resizing panel is the first thing anyone puts in a
+// layout. ResizeTo keeps nothing: the next projection fills the frame anyway.
+DEFINE_WORK_FUNC_TYPED(Camera3D, MoveTo, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.MoveTo(Point2D{ x, y });
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, ResizeTo, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    if (!self.ResizeTo(WindowSize{ w, h }))
+        ETCS_LOG("Camera3D::ResizeTo", "refused " << w << "x" << h << ".");
 }
 
 DEFINE_WORK_FUNC_TYPED(Camera3D, SetOrder, (int32_t, z))

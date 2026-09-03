@@ -35,6 +35,68 @@ namespace glfw_native {
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <mutex>
+#include <vector>
+
+class GLFWWindow;
+
+/*
+ * GLFW IS ONE THING PER PROCESS. THIS IS THAT ONE THING.
+ *
+ * glfwInit, glfwTerminate and glfwPollEvents are library-wide, not
+ * per-window: the second init is a no-op, the first terminate destroys
+ * EVERY window, and one poll drains the queue for all of them. GLFW has
+ * always treated them that way and says so. We were the ones pretending
+ * otherwise -- init inside a window's create, terminate inside a window's
+ * destructor, and a poll verb on each window that drained the shared queue
+ * and then only did the post-poll work for itself.
+ *
+ * That pretence has three costs, and the two windows the paint editor wants
+ * hit all of them. A second window's create ran glfwInit again for nothing.
+ * A second window pumping in parallel ran glfwPollEvents concurrently, which
+ * is not re-entrant. And the first window destroyed took the whole library
+ * down with it, including the display connection the other one's Vulkan
+ * swapchain still held -- a hang in the surface teardown, not a crash, which
+ * is why it read as unrelated for so long.
+ *
+ * So the shape here is what GLFW already decided:
+ *
+ *   acquire/release   refcounted, so the library outlives every window and
+ *                     dies with the last one.
+ *   enroll/withdraw   the registry, so ONE poll pass does the post-poll work
+ *                     for EVERY window -- which is what makes a second window
+ *                     need no pump of its own.
+ *   poll              try_lock, NOT lock. A second pumper arriving mid-pass
+ *                     wants the queue drained, and it has been; making it
+ *                     wait to drain an empty queue turns a frame loop into a
+ *                     queue of frame loops. It returns false and gets on with
+ *                     its frame.
+ */
+class GLFWPump
+{
+public:
+    // Refcounted glfwInit. Hints and the error handler are set here because
+    // they belong to the library's lifetime, not to any window's.
+    static bool acquire();
+
+    // Refcounted glfwTerminate. The LAST holder terminates -- see the
+    // teardown hang above for what happens when the first one does.
+    static void release();
+
+    static void enroll(GLFWWindow* w);
+    static void withdraw(GLFWWindow* w);
+
+    // Drain the shared queue and run every enrolled window's post-poll work.
+    // False means another thread is mid-pass, which is not a failure: the
+    // queue this caller wanted drained is being drained right now.
+    static bool poll();
+
+private:
+    inline static std::mutex                s_registry;
+    inline static std::mutex                s_pumping;
+    inline static std::vector<GLFWWindow*>  s_windows;
+    inline static int                       s_refs = 0;
+};
 
 class GLFWWindow :
     public WindowBase<GLFWWindow>, public InputSourceBase<GLFWWindow>,
@@ -128,11 +190,21 @@ public:
     // answers "not yours" -- which would leak the window at the one moment
     // nothing is left to leak it to. Nothing races a destructor, so the plain
     // exchange is the whole of what is needed.
+    /*
+     * THE ORDER IS THE WHOLE OF IT.
+     *
+     * withdraw first, so no pump pass can still be reaching into this window
+     * (it blocks out any pass already inside one). Then the handle. Then the
+     * library share, LAST and refcounted -- terminating here rather than at
+     * close time is what stopped a second window's Vulkan teardown hanging on
+     * a display connection that had been pulled out from under it.
+     */
     ~GLFWWindow()
     {
         ETCS_LOG("Cleanup for GLFWWindow called...");
+        GLFWPump::withdraw(this);
         if (void* mine = m_window.exchange(nullptr)) drainAndDestroy(mine);
-        glfwTerminate();
+        if (m_holds_glfw) { m_holds_glfw = false; GLFWPump::release(); }
     }
 
     // The only glfwDestroyWindow in this file. Takes a handle its caller has
@@ -229,11 +301,11 @@ public:
             return;
         }
 
-        glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-        if (!glfwInit()) { this->removeTag("opening"); return; }
-        // Straight after glfwInit, which is where the display connection
-        // exists and before anything can issue a request against it.
-        install_x_error_handler();
+        // The library, refcounted. m_holds_glfw is this window's share of it
+        // and is what the destructor gives back -- taken here rather than in
+        // the constructor because a window that never opened never took one.
+        if (!GLFWPump::acquire()) { this->removeTag("opening"); return; }
+        m_holds_glfw = true;
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
@@ -258,6 +330,9 @@ public:
             glfwSetWindowFocusCallback(created, window_focus_callback);
             glfwSetWindowPosCallback(created, window_pos_callback);
             populateNativeSurfaceHandle();
+            // Enrolled before `active` goes on, so the first pump pass that
+            // can see this window as open already has its post-poll work.
+            GLFWPump::enroll(this);
             this->addTag("active");
             ETCS_LOG("Window active! Instance: " << this->getRID() << ".");
         }
@@ -353,14 +428,20 @@ public:
  * queue is drained; flushing per callback would be the uncoalesced behaviour
  * with extra steps.
  */
-    void PollEventsConcrete() override
+    void PollEventsConcrete() override { GLFWPump::poll(); }
+
+    /*
+     * This window's share of a poll pass, run by whichever thread won the
+     * pump -- which is very often not this window's frame loop, and that is
+     * the point: one pass serves every window.
+     *
+     * The PlatformUse is held across it because the pump is the one caller
+     * GLFW would certainly be inside when another thread wins the close.
+     */
+    void afterPoll()
     {
-        // Held across the whole pass: the pump is the one caller GLFW would
-        // certainly be inside when another thread wins the close.
         PlatformUse w(*this);
         if (!w) return;
-
-        glfwPollEvents();
         flushPointerPosition();
         // After the poll, so the window has had every chance to become
         // viewable and focused before the mode is applied. See
@@ -397,6 +478,28 @@ public:
         glfwGetFramebufferSize(*w, &fw, &fh);
         m_size = { static_cast<uint32_t>(fw), static_cast<uint32_t>(fh) };
         return m_size;
+    }
+
+    /*
+     * ASK the window manager. It is a request, not a setting -- a tiled or
+     * fullscreen window is simply not resized, and the WM says so by not
+     * sending the configure. So nothing is recorded here: m_size and every
+     * listener move when framebuffer_size_callback fires, which is the only
+     * place that knows what actually happened.
+     *
+     * True means the request went out, which is the most a window can
+     * honestly claim (ontology/Resizable.h). The size in a window's own
+     * coordinates is what glfwSetWindowSize takes, and it is the framebuffer
+     * size we hand out -- they differ on a scaled display, and reconciling
+     * that belongs with whoever introduces scaling rather than here.
+     */
+    bool ResizeTo(WindowSize s) override
+    {
+        if (s.width == 0 || s.height == 0) return false;
+        PlatformUse w(*this);
+        if (!w) return false;
+        glfwSetWindowSize(*w, static_cast<int>(s.width), static_cast<int>(s.height));
+        return true;
     }
 
     GLFWwindow* GetHandle() { return static_cast<GLFWwindow*>(m_window.load()); }
@@ -682,6 +785,12 @@ private:
     // How many threads are inside GLFW with this window's handle. PlatformUse
     // is the only thing allowed to move it.
     std::atomic<int> m_platform_users{ 0 };
+
+    // Does this window hold a share of the library? Taken on a create that
+    // reached glfwInit, given back once in the destructor. Not an atomic
+    // because only the create and the destructor touch it, and a create that
+    // lost its claim returned before here.
+    bool m_holds_glfw = false;
 public:
 
     // Runs inside WindowProvider.so, against the GLFW copy that called
@@ -702,6 +811,68 @@ public:
 #endif
     }
 };
+
+// ── GLFWPump ────────────────────────────────────────────────────────────────
+//
+// Out of line because the registry holds GLFWWindow*, which is incomplete
+// where the class above is declared -- the same reason this file already
+// defines its callbacks down here.
+
+inline bool GLFWPump::acquire()
+{
+    std::lock_guard<std::mutex> g(s_registry);
+    if (s_refs > 0) { ++s_refs; return true; }
+
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+    if (!glfwInit()) return false;
+    // Straight after glfwInit, which is where the display connection exists
+    // and before anything can issue a request against it.
+    GLFWWindow::install_x_error_handler();
+    s_refs = 1;
+    ETCS_LOG("GLFWPump", "GLFW up.");
+    return true;
+}
+
+inline void GLFWPump::release()
+{
+    std::lock_guard<std::mutex> g(s_registry);
+    if (s_refs == 0) return;
+    if (--s_refs > 0) return;
+    ETCS_LOG("GLFWPump", "last window gone -- GLFW down.");
+    glfwTerminate();
+}
+
+inline void GLFWPump::enroll(GLFWWindow* w)
+{
+    std::lock_guard<std::mutex> g(s_registry);
+    for (GLFWWindow* e : s_windows) if (e == w) return;
+    s_windows.push_back(w);
+}
+
+// Blocks out a pass already inside afterPoll for this window, which is the
+// point: after this returns, no pump can be holding the pointer.
+inline void GLFWPump::withdraw(GLFWWindow* w)
+{
+    std::lock_guard<std::mutex> g(s_registry);
+    for (size_t i = 0; i < s_windows.size(); ++i)
+        if (s_windows[i] == w) { s_windows.erase(s_windows.begin() + i); return; }
+}
+
+inline bool GLFWPump::poll()
+{
+    std::unique_lock<std::mutex> pumping(s_pumping, std::try_to_lock);
+    if (!pumping.owns_lock()) return false;   // somebody else has the queue
+
+    glfwPollEvents();
+
+    // Under the registry lock rather than over a snapshot: a copied vector of
+    // raw pointers is a list of windows that were alive when it was taken.
+    // Holding it means withdraw() waits for this pass, which is bounded --
+    // afterPoll drops out immediately once the handle has been claimed.
+    std::lock_guard<std::mutex> g(s_registry);
+    for (GLFWWindow* w : s_windows) w->afterPoll();
+    return true;
+}
 
 
 void GLFWWindow::framebuffer_size_callback(GLFWwindow* window, int width, int height)
