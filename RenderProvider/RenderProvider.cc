@@ -6,7 +6,7 @@
 // on why the clock and the Vulkan work sit on the sides they do).
 // Instance and ImageSurface stay BASIC -- neither has anything continuous
 // to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel ClayLayout")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
@@ -44,13 +44,6 @@ ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
 ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
     Create, SetPosition, SetOrder, SetBackground, SetRetain, MoveTo, ResizeTo,
     Draw, Clear, DrawRect, Blit, Delete)
-
-// The layout solver. Declared once, re-solved on every size change, and not a
-// drawable at all -- it writes its answers back through MoveTo/ResizeTo, so it
-// arranges nodes from any module without knowing what any of them are.
-ETCS_TAG_BLOCK_BASIC(ClayLayout,
-    Create, AddBox, SetDirection, SetPadding, SetGap,
-    Solve, FollowResize, Report, Delete)
 
 // The 3D scene node: a box, self-similar with its children, which projects its
 // whole subtree into a camera against one depth buffer. HYBRID because of the

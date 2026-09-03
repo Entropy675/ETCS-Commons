@@ -1,24 +1,41 @@
-#ifndef RENDERPROVIDER_CLAYLAYOUT_H__
-#define RENDERPROVIDER_CLAYLAYOUT_H__
+#ifndef LAYOUTPROVIDER_CLAYOUT_H__
+#define LAYOUTPROVIDER_CLAYOUT_H__
 
 #include "../../core_defs.h"
 #include "../../ontology.h"
 
 /*
- * THE ONLY PLACE clay.h IS INCLUDED. Clay computes boxes; it does not draw,
- * does not own a window, and has never heard of a Drawable2D. Keeping it
- * behind this file is what lets that stay true -- see clay/VENDORED.md.
+ * THE ONLY PLACE clay.h IS INCLUDED, and the only place it CAN be -- nothing
+ * else in this module or any other reaches past this file. Clay computes
+ * boxes; it does not draw, does not own a window, and has never heard of a
+ * Drawable2D. See clay/VENDORED.md.
  *
- * Warnings are silenced across the include, and only across it. This module
- * builds -Wall -Wextra and should keep doing so; a vendored file we do not
- * write is not a place those warnings can be acted on, and several hundred
- * -Wmissing-field-initializers from its compound literals would bury the ones
- * that are ours. Restored immediately after, so nothing below this line loses
- * a warning.
+ * ── THE INCLUDE IS SILENT, AND EVERYTHING BELOW IT IS NOT ─────────────────
+ *
+ * The list is long because it is the whole list. A build that prints warnings
+ * is a build nobody reads warnings from, so the standard to hold is zero, and
+ * the only way to have that AND -Wall -Wextra on our own code is to say
+ * exactly which diagnostics a file we do not write is exempt from.
+ *
+ * Every one of these is a fine thing to write in C and a warning only because
+ * a C++ compiler is reading it: unused debug locals behind Clay's own
+ * CLAY_DEBUG paths, an unused parameter on a callback that keeps a uniform
+ * signature, int/uint32 comparisons in loop bounds, compound literals that
+ * leave trailing members zeroed. None is actionable here; all of them would be
+ * actionable in Clayout's own code, which is why the pop is immediate.
+ *
+ * If an upgrade adds a new warning, the fix is another line HERE with a note,
+ * never -w on the module.
  */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wtype-limits"
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
 #define CLAY_IMPLEMENTATION
 #include "clay/clay.h"
 #pragma GCC diagnostic pop
@@ -28,7 +45,7 @@
 #include <vector>
 
 /*
- * ── ClayLayout ───────────────────────────────────────────────────────────
+ * ── Clayout ──────────────────────────────────────────────────────────────
  *
  * WHERE THE NUMBERS COME FROM.
  *
@@ -40,10 +57,17 @@
  * about to solve again badly.
  *
  * So this holds a tree of boxes, hands it to Clay, and writes the answers back
- * through the verbs the nodes already have: SetPosition and ResizeTo. Nothing
- * about drawing changes, nothing about the ontology changes, and the 2D side
- * gains grow/fixed/percent sizing, padding, gaps, alignment and nesting
- * without any of it being written here.
+ * through the family verbs the nodes already have: Drawable2D_::MoveTo and
+ * Resizable_::ResizeTo. Nothing about drawing changes, nothing about the
+ * ontology changes, and the 2D side gains grow/fixed/percent sizing, padding,
+ * gaps, alignment and nesting without any of it being written here.
+ *
+ * IT NAMES NO RENDERER, WHICH IS WHY IT IS ITS OWN PROVIDER. Everything below
+ * reaches its subjects by family name through the ontology -- "Drawable2D",
+ * "Resizable" -- so it arranges RenderProvider's compositors, and would
+ * arrange a second backend's, and depends on neither. A layout solver that had
+ * to be linked against a renderer would be a layout solver that had picked
+ * one.
  *
  * A CONTROLLER, NOT A NODE. It is not a Drawable2D and never appears in the
  * tree it arranges. The alternative -- a layout container that is also a node
@@ -63,14 +87,14 @@
  *     fit           as small as the contents allow
  *     percent <f>   a fraction of the parent
  */
-class ClayLayout : public DeletableBase<ClayLayout>, public ResizableBase<ClayLayout>
+class Clayout : public DeletableBase<Clayout>, public ResizableBase<Clayout>
 {
 public:
-    WIRE_TYPE_IDENTITY(ClayLayout);
+    WIRE_TYPE_IDENTITY(Clayout);
 
-    ClayLayout() = default;
+    Clayout() = default;
 
-    ~ClayLayout()
+    ~Clayout()
     {
         // The arena is ours and Clay holds no other resource, so this is the
         // whole of teardown. Freed rather than leaked because a script can
@@ -91,7 +115,7 @@ public:
     {
         if (w == 0 || h == 0)
         {
-            ETCS_LOG("ClayLayout", "Create with a zero dimension (" << w << "x" << h << ").");
+            ETCS_LOG("Clayout", "Create with a zero dimension (" << w << "x" << h << ").");
             return false;
         }
         if (!m_memory)
@@ -100,13 +124,13 @@ public:
             m_memory = std::malloc(need);
             if (!m_memory)
             {
-                ETCS_LOG("ClayLayout", "could not allocate " << need << " bytes for Clay.");
+                ETCS_LOG("Clayout", "could not allocate " << need << " bytes for Clay.");
                 return false;
             }
             Clay_Arena arena = Clay_CreateArenaWithCapacityAndMemory(need, m_memory);
             m_context = Clay_Initialize(arena,
                                         Clay_Dimensions{ static_cast<float>(w), static_cast<float>(h) },
-                                        Clay_ErrorHandler{ &ClayLayout::onClayError, this });
+                                        Clay_ErrorHandler{ &Clayout::onClayError, this });
         }
         m_size = WindowSize{ w, h };
         this->addTag("active");
@@ -215,17 +239,17 @@ public:
             ++moved;
         }
 
-        ETCS_LOG("ClayLayout", "solved " << m_size.width << "x" << m_size.height
+        ETCS_LOG("Clayout", "solved " << m_size.width << "x" << m_size.height
                  << " over " << m_boxes.size() << " box(es), placed " << moved << ".");
         return moved > 0;
     }
 
     void Report() const
     {
-        ETCS_LOG("ClayLayout", m_size.width << "x" << m_size.height << ", "
+        ETCS_LOG("Clayout", m_size.width << "x" << m_size.height << ", "
                  << m_boxes.size() << " box(es):");
         for (const Box& b : m_boxes)
-            ETCS_LOG("ClayLayout", "  RID:" << b.node << " parent:" << b.parent
+            ETCS_LOG("Clayout", "  RID:" << b.node << " parent:" << b.parent
                      << "  w=" << kindName(b.w_kind) << "/" << b.w_value
                      << "  h=" << kindName(b.h_kind) << "/" << b.h_value
                      << "  dir=" << (b.dir ? "column" : "row"));
@@ -320,7 +344,7 @@ private:
 
     static void onClayError(Clay_ErrorData e)
     {
-        ETCS_LOG("ClayLayout", "clay: " << std::string(e.errorText.chars,
+        ETCS_LOG("Clayout", "clay: " << std::string(e.errorText.chars,
                                                        static_cast<size_t>(e.errorText.length)));
     }
 

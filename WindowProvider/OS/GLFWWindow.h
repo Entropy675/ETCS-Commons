@@ -177,7 +177,7 @@ public:
             return new_block;
         };
 
-        glfw_allocator.deallocate = [](void* block, void* user) {
+        glfw_allocator.deallocate = [](void* /*block*/, void* /*user*/) {
             // No-op: arena is block-freed on module unload
         };
 
@@ -914,7 +914,7 @@ void GLFWWindow::mouse_button_callback(GLFWwindow* window, int button, int actio
 // Leaving is as important as entering: the cursor moves while it is away, and
 // the first report after it comes back would otherwise measure against where
 // it was when it left. Both edges re-prime for the same reason.
-void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
+void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int /*entered*/)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
@@ -929,7 +929,7 @@ void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
 // Focus is the one that bites under capture: losing focus releases the
 // pointer, and regaining it re-grabs and recentres -- a position change with
 // no movement behind it, arriving as one large delta.
-void GLFWWindow::window_focus_callback(GLFWwindow* window, int focused)
+void GLFWWindow::window_focus_callback(GLFWwindow* window, int /*focused*/)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
@@ -940,7 +940,7 @@ void GLFWWindow::window_focus_callback(GLFWwindow* window, int focused)
     handler->RequestCaptureReapply();
 }
 
-void GLFWWindow::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+void GLFWWindow::key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int mods)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
 

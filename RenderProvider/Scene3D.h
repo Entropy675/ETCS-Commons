@@ -252,7 +252,6 @@ public:
 
 
     /*
-    /*
  * SENSITIVITY IS THE YAW SPAN: how many full turns the frame's width covers.
  * 1.0 means the width is exactly one turn, so the pointer's position over the
  * view names a direction and every direction is reachable without the pointer

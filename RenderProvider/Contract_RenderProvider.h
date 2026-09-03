@@ -35,12 +35,6 @@
 #include "Scene3D.h"
 #include "Camera3D.h"
 
-// The layout solver. Not a Drawable2D and never in the tree it arranges --
-// it computes where the others go and writes the answers back through their
-// own family verbs. The vendored Clay it wraps is reachable from nowhere
-// else (clay/VENDORED.md).
-#include "ClayLayout.h"
-
 // The Glyphs leaf. AFTER the surfaces, because a label bound to a frame rate
 // reads it off this platform's concrete Surface -- the rate is a property of
 // the frame loop, not of the Surface family, so the type has to be complete
