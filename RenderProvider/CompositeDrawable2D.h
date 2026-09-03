@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
+#include <mutex>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -92,29 +94,50 @@ public:
      * The two family verbs (ontology/Drawable2D.h, ontology/Resizable.h), so
      * a layout solver can place and size this without knowing what it is.
      *
-     * ResizeTo REALLOCATES, which is the reason it belongs here rather than
-     * being synthesised from SetPosition and a width field: a compositor's
-     * size IS its buffer, and Allocate zero-fills.
+     * ── THEY STAGE. THEY DO NOT APPLY. ───────────────────────────────────
      *
-     * The retained case is where that shows. A canvas's pixels are the
-     * picture, so they are put back: background first, then the old bytes
-     * into the top-left. Cropping on shrink and fresh background on grow is
-     * the only answer that needs no resampling policy -- a paint program that
-     * silently resampled the picture on every drag of a window corner would
-     * be worse than one that does not.
+     * THE BUFFER BELONGS TO WHICHEVER THREAD IS COMPOSING, and that is not
+     * this one. A resize arrives on the event pump, inside GLFW's
+     * framebuffer callback; the frame edge is meanwhile walking this tree in
+     * ConsumeFrames and reading these very bytes. The first version of this
+     * reallocated here, and the crash is exactly what that predicts:
      *
-     * THE BACKGROUND FILL IS NOT COSMETIC. Skipping it leaves the grown
-     * margin at alpha 0, so the compositor ABOVE shows through and a widened
-     * white canvas grows a band of window-chrome grey down its side, which
-     * reads as the layout being wrong rather than the buffer being empty.
+     *     Pixels_::Composite  <-  recompose  <-  DrawInto  <-  ConsumeFrames
      *
-     * Both verbs mark the pixel path: everything above holds a merged copy of
-     * a child that just moved or changed shape.
+     * segfaulting on a block the pump thread had just freed underneath it.
+     * It survives a slow drag, where resize events land between frames, and
+     * dies on a burst -- which is what dragging a window ACROSS DISPLAYS
+     * produces, as the window manager re-settles the frame two or three
+     * times in a few milliseconds. Reproduced 4 runs in 8 by replaying that
+     * burst; caught under gdb on the first try.
+     *
+     * A lock would be the wrong fix. Every pixel operation in the ontology
+     * reads this buffer, so guarding it means a reader-writer lock on the
+     * hot path of every composite in the system, to serialise against an
+     * event that happens when a human drags a corner.
+     *
+     * So the geometry is STAGED and applied at the top of recompose(), which
+     * is already the one place that owns the buffer exclusively -- the same
+     * deferral VulkanSurface makes for its Vulkan calls, for the same
+     * reason. The layout keeps writing whenever it likes and nothing it
+     * writes takes effect in the middle of somebody reading.
+     *
+     * A LAYOUT PASS ALSO LANDS ATOMICALLY as a side effect, which is a
+     * smaller bug fixed for free: Solve calls MoveTo and then ResizeTo, and
+     * a frame that fell between them drew the node at its new size in its
+     * old place.
+     *
+     * Both mark the pixel path, because everything above holds a merged copy
+     * of a child that is about to move or change shape.
      */
     bool MoveTo(Point2D p) override
     {
-        if (p.x == m_x && p.y == m_y) return true;
-        m_x = p.x; m_y = p.y;
+        {
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            stageFrom();
+            m_pending_x = p.x;
+            m_pending_y = p.y;
+        }
         MarkDirty();
         etcs_mark_pixel_path(this);
         return true;
@@ -123,28 +146,12 @@ public:
     bool ResizeTo(WindowSize s) override
     {
         if (s.width == 0 || s.height == 0) return false;
-        if (s.width == m_w && s.height == m_h) return true;
-
-        std::vector<uint8_t> old;
-        uint32_t ow = m_w, oh = m_h;
-        if (m_retain && PixelData())
-            old.assign(PixelData(), PixelData() + PixelBytes());
-
-        m_w = s.width;
-        m_h = s.height;
-        Allocate(m_w, m_h);
-
-        if (!old.empty())
         {
-            ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
-            const uint32_t cw = ow < m_w ? ow : m_w;
-            const uint32_t ch = oh < m_h ? oh : m_h;
-            for (uint32_t y = 0; y < ch; ++y)
-                std::memcpy(PixelData() + static_cast<size_t>(y) * m_w * 4,
-                            old.data()  + static_cast<size_t>(y) * ow   * 4,
-                            static_cast<size_t>(cw) * 4);
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            stageFrom();
+            m_pending_w = s.width;
+            m_pending_h = s.height;
         }
-
         MarkDirty();
         etcs_mark_pixel_path(this);
         return true;
@@ -320,8 +327,79 @@ private:
  * implementations, and it is the mechanism a non-rectangular merge would
  * extend rather than replace.
  */
+    /*
+     * Seed the staged geometry from the live values the first time anything
+     * stages, so a MoveTo alone does not carry a stale size along with it.
+     * Called under m_pending_mtx.
+     */
+    void stageFrom()
+    {
+        if (m_pending) return;
+        m_pending   = true;
+        m_pending_x = m_x;  m_pending_y = m_y;
+        m_pending_w = m_w;  m_pending_h = m_h;
+    }
+
+    /*
+     * Apply whatever the layout staged. ON THE COMPOSE THREAD, at the top of
+     * recompose, before a single byte is read -- see MoveTo above for why
+     * that is the only safe moment.
+     *
+     * The retained case is the one with work in it. A canvas's pixels ARE the
+     * picture, so they are put back: background first, then the old bytes
+     * into the top-left. Cropping on shrink and fresh background on grow is
+     * the only answer that needs no resampling policy, and a paint program
+     * that silently resampled on every drag of a window corner would be worse
+     * than one that does not.
+     *
+     * THE BACKGROUND FILL IS NOT COSMETIC. Without it the grown margin sits
+     * at alpha 0, the compositor above shows through, and a widened white
+     * canvas grows a band of window-chrome grey down its side -- which reads
+     * as the layout being wrong rather than the buffer being empty.
+     */
+    void applyPendingGeometry()
+    {
+        int32_t nx, ny; uint32_t nw, nh;
+        {
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            if (!m_pending) return;
+            m_pending = false;
+            nx = m_pending_x; ny = m_pending_y;
+            nw = m_pending_w; nh = m_pending_h;
+        }
+
+        m_x = nx; m_y = ny;
+        if (nw == m_w && nh == m_h) return;
+
+        std::vector<uint8_t> old;
+        const uint32_t ow = m_w;
+        // Sized from the BUFFER, not from m_w: they agree today and a copy
+        // whose bounds come from a different variable than its bytes is the
+        // shape of the next overrun.
+        if (m_retain && PixelData())
+            old.assign(PixelData(), PixelData() + PixelBytes());
+        const uint32_t old_rows = (ow == 0) ? 0
+                                : static_cast<uint32_t>(old.size() / (static_cast<size_t>(ow) * 4));
+
+        m_w = nw;
+        m_h = nh;
+        Allocate(m_w, m_h);
+
+        if (!old.empty())
+        {
+            ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            const uint32_t cw = ow < m_w ? ow : m_w;
+            const uint32_t ch = old_rows < m_h ? old_rows : m_h;
+            for (uint32_t y = 0; y < ch; ++y)
+                std::memcpy(PixelData() + static_cast<size_t>(y) * m_w * 4,
+                            old.data()  + static_cast<size_t>(y) * ow   * 4,
+                            static_cast<size_t>(cw) * 4);
+        }
+    }
+
     void recompose()
     {
+        applyPendingGeometry();
         ++m_recompositions;
         // Logged because it is the observable form of this class's only
         // claim. A scene that settles logs one of these per compositor and
@@ -388,6 +466,14 @@ private:
     uint32_t m_h = 0;
     // See SetRetain.
     bool m_retain = false;
+
+    // Geometry the layout has asked for, not yet applied. Guarded because
+    // the writer is the event pump and the reader is the frame edge; the
+    // mutex is taken twice per resize and never during a composite.
+    std::mutex m_pending_mtx;
+    bool       m_pending   = false;
+    int32_t    m_pending_x = 0, m_pending_y = 0;
+    uint32_t   m_pending_w = 0, m_pending_h = 0;
     float    m_bg[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     uint64_t m_recompositions = 0;
 };

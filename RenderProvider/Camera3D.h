@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 
 // ---------------------------------------------------------------------------
 // Camera3D — the Camera leaf: a 2D plane that a 3D scene fills.
@@ -77,19 +78,41 @@ public:
     void SetPosition(int32_t x, int32_t y) { m_x = x; m_y = y; markPath(); }
     void SetOrder(int32_t z)               { m_order = z; Reorder(); markPath(); }
 
-    // The family verbs -- a camera is an ordinary 2D node and lays out as one.
-    // Nothing is preserved across a resize because a camera's buffer is
-    // derived: the next projection fills it completely, so copying the old
-    // frame forward would only show one stale image for one frame.
+    /*
+     * The family verbs -- a camera is an ordinary 2D node and lays out as one.
+     *
+     * STAGED, NOT APPLIED, for the reason CompositeDrawable2D::MoveTo sets out
+     * at length: a resize arrives on the event pump while the frame edge is
+     * reading this buffer, and reallocating under it is a segfault waiting for
+     * a burst of resize events to line up. Applied in DrawIntoConcrete, on the
+     * thread that owns the pixels.
+     *
+     * Nothing is preserved across the resize, unlike a compositor's: a
+     * camera's buffer is DERIVED, and the next projection fills it completely.
+     * Carrying the old frame forward would show one stale image for one frame
+     * and cost a copy to do it.
+     */
     bool MoveTo(Point2D p) override
-    { if (p.x != m_x || p.y != m_y) { m_x = p.x; m_y = p.y; markPath(); } return true; }
+    {
+        {
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            stageFrom();
+            m_pending_x = p.x;
+            m_pending_y = p.y;
+        }
+        markPath();
+        return true;
+    }
 
     bool ResizeTo(WindowSize s) override
     {
         if (s.width == 0 || s.height == 0) return false;
-        if (s.width == m_w && s.height == m_h) return true;
-        m_w = s.width; m_h = s.height;
-        Allocate(m_w, m_h);
+        {
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            stageFrom();
+            m_pending_w = s.width;
+            m_pending_h = s.height;
+        }
         markPath();
         return true;
     }
@@ -222,6 +245,7 @@ public:
     void DrawIntoConcrete(Surface_* dst) override
     {
         if (!dst) return;
+        applyPendingGeometry();     // before anything reads the buffer
 
         // The branch this class shares with CompositeDrawable2D, plus the one
         // thing a flag cannot express. TakeDirty covers every discrete change
@@ -296,6 +320,33 @@ private:
     // correctly, forever. The rule and the walk live in ontology/Pixels.h.
     void markPath() { etcs_mark_pixel_path(this); }
 
+    // Seeded from the live values on first stage, so a MoveTo alone does not
+    // drag a stale size along with it. Called under m_pending_mtx.
+    void stageFrom()
+    {
+        if (m_pending) return;
+        m_pending   = true;
+        m_pending_x = m_x;  m_pending_y = m_y;
+        m_pending_w = m_w;  m_pending_h = m_h;
+    }
+
+    // On the compose thread only. See MoveTo.
+    void applyPendingGeometry()
+    {
+        int32_t nx, ny; uint32_t nw, nh;
+        {
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            if (!m_pending) return;
+            m_pending = false;
+            nx = m_pending_x; ny = m_pending_y;
+            nw = m_pending_w; nh = m_pending_h;
+        }
+        m_x = nx; m_y = ny;
+        if (nw == m_w && nh == m_h) return;
+        m_w = nw; m_h = nh;
+        Allocate(m_w, m_h);
+    }
+
     // 2D children draw over the projected frame, in the camera's own space.
     // Run after Render inside the same dirty window, so an overlay never
     // appears for a frame without the geometry under it or vice versa.
@@ -357,6 +408,13 @@ private:
     int32_t  m_y = 0;
     uint32_t m_w = 0;
     uint32_t m_h = 0;
+
+    // Geometry the layout asked for, not yet applied -- written by the event
+    // pump, read by the frame edge. See MoveTo.
+    std::mutex m_pending_mtx;
+    bool       m_pending   = false;
+    int32_t    m_pending_x = 0, m_pending_y = 0;
+    uint32_t   m_pending_w = 0, m_pending_h = 0;
     float    m_bg[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
     // A default that renders something rather than nothing: eye back along
