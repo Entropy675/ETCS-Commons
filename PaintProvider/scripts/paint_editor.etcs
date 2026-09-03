@@ -1,0 +1,122 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A paint editor, set up and ready to draw on.
+#
+#     ./bin/etcs modules/PaintProvider/scripts/paint_editor.etcs
+#
+# Move the pointer over the window and hold any key to lay down a stroke. The
+# window's cross ends the session.
+#
+# THE SHELL IS THE TOOL PALETTE. There is no on-screen UI here, and that is a
+# deliberate reading of what this system already gives you rather than a gap:
+# every setting is a verb, so the prompt this drops into IS the settings panel,
+# and it is live.
+#
+#     Root> brush.SetRadius(24.0)                  # a fatter nib
+#     Root> brush.SetColor(0.9, 0.2, 0.3, 1.0)     # red
+#     Root> input.SetBrush(24.0, 0.9, 0.2, 0.3, 1.0)  # both at once
+#     Root> ink.Clear(0.0, 0.0, 0.0, 0.0)          # wipe the drawing
+#     Root> paper.Clear(0.98, 0.97, 0.94, 1.0)     # tint the paper
+#     Root> doc.SetActiveLayer(@paper)             # draw on the paper instead
+#     Root> canvas.Render()                        # recomposite now
+#     Root> input.Report()                         # what the stroke state is
+#
+# THE STRUCTURE, and the seam between the two providers is one call:
+#
+#   view    a RenderProvider Surface -- the window's presentable surface
+#   paper   a PaintLayer  -- the opaque sheet under everything
+#   ink     a PaintLayer  -- what strokes land on
+#   doc     a PaintDocument -- the layer stack, and which layer is active
+#   canvas  a PaintSurface -- binds the document TO the surface
+#   brush   a PaintTool   -- radius and colour
+#   input   a PaintInput  -- turns pointer positions and presses into strokes
+#
+# PaintProvider owns no raster backend at all. It reaches the surface through
+# ETCS::resolve_in_family<Surface_>("Surface", rid) -- a composed reference,
+# resolved by the loader through the origin-affixed key (core/Entity.h) -- so
+# nothing here is compiled against RenderProvider and any other provider's
+# Surface would serve just as well.
+#
+# THREAD LEDGER -- four:
+#
+#   1. this script's thread   main.ProduceEvents -> input.ConsumeInput
+#   2. detached thread        main.ProducePointer -> input.ConsumePointer
+#   3. pool worker            Surface.ProduceFrames   frame clock
+#   4. detached thread        Surface.ConsumeFrames   present
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn WindowProvider::Window main
+main.Create(1280, 800, 'ETCS Paint')
+
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+view.Clear(0.13, 0.13, 0.15, 1.0)
+
+# ── the document: a sheet, and something to draw on it ───────────────────
+#
+# Two layers rather than one, because a paint program's first real question is
+# "undo the drawing without losing the paper" and a stack answers it by being a
+# stack. `ink` starts fully transparent so the paper shows through it.
+spawn PaintProvider::PaintLayer paper
+paper.Create(1280, 800)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+
+spawn PaintProvider::PaintLayer ink
+ink.Create(1280, 800)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+
+spawn PaintProvider::PaintDocument doc
+doc.Create(1280, 800, 'untitled')
+doc.AddLayer(@paper)
+doc.AddLayer(@ink)
+doc.SetActiveLayer(@ink)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(6.0)
+brush.SetColor(0.10, 0.10, 0.12, 1.0)
+
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@view)
+canvas.AttachDocument(@doc)
+canvas.Render()
+
+# SetBrush as well as the tool's own setters: PaintInput keeps the stroke
+# parameters it stamps with, so a tool changed underneath it would not be seen
+# until the next BindTool. Setting both is what makes the two agree at start.
+spawn PaintProvider::PaintInput input
+input.Create(@doc, @brush, @canvas)
+input.SetBrush(6.0, 0.10, 0.10, 0.12, 1.0)
+
+# THE FRAME PUMP, and this script draws nothing without it. A Surface is
+# RETAINED, not immediate: Clear/DrawRect/Blit build a composition and
+# something has to present it. Without this the window comes up, strokes
+# accumulate into the layer, and the screen stays blank -- which reads as
+# "painting is broken" rather than as "nobody asked for a frame".
+detach RenderProvider/scripts/render_frames.etcs view=view
+
+# Positions on their own thread, presses on this one. An edge blocks the thread
+# that states it, and the two channels are independent by construction
+# (ontology/InputSource.h) -- a keystroke never queues behind a burst of
+# pointer positions.
+detach paint_pointer.etcs window=main input=input
+
+# The pump AND the press channel. Returns when the window closes.
+main.ProduceEvents() -> input.ConsumeInput()
+
+# The cross was pressed. Close acknowledges it, then the session's entities go
+# in the reverse of the order they were built: what draws before what it draws
+# through, and the surface before the device it was made from.
+main.Close()
+
+input.Delete()
+canvas.Delete()
+doc.Delete()
+ink.Delete()
+paper.Delete()
+brush.Delete()
+view.Delete()
+gpu.Delete()
+main.Delete()

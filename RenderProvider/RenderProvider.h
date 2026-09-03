@@ -709,13 +709,17 @@ DEFINE_WORK_FUNC(Scene3D, Look)
     ETCS_LOG("Scene3D::Look",
              "yaw=" << self.Yaw() << " rad (" << self.Yaw() * DEG << " deg), wrapped to [-pi, pi)"
              "   pitch=" << self.Pitch() << " rad (" << self.Pitch() * DEG << " deg), "
-             "clamped to +/-85 deg"
+             "the VIEW's elevation, +/-85 deg"
              "\n    the " << self.FrameWidth() << "x" << self.FrameHeight() << " frame spans "
              << self.YawSpanTurns() << " turn(s) of yaw across its width and "
              << self.PitchSpanDeg() << " degrees of pitch down its height (sensitivity "
-             << self.Sensitivity() << "). Absolute: the pointer's position over the frame is "
-             "the direction, so nothing accumulates and nothing drifts. "
-             "SetSensitivity(0.5) halves both spans.");
+             << self.Sensitivity() << ", yaw only -- a bounded axis cannot be compressed "
+             "without putting its own stops inside the frame). Seeded looking "
+             << self.ReferenceElevationDeg() << " deg from the horizon, which the pitch "
+             "range is NOT centred on: the range is the world's, so the view cannot run "
+             "past the pole at one end while stopping short at the other."
+             "\n    Absolute: the pointer's position over the frame is the direction, so "
+             "nothing accumulates and nothing drifts.");
 }
 
 DEFINE_WORK_FUNC(Scene3D, Order)

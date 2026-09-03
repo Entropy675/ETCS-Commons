@@ -128,11 +128,15 @@ public:
     bool RenderConcrete() override
     {
         if (m_scene == 0) return false;
-        Drawable3D_* scene = ETCS::resolve_in_family<Drawable3D_>("Drawable3D", m_scene);
+        // Held for the same reason the compose walk is: Project walks somebody
+        // else's scene graph, so the answer has to stay true for the whole
+        // projection rather than for the instant it was given. Falsy now also
+        // means "being deleted right now", which is nothing to render either.
+        ETCS::Held<Drawable3D_> scene = ETCS::resolve_held<Drawable3D_>("Drawable3D", m_scene);
         if (!scene)
         {
             ETCS_LOG("Camera3D", "scene RID:" << m_scene
-                     << " no longer resolves -- nothing to render.");
+                     << " is gone or going -- nothing to render.");
             return false;
         }
         ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
@@ -263,7 +267,8 @@ private:
     bool sceneInMotion()
     {
         if (m_scene == 0) return false;
-        Drawable3D_* scene = ETCS::resolve_in_family<Drawable3D_>("Drawable3D", m_scene);
+        // Three calls through the pointer, so it is held across them.
+        ETCS::Held<Drawable3D_> scene = ETCS::resolve_held<Drawable3D_>("Drawable3D", m_scene);
         if (!scene) return false;
         if (scene->getSourceTag() != ETCS::Buffer("Scene3D")) return false;
         return static_cast<Scene3D*>(scene->getTrueType())->InMotion();
