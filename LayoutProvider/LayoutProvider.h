@@ -9,9 +9,11 @@
 /*
  * LayoutProvider -- one tag, and deliberately one.
  *
- *   Clayout   -- a layout solver [Resizable + Deletable]. Holds a tree of
+ *   Layout    -- a layout solver [Resizable + Deletable]. Holds a tree of
  *                boxes, solves it, and writes the answers back through
- *                Drawable2D_::MoveTo and Resizable_::ResizeTo.
+ *                Drawable2D_::MoveTo and Resizable_::ResizeTo. Implemented by
+ *                `Clayout`, over vendored Clay -- the contract name says the
+ *                role, not the ingredient (Contract_LayoutProvider.h).
  *
  * It arranges nodes it reaches by family name, so it has no link-time
  * relationship with the provider those nodes came from and could arrange a
@@ -24,17 +26,17 @@
  * declare and how, not in the number of verbs.
  */
 
-// ── Clayout ──────────────────────────────────────────────────────────────
+// ── Layout ───────────────────────────────────────────────────────────────
 //
 // A layout is DECLARED once and re-solved whenever the size changes, so these
 // are setup verbs plus one trigger. Clayout.h has the reasoning on why it is
 // not a node in the tree it arranges, and why it names no renderer.
 
-DEFINE_WORK_FUNC_TYPED(Clayout, Create, (uint32_t, w), (uint32_t, h))
+DEFINE_WORK_FUNC_TYPED(Layout, Create, (uint32_t, w), (uint32_t, h))
 {
     (void)ctx;
     if (!self.Create(w, h))
-        ETCS_LOG("Clayout::Create", "layout not created.");
+        ETCS_LOG("Layout::Create", "layout not created.");
 }
 
 /*
@@ -46,31 +48,31 @@ DEFINE_WORK_FUNC_TYPED(Clayout, Create, (uint32_t, w), (uint32_t, h))
  *
  * parent 0 means "this is the root of the layout".
  */
-DEFINE_WORK_FUNC_TYPED(Clayout, AddBox,
+DEFINE_WORK_FUNC_TYPED(Layout, AddBox,
     (ETCS::RID, node), (ETCS::RID, parent),
     (int32_t, w_kind), (float, w_value),
     (int32_t, h_kind), (float, h_value))
 {
     (void)ctx;
     self.AddBox(node, parent,
-                static_cast<Clayout::Sizing>(w_kind), w_value,
-                static_cast<Clayout::Sizing>(h_kind), h_value);
+                static_cast<Layout::Sizing>(w_kind), w_value,
+                static_cast<Layout::Sizing>(h_kind), h_value);
 }
 
 // SetDirection <node> <0 row | 1 column>
-DEFINE_WORK_FUNC_TYPED(Clayout, SetDirection, (ETCS::RID, node), (int32_t, dir))
+DEFINE_WORK_FUNC_TYPED(Layout, SetDirection, (ETCS::RID, node), (int32_t, dir))
 {
     (void)ctx;
     self.SetDirection(node, dir != 0);
 }
 
-DEFINE_WORK_FUNC_TYPED(Clayout, SetPadding, (ETCS::RID, node), (float, px))
+DEFINE_WORK_FUNC_TYPED(Layout, SetPadding, (ETCS::RID, node), (float, px))
 {
     (void)ctx;
     self.SetPadding(node, px);
 }
 
-DEFINE_WORK_FUNC_TYPED(Clayout, SetGap, (ETCS::RID, node), (float, px))
+DEFINE_WORK_FUNC_TYPED(Layout, SetGap, (ETCS::RID, node), (float, px))
 {
     (void)ctx;
     self.SetGap(node, px);
@@ -78,7 +80,7 @@ DEFINE_WORK_FUNC_TYPED(Clayout, SetGap, (ETCS::RID, node), (float, px))
 
 // Solve once, now -- for the first pass, and for a script that has just
 // changed the declaration. FollowResize does this on every size change.
-DEFINE_WORK_FUNC(Clayout, Solve)
+DEFINE_WORK_FUNC(Layout, Solve)
 {
     (void)ctx; (void)data;
     self.Solve();
@@ -92,27 +94,27 @@ DEFINE_WORK_FUNC(Clayout, Solve)
  * size arrives rather than on a frame tick. The follower is resolved by RID at
  * fire time (ontology/Resizable.h), so deleting the layout mid-drag is fine.
  */
-DEFINE_WORK_FUNC_TYPED(Clayout, FollowResize, (ETCS::RID, source))
+DEFINE_WORK_FUNC_TYPED(Layout, FollowResize, (ETCS::RID, source))
 {
     (void)ctx;
     ETCS::Held<Resizable_> src = ETCS::resolve_held<Resizable_>("Resizable", source);
     if (!src)
     {
-        ETCS_LOG("Clayout::FollowResize", "RID:" << source
+        ETCS_LOG("Layout::FollowResize", "RID:" << source
                  << " is not a live Resizable -- nothing to follow.");
         return;
     }
     self.FollowResize(src.get());
-    ETCS_LOG("Clayout::FollowResize", "now tracking RID:" << source << ".");
+    ETCS_LOG("Layout::FollowResize", "now tracking RID:" << source << ".");
 }
 
-DEFINE_WORK_FUNC(Clayout, Report)
+DEFINE_WORK_FUNC(Layout, Report)
 {
     (void)ctx; (void)data;
     self.Report();
 }
 
-DEFINE_WORK_FUNC(Clayout, Delete)
+DEFINE_WORK_FUNC(Layout, Delete)
 {
     (void)ctx; (void)data;
     self.DeleteConcrete();
