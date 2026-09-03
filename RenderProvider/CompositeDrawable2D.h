@@ -97,6 +97,25 @@ public:
         MarkDirty();
     }
 
+    /*
+ * KEEP WHAT IS ALREADY IN THE BUFFER, instead of clearing to the background.
+ *
+ * A compositor normally owns its pixels outright: it clears, walks its
+ * children, and the result is a function of the tree. That is right for a
+ * scene and wrong for a CANVAS, where something outside the tree -- a brush
+ * stamping through the Surface verbs -- is also a writer, and the buffer is
+ * the accumulated picture rather than a derived one. Clearing it every
+ * recompose throws away exactly the thing being made; the symptom is a paint
+ * program where strokes land and vanish, with nothing in the log to say why.
+ *
+ * Retained does not mean static. Children still draw on top every pass, so a
+ * cursor or a selection rectangle over a retained canvas behaves as it does
+ * anywhere else. What changes is only who is assumed to own the pixels
+ * underneath them.
+ */
+    void SetRetain(bool on) { m_retain = on; MarkDirty(); }
+    bool Retained() const   { return m_retain; }
+
     // ── Drawable2D_ dispatch ─────────────────────────────────────────────
 
     Rect2D BoundsConcrete() override { return Rect2D{ m_x, m_y, m_w, m_h }; }
@@ -249,7 +268,8 @@ private:
         // see rather than pay for silently.
         ETCS_LOG("CompositeDrawable2D", "recompose #" << m_recompositions
                  << " RID:" << getRID() << " (" << m_w << "x" << m_h << ")");
-        ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        // See SetRetain: a canvas's buffer is the picture, not a derived image.
+        if (!m_retain) ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
 
         PushClip(0, 0, m_w, m_h);
 
@@ -304,6 +324,8 @@ private:
     int32_t  m_y = 0;
     uint32_t m_w = 0;
     uint32_t m_h = 0;
+    // See SetRetain.
+    bool m_retain = false;
     float    m_bg[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     uint64_t m_recompositions = 0;
 };

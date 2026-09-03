@@ -533,6 +533,16 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetBackground,
     self.SetBackground(r, g, b, a);
 }
 
+// SetRetain <0|1> -- stop clearing to the background on recompose, for a node
+// whose pixels something outside the tree also writes. See SetRetain itself.
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetRetain, (int32_t, on))
+{
+    (void)ctx;
+    self.SetRetain(on != 0);
+    ETCS_LOG("CompositeDrawable2D", "retain " << (on ? "ON -- the buffer is the picture"
+                                                    : "OFF -- the buffer is derived from the tree"));
+}
+
 // Recompose if anything beneath changed, then blit once. The same verb
 // PolygonDrawable2D answers, doing the same job -- which is what lets a script
 // swap one for the other without knowing which it has.

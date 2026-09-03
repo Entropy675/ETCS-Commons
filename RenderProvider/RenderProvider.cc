@@ -42,7 +42,8 @@ ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
 // at all -- see CompositeDrawable2D.h on how Pixels_'s own dirty flag ends up
 // serving both this and the device upload, in sequence.
 ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
-    Create, SetPosition, SetOrder, SetBackground, Draw, Clear, DrawRect, Blit, Delete)
+    Create, SetPosition, SetOrder, SetBackground, SetRetain,
+    Draw, Clear, DrawRect, Blit, Delete)
 
 // The 3D scene node: a box, self-similar with its children, which projects its
 // whole subtree into a camera against one depth buffer. HYBRID because of the

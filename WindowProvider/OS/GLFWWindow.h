@@ -249,6 +249,9 @@ public:
             glfwSetFramebufferSizeCallback(created, framebuffer_size_callback);
             glfwSetKeyCallback(created, key_callback);
             glfwSetCursorPosCallback(created, cursor_callback);
+            // Buttons were never wired at all, so anything wanting "press
+            // here" had to borrow the keyboard -- see InputSource.h.
+            glfwSetMouseButtonCallback(created, mouse_button_callback);
             // Focus is tracked so capture can be re-applied on regaining it;
             // enter/leave only reports whether the pointer is over the frame.
             glfwSetCursorEnterCallback(created, cursor_enter_callback);
@@ -424,6 +427,7 @@ private:
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
     static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void cursor_callback(GLFWwindow* window, double xpos, double ypos);
+    static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
     static void cursor_enter_callback(GLFWwindow* window, int entered);
     static void window_focus_callback(GLFWwindow* window, int focused);
 
@@ -713,6 +717,27 @@ void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
     handler->noteCursor(xpos, ypos);
+}
+
+/*
+ * A CLICK CARRIES THE POSITION IT HAPPENED AT, asked for here rather than
+ * taken from the last motion callback.
+ *
+ * glfwGetCursorPos is the platform's current answer, and it is the right one:
+ * a press can arrive in the same poll pass as the movement that led to it, and
+ * reading our own last-recorded position would then be one event stale -- a
+ * stroke starting a few pixels behind the cursor, which is the exact class of
+ * bug the absolute-position model exists to remove.
+ */
+void GLFWWindow::mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
+{
+    (void)mods;
+    auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
+    if (!handler) return;
+    double mx = 0.0, my = 0.0;
+    glfwGetCursorPos(window, &mx, &my);
+    handler->pushButton(button, action == GLFW_PRESS,
+                        static_cast<int>(mx), static_cast<int>(my));
 }
 
 // Leaving is as important as entering: the cursor moves while it is away, and
