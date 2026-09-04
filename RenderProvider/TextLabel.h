@@ -307,16 +307,8 @@ private:
     }
 
     // Changing a label changes the image, so every pixel owner above it holds
-    // a stale copy. The same walk PolygonDrawable2D, Camera3D and Scene3D all
-    // make -- three leaves, one rule.
-    void markDirtyPath()
-    {
-        for (ETCS::Entity* n = this; n; n = n->getParent())
-        {
-            void* p = n->getInterfacePointer(ETCS::Buffer("Pixels"));
-            if (p) static_cast<Pixels_*>(p)->MarkDirty();
-        }
-    }
+    // a stale copy (ontology/Pixels.h).
+    void markDirtyPath() { etcs_mark_pixel_path(this); }
 
     /*
  * The font: 95 glyphs, ASCII 32..126, five columns each, bit 0 = top row.

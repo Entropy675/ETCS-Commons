@@ -1,7 +1,7 @@
 /ETCS
 .etcs_history
 .ace_build_fingerprint
-.ace_build_x86_64
+.ace_build_x86_64*
 *.d
 *.o
 *_hashes.h

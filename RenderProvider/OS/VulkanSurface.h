@@ -311,11 +311,33 @@ public:
         }
         if (root_rid == 0) return false;
 
-        Drawable_* root = ETCS::resolve_in_family<Drawable_>("Drawable", root_rid);
+        /*
+     * HELD, not merely resolved, and this walk is the reason the hold exists.
+     *
+     * Re-resolving every frame makes a composed reference safe against a root
+     * that has ALREADY gone. It cannot make it safe against one going now,
+     * because a bare pointer is an answer about the instant it was handed
+     * over and this walk lasts a whole tree. Deleting a bound compositor mid
+     * frame therefore freed the subtree out from under DrawInto -- reproduced
+     * about one run in three, and gone under a debugger, which is exactly the
+     * shape of a race with a delete.
+     *
+     * The hold makes the Delete event wait for this walk instead
+     * (Entity::tryHold, core/Entity.h). Falsy now covers being deleted RIGHT
+     * NOW as well as being gone already, and both mean the same thing here:
+     * unbind and show what was last composed.
+     *
+     * NOTHING INSIDE THIS SCOPE MAY EMIT AN ORDERED EVENT -- the Delete
+     * waiting on the hold may be ahead of it in the queue. DrawInto draws;
+     * that is the whole of what is allowed.
+     */
+        ETCS::Held<Drawable_> root = ETCS::resolve_held<Drawable_>("Drawable", root_rid);
         if (!root)
         {
             ETCS_LOG("VulkanSurface", "compose root RID:" << root_rid
-                     << " no longer resolves -- unbinding.");
+                     << " is gone or going -- unbinding.");
+            // Outside the hold by construction: it is already falsy, so there
+            // is nothing held and SetComposeRoot is free to take its lock.
             SetComposeRoot(0);
             return false;
         }

@@ -1,0 +1,141 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A toolbar, built out of shapes and registered as meanings.
+#
+#     run paint_toolbar.etcs bar=<Drawable2D> palette=<PaintPalette>
+#
+# EVERY SWATCH IS AN ORDINARY RECTANGLE in the caller's 2D tree, and that is
+# the whole design. PaintProvider owns no raster backend and grows none for a
+# row of coloured squares: RenderProvider's shape leaf already knows how to
+# draw one, where it is, and whether a point is on it. What PaintProvider adds
+# is the only part that is about painting -- this node means that colour --
+# and PaintPalette is that mapping and nothing else.
+#
+# So the appearance of the toolbar is a SCRIPT. Rearranging it, restyling it,
+# adding a swatch or replacing the whole row with a colour wheel from a third
+# module is an edit to this file and to no C++ at all.
+#
+# NAMES NO ABSOLUTE POSITION, like every component here: each swatch is placed
+# in `bar`'s space, so moving the bar moves the toolbar with nothing here
+# recomputed, and the input that finds these nodes arrives already translated
+# into the same space they were laid out in (Drawable2D_::PickAt).
+
+requires bar     [Drawable2D]
+requires palette [PaintPalette]
+
+# ── the colours ──────────────────────────────────────────────────────────
+#
+# 44x44 at y=8, sixteen apart. Stated as four corners rather than as a rect
+# because a polygon leaf is the general shape and a rectangle is the case of
+# it everyone reaches for first.
+
+bar.spawn(RenderProvider::PolygonDrawable2D swatch_ink)
+swatch_ink.Create()
+swatch_ink.AddPoint(16, 8)
+swatch_ink.AddPoint(60, 8)
+swatch_ink.AddPoint(60, 52)
+swatch_ink.AddPoint(16, 52)
+swatch_ink.SetFill(0.10, 0.10, 0.12, 1.0)
+swatch_ink.SetOrder(1)
+palette.AddColor(@swatch_ink, 0.10, 0.10, 0.12, 1.0)
+
+bar.spawn(RenderProvider::PolygonDrawable2D swatch_red)
+swatch_red.Create()
+swatch_red.AddPoint(76, 8)
+swatch_red.AddPoint(120, 8)
+swatch_red.AddPoint(120, 52)
+swatch_red.AddPoint(76, 52)
+swatch_red.SetFill(0.85, 0.18, 0.22, 1.0)
+swatch_red.SetOrder(1)
+palette.AddColor(@swatch_red, 0.85, 0.18, 0.22, 1.0)
+
+bar.spawn(RenderProvider::PolygonDrawable2D swatch_amber)
+swatch_amber.Create()
+swatch_amber.AddPoint(136, 8)
+swatch_amber.AddPoint(180, 8)
+swatch_amber.AddPoint(180, 52)
+swatch_amber.AddPoint(136, 52)
+swatch_amber.SetFill(0.95, 0.66, 0.15, 1.0)
+swatch_amber.SetOrder(1)
+palette.AddColor(@swatch_amber, 0.95, 0.66, 0.15, 1.0)
+
+bar.spawn(RenderProvider::PolygonDrawable2D swatch_green)
+swatch_green.Create()
+swatch_green.AddPoint(196, 8)
+swatch_green.AddPoint(240, 8)
+swatch_green.AddPoint(240, 52)
+swatch_green.AddPoint(196, 52)
+swatch_green.SetFill(0.22, 0.62, 0.35, 1.0)
+swatch_green.SetOrder(1)
+palette.AddColor(@swatch_green, 0.22, 0.62, 0.35, 1.0)
+
+bar.spawn(RenderProvider::PolygonDrawable2D swatch_blue)
+swatch_blue.Create()
+swatch_blue.AddPoint(256, 8)
+swatch_blue.AddPoint(300, 8)
+swatch_blue.AddPoint(300, 52)
+swatch_blue.AddPoint(256, 52)
+swatch_blue.SetFill(0.20, 0.42, 0.80, 1.0)
+swatch_blue.SetOrder(1)
+palette.AddColor(@swatch_blue, 0.20, 0.42, 0.80, 1.0)
+
+bar.spawn(RenderProvider::PolygonDrawable2D swatch_paper)
+swatch_paper.Create()
+swatch_paper.AddPoint(316, 8)
+swatch_paper.AddPoint(360, 8)
+swatch_paper.AddPoint(360, 52)
+swatch_paper.AddPoint(316, 52)
+swatch_paper.SetFill(1.0, 1.0, 1.0, 1.0)
+swatch_paper.SetOrder(1)
+# White IS the eraser here, and honestly so: the ink layer composites over an
+# opaque sheet, so painting the paper's colour is what erasing looks like from
+# the outside. A real eraser is a different blend mode, which is a tool change
+# rather than a colour change and belongs in PaintTool when it exists.
+palette.AddColor(@swatch_paper, 1.0, 1.0, 1.0, 1.0)
+
+# ── the nibs ─────────────────────────────────────────────────────────────
+#
+# Drawn at the size they select, so the button IS the preview. Squares rather
+# than circles because the shape leaf takes points and a circle is a lot of
+# them for a thing whose only job is to say "this big".
+
+bar.spawn(RenderProvider::PolygonDrawable2D nib_fine)
+nib_fine.Create()
+nib_fine.AddPoint(420, 26)
+nib_fine.AddPoint(426, 26)
+nib_fine.AddPoint(426, 32)
+nib_fine.AddPoint(420, 32)
+nib_fine.SetFill(0.85, 0.85, 0.88, 1.0)
+nib_fine.SetOrder(1)
+palette.AddSize(@nib_fine, 3.0)
+
+bar.spawn(RenderProvider::PolygonDrawable2D nib_medium)
+nib_medium.Create()
+nib_medium.AddPoint(452, 20)
+nib_medium.AddPoint(466, 20)
+nib_medium.AddPoint(466, 34)
+nib_medium.AddPoint(452, 34)
+nib_medium.SetFill(0.85, 0.85, 0.88, 1.0)
+nib_medium.SetOrder(1)
+palette.AddSize(@nib_medium, 8.0)
+
+bar.spawn(RenderProvider::PolygonDrawable2D nib_broad)
+nib_broad.Create()
+nib_broad.AddPoint(492, 12)
+nib_broad.AddPoint(520, 12)
+nib_broad.AddPoint(520, 40)
+nib_broad.AddPoint(492, 40)
+nib_broad.SetFill(0.85, 0.85, 0.88, 1.0)
+nib_broad.SetOrder(1)
+palette.AddSize(@nib_broad, 18.0)
+
+bar.spawn(RenderProvider::PolygonDrawable2D nib_wide)
+nib_wide.Create()
+nib_wide.AddPoint(548, 6)
+nib_wide.AddPoint(590, 6)
+nib_wide.AddPoint(590, 48)
+nib_wide.AddPoint(548, 48)
+nib_wide.SetFill(0.85, 0.85, 0.88, 1.0)
+nib_wide.SetOrder(1)
+palette.AddSize(@nib_wide, 30.0)

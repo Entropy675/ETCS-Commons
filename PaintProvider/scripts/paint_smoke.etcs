@@ -1,4 +1,5 @@
 #!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
 # Minimal PaintProvider smoke test: a window with a paint document and a
 # brush-driven input edge. Same pattern as the scene input examples: the
 # window's event stream is produced on the OS-thread side and consumed by
@@ -50,7 +51,7 @@ input.SetBrush(12.0, 1.0, 0.25, 0.25, 1.0)
 # comes up, the input edge opens, strokes accumulate into the layer -- and the
 # screen stays blank, which reads as "painting is broken" rather than as
 # "nobody asked for a frame".
-detach render_frames.etcs view=view
+detach RenderProvider/scripts/render_frames.etcs view=view
 
 # Standing control-thread edge: OS poll loop -> paint stroke state machine.
 # Returns when the window closes.

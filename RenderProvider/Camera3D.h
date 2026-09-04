@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 
 // ---------------------------------------------------------------------------
 // Camera3D — the Camera leaf: a 2D plane that a 3D scene fills.
@@ -77,6 +78,45 @@ public:
     void SetPosition(int32_t x, int32_t y) { m_x = x; m_y = y; markPath(); }
     void SetOrder(int32_t z)               { m_order = z; Reorder(); markPath(); }
 
+    /*
+     * The family verbs -- a camera is an ordinary 2D node and lays out as one.
+     *
+     * STAGED, NOT APPLIED, for the reason CompositeDrawable2D::MoveTo sets out
+     * at length: a resize arrives on the event pump while the frame edge is
+     * reading this buffer, and reallocating under it is a segfault waiting for
+     * a burst of resize events to line up. Applied in DrawIntoConcrete, on the
+     * thread that owns the pixels.
+     *
+     * Nothing is preserved across the resize, unlike a compositor's: a
+     * camera's buffer is DERIVED, and the next projection fills it completely.
+     * Carrying the old frame forward would show one stale image for one frame
+     * and cost a copy to do it.
+     */
+    bool MoveTo(Point2D p) override
+    {
+        {
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            stageFrom();
+            m_pending_x = p.x;
+            m_pending_y = p.y;
+        }
+        markPath();
+        return true;
+    }
+
+    bool ResizeTo(WindowSize s) override
+    {
+        if (s.width == 0 || s.height == 0) return false;
+        {
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            stageFrom();
+            m_pending_w = s.width;
+            m_pending_h = s.height;
+        }
+        markPath();
+        return true;
+    }
+
     // What the frame is cleared to before the scene is drawn into it. The sky,
     // in other words -- and transparent by default, so a camera nested over
     // other 2D content shows it through wherever no geometry landed.
@@ -128,11 +168,15 @@ public:
     bool RenderConcrete() override
     {
         if (m_scene == 0) return false;
-        Drawable3D_* scene = ETCS::resolve_in_family<Drawable3D_>("Drawable3D", m_scene);
+        // Held for the same reason the compose walk is: Project walks somebody
+        // else's scene graph, so the answer has to stay true for the whole
+        // projection rather than for the instant it was given. Falsy now also
+        // means "being deleted right now", which is nothing to render either.
+        ETCS::Held<Drawable3D_> scene = ETCS::resolve_held<Drawable3D_>("Drawable3D", m_scene);
         if (!scene)
         {
             ETCS_LOG("Camera3D", "scene RID:" << m_scene
-                     << " no longer resolves -- nothing to render.");
+                     << " is gone or going -- nothing to render.");
             return false;
         }
         ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
@@ -201,6 +245,7 @@ public:
     void DrawIntoConcrete(Surface_* dst) override
     {
         if (!dst) return;
+        applyPendingGeometry();     // before anything reads the buffer
 
         // The branch this class shares with CompositeDrawable2D, plus the one
         // thing a flag cannot express. TakeDirty covers every discrete change
@@ -263,32 +308,43 @@ private:
     bool sceneInMotion()
     {
         if (m_scene == 0) return false;
-        Drawable3D_* scene = ETCS::resolve_in_family<Drawable3D_>("Drawable3D", m_scene);
+        // Three calls through the pointer, so it is held across them.
+        ETCS::Held<Drawable3D_> scene = ETCS::resolve_held<Drawable3D_>("Drawable3D", m_scene);
         if (!scene) return false;
         if (scene->getSourceTag() != ETCS::Buffer("Scene3D")) return false;
         return static_cast<Scene3D*>(scene->getTrueType())->InMotion();
     }
 
-    /*
- * Mark this frame stale, AND every pixel-owning ancestor with it.
- *
- * MarkDirty alone marks the camera, which is not enough and fails silently:
- * a camera nested in a compositor is only redrawn when that compositor
- * recomposes, and a compositor recomposes only when IT is dirty -- so a
- * stale view sits inside a clean parent and is blitted, correctly, forever.
- * Found by moving a scene and watching a perfectly good frame not change.
- *
- * Same walk PolygonDrawable2D::markCompositorsDirty and Scene3D's own
- * markPixelPath make. Three nodes, one rule: whoever holds a merged copy of
- * what changed is out of date, and every pixel owner above you holds one.
- */
-    void markPath()
+    // Mark this frame stale AND every pixel-owning ancestor with it: MarkDirty
+    // alone leaves a stale view inside a clean parent, which is blitted,
+    // correctly, forever. The rule and the walk live in ontology/Pixels.h.
+    void markPath() { etcs_mark_pixel_path(this); }
+
+    // Seeded from the live values on first stage, so a MoveTo alone does not
+    // drag a stale size along with it. Called under m_pending_mtx.
+    void stageFrom()
     {
-        for (ETCS::Entity* n = this; n; n = n->getParent())
+        if (m_pending) return;
+        m_pending   = true;
+        m_pending_x = m_x;  m_pending_y = m_y;
+        m_pending_w = m_w;  m_pending_h = m_h;
+    }
+
+    // On the compose thread only. See MoveTo.
+    void applyPendingGeometry()
+    {
+        int32_t nx, ny; uint32_t nw, nh;
         {
-            void* p = n->getInterfacePointer(ETCS::Buffer("Pixels"));
-            if (p) static_cast<Pixels_*>(p)->MarkDirty();
+            std::lock_guard<std::mutex> g(m_pending_mtx);
+            if (!m_pending) return;
+            m_pending = false;
+            nx = m_pending_x; ny = m_pending_y;
+            nw = m_pending_w; nh = m_pending_h;
         }
+        m_x = nx; m_y = ny;
+        if (nw == m_w && nh == m_h) return;
+        m_w = nw; m_h = nh;
+        Allocate(m_w, m_h);
     }
 
     // 2D children draw over the projected frame, in the camera's own space.
@@ -352,6 +408,13 @@ private:
     int32_t  m_y = 0;
     uint32_t m_w = 0;
     uint32_t m_h = 0;
+
+    // Geometry the layout asked for, not yet applied -- written by the event
+    // pump, read by the frame edge. See MoveTo.
+    std::mutex m_pending_mtx;
+    bool       m_pending   = false;
+    int32_t    m_pending_x = 0, m_pending_y = 0;
+    uint32_t   m_pending_w = 0, m_pending_h = 0;
     float    m_bg[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
     // A default that renders something rather than nothing: eye back along

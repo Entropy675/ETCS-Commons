@@ -252,12 +252,17 @@ public:
 
 
     /*
-    /*
- * SENSITIVITY IS A SPAN MULTIPLIER: how much of each axis the frame covers.
- * 1.0 means the frame's width is exactly one full turn of yaw and its height
- * is exactly the full pitch range, so the pointer's position over the view
- * names a direction on the sphere around the camera and every direction is
- * reachable without the pointer leaving the frame.
+ * SENSITIVITY IS THE YAW SPAN: how many full turns the frame's width covers.
+ * 1.0 means the width is exactly one turn, so the pointer's position over the
+ * view names a direction and every direction is reachable without the pointer
+ * leaving the frame.
+ *
+ * YAW ONLY, and the asymmetry is the axes', not an oversight. Compression
+ * means going round an axis more than once inside the frame, and only a circle
+ * can do that. Pitch is bounded, so multiplying its span pushes the ends of
+ * the range inside the frame and everything past them is a dead zone -- at 2.0
+ * the top and bottom quarters of the frame did nothing. The height maps onto
+ * the pitch range exactly once, always.
  *
  * IT IS A RANGE, NOT A RATE, and that distinction is what makes it tunable at
  * last. Nothing accumulates in an absolute control, so this cannot compound,
@@ -289,6 +294,9 @@ public:
     // the only way to check a bound was to look at the screen and guess. A
     // constraint nothing can read is a constraint nothing can test.
     float Yaw() const   { return m_yaw; }
+    // The VIEW's elevation, not the rotation applied to reach it -- the
+    // question this exists to answer is how far up the camera is looking, and
+    // the rotation answers it only for a scene seeded on the horizon.
     float Pitch() const { return m_pitch; }
 
     float Sensitivity() const    { return m_sens_scale; }
@@ -299,7 +307,14 @@ public:
     // Reported rather than stored: both are the sensitivity applied to a fixed
     // span, so there is one setting and these are its two consequences.
     float YawSpanTurns()  const { return m_sens_scale; }
-    float PitchSpanDeg()  const { return 2.0f * PITCH_LIMIT_RAD * m_sens_scale * 57.2957795f; }
+    // Fixed, and not a consequence of the sensitivity: a bounded axis cannot
+    // be compressed without putting part of the frame past its own stop. See
+    // applyLookTo's pitch mapping.
+    float PitchSpanDeg()  const { return 2.0f * PITCH_LIMIT_RAD * 57.2957795f; }
+    // Where the view is aimed when the pointer is at the middle of the frame's
+    // height -- the seeded direction's own elevation, in degrees. The pitch
+    // range is centred on the horizon, NOT on this.
+    float ReferenceElevationDeg() const { return m_ref_elev * 57.2957795f; }
 
     // Restart the pipeline after a key change. A scene at rest marks nothing,
     // so nothing re-renders, so nothing calls Interact and the first keypress
@@ -892,29 +907,10 @@ private:
         }
     }
 
-    /*
- * Mark this node and every pixel-owning ancestor of it.
- *
- * The camera alone is not enough, and the frame that did not change is how
- * you find that out: a camera nested in a compositor is drawn by that
- * compositor's recomposition, and a compositor recomposes only when IT is
- * dirty. Marking the camera and stopping leaves a stale image sitting in a
- * clean parent, which is drawn, correctly, forever.
- *
- * So the walk is the same one PolygonDrawable2D::markCompositorsDirty
- * makes, for the same reason, and it stops at nothing: EVERY pixel owner up
- * the chain holds a merged copy of what changed, so every one of them is
- * out of date. Reached as Entity, since the chain crosses families -- a
- * camera's parent is a compositor, whose parent may be anything.
- */
-    static void markPixelPath(ETCS::Entity* node)
-    {
-        for (; node; node = node->getParent())
-        {
-            void* p = node->getInterfacePointer(ETCS::Buffer("Pixels"));
-            if (p) static_cast<Pixels_*>(p)->MarkDirty();
-        }
-    }
+    // Mark a camera and every pixel owner above it (ontology/Pixels.h). Taken
+    // as Entity because the chain crosses families: a camera's parent is a
+    // compositor, whose parent may be anything at all.
+    static void markPixelPath(ETCS::Entity* node) { etcs_mark_pixel_path(node); }
 
     // ── geometry helpers ─────────────────────────────────────────────────
 
@@ -1288,13 +1284,36 @@ private:
                          "world +X. Point the camera off the pole to choose it.");
             }
 
+            /*
+             * HOW HIGH THE REFERENCE ALREADY LOOKS, and the whole reason the
+             * limit needs it. m_ref_fwd is wherever the scene was pointed at
+             * seeding -- scene3d.etcs seeds it 8.9 degrees below the horizon --
+             * and the pitch applied below is a rotation FROM it, not an
+             * elevation. Bounding the rotation therefore bounded the wrong
+             * quantity: +-85 degrees about a reference already tilted down 8.9
+             * put the actual view between +76.1 and -93.9, and -93.9 is past
+             * straight down, where the world comes back the other way up. That
+             * inversion is the view flipping on the way down the frame.
+             *
+             * Exact rather than approximate: m_ref_right is horizontal by
+             * construction (y dropped above), so the rotation stays in the
+             * plane of the horizontal direction and world up, and elevations
+             * simply add.
+             */
+            m_ref_elev = std::asin(m_ref_fwd.y < -1.0f ? -1.0f
+                                 : (m_ref_fwd.y > 1.0f ? 1.0f : m_ref_fwd.y));
+
             // Row 2: what the look turns about is the eye, in the scene's
             // frame -- a first-person look is a rotation about the viewer, and
             // that is exactly what a pivot is for.
             m_ov.SetPivot(v.position.x - m_ov.x, v.position.y - m_ov.y, v.position.z - m_ov.z);
             m_ov.Orient(0.0f, 0.0f, 0.0f, 0.0f);
             m_yaw = 0.0f;
-            m_pitch = 0.0f;
+            // The view's elevation, which at seeding is the reference's. Yaw
+            // has no such absolute zero worth naming -- it is a circle -- so
+            // the two angles are deliberately in different frames: the one
+            // with a limit is stated where the limit means something.
+            m_pitch = m_ref_elev;
             m_look_seeded = true;
             return;
         }
@@ -1317,16 +1336,43 @@ private:
         const float fy = (static_cast<float>(m_ptr_y.load(std::memory_order_relaxed)) / h) - 0.5f;
 
         m_yaw   = wrapAngle(fx * 6.28318530718f * m_sens_scale);
-        // Negated: screen y grows downward, and the top of the frame is up.
-        m_pitch = clampPitch(-fy * 2.0f * PITCH_LIMIT_RAD * m_sens_scale);
+        /*
+     * THE FRAME'S HEIGHT READ AS AN ELEVATION: top edge +85 degrees, bottom
+     * edge -85, horizon exactly halfway down. Negated because screen y grows
+     * downward.
+     *
+     * NO SPAN MULTIPLIER ON THIS AXIS, and that is not an omission.
+     * Compressing an axis means going round it more than once before the
+     * pointer reaches the edge, which a circle can do and a bounded range
+     * cannot: multiplying pitch only pushed the ends of the range inside the
+     * frame, so at 2.0 the top and bottom quarters were past the stop and did
+     * nothing at all. Sensitivity is turns across the WIDTH, which is what it
+     * has always claimed to be.
+     *
+     * The height therefore maps onto the pitch range exactly, so clampPitch is
+     * finally the no-op check its own comment describes rather than the thing
+     * doing the work.
+     */
+        m_pitch = clampPitch(-fy * 2.0f * PITCH_LIMIT_RAD);
 
         // Rebuilt from the two angles, never accumulated onto. RotateBy
         // composes from the left, so the pitch written first is applied first
         // and the yaw written second wraps around it -- pitch in the reference
         // frame, yaw in the world's, which is the level-horizon order.
+        //
+        // m_pitch is where the view should END UP; what is applied is the
+        // rotation that gets there from where the reference already was.
+        // ref_elev MINUS the target, not plus, and the direction was measured
+        // rather than reasoned: a positive rotation about m_ref_right tilts
+        // the forward vector DOWN, so composing it the other way round both
+        // left the result unbounded and pointed the control the wrong way --
+        // the pointer at the top of the frame aimed the camera at the ground.
+        // Written this way the identity is exact: the view's elevation comes
+        // out as m_pitch, whatever the reference was.
+        const float pitch_rot = m_ref_elev - m_pitch;
         m_ov.Orient(0.0f, 0.0f, 0.0f, 0.0f);
-        if (m_pitch != 0.0f)
-            m_ov.RotateBy(m_ref_right.x, m_ref_right.y, m_ref_right.z, m_pitch);
+        if (pitch_rot != 0.0f)
+            m_ov.RotateBy(m_ref_right.x, m_ref_right.y, m_ref_right.z, pitch_rot);
         if (m_yaw != 0.0f)
             m_ov.RotateBy(0.0f, 1.0f, 0.0f, m_yaw);
 
@@ -1571,6 +1617,9 @@ private:
  * turns out to matter more than the uniformity.
  */
     float              m_sens_scale = 2.0f;
+    // The seeded direction's elevation. Frame-thread only, written once at
+    // seeding -- see applyLookTo's seeding block for what it is for.
+    float              m_ref_elev   = 0.0f;
 
     std::chrono::steady_clock::time_point m_last_step{};
     bool                                  m_stepped = false;

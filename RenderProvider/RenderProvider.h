@@ -533,6 +533,42 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetBackground,
     self.SetBackground(r, g, b, a);
 }
 
+// SetRetain <0|1> -- stop clearing to the background on recompose, for a node
+// whose pixels something outside the tree also writes. See SetRetain itself.
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetRetain, (int32_t, on))
+{
+    (void)ctx;
+    self.SetRetain(on != 0);
+    ETCS_LOG("CompositeDrawable2D", "retain " << (on ? "ON -- the buffer is the picture"
+                                                    : "OFF -- the buffer is derived from the tree"));
+}
+
+/*
+ * MoveTo / ResizeTo -- the FAMILY verbs, exposed so a script can drive by hand
+ * exactly what a layout drives automatically.
+ *
+ * MoveTo does the same work as SetPosition and both stay: SetPosition is what a
+ * compositor has always been told, MoveTo is what the family asks of anything
+ * placeable (ontology/Drawable2D.h). Naming them apart rather than aliasing one
+ * to the other keeps a script that never heard of layout reading the way it
+ * always did.
+ *
+ * ResizeTo REALLOCATES the buffer -- see CompositeDrawable2D.h on what happens
+ * to a retained canvas's pixels when it does.
+ */
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, MoveTo, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.MoveTo(Point2D{ x, y });
+}
+
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, ResizeTo, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    if (!self.ResizeTo(WindowSize{ w, h }))
+        ETCS_LOG("CompositeDrawable2D::ResizeTo", "refused " << w << "x" << h << ".");
+}
+
 // Recompose if anything beneath changed, then blit once. The same verb
 // PolygonDrawable2D answers, doing the same job -- which is what lets a script
 // swap one for the other without knowing which it has.
@@ -709,13 +745,17 @@ DEFINE_WORK_FUNC(Scene3D, Look)
     ETCS_LOG("Scene3D::Look",
              "yaw=" << self.Yaw() << " rad (" << self.Yaw() * DEG << " deg), wrapped to [-pi, pi)"
              "   pitch=" << self.Pitch() << " rad (" << self.Pitch() * DEG << " deg), "
-             "clamped to +/-85 deg"
+             "the VIEW's elevation, +/-85 deg"
              "\n    the " << self.FrameWidth() << "x" << self.FrameHeight() << " frame spans "
              << self.YawSpanTurns() << " turn(s) of yaw across its width and "
              << self.PitchSpanDeg() << " degrees of pitch down its height (sensitivity "
-             << self.Sensitivity() << "). Absolute: the pointer's position over the frame is "
-             "the direction, so nothing accumulates and nothing drifts. "
-             "SetSensitivity(0.5) halves both spans.");
+             << self.Sensitivity() << ", yaw only -- a bounded axis cannot be compressed "
+             "without putting its own stops inside the frame). Seeded looking "
+             << self.ReferenceElevationDeg() << " deg from the horizon, which the pitch "
+             "range is NOT centred on: the range is the world's, so the view cannot run "
+             "past the pole at one end while stopping short at the other."
+             "\n    Absolute: the pointer's position over the frame is the direction, so "
+             "nothing accumulates and nothing drifts.");
 }
 
 DEFINE_WORK_FUNC(Scene3D, Order)
@@ -918,6 +958,22 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, SetPosition, (int32_t, x), (int32_t, y))
 {
     (void)ctx;
     self.SetPosition(x, y);
+}
+
+// The family verbs, same pair as CompositeDrawable2D's and here for the same
+// reason -- a 3D view in a resizing panel is the first thing anyone puts in a
+// layout. ResizeTo keeps nothing: the next projection fills the frame anyway.
+DEFINE_WORK_FUNC_TYPED(Camera3D, MoveTo, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.MoveTo(Point2D{ x, y });
+}
+
+DEFINE_WORK_FUNC_TYPED(Camera3D, ResizeTo, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    if (!self.ResizeTo(WindowSize{ w, h }))
+        ETCS_LOG("Camera3D::ResizeTo", "refused " << w << "x" << h << ".");
 }
 
 DEFINE_WORK_FUNC_TYPED(Camera3D, SetOrder, (int32_t, z))

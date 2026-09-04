@@ -32,6 +32,71 @@ namespace glfw_native {
 #include <iostream>
 #include <cstdlib>
 #include <cmath>
+#include <atomic>
+#include <thread>
+#include <chrono>
+#include <mutex>
+#include <vector>
+
+class GLFWWindow;
+
+/*
+ * GLFW IS ONE THING PER PROCESS. THIS IS THAT ONE THING.
+ *
+ * glfwInit, glfwTerminate and glfwPollEvents are library-wide, not
+ * per-window: the second init is a no-op, the first terminate destroys
+ * EVERY window, and one poll drains the queue for all of them. GLFW has
+ * always treated them that way and says so. We were the ones pretending
+ * otherwise -- init inside a window's create, terminate inside a window's
+ * destructor, and a poll verb on each window that drained the shared queue
+ * and then only did the post-poll work for itself.
+ *
+ * That pretence has three costs, and the two windows the paint editor wants
+ * hit all of them. A second window's create ran glfwInit again for nothing.
+ * A second window pumping in parallel ran glfwPollEvents concurrently, which
+ * is not re-entrant. And the first window destroyed took the whole library
+ * down with it, including the display connection the other one's Vulkan
+ * swapchain still held -- a hang in the surface teardown, not a crash, which
+ * is why it read as unrelated for so long.
+ *
+ * So the shape here is what GLFW already decided:
+ *
+ *   acquire/release   refcounted, so the library outlives every window and
+ *                     dies with the last one.
+ *   enroll/withdraw   the registry, so ONE poll pass does the post-poll work
+ *                     for EVERY window -- which is what makes a second window
+ *                     need no pump of its own.
+ *   poll              try_lock, NOT lock. A second pumper arriving mid-pass
+ *                     wants the queue drained, and it has been; making it
+ *                     wait to drain an empty queue turns a frame loop into a
+ *                     queue of frame loops. It returns false and gets on with
+ *                     its frame.
+ */
+class GLFWPump
+{
+public:
+    // Refcounted glfwInit. Hints and the error handler are set here because
+    // they belong to the library's lifetime, not to any window's.
+    static bool acquire();
+
+    // Refcounted glfwTerminate. The LAST holder terminates -- see the
+    // teardown hang above for what happens when the first one does.
+    static void release();
+
+    static void enroll(GLFWWindow* w);
+    static void withdraw(GLFWWindow* w);
+
+    // Drain the shared queue and run every enrolled window's post-poll work.
+    // False means another thread is mid-pass, which is not a failure: the
+    // queue this caller wanted drained is being drained right now.
+    static bool poll();
+
+private:
+    inline static std::mutex                s_registry;
+    inline static std::mutex                s_pumping;
+    inline static std::vector<GLFWWindow*>  s_windows;
+    inline static int                       s_refs = 0;
+};
 
 class GLFWWindow :
     public WindowBase<GLFWWindow>, public InputSourceBase<GLFWWindow>,
@@ -50,6 +115,46 @@ private:
 
 public:
     WIRE_TYPE_IDENTITY(GLFWWindow);
+
+    /*
+     * NOTHING IS INSIDE GLFW WITH THIS HANDLE WHEN IT IS DESTROYED.
+     *
+     * The tag transitions below settle WHO destroys and where that sits in the
+     * module's order. They do not settle WHEN: the pump can be inside
+     * glfwPollEvents on this very window at the moment another thread wins the
+     * close, and GLFW's window functions are not re-entrant across threads.
+     *
+     * So every call into the platform takes its handle through here, and the
+     * count is how many are inside. The destroy claims the handle FIRST and
+     * only then waits the count out -- which terminates by construction,
+     * because a caller arriving after the claim reads null and never raises
+     * it. Both sides are seq_cst (raise, then load the handle here; store the
+     * handle, then load the count there), which is what makes "I saw a live
+     * handle" and "I saw nobody inside" mutually exclusive.
+     *
+     * A counter rather than a lock, because the callbacks GLFW runs during a
+     * poll call back into this object -- a lock would have to be re-entrant
+     * and would serialise the pump against every geometry query.
+     */
+    struct PlatformUse
+    {
+        GLFWWindow& owner;
+        GLFWwindow* handle;
+
+        explicit PlatformUse(GLFWWindow& w) : owner(w), handle(nullptr)
+        {
+            owner.m_platform_users.fetch_add(1);
+            handle = static_cast<GLFWwindow*>(owner.m_window.load());
+            if (!handle) owner.m_platform_users.fetch_sub(1);
+        }
+        ~PlatformUse() { if (handle) owner.m_platform_users.fetch_sub(1); }
+
+        explicit operator bool() const { return handle != nullptr; }
+        GLFWwindow* operator*()  const { return handle; }
+
+        PlatformUse(const PlatformUse&)            = delete;
+        PlatformUse& operator=(const PlatformUse&) = delete;
+    };
 
     GLFWWindow()
     {
@@ -72,7 +177,7 @@ public:
             return new_block;
         };
 
-        glfw_allocator.deallocate = [](void* block, void* user) {
+        glfw_allocator.deallocate = [](void* /*block*/, void* /*user*/) {
             // No-op: arena is block-freed on module unload
         };
 
@@ -80,76 +185,219 @@ public:
         glfwInitAllocator(&glfw_allocator);
     }
 
+    // No tag operation here, deliberately. This runs during teardown, where
+    // the module's stream may already be stopping and a refused enqueue
+    // answers "not yours" -- which would leak the window at the one moment
+    // nothing is left to leak it to. Nothing races a destructor, so the plain
+    // exchange is the whole of what is needed.
+    /*
+     * THE ORDER IS THE WHOLE OF IT.
+     *
+     * withdraw first, so no pump pass can still be reaching into this window
+     * (it blocks out any pass already inside one). Then the handle. Then the
+     * library share, LAST and refcounted -- terminating here rather than at
+     * close time is what stopped a second window's Vulkan teardown hanging on
+     * a display connection that had been pulled out from under it.
+     */
     ~GLFWWindow()
     {
         ETCS_LOG("Cleanup for GLFWWindow called...");
-        if (m_window) {
-            ETCS_LOG("Destroying window handle: " << m_window);
-            glfwDestroyWindow(static_cast<GLFWwindow*>(m_window));
-            m_window = nullptr;
-        }
-        glfwTerminate();
+        GLFWPump::withdraw(this);
+        if (void* mine = m_window.exchange(nullptr)) drainAndDestroy(mine);
+        if (m_holds_glfw) { m_holds_glfw = false; GLFWPump::release(); }
     }
 
+    // The only glfwDestroyWindow in this file. Takes a handle its caller has
+    // ALREADY claimed out of m_window, so nothing new can be inside it, and
+    // waits out whatever was. Terminating by construction -- see PlatformUse.
+    void drainAndDestroy(void* claimed)
+    {
+        while (m_platform_users.load() != 0) std::this_thread::yield();
+        ETCS_LOG("GLFWWindow", "destroying handle " << claimed << ".");
+        glfwDestroyWindow(static_cast<GLFWwindow*>(claimed));
+    }
+
+    /*
+     * THE LIFECYCLE IS TWO FLAGS, AND THE FLAGS ARE THE CLAIMS.
+     *
+     *     opening   a create is in progress -- nothing about the window is
+     *               settled yet
+     *     active    the window is up, and IsActive() is this
+     *
+     * A tag operation is ordered on the module's own stream and now answers
+     * whether it MOVED the surface (Entity::addTag/removeTag), so "did the
+     * state change" and "was I the one who changed it" are one question with
+     * one answer. That is all a claim ever was, and it needs no mechanism of
+     * its own: the state surface already had to record the transition, and
+     * recording it is what decides the winner.
+     *
+     * ENTRY IS A CLAIM because CreateWindow is called TWICE for one window in
+     * the ordinary case -- `main.Create(...)` from the script and Run's own
+     * CreateWindow, which every scene script relies on being idempotent --
+     * from two different threads. `if (m_window) return` is a test and an act
+     * with a gap both callers fit into: two glfwCreateWindow calls, one of the
+     * two windows immediately unreachable.
+     */
     void CreateWindowConcrete(const char* title = "invalid window", uint32_t width = 100, uint32_t height = 100)
     {
-        if (m_window) return;
-
-        glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-        if (!glfwInit()) return;
-        // Straight after glfwInit, which is where the display connection
-        // exists and before anything can issue a request against it.
-        install_x_error_handler();
-
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
-        m_window = (void*)glfwCreateWindow(width, height, title, nullptr, nullptr);
-
-        ETCS_LOG("Creating window with handle: " << m_window << ".");
-        if (m_window)
+        /*
+         * TWO FLAGS BECAUSE THERE ARE TWO QUESTIONS, and `opening` alone
+         * cannot answer both. It is transient by design -- cleared the moment
+         * the create settles -- so a caller arriving afterwards would claim it
+         * again and build a SECOND window over the first, which is worse than
+         * the race it replaced: the original handle leaks, the surface stays
+         * bound to it, and the crash lands later somewhere else entirely.
+         *
+         * `active` is the settled answer, `opening` the in-progress one. This
+         * pair of tests is not a test-and-act with a gap in it, because the
+         * claim below is what serialises the creators: whoever holds `opening`
+         * is the only one building, and the re-check after winning it closes
+         * the one ordering another creator could have finished in.
+         */
+        if (this->hasTag("active"))
         {
-            glfwShowWindow(static_cast<GLFWwindow*>(m_window));
-            glfwFocusWindow(static_cast<GLFWwindow*>(m_window));
-            glfwSetWindowUserPointer(GetHandle(), this);
-            glfwSetFramebufferSizeCallback(GetHandle(), framebuffer_size_callback);
-            glfwSetKeyCallback(GetHandle(), key_callback);
-            glfwSetCursorPosCallback(GetHandle(), cursor_callback);
-            // Focus is tracked so capture can be re-applied on regaining it;
-            // enter/leave only reports whether the pointer is over the frame.
-            glfwSetCursorEnterCallback(GetHandle(), cursor_enter_callback);
-            glfwSetWindowFocusCallback(GetHandle(), window_focus_callback);
-            glfwSetWindowPosCallback(GetHandle(), window_pos_callback);
-            populateNativeSurfaceHandle();
-            this->addTag("active");
-            ETCS_LOG("Window active! Instance: " << this->getRID() << ".");
-        }
-    }
-
-
-    void CloseWindowConcrete() override
-    {
-        ETCS_LOG("closeWindow: handle=" << m_window);
-
-        if (!m_window) {
-            ETCS_LOG("closeWindow: Already closed, no-op");
+            ETCS_LOG("CreateWindow", "already open -- no-op.");
             return;
         }
 
-        bool already_closing = (glfwWindowShouldClose(static_cast<GLFWwindow*>(m_window)) == GL_TRUE);
-
-        if (!already_closing) {
-            // PHASE 1: First call - just signal intent
-            // Let the poll loop detect shouldClose() and handle cleanup
-            ETCS_LOG("closeWindow: Phase 1 - signaling close");
-            glfwSetWindowShouldClose(static_cast<GLFWwindow*>(m_window), GL_TRUE);
-            // Do NOT remove tag or destroy window here!
-        } else {
-            // PHASE 2: Second call - poll loop has exited, do actual cleanup
-            ETCS_LOG("closeWindow: Phase 2 - performing cleanup");
-            this->removeTag("active");
-            glfwDestroyWindow(static_cast<GLFWwindow*>(m_window));
-            m_window = nullptr;
+        if (!this->addTag("opening"))
+        {
+            /*
+             * LOSING THE CLAIM MEANS WAITING FOR THE OUTCOME, not returning
+             * from the middle of someone else's create. Run's very next line
+             * is `if (!IsActive()) -> creation failed -> raise the closure
+             * interrupt`, so a second caller coming back while the window is
+             * still being built reports a failure that did not happen and
+             * takes the whole script down with it. "Idempotent" has to mean
+             * the caller returns to a SETTLED window.
+             *
+             * `opening` clears either way -- active, or back to nothing -- so
+             * this ends on both outcomes. Bounded anyway: a create wedged
+             * inside the platform is worth a line in the log rather than a
+             * thread that never comes back.
+             */
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (this->hasTag("opening"))
+            {
+                if (std::chrono::steady_clock::now() > deadline)
+                {
+                    ETCS_LOG("CreateWindow", "another caller has been opening this window "
+                             "for 10s and has not finished -- returning without waiting.");
+                    break;
+                }
+                std::this_thread::yield();
+            }
+            ETCS_LOG("CreateWindow", "already open -- no-op.");
+            return;
         }
+
+        // Won the claim -- but another creator may have finished between the
+        // test above and it. Asking again under the claim is the whole of what
+        // makes the pair sound.
+        if (this->hasTag("active"))
+        {
+            this->removeTag("opening");
+            ETCS_LOG("CreateWindow", "already open -- no-op.");
+            return;
+        }
+
+        // The library, refcounted. m_holds_glfw is this window's share of it
+        // and is what the destructor gives back -- taken here rather than in
+        // the constructor because a window that never opened never took one.
+        if (!GLFWPump::acquire()) { this->removeTag("opening"); return; }
+        m_holds_glfw = true;
+
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+        GLFWwindow* created = glfwCreateWindow(width, height, title, nullptr, nullptr);
+        m_window.store(created);
+
+        ETCS_LOG("Creating window with handle: " << created << ".");
+        if (created)
+        {
+            glfwShowWindow(created);
+            glfwFocusWindow(created);
+            glfwSetWindowUserPointer(created, this);
+            glfwSetFramebufferSizeCallback(created, framebuffer_size_callback);
+            glfwSetKeyCallback(created, key_callback);
+            glfwSetCursorPosCallback(created, cursor_callback);
+            // Buttons were never wired at all, so anything wanting "press
+            // here" had to borrow the keyboard -- see InputSource.h.
+            glfwSetMouseButtonCallback(created, mouse_button_callback);
+            // Focus is tracked so capture can be re-applied on regaining it;
+            // enter/leave only reports whether the pointer is over the frame.
+            glfwSetCursorEnterCallback(created, cursor_enter_callback);
+            glfwSetWindowFocusCallback(created, window_focus_callback);
+            glfwSetWindowPosCallback(created, window_pos_callback);
+            populateNativeSurfaceHandle();
+            // Enrolled before `active` goes on, so the first pump pass that
+            // can see this window as open already has its post-poll work.
+            GLFWPump::enroll(this);
+            this->addTag("active");
+            ETCS_LOG("Window active! Instance: " << this->getRID() << ".");
+        }
+
+        // LAST, so that `opening` going off means everything else already
+        // went on: it is what the loser above is waiting to see, and a waiter
+        // released before `active` landed would read the window as failed.
+        this->removeTag("opening");
+    }
+
+
+    /*
+     * TWO PHASES, AND THE SECOND IS A TAG TRANSITION.
+     *
+     * Phase 1 states the intent and returns, because the pump has to SEE the
+     * close to leave its loop -- that is the only reason closing has two
+     * halves. Not a claim, and it does not need to be: the flag belongs to the
+     * platform and setting it twice is setting it once.
+     *
+     * Phase 2 is reached by three threads for ONE cross press -- the pump, the
+     * script's own Close(), and Run's exit -- so it cannot be a step each of
+     * them performs. What they used to find was a live handle they all
+     * destroyed, and destroying a window twice walks the toolkit's window list
+     * off its end (Window_::m_window on why that is fatal rather than merely
+     * redundant).
+     *
+     * `removeTag("active")` does BOTH jobs at once, which is why the claim
+     * belongs on the tag surface and not beside it. It records the state --
+     * the window is no longer active, and IsActive() answers no to the pump
+     * and to Run before the thing they are looping on stops existing -- and
+     * its answer names the one caller that made that transition. One
+     * operation, ordered on the same stream as every other state change in
+     * this module, and no second mechanism to keep in step with it.
+     */
+    void CloseWindowConcrete() override
+    {
+        {
+            PlatformUse w(*this);
+            if (!w)
+            {
+                ETCS_LOG("closeWindow", "already closed -- no-op.");
+                return;
+            }
+
+            if (glfwWindowShouldClose(*w) != GL_TRUE)
+            {
+                ETCS_LOG("closeWindow", "phase 1 -- signalling close on handle " << *w << ".");
+                glfwSetWindowShouldClose(*w, GL_TRUE);
+                return;
+            }
+        }
+
+        if (!this->removeTag("active"))
+        {
+            ETCS_LOG("closeWindow", "phase 2 went to another caller -- nothing to do.");
+            return;
+        }
+
+        // Publication, not exclusion -- the transition above already settled
+        // that this call is the only one here. Readers stop seeing the handle
+        // before it stops existing.
+        void* mine = m_window.exchange(nullptr);
+        if (!mine) return;
+        ETCS_LOG("closeWindow", "phase 2 -- claimed handle " << mine << ".");
+        drainAndDestroy(mine);
     }
 
     bool DeleteConcrete() override
@@ -162,8 +410,9 @@ public:
 
     bool ShouldCloseConcrete() override
     {
-        if (!m_window) return true;
-        return glfwWindowShouldClose(static_cast<GLFWwindow*>(m_window)) == GL_TRUE;
+        PlatformUse w(*this);
+        if (!w) return true;
+        return glfwWindowShouldClose(*w) == GL_TRUE;
     }
 
     /*
@@ -179,45 +428,81 @@ public:
  * queue is drained; flushing per callback would be the uncoalesced behaviour
  * with extra steps.
  */
-    void PollEventsConcrete() override
+    void PollEventsConcrete() override { GLFWPump::poll(); }
+
+    /*
+     * This window's share of a poll pass, run by whichever thread won the
+     * pump -- which is very often not this window's frame loop, and that is
+     * the point: one pass serves every window.
+     *
+     * The PlatformUse is held across it because the pump is the one caller
+     * GLFW would certainly be inside when another thread wins the close.
+     */
+    void afterPoll()
     {
-        glfwPollEvents();
+        PlatformUse w(*this);
+        if (!w) return;
         flushPointerPosition();
         // After the poll, so the window has had every chance to become
         // viewable and focused before the mode is applied. See
         // SetMouseCapture for why this cannot be done where it is requested.
-        applyMouseCapture();
+        applyMouseCapture(*w);
     }
 
     WindowPosition GetPositionConcrete() override
     {
-        if (!m_window) return {0, 0};
+        PlatformUse w(*this);
+        if (!w) return {0, 0};
 
         int x, y;
-        glfwGetWindowPos(static_cast<GLFWwindow*>(m_window), &x, &y);
+        glfwGetWindowPos(*w, &x, &y);
         return { static_cast<int32_t>(x), static_cast<int32_t>(y) };
     }
 
     void SetPositionConcrete(int32_t x, int32_t y) override
     {
-        if (!m_window) return;
+        PlatformUse w(*this);
+        if (!w) return;
 
-        glfwSetWindowPos(static_cast<GLFWwindow*>(m_window), x, y);
+        glfwSetWindowPos(*w, x, y);
         ETCS_LOG("SetPosition", "Window moved to: " << x << ", " << y);
     }
 
 
     WindowSize GetSizeConcrete() override
     {
-        if (!m_window) return {0, 0};
+        PlatformUse w(*this);
+        if (!w) return {0, 0};
 
-        int w, h;
-        glfwGetFramebufferSize(static_cast<GLFWwindow*>(m_window), &w, &h);
-        m_size = { static_cast<uint32_t>(w), static_cast<uint32_t>(h) };
+        int fw, fh;
+        glfwGetFramebufferSize(*w, &fw, &fh);
+        m_size = { static_cast<uint32_t>(fw), static_cast<uint32_t>(fh) };
         return m_size;
     }
 
-    GLFWwindow* GetHandle() { return static_cast<GLFWwindow*>(m_window); }
+    /*
+     * ASK the window manager. It is a request, not a setting -- a tiled or
+     * fullscreen window is simply not resized, and the WM says so by not
+     * sending the configure. So nothing is recorded here: m_size and every
+     * listener move when framebuffer_size_callback fires, which is the only
+     * place that knows what actually happened.
+     *
+     * True means the request went out, which is the most a window can
+     * honestly claim (ontology/Resizable.h). The size in a window's own
+     * coordinates is what glfwSetWindowSize takes, and it is the framebuffer
+     * size we hand out -- they differ on a scaled display, and reconciling
+     * that belongs with whoever introduces scaling rather than here.
+     */
+    bool ResizeTo(WindowSize s) override
+    {
+        if (s.width == 0 || s.height == 0) return false;
+        PlatformUse w(*this);
+        if (!w) return false;
+        glfwSetWindowSize(*w, static_cast<int>(s.width), static_cast<int>(s.height));
+        return true;
+    }
+
+    GLFWwindow* GetHandle() { return static_cast<GLFWwindow*>(m_window.load()); }
 
     /*
  * The screen's real pixel density, from the monitor's physical size.
@@ -245,6 +530,7 @@ private:
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
     static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void cursor_callback(GLFWwindow* window, double xpos, double ypos);
+    static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
     static void cursor_enter_callback(GLFWwindow* window, int entered);
     static void window_focus_callback(GLFWwindow* window, int focused);
 
@@ -360,13 +646,15 @@ public:
         }
         else
             ETCS_LOG("GLFWWindow", "cursor release requested.");
-        applyMouseCapture();   // may be too early; the pump will retry
+        // May be too early -- no handle yet, or not viewable. The pump retries.
+        { PlatformUse w(*this); if (w) applyMouseCapture(*w); }
     }
 
-    // The only place the platform is actually told. Called from the pump.
-    void applyMouseCapture()
+    // The only place the platform is actually told. Called from the pump,
+    // which hands in the handle it is already holding open (PlatformUse).
+    void applyMouseCapture(GLFWwindow* handle)
     {
-        if (!m_capture_dirty || !GetHandle()) return;
+        if (!m_capture_dirty || !handle) return;
 
         /*
      * GLFW_CURSOR_HIDDEN, NOT GLFW_CURSOR_DISABLED, and this is the whole of
@@ -402,13 +690,13 @@ public:
      * pointer's position over the frame is the angle, so it never needs to
      * keep going past an edge. Hiding it is the whole of what capture does.
      */
-        glfwSetInputMode(GetHandle(), GLFW_CURSOR,
+        glfwSetInputMode(handle, GLFW_CURSOR,
                          m_capture_want ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
 #ifdef GLFW_RAW_MOUSE_MOTION
         // Explicitly OFF, not merely unrequested: GLFW leaves the mode as it
         // found it, so a previous capture that enabled it would otherwise
         // persist and silently switch the units under the turn rate.
-        glfwSetInputMode(GetHandle(), GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+        glfwSetInputMode(handle, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
 #endif
 
         /*
@@ -493,6 +781,16 @@ private:
     bool   m_capture_want   = false;
     bool   m_capture_dirty  = false;
     bool   m_mouseCaptured  = false;
+
+    // How many threads are inside GLFW with this window's handle. PlatformUse
+    // is the only thing allowed to move it.
+    std::atomic<int> m_platform_users{ 0 };
+
+    // Does this window hold a share of the library? Taken on a create that
+    // reached glfwInit, given back once in the destructor. Not an atomic
+    // because only the create and the destructor touch it, and a create that
+    // lost its claim returned before here.
+    bool m_holds_glfw = false;
 public:
 
     // Runs inside WindowProvider.so, against the GLFW copy that called
@@ -500,18 +798,81 @@ public:
     // comment for why this must not be duplicated anywhere else.
     void populateNativeSurfaceHandle()
     {
-        if (!m_window) return;
+        PlatformUse w(*this);
+        if (!w) return;
 #if defined(_WIN32)
         m_nativeSurface.platform = NativeSurfacePlatform::Win32;
-        m_nativeSurface.win32.hwnd = glfw_native::glfwGetWin32Window(GetHandle());
+        m_nativeSurface.win32.hwnd = glfw_native::glfwGetWin32Window(*w);
         m_nativeSurface.win32.hinstance = GetModuleHandle(nullptr);
 #else
         m_nativeSurface.platform = NativeSurfacePlatform::X11;
         m_nativeSurface.x11.display = glfw_native::glfwGetX11Display();
-        m_nativeSurface.x11.window  = static_cast<unsigned long>(glfw_native::glfwGetX11Window(GetHandle()));
+        m_nativeSurface.x11.window  = static_cast<unsigned long>(glfw_native::glfwGetX11Window(*w));
 #endif
     }
 };
+
+// ── GLFWPump ────────────────────────────────────────────────────────────────
+//
+// Out of line because the registry holds GLFWWindow*, which is incomplete
+// where the class above is declared -- the same reason this file already
+// defines its callbacks down here.
+
+inline bool GLFWPump::acquire()
+{
+    std::lock_guard<std::mutex> g(s_registry);
+    if (s_refs > 0) { ++s_refs; return true; }
+
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+    if (!glfwInit()) return false;
+    // Straight after glfwInit, which is where the display connection exists
+    // and before anything can issue a request against it.
+    GLFWWindow::install_x_error_handler();
+    s_refs = 1;
+    ETCS_LOG("GLFWPump", "GLFW up.");
+    return true;
+}
+
+inline void GLFWPump::release()
+{
+    std::lock_guard<std::mutex> g(s_registry);
+    if (s_refs == 0) return;
+    if (--s_refs > 0) return;
+    ETCS_LOG("GLFWPump", "last window gone -- GLFW down.");
+    glfwTerminate();
+}
+
+inline void GLFWPump::enroll(GLFWWindow* w)
+{
+    std::lock_guard<std::mutex> g(s_registry);
+    for (GLFWWindow* e : s_windows) if (e == w) return;
+    s_windows.push_back(w);
+}
+
+// Blocks out a pass already inside afterPoll for this window, which is the
+// point: after this returns, no pump can be holding the pointer.
+inline void GLFWPump::withdraw(GLFWWindow* w)
+{
+    std::lock_guard<std::mutex> g(s_registry);
+    for (size_t i = 0; i < s_windows.size(); ++i)
+        if (s_windows[i] == w) { s_windows.erase(s_windows.begin() + i); return; }
+}
+
+inline bool GLFWPump::poll()
+{
+    std::unique_lock<std::mutex> pumping(s_pumping, std::try_to_lock);
+    if (!pumping.owns_lock()) return false;   // somebody else has the queue
+
+    glfwPollEvents();
+
+    // Under the registry lock rather than over a snapshot: a copied vector of
+    // raw pointers is a list of windows that were alive when it was taken.
+    // Holding it means withdraw() waits for this pass, which is bounded --
+    // afterPoll drops out immediately once the handle has been claimed.
+    std::lock_guard<std::mutex> g(s_registry);
+    for (GLFWWindow* w : s_windows) w->afterPoll();
+    return true;
+}
 
 
 void GLFWWindow::framebuffer_size_callback(GLFWwindow* window, int width, int height)
@@ -529,10 +890,31 @@ void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
     handler->noteCursor(xpos, ypos);
 }
 
+/*
+ * A CLICK CARRIES THE POSITION IT HAPPENED AT, asked for here rather than
+ * taken from the last motion callback.
+ *
+ * glfwGetCursorPos is the platform's current answer, and it is the right one:
+ * a press can arrive in the same poll pass as the movement that led to it, and
+ * reading our own last-recorded position would then be one event stale -- a
+ * stroke starting a few pixels behind the cursor, which is the exact class of
+ * bug the absolute-position model exists to remove.
+ */
+void GLFWWindow::mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
+{
+    (void)mods;
+    auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
+    if (!handler) return;
+    double mx = 0.0, my = 0.0;
+    glfwGetCursorPos(window, &mx, &my);
+    handler->pushButton(button, action == GLFW_PRESS,
+                        static_cast<int>(mx), static_cast<int>(my));
+}
+
 // Leaving is as important as entering: the cursor moves while it is away, and
 // the first report after it comes back would otherwise measure against where
 // it was when it left. Both edges re-prime for the same reason.
-void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
+void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int /*entered*/)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
@@ -547,7 +929,7 @@ void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
 // Focus is the one that bites under capture: losing focus releases the
 // pointer, and regaining it re-grabs and recentres -- a position change with
 // no movement behind it, arriving as one large delta.
-void GLFWWindow::window_focus_callback(GLFWwindow* window, int focused)
+void GLFWWindow::window_focus_callback(GLFWwindow* window, int /*focused*/)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
@@ -558,7 +940,7 @@ void GLFWWindow::window_focus_callback(GLFWwindow* window, int focused)
     handler->RequestCaptureReapply();
 }
 
-void GLFWWindow::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+void GLFWWindow::key_callback(GLFWwindow* window, int key, int /*scancode*/, int action, int mods)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
 
