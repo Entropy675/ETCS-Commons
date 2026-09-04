@@ -5,8 +5,20 @@
 #include "../sqlite/sqlite3.h"
 #include <iostream>
 
+/*
+ * The sqlite leaf. Claims `Database` -- the one family -- and nothing about
+ * locality, because locality is not a constraint on what a database owes
+ * (ontology/DatabaseBase.h). What makes this the LOCAL one is that it opens a
+ * path on this machine's filesystem, which is a fact about this class, stated
+ * by this class, and visible to a script as the tag it spawns.
+ *
+ * The name keeps `Sqlite` in it on purpose: this is the implementation, and
+ * the implementation may name its ingredient. The contract name it reaches
+ * ETCS under is `LocalDatabase`, typedef'd in Contract_DatabaseProvider.h --
+ * the same split Clayout/Layout makes, for the same reason.
+ */
 class SqliteLocalDatabase : 
-    public LocalDatabaseBase<SqliteLocalDatabase>, public DeletableBase<SqliteLocalDatabase>
+    public DatabaseBase<SqliteLocalDatabase>, public DeletableBase<SqliteLocalDatabase>
 {
     WIRE_TYPE_IDENTITY(SqliteLocalDatabase); // does public: for you :) 
     
