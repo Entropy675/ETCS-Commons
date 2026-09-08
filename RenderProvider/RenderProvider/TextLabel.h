@@ -308,7 +308,7 @@ private:
 
     // Changing a label changes the image, so every pixel owner above it holds
     // a stale copy (ontology/Pixels.h).
-    void markDirtyPath() { etcs_mark_pixel_path(this); }
+    void markDirtyPath() { etcs_mark_observed(this); }
 
     /*
  * The font: 95 glyphs, ASCII 32..126, five columns each, bit 0 = top row.

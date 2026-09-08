@@ -443,6 +443,12 @@ public:
         PlatformUse w(*this);
         if (!w) return;
         flushPointerPosition();
+        // The resize countdown, for the same reason and in the same place as
+        // the pointer flush above it: a burst arrives as a burst of callbacks,
+        // and what a consumer wants is the one value they settle on. This pass
+        // is the only clock either of them needs -- the pump was already going
+        // round. Costs an int read on a window nobody follows.
+        settleResize();
         // After the poll, so the window has had every chance to become
         // viewable and focused before the mode is applied. See
         // SetMouseCapture for why this cannot be done where it is requested.

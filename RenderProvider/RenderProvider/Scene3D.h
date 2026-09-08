@@ -655,8 +655,12 @@ public:
         coverSubtree(nodes);
         for (const Node& n : nodes) rasterBox(*px, v, n);
 
-        px->MarkDirty();
-        registerViewer(camera->getRID());
+        // The camera now holds an image of me, so it is an observer of me in
+        // the literal sense -- registered here rather than in a setter, so a
+        // camera that has never rendered is never marked (it has no image to
+        // invalidate). Marking it is what tells its own uploader to re-take.
+        this->Observe(camera->getRID());
+        etcs_mark_observed(camera);
         ++m_projections;
 
         // The foreign case, and the reason it is separate: a 3D leaf from
@@ -717,7 +721,8 @@ public:
  */
     void ReleaseConcrete()
     {
-        m_viewers.clear();
+        { std::vector<uint64_t> cams; ObserverRids(cams);
+          for (uint64_t c : cams) Unobserve(c); }
         m_ov.Rest();
         ClearHeld();
     }
@@ -885,12 +890,6 @@ private:
     // Registration happens in Project rather than in a setter, which means a
     // camera that has never rendered is never marked -- correct, since it has
     // no image to invalidate.
-    void registerViewer(ETCS::RID cam)
-    {
-        if (cam == 0) return;
-        if (std::find(m_viewers.begin(), m_viewers.end(), cam) == m_viewers.end())
-            m_viewers.push_back(cam);
-    }
     void markViewersDirty()
     {
         Scene3D* root = this;
@@ -900,17 +899,31 @@ private:
             if (!isOwnLeaf(node)) break;
             root = static_cast<Scene3D*>(node->getTrueType());
         }
-        for (ETCS::RID cam : root->m_viewers)
-        {
-            Camera_* c = ETCS::resolve_in_family<Camera_>("Camera", cam);
-            if (c) markPixelPath(c);
-        }
+
+        // The general statement first: everything watching the root is stale.
+        root->MarkObserved();
+
+        /*
+ * Then wake the PATH to each camera, which the bit alone cannot do. A camera
+ * is not below me, so nothing I mark bubbles to it -- and its own DrawInto,
+ * where it would read its bit, only runs if the compositor ABOVE it decided
+ * to walk that far. Marking only the bit leaves the camera holding a correct
+ * answer nobody ever asks it for.
+ *
+ * This is the one place the observer list itself is needed rather than the
+ * answer, which is what ObserverRids exists for.
+ */
+        std::vector<uint64_t> cams;
+        root->ObserverRids(cams);
+        for (uint64_t cam : cams)
+            if (Camera_* c = ETCS::resolve_in_family<Camera_>("Camera", cam))
+                markPixelPath(c);
     }
 
-    // Mark a camera and every pixel owner above it (ontology/Pixels.h). Taken
+    // Mark a camera and every observer above it (ontology/Observable.h). Taken
     // as Entity because the chain crosses families: a camera's parent is a
     // compositor, whose parent may be anything at all.
-    static void markPixelPath(ETCS::Entity* node) { etcs_mark_pixel_path(node); }
+    static void markPixelPath(ETCS::Entity* node) { etcs_mark_observed(node); }
 
     // ── geometry helpers ─────────────────────────────────────────────────
 
@@ -1637,7 +1650,6 @@ private:
     uint32_t               m_depth_w   = 0;
     uint32_t               m_depth_h   = 0;
     ETCS::RID              m_depth_cam = 0;
-    std::vector<ETCS::RID> m_viewers;
     uint64_t               m_projections = 0;
 };
 

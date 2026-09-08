@@ -105,7 +105,7 @@ static inline void paint_mark_pixel_path(ETCS::RID target)
 {
     ETCS::Held<Surface_> held = ETCS::resolve_held<Surface_>("Surface", target);
     if (!held) return;
-    etcs_mark_pixel_path(static_cast<ETCS::Entity*>(held.get()));
+    etcs_mark_observed(static_cast<ETCS::Entity*>(held.get()));
 }
 
 static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,

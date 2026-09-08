@@ -116,10 +116,23 @@ public:
         if (!loadPipeline(shader_dir)) { teardown(); return false; }
         if (!createSyncObjects()) { teardown(); return false; }
 
-        // OnResize fires immediately on registration with the CURRENT size
-        // (Resizable_::OnResize's existing semantics) -- this doubles as
-        // the initial swapchain build, so no separate first-build call.
-        m_parentResizable->OnResize([this](WindowSize sz) { this->queueResize(sz); }, 0);
+        /*
+ * Two statements, where there used to be one that did both jobs badly.
+ *
+ * The old line registered a callback capturing `this` raw, and relied on
+ * OnResize firing it inline to perform the INITIAL swapchain build. So the
+ * first build was disguised as a resize, and every later resize arrived on
+ * the poll thread inside a captured pointer that outlived nothing in
+ * particular -- the exact capture ontology/Resizable.h's own FollowResize
+ * comment says not to write.
+ *
+ * Now: build once, here, on the creating thread, because Create's return
+ * value depends on it having happened; and subscribe, so PresentConcrete can
+ * ask on the frame thread whether the parent has moved since. Nothing is
+ * captured and nothing runs on the poll thread.
+ */
+        recreateSwapchain(m_parentResizable->GetSize());
+        this->FollowResize(m_parentResizable);
 
         this->addTag("active");
         return m_swapchain != VK_NULL_HANDLE;
@@ -408,11 +421,20 @@ public:
         const ETCS::RID rid = source->getRID();
         if (!ensureTexture(rid, *px)) return;
 
-        // TakeDirty CONSUMES the flag, so a layer blitted twice in one
-        // frame uploads once. everUploaded covers the first blit of an
-        // image whose writer never marked it dirty.
+        /*
+ * Asked as THIS surface, which is what makes two windows over one image
+ * work. The flag this replaces was a single read-and-clear on the source, so
+ * whichever surface blitted first consumed it and the second cached its
+ * first upload forever -- paint_two_windows, where one window went dead.
+ *
+ * Still consuming, just per observer: a layer blitted twice in one frame
+ * uploads once. everUploaded still covers the first blit of an image whose
+ * writer never marked it.
+ */
         BlitTexture& tex = m_textures[rid];
-        if (px->TakeDirty() || !tex.everUploaded)
+        ETCS::IWireObservable* obs = etcs_observable_of(static_cast<ETCS::Entity*>(source));
+        const bool changed = obs ? obs->TakeObserved(this->getRID()) : true;
+        if (changed || !tex.everUploaded)
         {
             std::memcpy(tex.stagingMapped, px->PixelData(), px->PixelBytes());
             tex.needsUpload = true;
@@ -449,24 +471,21 @@ public:
  * survived every test here and shows up on a real desktop as a picture
  * that will not stay on screen, or a segfault out of a script that polls.
  *
- * So the callback now records the extent and this thread acts on it, at a
- * frame boundary, where no command buffer is in flight. Every Vulkan call
- * on this surface is back on one thread, which is what the design said it
- * wanted.
+ * So nothing is delivered to this surface at all. The parent records its own
+ * size and marks; this thread asks, at a frame boundary, whether that
+ * happened, and reads the size itself if it did. Every Vulkan call on this
+ * surface is back on one thread, which is what the design said it wanted.
+ *
+ * The record-and-hand-off this used to do (an atomic flag plus a mutexed
+ * pending extent) is gone with it: those existed to carry a size across a
+ * thread, and nothing carries a size any more. A drag that fires sixty
+ * events is sixty bits set on one observer and one read of the LATEST
+ * size -- coalescing by construction rather than by a staging slot.
  *
  * A surface with no presenter never processes a resize -- correct, and not
  * a gap: a surface nothing presents is showing nothing to resize.
  */
-        if (m_resizePending.exchange(false, std::memory_order_acquire))
-        {
-            WindowSize sz;
-            {
-                std::lock_guard<std::mutex> lock(m_stateMutex);
-                sz = m_pendingExtent;
-            }
-            recreateSwapchain(sz);
-            if (m_swapchain == VK_NULL_HANDLE) return;
-        }
+        if (PollResize() && m_swapchain == VK_NULL_HANDLE) return;
 
         FrameSnapshot frame;
         {
@@ -727,11 +746,6 @@ private:
         m_fpsPrimed = true;
     }
 
-    // Resize hand-off: written by the poll thread, acted on by the frame
-    // thread. See PresentConcrete.
-    std::atomic<bool>         m_resizePending{false};
-    WindowSize                m_pendingExtent{0, 0};   // guarded by m_stateMutex
-    bool                      m_builtOnce  = false;
 
     // --- setup helpers ---
 
@@ -1101,6 +1115,12 @@ private:
             return false;
         }
 
+        // Caching this source's pixels IS observing it -- registered at the one
+        // moment a cache entry comes into existence, so the two cannot disagree.
+        if (ETCS::IWireObservable* o = etcs_observable_of(
+                const_cast<ETCS::Entity*>(static_cast<const ETCS::Entity*>(&px))))
+            o->Observe(this->getRID());
+
         BlitTexture tex{};
         tex.w = px.PixelWidth();
         tex.h = px.PixelHeight();
@@ -1289,28 +1309,18 @@ private:
     // real resize thereafter (ontology/Resizable.h's notifyResize fix is
     // what makes the second case actually fire).
     /*
- * Called from the resize callback, on whatever thread polls the window.
- * Records and returns -- see PresentConcrete for why the recreation itself
- * belongs to the frame thread.
+ * BE this size (ontology/Resizable.h). The verb half, which this surface had
+ * no implementation of -- it only ever heard about sizes.
  *
- * The FIRST call is different and is taken synchronously: OnResize fires
- * immediately on registration with the current size, and that call IS the
- * initial swapchain build, on the creating thread, before any presenter
- * exists. Create's own return value depends on it having happened.
+ * Reached from PollResize, which PresentConcrete calls, so this runs on the
+ * frame thread with no command buffer in flight. That is the whole reason the
+ * pull is worth having: the one call that must not happen on the poll thread
+ * is now structurally unable to.
  */
-    void queueResize(WindowSize sz)
+    bool ResizeTo(WindowSize sz) override
     {
-        if (!m_builtOnce)
-        {
-            m_builtOnce = true;
-            recreateSwapchain(sz);
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(m_stateMutex);
-            m_pendingExtent = sz;
-        }
-        m_resizePending.store(true, std::memory_order_release);
+        recreateSwapchain(sz);
+        return true;
     }
 
     void recreateSwapchain(WindowSize sz)

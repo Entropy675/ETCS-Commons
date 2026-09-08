@@ -297,7 +297,7 @@ private:
     // of its own, so there is nothing here to mark. Note it does NOT stop at
     // the first, unlike the coordinate walk above -- coordinates are relative
     // to the nearest origin, staleness propagates to every cache.
-    void markCompositorsDirty() { etcs_mark_pixel_path(getParent()); }
+    void markCompositorsDirty() { etcs_mark_observed(getParent()); }
 
     // Even-odd scanline crossings for one row, in PARENT space, sorted.
     void rowSpans(int32_t y, std::vector<int32_t>& xs) const

@@ -29,10 +29,10 @@
 // THE DIRTY SEQUENCE is CompositeDrawable2D's, one step longer:
 //
 //   1. the scene moves -> it marks its registered viewers (Scene3D.h)
-//   2. DrawInto calls TakeDirty(): true, so it renders
+//   2. DrawInto calls TakeObserved(own RID): true, so it renders
 //   3. Render resolves the scene and asks it to Project into here
 //   4. Project writes pixels, which sets the flag again
-//   5. the destination's Blit calls TakeDirty(): true, so it re-uploads
+//   5. the destination's Blit calls TakeObserved(its own RID): true, so it re-uploads
 //
 // and a still scene stops at step 2: no resolve, no projection, no depth
 // buffer, one blit of an image the device already holds. A 3D view that costs
@@ -71,6 +71,8 @@ public:
         m_w = w;
         m_h = h;
         Allocate(w, h);          // idempotent for an unchanged size (Pixels_)
+        // Watch my own scene: the render gate in DrawIntoConcrete reads this.
+        this->ObserveSelf();
         this->addTag("active");
         return true;
     }
@@ -248,16 +250,19 @@ public:
         applyPendingGeometry();     // before anything reads the buffer
 
         // The branch this class shares with CompositeDrawable2D, plus the one
-        // thing a flag cannot express. TakeDirty covers every discrete change
+        // thing a flag cannot express. The observed bit covers every discrete change
         // -- the eye moved, the scene was rebound, a box was repainted. A
         // scene in MOTION is not a discrete change: it changes during the very
         // walk that draws it, so the mark it leaves is consumed by this
         // frame's own upload and there is nothing left to schedule the next
         // frame with. Asking is what closes that loop, and it costs a load.
-        if (TakeDirty() || sceneInMotion())
+        if (TakeObserved(getRID()) || sceneInMotion())
         {
             Render();
             drawOverlay();
+            // Render wrote my pixels, which marked every observer of me --
+            // including me. Drop that one; see ObservableBase::ClearSelfObserved.
+            ClearSelfObserved();
         }
 
         const Point2D base = parentAbsoluteOrigin();
@@ -315,10 +320,10 @@ private:
         return static_cast<Scene3D*>(scene->getTrueType())->InMotion();
     }
 
-    // Mark this frame stale AND every pixel-owning ancestor with it: MarkDirty
-    // alone leaves a stale view inside a clean parent, which is blitted,
-    // correctly, forever. The rule and the walk live in ontology/Pixels.h.
-    void markPath() { etcs_mark_pixel_path(this); }
+    // Mark this frame stale AND every observer above it: marking only myself
+    // leaves a stale view inside a clean parent, which is blitted, correctly,
+    // forever. The walk lives in ontology/Observable.h.
+    void markPath() { etcs_mark_observed(this); }
 
     // Seeded from the live values on first stage, so a MoveTo alone does not
     // drag a stale size along with it. Called under m_pending_mtx.
