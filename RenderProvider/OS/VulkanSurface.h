@@ -46,7 +46,12 @@ static constexpr uint32_t SURFACE_MAX_BLIT_SOURCES = 64;
 class VulkanSurface : public SurfaceBase<VulkanSurface>,
                        public PresentableBase<VulkanSurface>,
                        public DeletableBase<VulkanSurface>,
-                       public LifecycleBase<VulkanSurface>
+                       public LifecycleBase<VulkanSurface>,
+                       // Owns a held body: Surface::ProduceFrames loops for the
+                       // window's lifetime. Claiming Threaded is what lets the
+                       // arena ASK that loop to stop rather than only setting
+                       // flags it has to dereference this object to read.
+                       public ThreadedBase<VulkanSurface>
 {
 public:
     // The ordering every Surface owes (Orderable, composed by SurfaceBase).
@@ -271,9 +276,17 @@ public:
 
     // Has this surface stopped being a thing worth walking a tree for? The
     // question the frame edge asks BEFORE the walk, as against ready(), which
-    // asks whether a Vulkan call may proceed. Released is the graph answer and
-    // dead is the window answer; a walk is invalid under either.
-    bool Retired() const { return m_dead || Released(); }
+    // asks whether a Vulkan call may proceed.
+    //
+    // Three answers, one per way of asking, and a walk is invalid under any:
+    //   m_dead      the WINDOW answer   -- the swapchain is going
+    //   Released()  the GRAPH answer    -- this entity has let go of what it held
+    //   Halted()    the REQUEST answer  -- somebody asked the bodies to stop
+    //
+    // Halted is the one that arrives FIRST on a reclaim (etcs_retire_entity
+    // halts before it releases), which is what makes it the useful one: it is
+    // set while everything a running loop is about to touch is still valid.
+    bool Retired() const { return m_dead || Released() || Halted(); }
 
     bool RecomposeBound()
     {

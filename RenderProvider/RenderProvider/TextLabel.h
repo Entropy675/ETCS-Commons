@@ -1,8 +1,8 @@
 #ifndef TEXTLABEL_H__
 #define TEXTLABEL_H__
 
-#include "../../core_defs.h"
-#include "../../ontology.h"
+#include "../../../core_defs.h"
+#include "../../../ontology.h"
 
 #include <cstdint>
 #include <string>

@@ -1,8 +1,8 @@
 #ifndef CAMERA3D_H__
 #define CAMERA3D_H__
 
-#include "../../core_defs.h"
-#include "../../ontology.h"
+#include "../../../core_defs.h"
+#include "../../../ontology.h"
 
 #include <cmath>
 #include <cstdint>

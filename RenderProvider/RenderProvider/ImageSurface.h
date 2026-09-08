@@ -1,7 +1,7 @@
 #ifndef RENDERPROVIDER_IMAGESURFACE_H__
 #define RENDERPROVIDER_IMAGESURFACE_H__
 
-#include "../../ontology.h"
+#include "../../../ontology.h"
 
 // ImageSurface -- the offscreen, CPU-backed surface:
 // [Surface + Pixels + Resizable + Deletable]. Not Presentable, because

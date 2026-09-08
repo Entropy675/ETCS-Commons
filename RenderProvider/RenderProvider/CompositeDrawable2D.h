@@ -1,8 +1,8 @@
 #ifndef COMPOSITEDRAWABLE2D_H__
 #define COMPOSITEDRAWABLE2D_H__
 
-#include "../../core_defs.h"
-#include "../../ontology.h"
+#include "../../../core_defs.h"
+#include "../../../ontology.h"
 
 #include <algorithm>
 #include <cstdint>

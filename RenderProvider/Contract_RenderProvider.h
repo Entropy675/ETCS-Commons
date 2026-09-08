@@ -21,9 +21,9 @@
 // raster live in ontology/Pixels.h), so there is no per-platform concrete
 // type to select between -- the class IS the tag type on every platform, the
 // same way ChessProvider's OS-invariant types are.
-#include "ImageSurface.h"
-#include "PolygonDrawable2D.h"
-#include "CompositeDrawable2D.h"
+#include "RenderProvider/ImageSurface.h"
+#include "RenderProvider/PolygonDrawable2D.h"
+#include "RenderProvider/CompositeDrawable2D.h"
 
 // The 3D pair, and CPU-only for the same reason ImageSurface is: the
 // projection is arithmetic and a depth test, with no device object anywhere in
@@ -32,14 +32,14 @@
 // takes -- one Blit into a VulkanSurface. A device-side renderer would be a
 // second concrete Drawable3D under OS/, selected here; it would not change a
 // line of either header, which is the point of the seam being Project.
-#include "Scene3D.h"
-#include "Camera3D.h"
+#include "RenderProvider/Scene3D.h"
+#include "RenderProvider/Camera3D.h"
 
 // The Glyphs leaf. AFTER the surfaces, because a label bound to a frame rate
 // reads it off this platform's concrete Surface -- the rate is a property of
 // the frame loop, not of the Surface family, so the type has to be complete
 // here rather than reachable by family name.
-#include "TextLabel.h"
+#include "RenderProvider/TextLabel.h"
 
 // auto generated hashes of headers:
 #include "../../ETCS.h"

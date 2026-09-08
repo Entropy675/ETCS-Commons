@@ -1,8 +1,8 @@
 #ifndef SCENE3D_H__
 #define SCENE3D_H__
 
-#include "../../core_defs.h"
-#include "../../ontology.h"
+#include "../../../core_defs.h"
+#include "../../../ontology.h"
 
 #include <algorithm>
 #include <atomic>

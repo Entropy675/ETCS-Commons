@@ -250,13 +250,37 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
     while (!self.IsActive())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) return;
+        // Retired BEFORE active is a real order: a script that deletes the
+        // surface while this edge is still waiting for it to come up would
+        // otherwise spin here forever on an object being reclaimed.
+        if (self.Retired()) return;
         std::this_thread::yield();
     }
 
     uint64_t index = 0;
     bool stream_alive = true;
 
-    while (self.IsActive() && stream_alive)
+    /*
+ * RETIRED IS THE FIRST QUESTION, ahead of IsActive.
+ *
+ * VulkanSurface publishes Retired() for this edge specifically -- its own
+ * comment says it is "the question the frame edge asks BEFORE the walk" --
+ * and this loop was not asking it. Release sets it while the surface is
+ * still whole, so a clock that checks it stops one tick after the release
+ * rather than on the tick that faults.
+ *
+ * AND Retired() NOW INCLUDES Halted(), which is what makes this loop
+ * stoppable rather than merely well-informed. VulkanSurface claims Threaded,
+ * so etcs_retire_entity asks the bodies to stop BEFORE it releases anything
+ * -- the flag is set while everything this loop is about to touch is still
+ * valid, instead of after.
+ *
+ * STILL COOPERATIVE, so the honest limit stands: this stops at the next
+ * iteration, not instantly, and a tick already inside the body runs to its
+ * end. What changed is that the window is now bounded by one iteration
+ * rather than by whenever the object happens to be reclaimed.
+ */
+    while (!self.Retired() && self.IsActive() && stream_alive)
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) break;
 
