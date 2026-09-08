@@ -901,7 +901,7 @@ private:
         }
 
         // The general statement first: everything watching the root is stale.
-        root->MarkObserved();
+        root->MarkObserved(root->getRID());
 
         /*
  * Then wake the PATH to each camera, which the bit alone cannot do. A camera

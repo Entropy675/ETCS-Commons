@@ -77,7 +77,8 @@ public:
         return true;
     }
 
-    void SetPosition(int32_t x, int32_t y) { m_x = x; m_y = y; markPath(); }
+    void SetPosition(int32_t x, int32_t y)
+    { m_x = x; m_y = y; markPath(); MarkObservedBelow(); }
     void SetOrder(int32_t z)               { m_order = z; Reorder(); markPath(); }
 
     /*
@@ -258,11 +259,10 @@ public:
         // frame with. Asking is what closes that loop, and it costs a load.
         if (TakeObserved(getRID()) || sceneInMotion())
         {
+            // No self-clear: Render's writes mark with origin=this, so my own
+            // edge is skipped at the source rather than cleared afterwards.
             Render();
             drawOverlay();
-            // Render wrote my pixels, which marked every observer of me --
-            // including me. Drop that one; see ObservableBase::ClearSelfObserved.
-            ClearSelfObserved();
         }
 
         const Point2D base = parentAbsoluteOrigin();

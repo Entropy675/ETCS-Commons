@@ -75,7 +75,8 @@ public:
     void SetText(const std::string& text) { m_text = text; markDirtyPath(); }
     const std::string& Text() const       { return m_text; }
 
-    void SetPosition(int32_t x, int32_t y) { m_x = x; m_y = y; markDirtyPath(); }
+    void SetPosition(int32_t x, int32_t y)
+    { m_x = x; m_y = y; markDirtyPath(); MarkObservedBelow(); }
     void SetOrder(int32_t z)               { m_order = z; Reorder(); markDirtyPath(); }
     void SetColor(float r, float g, float b, float a)
     {

@@ -94,7 +94,11 @@ public:
         return true;
     }
 
-    void SetPosition(int32_t x, int32_t y) { m_x = x; m_y = y; etcs_mark_observed(this); }
+    // Two statements, because a move is two facts: my parent's merged copy is
+    // stale (up), and every child's coordinates are stated relative to a frame
+    // that just shifted (down). Only the first used to be made.
+    void SetPosition(int32_t x, int32_t y)
+    { m_x = x; m_y = y; etcs_mark_observed(this); MarkObservedBelow(); }
     void SetOrder(int32_t z)               { m_order = z; Reorder(); etcs_mark_observed(this); }
 
     /*
@@ -146,6 +150,7 @@ public:
             m_pending_y = p.y;
         }
         etcs_mark_observed(this);
+        MarkObservedBelow();     // the frame my children sit in moved
         return true;
     }
 
@@ -278,10 +283,11 @@ public:
         // frame.
         if (TakeObserved(getRID()) || anyChildAnimating())
         {
+            // No self-clear afterwards: recompose's own writes mark with
+            // origin=this, so my own edge is skipped at the source. A child that
+            // changes DURING the recompose still marks me, and is no longer
+            // swallowed by a clear that could not tell the two apart.
             recompose();
-            // recompose wrote my pixels, marking every observer of me --
-            // me included. Drop that one; see ObservableBase::ClearSelfObserved.
-            ClearSelfObserved();
         }
 
         const Point2D base = parentAbsoluteOrigin();
