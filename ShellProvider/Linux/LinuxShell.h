@@ -127,6 +127,37 @@ public:
         if (!ok)
             ETCS_LOG("Shell", "script '" << path << "' stopped: "
                      << ETCS::execute_status_name(status));
+
+        /*
+ * THE SHELL DROPS THE CLOSURE. IT DOES NOT EXIT.
+ *
+ * A Thread's context is a closure boundary (SignalContext::closure_root), so a
+ * raise from inside a script this shell is running -- a window closing, a
+ * `signal` at the prompt -- lands on THESE flags rather than on g_sig_int. The
+ * boundary is what makes that raise mean "end this script", and this is what
+ * ending it does: delete what it created, then stand the shell back up.
+ *
+ * MY OWN FLAGS, NOT THE WALK. isInterrupted() crosses the boundary upward, so
+ * it also answers true for a genuine process SIGTERM -- and clearing on that
+ * would have the shell swallow a real shutdown. raised() on the local pointers
+ * asks the narrower question: was the raise addressed to THIS closure.
+ *
+ * Cleared afterwards, which is the whole difference between a boundary and a
+ * kill switch. The script is over; the shell is not, and the next Run must not
+ * inherit a standing interrupt from the last one.
+ */
+        const bool mine = ETCS::SignalContext::raised(sig.interrupt)
+                       || ETCS::SignalContext::raised(sig.terminate);
+        if (mine)
+        {
+            const ETCS::ExecSource src{path.c_str(), 0};
+            const size_t gone = ETCS::dissolve_closure(ctx, src);
+            ETCS_LOG("Shell", "closure of '" << path << "' ended -- " << gone
+                     << " entit" << (gone == 1 ? "y" : "ies")
+                     << " deleted, shell still up.");
+            if (sig.interrupt) sig.interrupt->store(0, std::memory_order_release);
+            if (sig.terminate) sig.terminate->store(0, std::memory_order_release);
+        }
         return ok;
     }
 
