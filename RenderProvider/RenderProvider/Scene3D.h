@@ -96,6 +96,17 @@ public:
         // Only a node with no extent is a leaf here.
         m_ov.radius = std::sqrt(m_half.x * m_half.x + m_half.y * m_half.y + m_half.z * m_half.z);
         this->addTag("active");
+        /*
+ * The symmetric half of ReleaseConcrete's, and needed for the same reason: a
+ * node ARRIVING changes what the scene projects, and the addTag above marks
+ * only the parent chain -- which a camera is not on.
+ *
+ * It worked by accident until it didn't. A spawn is normally followed by
+ * SetPosition/SetColor, and those already fan out, so the new node appeared;
+ * a bare spawn + Create left the compositor's recompose count unchanged.
+ * Measured both ways.
+ */
+        markViewersDirty();
         return true;
     }
 
@@ -721,6 +732,27 @@ public:
  */
     void ReleaseConcrete()
     {
+        /*
+ * TELL THE VIEWERS FIRST, before this node stops being part of the scene.
+ *
+ * The generic machinery marks correctly and it is still not enough here: a
+ * node leaving marks the nearest Observable at or above its parent
+ * (Entity::markStateChange), which bubbles to the scene root -- and a camera
+ * is NOT above the root, so nothing that bubbles reaches it. Its own
+ * DrawInto, where it would read the edge it holds, only runs if the
+ * compositor ABOVE it decided to walk that far, and the compositor decides
+ * that from its own bit, which nothing has set. See markViewersDirty's own
+ * comment: the bit alone leaves the camera holding a correct answer nobody
+ * ever asks it for.
+ *
+ * So the same fan-out every setter on this type already does, on the way out.
+ * Measured before and after: deleting a Scene3D node left the compositor's
+ * recompose count unchanged until a mouse move woke it for unrelated reasons.
+ *
+ * BEFORE the Unobserve loop below, which drops this node's own edges -- the
+ * walk to the root has to happen while the parent link is still whole.
+ */
+        markViewersDirty();
         { std::vector<uint64_t> cams; ObserverRids(cams);
           for (uint64_t c : cams) Unobserve(c); }
         m_ov.Rest();

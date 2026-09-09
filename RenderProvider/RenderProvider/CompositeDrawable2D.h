@@ -317,15 +317,6 @@ public:
     bool Animating() override { return anyChildAnimating(); }
 
 private:
-    bool anyChildAnimating()
-    {
-        std::vector<Drawable_*> ordered;
-        collectDrawableChildren(ordered);
-        for (Drawable_* child : ordered)
-            if (child->Animating()) return true;
-        return false;
-    }
-
     /*
  * Rebuild the buffer from the subtree: reset, clip to our own extent, draw
  * every Drawable child into OURSELVES, unclip.
