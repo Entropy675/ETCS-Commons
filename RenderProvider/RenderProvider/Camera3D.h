@@ -392,8 +392,8 @@ private:
         PopClip();
     }
 
-    // Where this node's PARENT sits, stopping at the first ancestor that owns
-    // pixels, because such an ancestor is a coordinate origin. Identical to
+    // Where this node's PARENT sits, stopping at the first ancestor that is a
+    // raster, because such an ancestor is a coordinate origin. Identical to
     // CompositeDrawable2D's and PolygonDrawable2D's -- the three are
     // interchangeable as children, so they must agree on what a position
     // means.
@@ -404,7 +404,7 @@ private:
         {
             void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
             if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Pixels"))) break;   // origin
+            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
             const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
             acc.x += pb.x;
             acc.y += pb.y;

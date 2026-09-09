@@ -288,8 +288,8 @@ private:
         }
     }
 
-    // Where this node's PARENT sits, stopping at the first pixel-owning
-    // ancestor. Identical to PolygonDrawable2D's and Camera3D's -- the four
+    // Where this node's PARENT sits, stopping at the first ancestor that is a
+    // raster. Identical to PolygonDrawable2D's and Camera3D's -- the four
     // 2D leaves are interchangeable as children, so they must agree on what a
     // position means.
     Point2D parentAbsoluteOrigin()
@@ -299,7 +299,7 @@ private:
         {
             void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
             if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Pixels"))) break;   // origin
+            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
             const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
             acc.x += pb.x;
             acc.y += pb.y;

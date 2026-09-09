@@ -51,7 +51,24 @@ class VulkanSurface : public SurfaceBase<VulkanSurface>,
                        // window's lifetime. Claiming Threaded is what lets the
                        // arena ASK that loop to stop rather than only setting
                        // flags it has to dereference this object to read.
-                       public ThreadedBase<VulkanSurface>
+                       public ThreadedBase<VulkanSurface>,
+                       /*
+                        * The other half of the raster split (ontology/
+                        * Raster.h). This surface's pixels are the swapchain's
+                        * images: they exist, they have a size, and there is
+                        * no address in this process at which to read them --
+                        * which is the whole content of Renderable, and the
+                        * exact complement of the Pixels every CPU-backed
+                        * surface here claims. Claiming it is what lets the
+                        * runtime SAY that, rather than leaving a consumer to
+                        * infer it from the absence of a Pixels pointer.
+                        *
+                        * Mutually exclusive with Pixels: both families inherit
+                        * Raster_ virtually, so a leaf claiming the two has no
+                        * unique final overrider for PixelWidth and does not
+                        * compile.
+                        */
+                       public RenderableBase<VulkanSurface>
 {
 public:
     // The ordering every Surface owes (Orderable, composed by SurfaceBase).
@@ -385,14 +402,21 @@ public:
         m_pendingDraws.push_back({ PendingDraw::Kind::Rect, x, y, w, h, r, g, b, a, 0 });
     }
 
-    // The source is reached as Pixels_ (ontology/Pixels.h), never as a
-    // concrete type -- this is the whole reason Pixels is its own family.
-    // A PintaProvider layer, a test image surface, anything that owns CPU
-    // pixels and registers the interface pointer can be blitted here with
-    // no compile-time relationship to this module.
-    //
-    // w/h of 0 mean "the source's own size", which is what a 1:1 canvas
-    // composite wants and saves every caller restating it.
+    /*
+     * The source is reached by FAMILY, never as a concrete type -- this is
+     * the whole reason the raster families exist. A PintaProvider layer, a
+     * test image surface, anything that registers the interface pointer can
+     * be blitted here with no compile-time relationship to this module.
+     *
+     * "Pixels" is still the ONE lookup on the path that succeeds, because an
+     * upload needs host bytes and a Pixels_ is a Raster_ (ontology/Raster.h)
+     * -- it answers its own size, so nothing is asked twice. What changed is
+     * the branch where it FAILS: "no host bytes" used to be one message
+     * covering two unrelated causes, and Renderable is what tells them apart.
+     *
+     * w/h of 0 mean "the source's own size", which is what a 1:1 canvas
+     * composite wants and saves every caller restating it.
+     */
     void BlitConcrete(Surface_* source, int32_t x, int32_t y,
                        uint32_t w, uint32_t h, float opacity) override
     {
@@ -403,18 +427,42 @@ public:
         // the frame consumer reads (ConsumeFrames, RenderProvider.h).
         std::lock_guard<std::mutex> lock(m_stateMutex);
         m_composed = false;          // appends only -- see ClearConcrete
+
         // Every Surface_ is an Entity (virtually), so the source's own
         // identity and its other interfaces are both reachable from here.
-        // A device-side offscreen source would be read by image copy at this
-        // point instead; today only CPU-backed sources can be uploaded.
         Pixels_* px = static_cast<Pixels_*>(source->getInterfacePointer(ETCS::Buffer("Pixels")));
         if (!px)
         {
-            ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
-                     << " has no Pixels interface -- only a CPU-backed surface can be blitted from yet.");
+            /*
+ * NO HOST BYTES IS THREE DIFFERENT FACTS, and this used to report them as one.
+ *
+ * A raster whose pixels are on THIS device is an image copy with no host round
+ * trip at all -- the seam ontology/Renderable.h describes, and the copy itself
+ * is the piece that is not written yet. One on ANOTHER device cannot be copied
+ * however this surface is fixed: the bytes have to come back through host
+ * memory first, and that is its owner's job. And a source that is no raster at
+ * all is not a rendering problem in either direction.
+ *
+ * Three causes, three different fixes, and one message for all of them was why
+ * the first two looked like the third.
+ */
+            Renderable_* gpu = static_cast<Renderable_*>(
+                source->getInterfacePointer(ETCS::Buffer("Renderable")));
+            if (gpu && gpu->DeviceKey() != 0 && gpu->DeviceKey() == this->DeviceKey())
+                ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
+                         << " is device-resident on THIS device -- a device-to-device"
+                         << " copy is the path for it, and it is not implemented yet.");
+            else if (gpu)
+                ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
+                         << " is device-resident elsewhere (key " << gpu->DeviceKey()
+                         << " vs " << this->DeviceKey() << ") -- it has to be read back"
+                         << " to host memory by its owner before it can be blitted here.");
+            else
+                ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
+                         << " is not a raster at all -- nothing to read from it.");
             return;
         }
-        if (px->PixelWidth() == 0 || px->PixelHeight() == 0) return;
+        if (px->RasterEmpty()) return;
         if (w == 0) w = px->PixelWidth();
         if (h == 0) h = px->PixelHeight();
 
@@ -442,6 +490,30 @@ public:
 
         m_pendingDraws.push_back({ PendingDraw::Kind::Blit, x, y, w, h, 0.0f, 0.0f, 0.0f, opacity, rid });
     }
+
+    // --- Renderable_ / Raster_ dispatch (RenderableBase.h) ---
+
+    /*
+     * The VkDevice handle, which is exactly what Renderable_::DeviceKey asks
+     * for: something unique to one device within this process, compared only
+     * for equality, and meaningful to nobody but the backend that published
+     * it. Two VulkanSurfaces over the same VulkanInstance answer the same
+     * key, which is the case a device-to-device copy would be legal in.
+     *
+     * Zero before Create, and that is a real state rather than an error --
+     * an entity between construction and Create has no device, and the
+     * comparison in Blit already treats zero as "not somewhere I can reach".
+     */
+    uint64_t DeviceKeyConcrete() const
+    {
+        return m_instance ? reinterpret_cast<uint64_t>(m_instance->GetDevice()) : 0;
+    }
+
+    // The swapchain's extent, which IS this surface's raster -- not a second
+    // number kept beside it. Zero until the swapchain exists, so RasterEmpty()
+    // answers true for exactly the window that has nothing to show yet.
+    uint32_t PixelWidthConcrete()  const { return m_extent.width;  }
+    uint32_t PixelHeightConcrete() const { return m_extent.height; }
 
     // --- Presentable_ dispatch (PresentableBase.h) ---
 

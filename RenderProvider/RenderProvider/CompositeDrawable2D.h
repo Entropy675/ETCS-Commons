@@ -443,7 +443,7 @@ private:
         {
             void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
             if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Pixels"))) break;  // origin
+            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
             const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
             acc.x += pb.x;
             acc.y += pb.y;
