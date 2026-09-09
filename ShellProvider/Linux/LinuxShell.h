@@ -6,6 +6,8 @@
 
 #include <string>
 
+#include "LinuxTerminal.h"
+
 // ---------------------------------------------------------------------------
 // LinuxShell — an ETCS control thread you can hand scripts to.
 //
@@ -22,6 +24,13 @@
 // no home before this module, so it lived in ShellREPL.h wedged beside core
 // behind an ETCS_LOADER guard. Here it is an ordinary provider type with an OS
 // fork behind a contract name, exactly like GLFWWindow -> Window.
+//
+// The terminal itself is LinuxTerminal.h beside this file, and is deliberately
+// NOT a member of this type. A Shell's actions are the run layer -- give it a
+// script, ask it to detach one -- while reading a keystroke is not a causal
+// claim about anything and has no receiver worth naming. So the terminal is
+// four function pointers this module publishes at registration, and this type
+// is what a script names.
 //
 // So the split is: the command execution layer is core, the command RUN layer
 // is a type. `Shell` is the contract name (Contract_ShellProvider.h) and every
