@@ -21,6 +21,32 @@
 // raster live in ontology/Pixels.h), so there is no per-platform concrete
 // type to select between -- the class IS the tag type on every platform, the
 // same way ChessProvider's OS-invariant types are.
+/*
+ * The one lookup that is a single tag rather than a family: Instance is flat by
+ * design (no ontology supertype but Deletable), so its tag row is the only
+ * place it appears.
+ *
+ * HERE RATHER THAN IN RenderProvider.h, where it used to sit beside its only
+ * caller. RenderProvider/Device.h resolves an Instance the same way and is
+ * included from THIS file, so a helper defined after these includes is one the
+ * type headers cannot see. It is the same lookup for the same reason from both
+ * sides; writing it twice is how the two stop agreeing.
+ */
+static inline ETCS::Entity* rp_resolve_tag(const char* tag, ETCS::RID rid)
+{
+    if (rid == 0) return nullptr;
+    auto& ridMap = ETCS::EventNode::getInstance().ridMap;
+    auto it = ridMap.find(ETCS::Buffer(tag));
+    if (it == ridMap.end()) return nullptr;
+    return it->second.invoke_get(rid);
+}
+
+// The device capability attachment. Beside these rather than under OS/ for a
+// reason that looks like an exception and is not: what varies per platform is
+// the Instance it names, which is already selected above -- this type only
+// says "reachable from here", which is the same statement everywhere.
+#include "RenderProvider/Device.h"
+
 #include "RenderProvider/ImageSurface.h"
 #include "RenderProvider/PolygonDrawable2D.h"
 #include "RenderProvider/CompositeDrawable2D.h"

@@ -648,12 +648,66 @@ public:
         View v;
         if (!buildView(camera, v)) return nullptr;
 
-        Pixels_* px = cameraPixels(camera);
-        if (!px)
+        /*
+ * WHERE THE SPANS GO, and it is the ONLY thing that differs between a host
+ * projection and a device one.
+ *
+ * Everything above this line and everything below it -- the view, the flatten,
+ * the corner transform, the near clip, the perspective divide, the fan, the
+ * depth test -- is arithmetic about a scene and a lens, and none of it knows
+ * or needs to know whose memory the answer lands in. What varies is one
+ * question asked once per surviving run of pixels: write these bytes, or emit
+ * this rectangle through the destination.
+ *
+ * A CAMERA THAT OWNS PIXELS gets the first, unchanged and byte-for-byte.
+ * A camera that owns NONE gets the second, and that is not a fallback: it is
+ * the same thing PolygonDrawable2D already does one dimension down, in its own
+ * words -- "it draws THROUGH the destination surface, using only the three
+ * verbs every Surface already owes ... which is what lets the same scene
+ * realise onto a window's swapchain, an offscreen CPU layer, or anything a
+ * future provider registers under Surface, with no branch here for which one
+ * it got". Every Camera_ IS a Surface_, so the camera itself is that
+ * destination, and what it does with a DrawRect is its own business:
+ * GpuCamera3D records it and replays it onto whatever it is drawn into, so on
+ * a VulkanSurface the frame is produced by the device and never exists as host
+ * pixels at all.
+ *
+ * DEPTH STAYS HERE EITHER WAY. m_depth is the scene's, not the camera's --
+ * DepthAt and DepthFor are answered off it (Drawable3D.h: the three
+ * granularities "are the SAME camera question ... and their answers have to
+ * agree"), so resolving occlusion on the host and emitting only the runs that
+ * survived is what keeps all three agreeing on both paths.
+ */
+        /*
+ * THE CAMERA DECIDES, not the presence of a buffer.
+ *
+ * A camera that owns pixels can still be asked to project through a device --
+ * Camera3D keeps its buffer across the toggle rather than freeing it, because
+ * the toggle is meant to be flipped while running and a reallocation per flip
+ * is exactly what its MoveTo comment is careful about. So "has Pixels" and
+ * "wants the host" are different questions, and only the second is this one.
+ *
+ * DeviceProjection() is the request AND a device still being there
+ * (ontology/Camera.h), derived rather than stored, so a Device deleted
+ * mid-flight lands here as a quiet fall back to the buffer the camera never
+ * gave up.
+ */
+        Sink sink;
+        if (camera->DeviceProjection()) sink.dst = cameraSurface(camera);
+        else                            sink.px  = cameraPixels(camera);
+
+        if (!sink.dst && !sink.px)
         {
-            ETCS_LOG("Scene3D", "camera RID:" << camera->getRID()
-                     << " owns no pixels -- a projection has nowhere to land.");
-            return nullptr;
+            // Neither: a camera on the host path that owns no buffer. Nothing
+            // to write into and nothing to draw through.
+            sink.dst = cameraSurface(camera);
+            if (!sink.dst)
+            {
+                ETCS_LOG("Scene3D", "camera RID:" << camera->getRID()
+                         << " owns no pixels and is not a surface either -- a "
+                            "projection has nowhere to land.");
+                return nullptr;
+            }
         }
 
         m_depth.assign(static_cast<size_t>(v.w) * v.h, kFar);
@@ -664,7 +718,7 @@ public:
         std::vector<Node> nodes;
         collectSubtree(Point3D{0,0,0}, nodes);
         coverSubtree(nodes);
-        for (const Node& n : nodes) rasterBox(*px, v, n);
+        for (const Node& n : nodes) rasterBox(sink, v, n);
 
         // The camera now holds an image of me, so it is an observer of me in
         // the literal sense -- registered here rather than in a setter, so a
@@ -789,6 +843,49 @@ private:
 
     static constexpr float kFar = std::numeric_limits<float>::infinity();
 
+    /*
+ * The raster sink -- see ProjectConcrete for why this is the only thing that
+ * varies. Exactly one of the two is set.
+ *
+ * A RUN, NOT A PIXEL, is what both are asked for. The host path wrote each
+ * pixel as it passed the depth test, which is the same bytes either way; the
+ * device path could not be expressed at all at that granularity, because a
+ * DrawRect per pixel is not a drawing, it is a denial of service. So the
+ * scanline accumulates a run of consecutive survivors and flushes it once,
+ * which is the same "one DrawRect per span" PolygonDrawable2D fills with.
+ */
+    struct Sink
+    {
+        Pixels_*  px  = nullptr;   // host: write the bytes
+        Surface_* dst = nullptr;   // no buffer: emit the run through the surface
+
+        void run(int32_t y, int32_t x0, int32_t x1, const float col[4]) const
+        {
+            const uint32_t w = static_cast<uint32_t>(x1 - x0 + 1);
+            if (w == 0) return;
+
+            if (dst)
+            {
+                // In the camera's OWN space. Where that lands on a destination
+                // is composed at DrawInto time by the camera, exactly as it is
+                // for every other 2D node -- nothing here states an absolute
+                // position, which is the upward half of the 2D contract.
+                dst->DrawRect(x0, y, w, 1, col[0], col[1], col[2], col[3]);
+                return;
+            }
+
+            uint8_t* base = px->PixelData();
+            if (!base) return;
+            uint8_t* d = base + static_cast<size_t>(y) * px->PixelStride()
+                              + static_cast<size_t>(x0) * 4;
+            // REPLACE, not blend -- the depth test already decided this run is
+            // what is visible here, which is what the byte-write always meant.
+            const uint8_t c[4] = { toByte(col[0]), toByte(col[1]),
+                                   toByte(col[2]), toByte(col[3]) };
+            for (uint32_t i = 0; i < w; ++i, d += 4) std::memcpy(d, c, 4);
+        }
+    };
+
     // ── camera access, always by family name ─────────────────────────────
     //
     // Camera_ declares the view and the scene and nothing else; its pixels,
@@ -801,6 +898,15 @@ private:
         if (!c) return nullptr;
         void* p = c->getInterfacePointer(ETCS::Buffer("Pixels"));
         return p ? static_cast<Pixels_*>(p) : nullptr;
+    }
+    // Every camera is a Surface (CameraBase composes it through Drawable2D),
+    // but Camera_ does not INHERIT Surface_ -- the lineage is in the base, so
+    // reaching it is a lookup like every other family crossing here.
+    static Surface_* cameraSurface(Camera_* c)
+    {
+        if (!c) return nullptr;
+        void* p = c->getInterfacePointer(ETCS::Buffer("Surface"));
+        return p ? static_cast<Surface_*>(p) : nullptr;
     }
     static Drawable2D_* cameraPlane(Camera_* c)
     {
@@ -1056,7 +1162,7 @@ private:
  * constant per face, because a scene of axis-aligned boxes has exactly six
  * distinct normals and nothing here needs a light to be a thing.
  */
-    void rasterBox(Pixels_& px, const View& v, const Node& n)
+    void rasterBox(const Sink& sink, const View& v, const Node& n)
     {
         Point3D c[8];
         for (int i = 0; i < 8; ++i) c[i] = toView(v, corner(n, i));
@@ -1077,15 +1183,15 @@ private:
             const float s = shade[f];
             const float col[4] = { n.color[0] * s, n.color[1] * s, n.color[2] * s, n.color[3] };
             const int* q = faces[f];
-            clipAndFill(px, v, c[q[0]], c[q[1]], c[q[2]], col);
-            clipAndFill(px, v, c[q[0]], c[q[2]], c[q[3]], col);
+            clipAndFill(sink, v, c[q[0]], c[q[1]], c[q[2]], col);
+            clipAndFill(sink, v, c[q[0]], c[q[2]], c[q[3]], col);
         }
     }
 
     // Clip in view space, project what survives, fan it. The two steps are
     // separate because they answer different questions and only one of them
     // can be done after the divide -- see clipNear.
-    void clipAndFill(Pixels_& px, const View& v,
+    void clipAndFill(const Sink& sink, const View& v,
                      Point3D a, Point3D b, Point3D c, const float col[4])
     {
         const Point3D tri[3] = {a, b, c};
@@ -1100,7 +1206,7 @@ private:
             s[i] = toScreen(v, poly[i]);
         }
         for (int i = 1; i + 1 < n; ++i)
-            triangle(px, v, s[0], s[i], s[i + 1], col);
+            triangle(sink, v, s[0], s[i], s[i + 1], col);
     }
 
     /*
@@ -1116,7 +1222,7 @@ private:
  * (clipAndFill), so there is no sign check left to make and no vertex whose
  * divide can go the wrong way.
  */
-    void triangle(Pixels_& px, const View& v,
+    void triangle(const Sink& sink, const View& v,
                   const Vertex& a, const Vertex& b, const Vertex& c, const float col[4])
     {
         const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
@@ -1135,16 +1241,21 @@ private:
         const float inv_area = 1.0f / area;
         const float iza = 1.0f / a.z, izb = 1.0f / b.z, izc = 1.0f / c.z;
 
-        uint8_t* base = px.PixelData();
-        if (!base) return;
-        const size_t stride = px.PixelStride();
-
-        const uint8_t cr = toByte(col[0]), cg = toByte(col[1]),
-                      cb = toByte(col[2]), ca = toByte(col[3]);
+        if (!sink.dst && !sink.px->PixelData()) return;
 
         for (int32_t y = y0; y <= y1; ++y)
         {
             const float py = static_cast<float>(y) + 0.5f;
+
+            // The open run on this scanline. A pixel that fails the coverage
+            // or depth test ENDS it -- flushing there rather than at the end
+            // of the line is what keeps a run a run: the survivors of one
+            // triangle are contiguous per scanline only between rejections.
+            int32_t run_x0 = 0;
+            int32_t run_x1 = -1;
+            auto flush = [&]() { if (run_x1 >= run_x0) sink.run(y, run_x0, run_x1, col);
+                                 run_x1 = -1; };
+
             for (int32_t x = x0; x <= x1; ++x)
             {
                 const float pxf = static_cast<float>(x) + 0.5f;
@@ -1153,7 +1264,7 @@ private:
                 float w1 = (c.x - b.x) * (py - b.y) - (c.y - b.y) * (pxf - b.x);
                 float w2 = (a.x - c.x) * (py - c.y) - (a.y - c.y) * (pxf - c.x);
                 if (area < 0.0f) { w0 = -w0; w1 = -w1; w2 = -w2; }
-                if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
+                if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) { flush(); continue; }
 
                 // w1 belongs to a, w2 to b, w0 to c -- each weight is the
                 // area of the triangle OPPOSITE its vertex.
@@ -1162,16 +1273,17 @@ private:
                 const float lc = w0 * std::fabs(inv_area);
 
                 const float inv_z = la * iza + lb * izb + lc * izc;
-                if (!(inv_z > 0.0f)) continue;
+                if (!(inv_z > 0.0f)) { flush(); continue; }
                 const float z = 1.0f / inv_z;
 
                 float& slot = m_depth[static_cast<size_t>(y) * v.w + x];
-                if (z >= slot) continue;
+                if (z >= slot) { flush(); continue; }
                 slot = z;
 
-                uint8_t* d = base + static_cast<size_t>(y) * stride + static_cast<size_t>(x) * 4;
-                d[0] = cr; d[1] = cg; d[2] = cb; d[3] = ca;
+                if (run_x1 < run_x0) run_x0 = x;   // opening a new run
+                run_x1 = x;
             }
+            flush();   // the line ended while a run was still open
         }
     }
 

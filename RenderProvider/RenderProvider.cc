@@ -6,11 +6,18 @@
 // on why the clock and the Vulkan work sit on the sides they do).
 // Instance and ImageSurface stay BASIC -- neither has anything continuous
 // to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
 ETCS_TAG_BLOCK_BASIC(Instance,
+    Create, Delete)
+
+// The device capability attachment: spawn one under a Camera and point it at
+// an Instance, and that camera can project through the GPU. Presence is the
+// capability (ontology/Device.h) -- there is always a CPU, so only the
+// addition needs saying.
+ETCS_TAG_BLOCK_BASIC(Device,
     Create, Delete)
 
 // The window-bound presentable surface: spawn it as a Window's child.
@@ -61,7 +68,7 @@ ETCS_TAG_BLOCK_HYBRID(Scene3D,
 // into a window with no case anywhere for "this one is 3D".
 ETCS_TAG_BLOCK_BASIC(Camera3D,
     Create, SetPosition, SetOrder, SetBackground, MoveTo, ResizeTo,
-    LookAt, SetLens, SetScene,
+    LookAt, SetLens, SetScene, SetDeviceProjection,
     Render, Draw, Clear, DrawRect, Blit, Delete)
 
 // Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of

@@ -50,17 +50,8 @@
 // aggregates were published but never populated -- fixed in core by
 // etcs_supertype_fanout, whose own comment carries the history.
 
-// The one lookup that is a single tag rather than a family: Instance is
-// flat by design (no ontology supertype but Deletable), so its tag row is
-// the only place it appears.
-static inline ETCS::Entity* rp_resolve_tag(const char* tag, ETCS::RID rid)
-{
-    if (rid == 0) return nullptr;
-    auto& ridMap = ETCS::EventNode::getInstance().ridMap;
-    auto it = ridMap.find(ETCS::Buffer(tag));
-    if (it == ridMap.end()) return nullptr;
-    return it->second.invoke_get(rid);
-}
+// rp_resolve_tag now lives in Contract_RenderProvider.h -- see its comment
+// there for why it had to move up.
 
 // ── Instance ─────────────────────────────────────────────────────────────
 
@@ -75,6 +66,26 @@ DEFINE_WORK_FUNC(Instance, Delete)
 {
     (void)ctx; (void)data;
     self.DeleteConcrete();
+}
+
+// ── Device ───────────────────────────────────────────────────────────────
+//
+// Takes the Instance's RID and nothing else: what this type says is which
+// device is reachable from whatever it is a child of, and that is one fact.
+
+DEFINE_WORK_FUNC_TYPED(Device, Create, (ETCS::RID, instance_rid))
+{
+    (void)ctx;
+    if (!self.Create(instance_rid))
+        ETCS_LOG("Device::Create", "RID:" << instance_rid
+                 << " is not a Created RenderProvider::Instance -- whatever owns "
+                    "this keeps working on the host.");
+}
+
+DEFINE_WORK_FUNC(Device, Delete)
+{
+    (void)ctx; (void)data;
+    self.Delete();
 }
 
 // ── Surface (window-bound, presentable) ──────────────────────────────────
@@ -1036,6 +1047,23 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, SetScene, (ETCS::RID, scene))
         ETCS_LOG("Camera3D::SetScene", "RID:" << scene << " does not resolve as a "
                  "Drawable3D today -- bound anyway, it is resolved per render.");
     self.SetScene(scene);
+}
+
+/*
+ * Ask this camera to project through a device instead of into its own pixels.
+ *
+ * A REQUEST, and it can be refused -- there is nothing to switch to without a
+ * ready Device child (ontology/Device.h). Refusal is logged by the leaf rather
+ * than swallowed here, because "you have no Device under this camera" is the
+ * one thing the script author can act on.
+ *
+ * uint32_t, because the script grammar has no bool: 0 is off, anything else on.
+ * Same convention Window.CaptureMouse already uses.
+ */
+DEFINE_WORK_FUNC_TYPED(Camera3D, SetDeviceProjection, (uint32_t, on))
+{
+    (void)ctx;
+    self.SetDeviceProjection(on != 0);
 }
 
 DEFINE_WORK_FUNC(Camera3D, Render)
