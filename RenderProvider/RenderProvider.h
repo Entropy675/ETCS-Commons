@@ -312,6 +312,11 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
     if (stream.isOpen())
         stream.closeWrite();
 
+    // THIS BODY HAS LEFT, and says so rather than leaving the entity reading
+    // as mid-wind-down forever (ontology/Threaded.h). The first of the two
+    // frame-edge bodies to get here makes the transition; the other's call is
+    // the no-op the exchange is there to make it.
+    self.Stop();
     ETCS_LOG("Surface::ProduceFrames", "clock stopped after " << index << " ticks.");
 }
 
@@ -376,6 +381,7 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
     const double secs = (presented > 1)
         ? std::chrono::duration<double>(std::chrono::steady_clock::now() - first).count()
         : 0.0;
+    self.Stop();   // this body has left -- see ProduceFrames above
     ETCS_LOG("Surface::ConsumeFrames", "stream closed after presenting " << presented
              << " frames" << (secs > 0.0
                  ? " in " + std::to_string(secs) + "s = "
