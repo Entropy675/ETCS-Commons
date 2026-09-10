@@ -1052,10 +1052,10 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, SetScene, (ETCS::RID, scene))
 /*
  * Ask this camera to project through a device instead of into its own pixels.
  *
- * A REQUEST, and it can be refused -- there is nothing to switch to without a
- * ready Device child (ontology/Device.h). Refusal is logged by the leaf rather
- * than swallowed here, because "you have no Device under this camera" is the
- * one thing the script author can act on.
+ * RARELY NEEDED, because the default is yes: a camera uses a device as soon as
+ * one is attached under it (ontology/Camera.h), so this exists to hold a camera
+ * on the HOST deliberately -- comparing the two paths, or keeping one camera on
+ * the CPU while another uses the GPU.
  *
  * uint32_t, because the script grammar has no bool: 0 is off, anything else on.
  * Same convention Window.CaptureMouse already uses.

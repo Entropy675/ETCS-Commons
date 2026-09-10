@@ -170,26 +170,25 @@ public:
     // produced is the scene's business (ontology/Camera.h), and a camera that
     // knew would be describing one renderer.
     /*
-     * THE DEVICE TOGGLE -- the request half. Camera.h holds the other half,
-     * and holds it as a derivation rather than a second field: the effective
-     * mode is this AND a Device child still being there, computed at read
-     * time, so the two can never disagree.
+     * THE DEVICE TOGGLE -- the standing preference half. Camera.h holds the
+     * other half, and holds it as a derivation rather than a second field: the
+     * effective mode is this AND a Device child still being there, computed at
+     * read time, so the two can never disagree.
      *
-     * Refused when there is nothing to switch to, rather than silently
-     * accepted and silently ineffective: "you have no Device under this
-     * camera" is the one thing a caller can act on, and a toggle that says
-     * yes and does nothing is how that goes unnoticed until the frame looks
-     * wrong. Turning it OFF always succeeds -- there is always a CPU.
+     * DEFAULTS TO TRUE, and that is what makes attaching a device enough. See
+     * Camera.h: once presence implies use, "forced host" and "use one if you
+     * have one" are the only two states that differ, so this is a boolean whose
+     * default is yes rather than a mode anyone has to select.
+     *
+     * SO ASKING FOR IT WITH NO DEVICE IS NOT REFUSED, which reverses what this
+     * did when the default was false. Then it would have been a toggle that
+     * said yes and changed nothing -- worth refusing. Now it records a standing
+     * preference that takes effect the moment a device appears, which is a real
+     * answer to a real question. Turning it OFF always succeeds; there is
+     * always a CPU.
      */
     bool SetDeviceProjectionConcrete(bool on) override
     {
-        if (on && !this->DeviceSource())
-        {
-            ETCS_LOG("Camera3D", "SetDeviceProjection(1) refused on RID:" << getRID()
-                     << " -- no ready Device child. Spawn a RenderProvider::Device "
-                        "under this camera and Create it with an Instance RID.");
-            return false;
-        }
         if (m_want_device == on) return true;
         m_want_device = on;
         // A mode change is a state change: what this camera will produce next
@@ -580,7 +579,8 @@ private:
 
     // Device mode: the request (Camera.h derives the effective mode) and the
     // recording it produces.
-    bool               m_want_device = false;
+    // True by default: a camera uses a device when it has one (Camera.h).
+    bool               m_want_device = true;
     std::vector<Op>    m_ops;
     mutable std::mutex m_ops_mtx;
     uint64_t  m_renders = 0;
