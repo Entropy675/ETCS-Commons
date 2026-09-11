@@ -50,17 +50,8 @@
 // aggregates were published but never populated -- fixed in core by
 // etcs_supertype_fanout, whose own comment carries the history.
 
-// The one lookup that is a single tag rather than a family: Instance is
-// flat by design (no ontology supertype but Deletable), so its tag row is
-// the only place it appears.
-static inline ETCS::Entity* rp_resolve_tag(const char* tag, ETCS::RID rid)
-{
-    if (rid == 0) return nullptr;
-    auto& ridMap = ETCS::EventNode::getInstance().ridMap;
-    auto it = ridMap.find(ETCS::Buffer(tag));
-    if (it == ridMap.end()) return nullptr;
-    return it->second.invoke_get(rid);
-}
+// rp_resolve_tag now lives in Contract_RenderProvider.h -- see its comment
+// there for why it had to move up.
 
 // ── Instance ─────────────────────────────────────────────────────────────
 
@@ -75,6 +66,26 @@ DEFINE_WORK_FUNC(Instance, Delete)
 {
     (void)ctx; (void)data;
     self.DeleteConcrete();
+}
+
+// ── Device ───────────────────────────────────────────────────────────────
+//
+// Takes the Instance's RID and nothing else: what this type says is which
+// device is reachable from whatever it is a child of, and that is one fact.
+
+DEFINE_WORK_FUNC_TYPED(Device, Create, (ETCS::RID, instance_rid))
+{
+    (void)ctx;
+    if (!self.Create(instance_rid))
+        ETCS_LOG("Device::Create", "RID:" << instance_rid
+                 << " is not a Created RenderProvider::Instance -- whatever owns "
+                    "this keeps working on the host.");
+}
+
+DEFINE_WORK_FUNC(Device, Delete)
+{
+    (void)ctx; (void)data;
+    self.Delete();
 }
 
 // ── Surface (window-bound, presentable) ──────────────────────────────────
@@ -250,13 +261,37 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
     while (!self.IsActive())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) return;
+        // Retired BEFORE active is a real order: a script that deletes the
+        // surface while this edge is still waiting for it to come up would
+        // otherwise spin here forever on an object being reclaimed.
+        if (self.Retired()) return;
         std::this_thread::yield();
     }
 
     uint64_t index = 0;
     bool stream_alive = true;
 
-    while (self.IsActive() && stream_alive)
+    /*
+ * RETIRED IS THE FIRST QUESTION, ahead of IsActive.
+ *
+ * VulkanSurface publishes Retired() for this edge specifically -- its own
+ * comment says it is "the question the frame edge asks BEFORE the walk" --
+ * and this loop was not asking it. Release sets it while the surface is
+ * still whole, so a clock that checks it stops one tick after the release
+ * rather than on the tick that faults.
+ *
+ * AND Retired() NOW INCLUDES Halted(), which is what makes this loop
+ * stoppable rather than merely well-informed. VulkanSurface claims Threaded,
+ * so etcs_retire_entity asks the bodies to stop BEFORE it releases anything
+ * -- the flag is set while everything this loop is about to touch is still
+ * valid, instead of after.
+ *
+ * STILL COOPERATIVE, so the honest limit stands: this stops at the next
+ * iteration, not instantly, and a tick already inside the body runs to its
+ * end. What changed is that the window is now bounded by one iteration
+ * rather than by whenever the object happens to be reclaimed.
+ */
+    while (!self.Retired() && self.IsActive() && stream_alive)
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) break;
 
@@ -277,6 +312,11 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
     if (stream.isOpen())
         stream.closeWrite();
 
+    // THIS BODY HAS LEFT, and says so rather than leaving the entity reading
+    // as mid-wind-down forever (ontology/Threaded.h). The first of the two
+    // frame-edge bodies to get here makes the transition; the other's call is
+    // the no-op the exchange is there to make it.
+    self.Stop();
     ETCS_LOG("Surface::ProduceFrames", "clock stopped after " << index << " ticks.");
 }
 
@@ -341,6 +381,7 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
     const double secs = (presented > 1)
         ? std::chrono::duration<double>(std::chrono::steady_clock::now() - first).count()
         : 0.0;
+    self.Stop();   // this body has left -- see ProduceFrames above
     ETCS_LOG("Surface::ConsumeFrames", "stream closed after presenting " << presented
              << " frames" << (secs > 0.0
                  ? " in " + std::to_string(secs) + "s = "
@@ -1012,6 +1053,23 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, SetScene, (ETCS::RID, scene))
         ETCS_LOG("Camera3D::SetScene", "RID:" << scene << " does not resolve as a "
                  "Drawable3D today -- bound anyway, it is resolved per render.");
     self.SetScene(scene);
+}
+
+/*
+ * Ask this camera to project through a device instead of into its own pixels.
+ *
+ * RARELY NEEDED, because the default is yes: a camera uses a device as soon as
+ * one is attached under it (ontology/Camera.h), so this exists to hold a camera
+ * on the HOST deliberately -- comparing the two paths, or keeping one camera on
+ * the CPU while another uses the GPU.
+ *
+ * uint32_t, because the script grammar has no bool: 0 is off, anything else on.
+ * Same convention Window.CaptureMouse already uses.
+ */
+DEFINE_WORK_FUNC_TYPED(Camera3D, SetDeviceProjection, (uint32_t, on))
+{
+    (void)ctx;
+    self.SetDeviceProjection(on != 0);
 }
 
 DEFINE_WORK_FUNC(Camera3D, Render)

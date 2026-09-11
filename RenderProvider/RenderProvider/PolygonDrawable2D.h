@@ -1,8 +1,8 @@
 #ifndef POLYGONDRAWABLE2D_H__
 #define POLYGONDRAWABLE2D_H__
 
-#include "../../core_defs.h"
-#include "../../ontology.h"
+#include "../../../core_defs.h"
+#include "../../../ontology.h"
 
 #include <algorithm>
 #include <cmath>
@@ -264,14 +264,21 @@ private:
  * exactly "the outermost drawable", which is the node whose coordinates are
  * the destination's own.
  *
- * AND AT THE FIRST ANCESTOR THAT OWNS PIXELS, without adding its origin. A
- * node with a buffer is a COORDINATE ORIGIN: its children state their points
- * in its space, and its buffer IS that space, so the offset between them is
- * zero. Whatever that node is nested inside is its own problem, resolved
- * once, when it is blitted (CompositeDrawable2D). Without this rule a
- * composited subtree would be drawn at its screen position inside a buffer
- * that starts at its own top-left, which is the same picture translated by
- * however deep the tree happened to be.
+ * AND AT THE FIRST ANCESTOR THAT IS A RASTER, without adding its origin. A
+ * node with a raster of its own is a COORDINATE ORIGIN: its children state
+ * their points in its space, and that raster IS that space, so the offset
+ * between them is zero. Whatever that node is nested inside is its own
+ * problem, resolved once, when it is blitted (CompositeDrawable2D). Without
+ * this rule a composited subtree would be drawn at its screen position
+ * inside a buffer that starts at its own top-left, which is the same picture
+ * translated by however deep the tree happened to be.
+ *
+ * ASKED AS Raster, NOT Pixels, which is the point of that family existing
+ * (ontology/Raster.h). "Is this node an origin" is a question about whether
+ * it HAS a raster, not about whose memory the raster sits in -- and while
+ * every raster in this system was CPU-backed the two had the same answer. A
+ * device-resident ancestor is just as much an origin, and was walked
+ * straight past.
  *
  * Walked per draw rather than cached. It is O(depth) on a chain that is
  * three or four deep in practice, and a cached transform is a second copy
@@ -284,7 +291,7 @@ private:
         {
             void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
             if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Pixels"))) break;   // origin
+            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
             const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
             acc.x += pb.x;
             acc.y += pb.y;
@@ -297,7 +304,7 @@ private:
     // of its own, so there is nothing here to mark. Note it does NOT stop at
     // the first, unlike the coordinate walk above -- coordinates are relative
     // to the nearest origin, staleness propagates to every cache.
-    void markCompositorsDirty() { etcs_mark_pixel_path(getParent()); }
+    void markCompositorsDirty() { etcs_mark_observed(getParent()); }
 
     // Even-odd scanline crossings for one row, in PARENT space, sorted.
     void rowSpans(int32_t y, std::vector<int32_t>& xs) const

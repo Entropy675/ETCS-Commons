@@ -46,7 +46,29 @@ static constexpr uint32_t SURFACE_MAX_BLIT_SOURCES = 64;
 class VulkanSurface : public SurfaceBase<VulkanSurface>,
                        public PresentableBase<VulkanSurface>,
                        public DeletableBase<VulkanSurface>,
-                       public LifecycleBase<VulkanSurface>
+                       public LifecycleBase<VulkanSurface>,
+                       // Owns a held body: Surface::ProduceFrames loops for the
+                       // window's lifetime. Claiming Threaded is what lets the
+                       // arena ASK that loop to stop rather than only setting
+                       // flags it has to dereference this object to read.
+                       public ThreadedBase<VulkanSurface>,
+                       /*
+                        * The other half of the raster split (ontology/
+                        * Raster.h). This surface's pixels are the swapchain's
+                        * images: they exist, they have a size, and there is
+                        * no address in this process at which to read them --
+                        * which is the whole content of Renderable, and the
+                        * exact complement of the Pixels every CPU-backed
+                        * surface here claims. Claiming it is what lets the
+                        * runtime SAY that, rather than leaving a consumer to
+                        * infer it from the absence of a Pixels pointer.
+                        *
+                        * Mutually exclusive with Pixels: both families inherit
+                        * Raster_ virtually, so a leaf claiming the two has no
+                        * unique final overrider for PixelWidth and does not
+                        * compile.
+                        */
+                       public RenderableBase<VulkanSurface>
 {
 public:
     // The ordering every Surface owes (Orderable, composed by SurfaceBase).
@@ -111,10 +133,23 @@ public:
         if (!loadPipeline(shader_dir)) { teardown(); return false; }
         if (!createSyncObjects()) { teardown(); return false; }
 
-        // OnResize fires immediately on registration with the CURRENT size
-        // (Resizable_::OnResize's existing semantics) -- this doubles as
-        // the initial swapchain build, so no separate first-build call.
-        m_parentResizable->OnResize([this](WindowSize sz) { this->queueResize(sz); }, 0);
+        /*
+ * Two statements, where there used to be one that did both jobs badly.
+ *
+ * The old line registered a callback capturing `this` raw, and relied on
+ * OnResize firing it inline to perform the INITIAL swapchain build. So the
+ * first build was disguised as a resize, and every later resize arrived on
+ * the poll thread inside a captured pointer that outlived nothing in
+ * particular -- the exact capture ontology/Resizable.h's own FollowResize
+ * comment says not to write.
+ *
+ * Now: build once, here, on the creating thread, because Create's return
+ * value depends on it having happened; and subscribe, so PresentConcrete can
+ * ask on the frame thread whether the parent has moved since. Nothing is
+ * captured and nothing runs on the poll thread.
+ */
+        recreateSwapchain(m_parentResizable->GetSize());
+        this->FollowResize(m_parentResizable);
 
         this->addTag("active");
         return m_swapchain != VK_NULL_HANDLE;
@@ -271,9 +306,17 @@ public:
 
     // Has this surface stopped being a thing worth walking a tree for? The
     // question the frame edge asks BEFORE the walk, as against ready(), which
-    // asks whether a Vulkan call may proceed. Released is the graph answer and
-    // dead is the window answer; a walk is invalid under either.
-    bool Retired() const { return m_dead || Released(); }
+    // asks whether a Vulkan call may proceed.
+    //
+    // Three answers, one per way of asking, and a walk is invalid under any:
+    //   m_dead      the WINDOW answer   -- the swapchain is going
+    //   Released()  the GRAPH answer    -- this entity has let go of what it held
+    //   Halted()    the REQUEST answer  -- somebody asked the bodies to stop
+    //
+    // Halted is the one that arrives FIRST on a reclaim (etcs_retire_entity
+    // halts before it releases), which is what makes it the useful one: it is
+    // set while everything a running loop is about to touch is still valid.
+    bool Retired() const { return m_dead || Released() || Halted(); }
 
     bool RecomposeBound()
     {
@@ -359,14 +402,21 @@ public:
         m_pendingDraws.push_back({ PendingDraw::Kind::Rect, x, y, w, h, r, g, b, a, 0 });
     }
 
-    // The source is reached as Pixels_ (ontology/Pixels.h), never as a
-    // concrete type -- this is the whole reason Pixels is its own family.
-    // A PintaProvider layer, a test image surface, anything that owns CPU
-    // pixels and registers the interface pointer can be blitted here with
-    // no compile-time relationship to this module.
-    //
-    // w/h of 0 mean "the source's own size", which is what a 1:1 canvas
-    // composite wants and saves every caller restating it.
+    /*
+     * The source is reached by FAMILY, never as a concrete type -- this is
+     * the whole reason the raster families exist. A PintaProvider layer, a
+     * test image surface, anything that registers the interface pointer can
+     * be blitted here with no compile-time relationship to this module.
+     *
+     * "Pixels" is still the ONE lookup on the path that succeeds, because an
+     * upload needs host bytes and a Pixels_ is a Raster_ (ontology/Raster.h)
+     * -- it answers its own size, so nothing is asked twice. What changed is
+     * the branch where it FAILS: "no host bytes" used to be one message
+     * covering two unrelated causes, and Renderable is what tells them apart.
+     *
+     * w/h of 0 mean "the source's own size", which is what a 1:1 canvas
+     * composite wants and saves every caller restating it.
+     */
     void BlitConcrete(Surface_* source, int32_t x, int32_t y,
                        uint32_t w, uint32_t h, float opacity) override
     {
@@ -377,29 +427,62 @@ public:
         // the frame consumer reads (ConsumeFrames, RenderProvider.h).
         std::lock_guard<std::mutex> lock(m_stateMutex);
         m_composed = false;          // appends only -- see ClearConcrete
+
         // Every Surface_ is an Entity (virtually), so the source's own
         // identity and its other interfaces are both reachable from here.
-        // A device-side offscreen source would be read by image copy at this
-        // point instead; today only CPU-backed sources can be uploaded.
         Pixels_* px = static_cast<Pixels_*>(source->getInterfacePointer(ETCS::Buffer("Pixels")));
         if (!px)
         {
-            ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
-                     << " has no Pixels interface -- only a CPU-backed surface can be blitted from yet.");
+            /*
+ * NO HOST BYTES IS THREE DIFFERENT FACTS, and this used to report them as one.
+ *
+ * A raster whose pixels are on THIS device is an image copy with no host round
+ * trip at all -- the seam ontology/Renderable.h describes, and the copy itself
+ * is the piece that is not written yet. One on ANOTHER device cannot be copied
+ * however this surface is fixed: the bytes have to come back through host
+ * memory first, and that is its owner's job. And a source that is no raster at
+ * all is not a rendering problem in either direction.
+ *
+ * Three causes, three different fixes, and one message for all of them was why
+ * the first two looked like the third.
+ */
+            Renderable_* gpu = static_cast<Renderable_*>(
+                source->getInterfacePointer(ETCS::Buffer("Renderable")));
+            if (gpu && gpu->DeviceKey() != 0 && gpu->DeviceKey() == this->DeviceKey())
+                ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
+                         << " is device-resident on THIS device -- a device-to-device"
+                         << " copy is the path for it, and it is not implemented yet.");
+            else if (gpu)
+                ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
+                         << " is device-resident elsewhere (key " << gpu->DeviceKey()
+                         << " vs " << this->DeviceKey() << ") -- it has to be read back"
+                         << " to host memory by its owner before it can be blitted here.");
+            else
+                ETCS_LOG("VulkanSurface", "Blit source RID:" << source->getRID()
+                         << " is not a raster at all -- nothing to read from it.");
             return;
         }
-        if (px->PixelWidth() == 0 || px->PixelHeight() == 0) return;
+        if (px->RasterEmpty()) return;
         if (w == 0) w = px->PixelWidth();
         if (h == 0) h = px->PixelHeight();
 
         const ETCS::RID rid = source->getRID();
         if (!ensureTexture(rid, *px)) return;
 
-        // TakeDirty CONSUMES the flag, so a layer blitted twice in one
-        // frame uploads once. everUploaded covers the first blit of an
-        // image whose writer never marked it dirty.
+        /*
+ * Asked as THIS surface, which is what makes two windows over one image
+ * work. The flag this replaces was a single read-and-clear on the source, so
+ * whichever surface blitted first consumed it and the second cached its
+ * first upload forever -- paint_two_windows, where one window went dead.
+ *
+ * Still consuming, just per observer: a layer blitted twice in one frame
+ * uploads once. everUploaded still covers the first blit of an image whose
+ * writer never marked it.
+ */
         BlitTexture& tex = m_textures[rid];
-        if (px->TakeDirty() || !tex.everUploaded)
+        ETCS::IWireObservable* obs = etcs_observable_of(static_cast<ETCS::Entity*>(source));
+        const bool changed = obs ? obs->TakeObserved(this->getRID()) : true;
+        if (changed || !tex.everUploaded)
         {
             std::memcpy(tex.stagingMapped, px->PixelData(), px->PixelBytes());
             tex.needsUpload = true;
@@ -407,6 +490,30 @@ public:
 
         m_pendingDraws.push_back({ PendingDraw::Kind::Blit, x, y, w, h, 0.0f, 0.0f, 0.0f, opacity, rid });
     }
+
+    // --- Renderable_ / Raster_ dispatch (RenderableBase.h) ---
+
+    /*
+     * The VkDevice handle, which is exactly what Renderable_::DeviceKey asks
+     * for: something unique to one device within this process, compared only
+     * for equality, and meaningful to nobody but the backend that published
+     * it. Two VulkanSurfaces over the same VulkanInstance answer the same
+     * key, which is the case a device-to-device copy would be legal in.
+     *
+     * Zero before Create, and that is a real state rather than an error --
+     * an entity between construction and Create has no device, and the
+     * comparison in Blit already treats zero as "not somewhere I can reach".
+     */
+    uint64_t DeviceKeyConcrete() const
+    {
+        return m_instance ? reinterpret_cast<uint64_t>(m_instance->GetDevice()) : 0;
+    }
+
+    // The swapchain's extent, which IS this surface's raster -- not a second
+    // number kept beside it. Zero until the swapchain exists, so RasterEmpty()
+    // answers true for exactly the window that has nothing to show yet.
+    uint32_t PixelWidthConcrete()  const { return m_extent.width;  }
+    uint32_t PixelHeightConcrete() const { return m_extent.height; }
 
     // --- Presentable_ dispatch (PresentableBase.h) ---
 
@@ -436,24 +543,21 @@ public:
  * survived every test here and shows up on a real desktop as a picture
  * that will not stay on screen, or a segfault out of a script that polls.
  *
- * So the callback now records the extent and this thread acts on it, at a
- * frame boundary, where no command buffer is in flight. Every Vulkan call
- * on this surface is back on one thread, which is what the design said it
- * wanted.
+ * So nothing is delivered to this surface at all. The parent records its own
+ * size and marks; this thread asks, at a frame boundary, whether that
+ * happened, and reads the size itself if it did. Every Vulkan call on this
+ * surface is back on one thread, which is what the design said it wanted.
+ *
+ * The record-and-hand-off this used to do (an atomic flag plus a mutexed
+ * pending extent) is gone with it: those existed to carry a size across a
+ * thread, and nothing carries a size any more. A drag that fires sixty
+ * events is sixty bits set on one observer and one read of the LATEST
+ * size -- coalescing by construction rather than by a staging slot.
  *
  * A surface with no presenter never processes a resize -- correct, and not
  * a gap: a surface nothing presents is showing nothing to resize.
  */
-        if (m_resizePending.exchange(false, std::memory_order_acquire))
-        {
-            WindowSize sz;
-            {
-                std::lock_guard<std::mutex> lock(m_stateMutex);
-                sz = m_pendingExtent;
-            }
-            recreateSwapchain(sz);
-            if (m_swapchain == VK_NULL_HANDLE) return;
-        }
+        if (PollResize() && m_swapchain == VK_NULL_HANDLE) return;
 
         FrameSnapshot frame;
         {
@@ -714,11 +818,6 @@ private:
         m_fpsPrimed = true;
     }
 
-    // Resize hand-off: written by the poll thread, acted on by the frame
-    // thread. See PresentConcrete.
-    std::atomic<bool>         m_resizePending{false};
-    WindowSize                m_pendingExtent{0, 0};   // guarded by m_stateMutex
-    bool                      m_builtOnce  = false;
 
     // --- setup helpers ---
 
@@ -1088,6 +1187,12 @@ private:
             return false;
         }
 
+        // Caching this source's pixels IS observing it -- registered at the one
+        // moment a cache entry comes into existence, so the two cannot disagree.
+        if (ETCS::IWireObservable* o = etcs_observable_of(
+                const_cast<ETCS::Entity*>(static_cast<const ETCS::Entity*>(&px))))
+            o->Observe(this->getRID());
+
         BlitTexture tex{};
         tex.w = px.PixelWidth();
         tex.h = px.PixelHeight();
@@ -1276,28 +1381,18 @@ private:
     // real resize thereafter (ontology/Resizable.h's notifyResize fix is
     // what makes the second case actually fire).
     /*
- * Called from the resize callback, on whatever thread polls the window.
- * Records and returns -- see PresentConcrete for why the recreation itself
- * belongs to the frame thread.
+ * BE this size (ontology/Resizable.h). The verb half, which this surface had
+ * no implementation of -- it only ever heard about sizes.
  *
- * The FIRST call is different and is taken synchronously: OnResize fires
- * immediately on registration with the current size, and that call IS the
- * initial swapchain build, on the creating thread, before any presenter
- * exists. Create's own return value depends on it having happened.
+ * Reached from PollResize, which PresentConcrete calls, so this runs on the
+ * frame thread with no command buffer in flight. That is the whole reason the
+ * pull is worth having: the one call that must not happen on the poll thread
+ * is now structurally unable to.
  */
-    void queueResize(WindowSize sz)
+    bool ResizeTo(WindowSize sz) override
     {
-        if (!m_builtOnce)
-        {
-            m_builtOnce = true;
-            recreateSwapchain(sz);
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(m_stateMutex);
-            m_pendingExtent = sz;
-        }
-        m_resizePending.store(true, std::memory_order_release);
+        recreateSwapchain(sz);
+        return true;
     }
 
     void recreateSwapchain(WindowSize sz)

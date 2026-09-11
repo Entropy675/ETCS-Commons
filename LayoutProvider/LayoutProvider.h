@@ -104,7 +104,18 @@ DEFINE_WORK_FUNC_TYPED(Layout, FollowResize, (ETCS::RID, source))
                  << " is not a live Resizable -- nothing to follow.");
         return;
     }
-    self.FollowResize(src.get());
+    /*
+     * Pushed, because a layout has no clock. Everything else that follows a
+     * size is inside a frame loop and can ask; a solver sits outside every
+     * loop, so nobody would ever ask on its behalf and it would re-solve once
+     * at startup and never again.
+     *
+     * Safe on this thread in a way it would not be for a surface: re-solving
+     * moves Drawables and makes no device calls. And the wake is deferred
+     * until the size settles, so a drag is one solve rather than one per
+     * event -- which is what the old callback did, on every single one.
+     */
+    self.FollowResize(src.get(), ResizeDelivery::Pushed);
     ETCS_LOG("Layout::FollowResize", "now tracking RID:" << source << ".");
 }
 

@@ -1,7 +1,7 @@
 #ifndef RENDERPROVIDER_IMAGESURFACE_H__
 #define RENDERPROVIDER_IMAGESURFACE_H__
 
-#include "../../ontology.h"
+#include "../../../ontology.h"
 
 // ImageSurface -- the offscreen, CPU-backed surface:
 // [Surface + Pixels + Resizable + Deletable]. Not Presentable, because
@@ -92,8 +92,14 @@ public:
         Pixels_* px = static_cast<Pixels_*>(source->getInterfacePointer(ETCS::Buffer("Pixels")));
         if (!px)
         {
+            // Says what is actually true of this path rather than what was
+            // true of the ontology: a CPU composite reads host bytes, so a
+            // source that has none cannot be one -- whether that is because
+            // it is device-resident or because it is not a raster at all.
+            // Same wording its two sibling compositors use.
             ETCS_LOG("ImageSurface", "Blit source RID:" << source->getRID()
-                     << " has no Pixels interface -- only a CPU-backed surface can be blitted from yet.");
+                     << " owns no pixels -- a device-side source cannot be read "
+                        "back into a CPU composite.");
             return;
         }
         if (px == static_cast<Pixels_*>(this))

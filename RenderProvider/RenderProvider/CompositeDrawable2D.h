@@ -1,8 +1,8 @@
 #ifndef COMPOSITEDRAWABLE2D_H__
 #define COMPOSITEDRAWABLE2D_H__
 
-#include "../../core_defs.h"
-#include "../../ontology.h"
+#include "../../../core_defs.h"
+#include "../../../ontology.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -36,19 +36,23 @@
 // space, so the offset between them is zero. Whatever the compositor is
 // nested inside is the compositor's problem, resolved once, when IT is blitted.
 //
-// THE DIRTY FLAG IS Pixels_'s OWN, and it already had the right shape.
-// Writers call MarkDirty, one consumer calls TakeDirty. Here the sequence
-// composes rather than collides:
+// THE DIRTY EDGE IS Observable_'s, and it is per observer. This node has two
+// distinct observers and they used to share one read-and-clear bool:
 //
-//   1. a descendant changes -> it walks up and MarkDirty()s this node
-//   2. DrawInto calls TakeDirty(): true, so it recomposes
-//   3. recomposing writes pixels, which sets the flag again
-//   4. the destination's Blit calls TakeDirty(): true, so it re-uploads
+//   1. a descendant changes -> etcs_mark_observed walks to the nearest
+//      Observable, which is this node, marking every observer of it
+//   2. DrawInto asks TakeObserved(getRID()) -- THIS NODE, watching ITSELF --
+//      true, so it recomposes
+//   3. recomposing writes pixels, which marks again
+//   4. the device asks TakeObserved(its own RID): true, so it re-uploads
 //
-// and on a frame where nothing changed, step 2 is false, no children are
-// walked at all, and step 4 is false so the device reuses its texture. Two
-// consumers of one flag, in sequence, each leaving it in the state the next
-// one needs.
+// and on a settled frame step 2 is false, no children are walked, and step 4
+// is false so the device reuses its texture. Same sequence as the old single
+// flag, except the two consumers no longer consume each other: with one bool,
+// a SECOND device blitting this node found it already taken and went stale
+// forever. That is why the self-observation in Create is not ceremony -- it is
+// this node's own subscription, and forgetting it means TakeObserved answers
+// true for an unregistered observer and the tree recomposes every frame.
 //
 // WHAT IT IS NOT. Its shape is its rectangle -- a compositor is a buffer, and
 // a buffer is rectangular. A non-rectangular merge wants the shape as a mask
@@ -83,12 +87,19 @@ public:
         m_w = w;
         m_h = h;
         Allocate(w, h);       // idempotent for an unchanged size (Pixels_)
+        // Watch my own subtree: the recompose gate in DrawInto is this
+        // subscription being read. See the header comment.
+        this->ObserveSelf();
         this->addTag("active");
         return true;
     }
 
-    void SetPosition(int32_t x, int32_t y) { m_x = x; m_y = y; MarkDirty(); }
-    void SetOrder(int32_t z)               { m_order = z; Reorder(); MarkDirty(); }
+    // Two statements, because a move is two facts: my parent's merged copy is
+    // stale (up), and every child's coordinates are stated relative to a frame
+    // that just shifted (down). Only the first used to be made.
+    void SetPosition(int32_t x, int32_t y)
+    { m_x = x; m_y = y; etcs_mark_observed(this); MarkObservedBelow(); }
+    void SetOrder(int32_t z)               { m_order = z; Reorder(); etcs_mark_observed(this); }
 
     /*
      * The two family verbs (ontology/Drawable2D.h, ontology/Resizable.h), so
@@ -138,8 +149,8 @@ public:
             m_pending_x = p.x;
             m_pending_y = p.y;
         }
-        MarkDirty();
-        etcs_mark_pixel_path(this);
+        etcs_mark_observed(this);
+        MarkObservedBelow();     // the frame my children sit in moved
         return true;
     }
 
@@ -152,8 +163,7 @@ public:
             m_pending_w = s.width;
             m_pending_h = s.height;
         }
-        MarkDirty();
-        etcs_mark_pixel_path(this);
+        etcs_mark_observed(this);
         return true;
     }
 
@@ -163,7 +173,7 @@ public:
     void SetBackground(float r, float g, float b, float a)
     {
         m_bg[0] = r; m_bg[1] = g; m_bg[2] = b; m_bg[3] = a;
-        MarkDirty();
+        etcs_mark_observed(this);
     }
 
     /*
@@ -182,7 +192,7 @@ public:
  * anywhere else. What changes is only who is assumed to own the pixels
  * underneath them.
  */
-    void SetRetain(bool on) { m_retain = on; MarkDirty(); }
+    void SetRetain(bool on) { m_retain = on; etcs_mark_observed(this); }
     bool Retained() const   { return m_retain; }
 
     // ── Drawable2D_ dispatch ─────────────────────────────────────────────
@@ -257,22 +267,28 @@ public:
         /*
  * THE ONE BRANCH THIS WHOLE FILE EXISTS FOR.
  *
- * TakeDirty() is false exactly when nothing under this node has changed
+ * TakeObserved(getRID()) is false exactly when nothing under this node has changed
  * since the last composition -- so the entire subtree is skipped, not
  * walked and re-emitted, and what reaches the destination is one Blit of
  * an image that is already correct. On a scene where one node moved, only
  * the compositors on the path from that node to the root recompose;
  * everything else is a blit.
  */
-        // Two questions, not one. TakeDirty covers every discrete change --
+        // Two questions, not one. The observed bit covers every discrete change --
         // a child moved, a colour was set, a node was spawned. Animating
         // covers what a flag structurally cannot: a node that changes DURING
         // the walk, whose mark this frame's own upload then consumes (see
         // ontology/Drawable.h). Asking costs one virtual call per child on a
         // settled tree and is what lets a moving one schedule its own next
         // frame.
-        if (TakeDirty() || anyChildAnimating())
+        if (TakeObserved(getRID()) || anyChildAnimating())
+        {
+            // No self-clear afterwards: recompose's own writes mark with
+            // origin=this, so my own edge is skipped at the source. A child that
+            // changes DURING the recompose still marks me, and is no longer
+            // swallowed by a clear that could not tell the two apart.
             recompose();
+        }
 
         const Point2D base = parentAbsoluteOrigin();
         dst->Blit(this, base.x + m_x, base.y + m_y, m_w, m_h, 1.0f);
@@ -301,15 +317,6 @@ public:
     bool Animating() override { return anyChildAnimating(); }
 
 private:
-    bool anyChildAnimating()
-    {
-        std::vector<Drawable_*> ordered;
-        collectDrawableChildren(ordered);
-        for (Drawable_* child : ordered)
-            if (child->Animating()) return true;
-        return false;
-    }
-
     /*
  * Rebuild the buffer from the subtree: reset, clip to our own extent, draw
  * every Drawable child into OURSELVES, unclip.
@@ -436,7 +443,7 @@ private:
         {
             void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
             if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Pixels"))) break;  // origin
+            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
             const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
             acc.x += pb.x;
             acc.y += pb.y;
