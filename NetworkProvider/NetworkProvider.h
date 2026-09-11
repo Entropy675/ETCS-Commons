@@ -58,6 +58,17 @@ DEFINE_WORK_FUNC(HttpServer, SetPort)
     data << ok;
 }
 
+DEFINE_WORK_FUNC(HttpServer, AddHeader)
+{
+    (void)ctx;
+
+    // Expected buffer layout: [String: Key][sep][String: Value]
+    std::string key;
+    std::string value;
+    data >> key >> value;
+    self.AddHeader(key, value);
+}
+
 // AddHandler <rid> <Action> — registers an out-of-tree recipient for
 // connections. This is the ONE place a RID crosses into this structure from
 // outside, and it is explicit for exactly that reason: everything downstream
@@ -379,6 +390,13 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             asset = self.ResolvePath(path);
         }
 
+        // Build custom headers string from connection/state object
+        std::string custom_headers_str;
+        for (const auto& header : self.GetCustomHeaders())
+        {
+            custom_headers_str += header.first + ": " + header.second + "\r\n";
+        }
+
         // HTTP/1.1 is persistent by default; only close when the client
         // asked, or when this connection has served its budget. Closing
         // per request is what filled the client's ephemeral port range
@@ -396,18 +414,6 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
         int send_len = 0;
         if (asset.matched)
         {
-            // SendBuffer() is fixed (ETCS_NETWORK_MAX_HEADER_SIZE * 4).
-            // Anything larger is clipped by snprintf's own bound rather
-            // than corrupting memory, but is still a broken response.
-            // Flagged loudly; the real fix is a chunked send loop feeding
-            // several IOSubmission::Send calls, not yet wired here.
-            if (asset.length + 256 > c->SendBuffer().size())
-            {
-                ETCS_LOG("HttpServer::Serve", "WARNING: asset '" << path << "' ("
-                         << asset.length << " bytes) exceeds SendBuffer capacity ("
-                         << c->SendBuffer().size() << ") -- response TRUNCATED.");
-            }
-
             // Only the true fallback -- an extension MimeForExtension has
             // no explicit case for -- downloads instead of opening in-tab.
             // Every filtered type (html, css, js, images, fonts, wasm,
@@ -434,26 +440,74 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                 disposition_hdr = "Content-Disposition: attachment; filename=\"" + filename + "\"\r\n";
             }
 
-            send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
+            // HEADERS ONLY through snprintf; the body is memcpy'd after.
+            // %.*s stops at the first NUL, and a wasm module STARTS with
+            // one -- the magic is literally '\0' 'a' 's' 'm' -- so a
+            // single format call wrote Content-Length: N with a body of
+            // zero bytes for every wasm file, whatever the buffer sizes.
+            // The bytes were dropped at FORMAT time, not storage time,
+            // which is why enlarging NBuffer could not touch this.
+            // memcpy is NUL-safe; this is the binary-body path.
+            //
+            // snprintf's return is the length it WANTED to write, not
+            // what fit -- passing it straight to SetSendLen meant an
+            // oversized response had do_send reading PAST the buffer.
+            // Everything below is clamped to what SendBuffer holds.
+            //
+            // SendBuffer() is fixed (ETCS_NETWORK_MAX_HEADER_SIZE * 4):
+            // THAT macro is the knob for large assets, not NBuffer. The
+            // real fix for unbounded assets is a chunked send loop feeding
+            // several IOSubmission::Send calls, not yet wired here.
+            const size_t cap = c->SendBuffer().size();
+            const int hdr_fmt = snprintf(c->SendBuffer().data(), cap,
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: %s\r\n"
                 "Content-Length: %zu\r\n"
                 "Connection: %s\r\n"
                 "Keep-Alive: timeout=%d\r\n"
-                "%s"
-                "\r\n%.*s",
+                "%s%s\r\n",
                 asset.mime_type.c_str(), asset.length, conn_hdr,
                 SocketConnectionState::TIMEOUT_SECONDS,
-                disposition_hdr.c_str(),
-                static_cast<int>(asset.length), asset.data);
+                disposition_hdr.c_str(), custom_headers_str.c_str());
+
+            const size_t hdr_len =
+                (hdr_fmt < 0) ? 0 : std::min((size_t)hdr_fmt, cap - 1);
+
+            if (hdr_fmt < 0 || asset.length > cap - hdr_len)
+            {
+                // Refuse honestly rather than emit Content-Length: N and
+                // deliver fewer bytes -- that lie IS the client's
+                // partial-transfer / connection-reset symptom. Same
+                // refuse-rather-than-misreport contract as Start
+                // refusing to come up in plaintext.
+                ETCS_LOG("HttpServer::Serve", "REFUSING '" << path << "' ("
+                         << asset.length << " bytes): SendBuffer holds " << cap
+                         << " (" << (cap - hdr_len) << " free after headers)"
+                         << " -- raise ETCS_NETWORK_MAX_HEADER_SIZE.");
+                const char* err = "asset exceeds send buffer";
+                const int e = snprintf(c->SendBuffer().data(), cap,
+                    "HTTP/1.1 500 Internal Server Error\r\nConnection: %s\r\n"
+                    "Content-Length: %zu\r\n%s\r\n%s",
+                    conn_hdr, std::strlen(err), custom_headers_str.c_str(), err);
+                send_len = (e < 0) ? 0 : (int)std::min((size_t)e, cap - 1);
+            }
+            else
+            {
+                // Deliberately overwrites snprintf's NUL terminator: the
+                // header block ends with its own CRLF, and the body is
+                // raw bytes, not a C string.
+                std::memcpy(c->SendBuffer().data() + hdr_len, asset.data, asset.length);
+                send_len = (int)(hdr_len + asset.length);
+            }
         }
         else
         {
             const char* err = "404 Not Found";
-            send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
+            const int n = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
                 "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n"
-                "Content-Length: %zu\r\n\r\n%s",
-                conn_hdr, std::strlen(err), err);
+                "Content-Length: %zu\r\n%s\r\n%s",
+                conn_hdr, std::strlen(err), custom_headers_str.c_str(), err);
+            send_len = (n < 0) ? 0 : (int)std::min((size_t)n, c->SendBuffer().size() - 1);
         }
         c->SetSendLen(send_len);
 
