@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ETCS Web Shell</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --border: #30363d;
+      --fg: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --ok: #3fb950;
+      --err: #f85149;
+      --prompt: #79c0ff;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: var(--bg); color: var(--fg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+    #layout {
+      display: flex; flex-direction: column;
+      height: 100%; max-width: 960px; margin: 0 auto;
+      padding: 0.75rem; gap: 0.75rem;
+    }
+    header {
+      display: flex; align-items: baseline; justify-content: space-between;
+      color: var(--muted); font-size: 12px;
+    }
+    header strong { color: var(--accent); font-size: 14px; }
+    #term {
+      flex: 1; min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.45;
+    }
+    #term .err { color: var(--err); }
+    #term .sys { color: var(--muted); }
+    #input-row {
+      display: flex; gap: 0.5rem; align-items: center;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 0.5rem 0.75rem;
+    }
+    #input-row .ps1 { color: var(--prompt); user-select: none; }
+    #cmdline {
+      flex: 1; border: 0; outline: none;
+      background: transparent; color: var(--fg);
+      font: inherit;
+    }
+    #cmdline:disabled { opacity: 0.5; }
+    canvas#canvas {
+      display: none;
+      width: 100%; max-height: 40vh;
+      background: #111; border: 1px solid var(--border); border-radius: 8px;
+    }
+    canvas#canvas.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div id="layout">
+    <header>
+      <strong>ETCS</strong>
+      <span id="status">loading…</span>
+    </header>
+    <canvas id="canvas" width="600" height="400"></canvas>
+    <div id="term" aria-live="polite"></div>
+    <div id="input-row">
+      <span class="ps1">›</span>
+      <input id="cmdline" type="text" autocomplete="off" spellcheck="false"
+             placeholder="waiting for runtime…" disabled/>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const term = document.getElementById('term');
+  const cmdline = document.getElementById('cmdline');
+  const status = document.getElementById('status');
+  const canvas = document.getElementById('canvas');
+
+  function append(text, cls) {
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    term.appendChild(span);
+    term.scrollTop = term.scrollHeight;
+  }
+
+  // Called from C++ (lsh::term_write) and from Module.print
+  window.etcsTermWrite = function (t) {
+    if (t == null) return;
+    append(String(t), null);
+  };
+
+  function setStatus(s) { status.textContent = s; }
+
+  function pushLineToWasm(line) {
+    try {
+      if (typeof Module !== 'undefined' && Module._etcs_web_shell_push_line) {
+        // Side-module export may live under LDSO after ShellProvider loads
+        Module.ccall
+          ? Module.ccall('etcs_web_shell_push_line', null, ['string'], [line])
+          : null;
+      }
+      // Prefer direct export once MAIN resolves it; also try loaded lib
+      const LDSO = Module.LDSO;
+      const shell = LDSO && LDSO.loadedLibsByName && LDSO.loadedLibsByName['ShellProvider.wasm'];
+      const fn =
+        (Module._etcs_web_shell_push_line) ||
+        (shell && shell.exports && (
+          shell.exports.etcs_web_shell_push_line ||
+          shell.exports._etcs_web_shell_push_line
+        ));
+      if (typeof fn === 'function') {
+        // allocate UTF8 if needed — ccall handles strings; for raw export:
+        if (Module.ccall) {
+          Module.ccall('etcs_web_shell_push_line', null, ['string'], [line]);
+        } else if (Module.allocateUTF8) {
+          const p = Module.allocateUTF8(line);
+          fn(p);
+          Module._free(p);
+        }
+        return true;
+      }
+    } catch (e) {
+      append(String(e) + '\n', 'err');
+    }
+    return false;
+  }
+
+  // Robust push: use UTF8ToString path via ccall when available, else heap
+  function submitLine(line) {
+    append(line + '\n', null);
+    const mod = window.Module;
+    if (!mod) return;
+
+    function tryCall(fn) {
+      if (typeof fn !== 'function') return false;
+      try {
+        if (mod.ccall) {
+          mod.ccall('etcs_web_shell_push_line', null, ['string'], [line]);
+          return true;
+        }
+      } catch (_) {}
+      try {
+        const alloc = mod.stringToUTF8 || mod.writeAsciiToMemory;
+        const len = (line.length * 4) + 1;
+        const ptr = mod._malloc(len);
+        if (mod.stringToUTF8) mod.stringToUTF8(line, ptr, len);
+        else mod.writeAsciiToMemory(line, ptr);
+        fn(ptr);
+        mod._free(ptr);
+        return true;
+      } catch (e) {
+        append('[push] ' + e + '\n', 'err');
+        return false;
+      }
+    }
+
+    if (tryCall(mod._etcs_web_shell_push_line)) return;
+    if (tryCall(mod.etcs_web_shell_push_line)) return;
+
+    const lib = mod.LDSO && mod.LDSO.loadedLibsByName &&
+                mod.LDSO.loadedLibsByName['ShellProvider.wasm'];
+    if (lib && lib.exports) {
+      if (tryCall(lib.exports._etcs_web_shell_push_line)) return;
+      if (tryCall(lib.exports.etcs_web_shell_push_line)) return;
+    }
+    append('[etcs] push_line export not found — is ShellProvider.wasm loaded?\n', 'err');
+  }
+
+  cmdline.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    const line = cmdline.value;
+    cmdline.value = '';
+    submitLine(line);
+  });
+
+  var Module = {
+    canvas: canvas,
+    print: function (t) { window.etcsTermWrite(t + (t.endsWith('\n') ? '' : '\n')); },
+    printErr: function (t) {
+      const span = document.createElement('span');
+      span.className = 'err';
+      span.textContent = t + (String(t).endsWith('\n') ? '' : '\n');
+      term.appendChild(span);
+      term.scrollTop = term.scrollHeight;
+    },
+    // MAIN may dlopen ShellProvider.wasm itself once DL_EXTENSION is .wasm;
+    // listing it here also preloads for dylink.
+    dynamicLibraries: ['ShellProvider.wasm'],
+    locateFile: function (path) { return path; },
+    onRuntimeInitialized: function () {
+      setStatus('runtime ready');
+      cmdline.disabled = false;
+      cmdline.placeholder = 'type an ETCS line, Enter to send';
+      cmdline.focus();
+      append('[etcs] main runtime initialized\n', 'sys');
+      const libs = Object.keys((Module.LDSO && Module.LDSO.loadedLibsByName) || {});
+      append('[etcs] loaded: ' + libs.join(', ') + '\n', 'sys');
+      // Show canvas if WindowProvider is present later
+      if (libs.some(function (n) { return /Window/i.test(n); }))
+        canvas.classList.add('visible');
+    },
+    onAbort: function (r) {
+      setStatus('aborted');
+      append('[abort] ' + r + '\n', 'err');
+    }
+  };
+  window.Module = Module;
+
+  // Load glue: prefer etcs.js, fall back to extensionless "etcs"
+  function loadGlue(src) {
+    return new Promise(function (resolve, reject) {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = resolve;
+      s.onerror = reject;
+      document.body.appendChild(s);
+    });
+  }
+  loadGlue('etcs.js').catch(function () {
+    append('[etcs] etcs.js missing, trying ./etcs\n', 'sys');
+    return loadGlue('etcs');
+  }).catch(function () {
+    setStatus('failed to load etcs glue');
+    append('[etcs] could not load etcs.js / etcs\n', 'err');
+  });
+})();
+  </script>
+</body>
+</html>

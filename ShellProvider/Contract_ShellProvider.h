@@ -37,7 +37,13 @@
 #include "../../ETCS.h"
 #include "module_hashes.h"
 
+#if defined(_WIN32) || defined(WIN32)
+    // Windows include would land here with WinShell.h
+#elif defined(__EMSCRIPTEN__)
+#include "Web/WebShell.h"
+#else
 #include "Linux/LinuxShell.h"
+#endif
 
 /*
  * THE CONTRACT NAME IS `Shell`. The implementation is `LinuxShell`.
@@ -57,6 +63,10 @@
     // No WinShell yet -- the fork is declared so adding one is a file, not a
     // redesign, and so this file states plainly what is missing.
     #error "ShellProvider has no Windows backend yet; see Contract_ShellProvider.h"
+#elif defined(__EMSCRIPTEN__)
+    // Browser realization: WebShell (stdio / emscripten console). Same contract
+    // name Shell so scripts keep saying ShellProvider::Shell.
+    typedef WebShell Shell;
 #else
     typedef LinuxShell Shell;
 #endif
