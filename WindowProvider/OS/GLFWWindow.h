@@ -23,10 +23,14 @@
 namespace glfw_native {
 #if defined(_WIN32)
     #define GLFW_EXPOSE_NATIVE_WIN32
+    #include <GLFW/glfw3native.h>
+#elif defined(__EMSCRIPTEN__)
+    // No X11/Win32 native handles under emscripten. Canvas / WebGL is the
+    // surface; NativeSurfaceHandle stays None (see populateNativeSurfaceHandle).
 #else
     #define GLFW_EXPOSE_NATIVE_X11
+    #include <GLFW/glfw3native.h>
 #endif
-#include <GLFW/glfw3native.h>
 }
 
 #include <iostream>
@@ -158,6 +162,9 @@ public:
 
     GLFWWindow()
     {
+#if !defined(__EMSCRIPTEN__)
+        // Custom arena allocator requires GLFW 3.4+ GLFWallocator. Emscripten's
+        // port is older and has no such type -- use the default allocator.
         GLFWallocator glfw_allocator{};
 
         glfw_allocator.allocate = [](size_t size, void* user) -> void* {
@@ -183,6 +190,7 @@ public:
 
         glfw_allocator.user = &getArena();
         glfwInitAllocator(&glfw_allocator);
+#endif
     }
 
     // No tag operation here, deliberately. This runs during teardown, where
@@ -307,7 +315,15 @@ public:
         if (!GLFWPump::acquire()) { this->removeTag("opening"); return; }
         m_holds_glfw = true;
 
+#if defined(__EMSCRIPTEN__)
+        // Browser: need a WebGL/OpenGL ES context bound to the canvas. GLFW_NO_API
+        // is the desktop Vulkan path and has no surface equivalent here.
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#else
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+#endif
 
         GLFWwindow* created = glfwCreateWindow(width, height, title, nullptr, nullptr);
         m_window.store(created);
@@ -562,7 +578,7 @@ public:
  * connection to the server is gone entirely, and it is required not to
  * return. There is nothing to keep running at that point.
  */
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
     // Xlib's own types live in glfw_native (see this file's header comment on
     // why X11's `Window` typedef is quarantined there), so the handler is
     // declared in those terms -- there is no second Xlib visible to name.
@@ -585,7 +601,7 @@ public:
         glfw_native::XSetErrorHandler(&GLFWWindow::x_error_handler);
     }
 #else
-    static void install_x_error_handler() {}   // no X server to protect against
+    static void install_x_error_handler() {}   // no X server (Win32 / emscripten)
 #endif
 
     /*
@@ -810,6 +826,10 @@ public:
         m_nativeSurface.platform = NativeSurfacePlatform::Win32;
         m_nativeSurface.win32.hwnd = glfw_native::glfwGetWin32Window(*w);
         m_nativeSurface.win32.hinstance = GetModuleHandle(nullptr);
+#elif defined(__EMSCRIPTEN__)
+        // No OS window handle to hand to Vulkan/X11 interop. Canvas is owned
+        // by GLFW's emscripten backend; leave platform = None.
+        m_nativeSurface.platform = NativeSurfacePlatform::None;
 #else
         m_nativeSurface.platform = NativeSurfacePlatform::X11;
         m_nativeSurface.x11.display = glfw_native::glfwGetX11Display();
@@ -829,10 +849,15 @@ inline bool GLFWPump::acquire()
     std::lock_guard<std::mutex> g(s_registry);
     if (s_refs > 0) { ++s_refs; return true; }
 
+#if defined(__EMSCRIPTEN__)
+    // GLFW selects its emscripten platform; do not force X11.
+#else
     glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+#endif
     if (!glfwInit()) return false;
     // Straight after glfwInit, which is where the display connection exists
-    // and before anything can issue a request against it.
+    // and before anything can issue a request against it (no-op on Win32 /
+    // emscripten).
     GLFWWindow::install_x_error_handler();
     s_refs = 1;
     ETCS_LOG("GLFWPump", "GLFW up.");
