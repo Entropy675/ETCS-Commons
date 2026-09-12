@@ -4,6 +4,92 @@
 #include "../../../ontology.h"
 #include <GLFW/glfw3.h>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#include <emscripten/threading.h>
+
+// WebGL / DOM only on the browser main thread. Detached ETCS control threads
+// are pthread workers, so GLFW entry points that touch the canvas are
+// marshalled through this namespace.
+namespace glfw_web {
+
+struct CreateArgs {
+    int width;
+    int height;
+    const char* title;
+    GLFWwindow* out;
+};
+
+inline void do_create(CreateArgs* a)
+{
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    a->out = glfwCreateWindow(a->width, a->height, a->title, nullptr, nullptr);
+}
+
+inline GLFWwindow* create_window(int width, int height, const char* title)
+{
+    CreateArgs a{width, height, title, nullptr};
+    if (emscripten_is_main_runtime_thread())
+        do_create(&a);
+    else
+        emscripten_sync_run_in_main_runtime_thread(
+            EM_FUNC_SIG_VI, reinterpret_cast<void*>(+[](CreateArgs* p) { do_create(p); }), &a);
+    return a.out;
+}
+
+inline void do_poll() { glfwPollEvents(); }
+
+inline void poll_events()
+{
+    if (emscripten_is_main_runtime_thread())
+        do_poll();
+    else
+        emscripten_sync_run_in_main_runtime_thread(
+            EM_FUNC_SIG_V, reinterpret_cast<void*>(do_poll));
+}
+
+inline void do_init_ok(int* out) { *out = glfwInit() ? 1 : 0; }
+
+inline bool init()
+{
+    int ok = 0;
+    if (emscripten_is_main_runtime_thread())
+        do_init_ok(&ok);
+    else
+        emscripten_sync_run_in_main_runtime_thread(
+            EM_FUNC_SIG_VI, reinterpret_cast<void*>(do_init_ok), &ok);
+    return ok != 0;
+}
+
+inline void do_terminate() { glfwTerminate(); }
+
+inline void terminate()
+{
+    if (emscripten_is_main_runtime_thread())
+        do_terminate();
+    else
+        emscripten_sync_run_in_main_runtime_thread(
+            EM_FUNC_SIG_V, reinterpret_cast<void*>(do_terminate));
+}
+
+inline void do_destroy(GLFWwindow* w) { if (w) glfwDestroyWindow(w); }
+
+inline void destroy_window(GLFWwindow* w)
+{
+    if (!w) return;
+    if (emscripten_is_main_runtime_thread())
+        do_destroy(w);
+    else
+        emscripten_sync_run_in_main_runtime_thread(
+            EM_FUNC_SIG_VI, reinterpret_cast<void*>(do_destroy), w);
+}
+
+} // namespace glfw_web
+#endif // __EMSCRIPTEN__
+
 // Native-handle extraction (NativeSurfaceHandle, ontology/Window.h) needs
 // GLFW's platform-native accessors. Exposed here, inside WindowProvider's
 // own compiled code, against the one GLFW copy that actually called
@@ -222,7 +308,11 @@ public:
     {
         while (m_platform_users.load() != 0) std::this_thread::yield();
         ETCS_LOG("GLFWWindow", "destroying handle " << claimed << ".");
+#if defined(__EMSCRIPTEN__)
+        glfw_web::destroy_window(static_cast<GLFWwindow*>(claimed));
+#else
         glfwDestroyWindow(static_cast<GLFWwindow*>(claimed));
+#endif
     }
 
     /*
@@ -325,12 +415,28 @@ public:
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 #endif
 
+#if defined(__EMSCRIPTEN__)
+        // Hints + create run on the main runtime thread (see glfw_web).
+        GLFWwindow* created = glfw_web::create_window(
+            static_cast<int>(width), static_cast<int>(height), title);
+#else
         GLFWwindow* created = glfwCreateWindow(width, height, title, nullptr, nullptr);
+#endif
         m_window.store(created);
 
         ETCS_LOG("Creating window with handle: " << created << ".");
         if (created)
         {
+#if defined(__EMSCRIPTEN__)
+            // Host page needs <canvas id="canvas"> (or Module.canvas). GLFW's
+            // emscripten backend targets "#canvas" by default.
+            emscripten_set_canvas_element_size("#canvas",
+                static_cast<int>(width), static_cast<int>(height));
+            emscripten_set_element_css_size("#canvas",
+                static_cast<double>(width), static_cast<double>(height));
+            glfwMakeContextCurrent(created);
+            glfwSwapInterval(1);
+#endif
             glfwShowWindow(created);
             glfwFocusWindow(created);
             glfwSetWindowUserPointer(created, this);
@@ -850,11 +956,12 @@ inline bool GLFWPump::acquire()
     if (s_refs > 0) { ++s_refs; return true; }
 
 #if defined(__EMSCRIPTEN__)
-    // GLFW selects its emscripten platform; do not force X11.
+    // GLFW selects its emscripten platform; init on main runtime thread.
+    if (!glfw_web::init()) return false;
 #else
     glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-#endif
     if (!glfwInit()) return false;
+#endif
     // Straight after glfwInit, which is where the display connection exists
     // and before anything can issue a request against it (no-op on Win32 /
     // emscripten).
@@ -870,7 +977,11 @@ inline void GLFWPump::release()
     if (s_refs == 0) return;
     if (--s_refs > 0) return;
     ETCS_LOG("GLFWPump", "last window gone -- GLFW down.");
+#if defined(__EMSCRIPTEN__)
+    glfw_web::terminate();
+#else
     glfwTerminate();
+#endif
 }
 
 inline void GLFWPump::enroll(GLFWWindow* w)
@@ -894,7 +1005,11 @@ inline bool GLFWPump::poll()
     std::unique_lock<std::mutex> pumping(s_pumping, std::try_to_lock);
     if (!pumping.owns_lock()) return false;   // somebody else has the queue
 
+#if defined(__EMSCRIPTEN__)
+    glfw_web::poll_events();
+#else
     glfwPollEvents();
+#endif
 
     // Under the registry lock rather than over a snapshot: a copied vector of
     // raw pointers is a list of windows that were alive when it was taken.
