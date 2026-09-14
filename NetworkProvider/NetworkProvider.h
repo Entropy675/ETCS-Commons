@@ -1204,6 +1204,18 @@ DEFINE_WORK_FUNC(FileHtmlPage, MountExternal)
              << " at '" << segment << "' under RID:" << self.getRID());
 }
 
+DEFINE_WORK_FUNC(FileHtmlPage, MountFile)
+{
+    (void)ctx;
+    std::string url_path;
+    std::string disk_path;
+    data >> url_path;
+    data >> disk_path;
+    // No log here: MountFile logs the mount it made, or the exact reason it made
+    // none. A second line saying it was asked for would only ever agree.
+    self.MountFile(url_path, disk_path);
+}
+
 DEFINE_WORK_FUNC(FileHtmlPage, EnsureFallback)
 {
     (void)ctx;

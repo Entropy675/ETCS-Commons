@@ -45,7 +45,8 @@ ETCS_TAG_BLOCK_BASIC(StaticHtmlPage,
 )
 
 ETCS_TAG_BLOCK_BASIC(FileHtmlPage,
-    LoadFromDisk, SetDefaultExtension, MountExternal, EnsureFallback, Resolve, ListPaths, Delete
+    LoadFromDisk, MountFile, SetDefaultExtension, MountExternal,
+    EnsureFallback, Resolve, ListPaths, Delete
 )
 
 // TarpitNode — a self-registering Filter_ + gate-level consumer. See
