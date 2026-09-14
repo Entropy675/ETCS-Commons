@@ -96,18 +96,81 @@
   };
   function setStatus(s) { status.textContent = s; }
 
+  /*
+   * EMBEDDED MODE -- this same page, as somebody else's terminal.
+   *
+   * WindowProvider's page needs the canvas and the runtime in ONE document,
+   * because GLFWWindow resizes the canvas by the selector "#canvas" and that
+   * resolves in the runtime's own document. The terminal has no such tie: it is
+   * text out, lines in. So when this page is framed it boots no runtime at all
+   * and becomes the view -- the parent owns ETCS, this owns the scrollback and
+   * the input line.
+   *
+   * ONE FILE, TWO ROLES, and no second copy of the terminal to keep in step.
+   * Served on its own, nothing below changes: EMBEDDED is false, boot() runs, and
+   * this is the standalone shell it always was.
+   */
+  const EMBEDDED = (function () {
+    try { return window.parent && window.parent !== window; }
+    catch (_) { return true; }   // cross-origin parent: framed, and we cannot talk to it
+  })();
+
+  function parentPost(msg) {
+    try { window.parent.postMessage(msg, window.location.origin); } catch (_) {}
+  }
+
+  if (EMBEDDED) {
+    // The canvas belongs to the host page in this role. Leaving a second one
+    // here would give "#canvas" two answers in two documents.
+    if (canvas) canvas.remove();
+    setStatus('embedded');
+    window.addEventListener('message', function (ev) {
+      if (ev.origin !== window.location.origin) return;
+      const m = ev.data;
+      if (!m || typeof m !== 'object') return;
+      if (m.etcs === 'out') { append(String(m.text == null ? '' : m.text), null); return; }
+      if (m.etcs === 'enable') {
+        cmdline.disabled = !m.enabled;
+        cmdline.placeholder = m.enabled ? 'type an ETCS line, Enter to send'
+                                        : 'waiting for runtime…';
+        setStatus(m.enabled ? 'runtime ready' : 'embedded');
+        if (m.enabled) cmdline.focus();
+        return;
+      }
+    });
+  }
+
   function submitLine(line) {
     append(line + '\n', null);
+    if (EMBEDDED) { parentPost({ etcs: 'line', line: line }); return; }
     const mod = window.Module;
     if (!mod) return;
+
+    /*
+     * ccall FIRST AND UNGATED, because it does not need the symbol the gate was
+     * checking for.
+     *
+     * tryCall used to bail on `typeof fn !== 'function'` before doing anything --
+     * and its first branch then ignored `fn` entirely and went through
+     * mod.ccall(...). So a build that exposes ccall but does not also attach the
+     * raw _etcs_web_shell_push_line as a Module property (the common case unless
+     * it is named in EXPORTED_FUNCTIONS) refused all four candidates and printed
+     * "export not found", with the call that would have worked sitting inside the
+     * function it declined to enter. Every typed line was dropped.
+     */
+    if (mod.ccall) {
+      try {
+        mod.ccall('etcs_web_shell_push_line', null, ['string'], [line]);
+        return;
+      } catch (e) {
+        append('[push] ccall: ' + e + '\n', 'err');
+      }
+    }
+
+    // The raw-pointer path, for a build with no ccall. THIS one does need a real
+    // function, which is what the guard below is actually for.
     function tryCall(fn) {
       if (typeof fn !== 'function') return false;
-      try {
-        if (mod.ccall) {
-          mod.ccall('etcs_web_shell_push_line', null, ['string'], [line]);
-          return true;
-        }
-      } catch (_) {}
       try {
         const len = (line.length * 4) + 1;
         const ptr = mod._malloc(len);
@@ -169,6 +232,9 @@
       throw new Error('modules.json has no module entries');
     }
     append('[etcs] modules.json → ' + list.join(', ') + '\n', 'sys');
+    window.__etcsWasmNames = list;   // read by onRuntimeInitialized for the canvas
+    // The glue, if the manifest names it. See the load site below for why.
+    window.__etcsGlue = (j && j.glue) ? String(j.glue).trim().replace(/^\.\//, '') : '';
     return list;
   }
 
@@ -243,9 +309,24 @@
         cmdline.placeholder = 'type an ETCS line, Enter to send';
         cmdline.focus();
         append('[etcs] main runtime initialized\n', 'sys');
+        /*
+         * THE CANVAS SHOWS IF THE MANIFEST SAID A WINDOW WOULD BE THERE.
+         *
+         * It used to test Module.LDSO.loadedLibsByName for a /Window/ name, which
+         * could never fire for two independent reasons: LDSO is an internal
+         * emscripten JS binding and not a property of Module (the '(none yet)'
+         * fallback below conceded as much), and at onRuntimeInitialized the C++
+         * side has not dlopen'd anything yet regardless. So a standalone shell
+         * page with WindowProvider loaded still showed no canvas.
+         *
+         * The include list is the honest source for this -- it is what decides
+         * whether a Window can exist at all -- and it is known before the runtime
+         * starts.
+         */
         const libs = Object.keys((Module.LDSO && Module.LDSO.loadedLibsByName) || {});
         append('[etcs] LDSO: ' + (libs.length ? libs.join(', ') : '(none yet)') + '\n', 'sys');
-        if (libs.some(function (n) { return /Window/i.test(n); }))
+        if (window.__etcsWasmNames && window.__etcsWasmNames.some(
+              function (n) { return /Window/i.test(n); }))
           canvas.classList.add('visible');
       },
       onAbort: function (r) {
@@ -255,19 +336,49 @@
     };
     window.Module = Module;
 
-    setStatus('loading etcs.js…');
-    try {
-      await loadGlue('etcs.js');
-    } catch (_) {
-      append('[etcs] etcs.js missing, trying ./etcs\n', 'sys');
-      await loadGlue('etcs');
+    /*
+     * THE GLUE, NAMED BY THE MANIFEST WHEN IT SAYS SO.
+     *
+     * Probing 'etcs.js' and falling back to 'etcs' logged a failed script fetch
+     * in the browser console on EVERY load -- a real error for an expected
+     * condition. modules.json already decides what this page loads, so it can
+     * decide this too:  "glue": "etcs.js"
+     *
+     * Stage the em++ output AS .js while you are there. Served extensionless it
+     * arrives as application/octet-stream and the browser warns that it is not a
+     * valid JavaScript MIME type; it runs anyway, and the warning is avoidable.
+     * FileHtmlPage::MimeForExtension is right not to guess -- an extensionless
+     * file is not evidence of JavaScript -- so the deploy is the place that knows.
+     *
+     * The probe remains for a deployment that has not added the key.
+     */
+    if (window.__etcsGlue) {
+      setStatus('loading ' + window.__etcsGlue + '…');
+      await loadGlue(window.__etcsGlue);
+    } else {
+      setStatus('loading glue…');
+      append('[etcs] modules.json names no "glue" — probing etcs.js then etcs\n', 'sys');
+      try {
+        await loadGlue('etcs.js');
+      } catch (_) {
+        append('[etcs] etcs.js missing, trying ./etcs\n', 'sys');
+        await loadGlue('etcs');
+      }
     }
   }
 
-  boot().catch(function (e) {
-    setStatus('boot failed');
-    append('[etcs] boot: ' + e + '\n', 'err');
-  });
+  if (EMBEDDED) {
+    // No fetch, no glue, no Module: the host page has all of that. Announcing
+    // readiness is the whole of this side's boot -- the parent replays whatever
+    // the runtime printed before this frame finished loading.
+    append('[etcs] terminal attached to the host page runtime\n', 'sys');
+    parentPost({ etcs: 'view-ready' });
+  } else {
+    boot().catch(function (e) {
+      setStatus('boot failed');
+      append('[etcs] boot: ' + e + '\n', 'err');
+    });
+  }
 })();
   </script>
 </body>

@@ -112,7 +112,11 @@ DEFINE_WORK_FUNC_TYPED(Window, Run, (uint32_t, x), (uint32_t, y), (std::string, 
     while (self.IsActive())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60fps idle sleep
+        // Cooperative for the same reason the producers' waits are: Run holds the
+        // script thread for the window's whole life, and in the browser that is
+        // the page's thread -- a real sleep here freezes the tab rather than
+        // idling it.
+        etcs_cooperative_pause_ms(16);   // ~60fps idle
     }
 
     self.CloseWindow();
@@ -138,10 +142,14 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
 {
     (void)data;
 
+    // A cooperative pause, not a yield: under emscripten IsActive() can only
+    // become true from a DOM callback, and a yield loop never returns to the
+    // event loop that would deliver it -- so the spin could never end. See
+    // etcs_cooperative_pause_ms (core/ETCS_API.h).
     while (!self.IsActive())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) return;
-        std::this_thread::yield();
+        etcs_cooperative_pause_ms(1);
     }
 
     uint8_t id = self.RegisterKeyObserver();
@@ -175,7 +183,7 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
         // Sleep, not yield: input is applied once per frame and cannot tell 1ms
         // from 0, while a yield loop holds a pool worker at 100% for the
         // window's whole life -- taken straight out of the frame edge.
-        if (!emitted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (!emitted) etcs_cooperative_pause_ms(1);
     }
 
     if (stream.isOpen()) stream.closeWrite();
@@ -197,10 +205,14 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProducePointer)
 {
     (void)data;
 
+    // A cooperative pause, not a yield: under emscripten IsActive() can only
+    // become true from a DOM callback, and a yield loop never returns to the
+    // event loop that would deliver it -- so the spin could never end. See
+    // etcs_cooperative_pause_ms (core/ETCS_API.h).
     while (!self.IsActive())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) return;
-        std::this_thread::yield();
+        etcs_cooperative_pause_ms(1);
     }
 
     uint8_t id = self.RegisterPointerObserver();
@@ -223,7 +235,7 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProducePointer)
         }
 
         if (id == INPUT_INVALID_OBSERVER) id = self.RegisterPointerObserver();
-        if (!emitted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (!emitted) etcs_cooperative_pause_ms(1);
     }
 
     if (stream.isOpen()) stream.closeWrite();

@@ -1,0 +1,78 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# SERVE THE WEB WINDOW PAGE over TLS, with the headers a threaded wasm build
+# needs in order to have threads at all.
+#
+#     cd modules/WindowProvider/scripts && etcs serve_web.etcs
+#     then open https://localhost:8443/
+#
+# OUTSIDE www/, AND www/ IS THE ONLY DIRECTORY EXPOSED. Everything else the page
+# needs is mounted FILE BY FILE below, at the exact URL it is fetched from -- so
+# the scripts stay in their one real location and nothing is duplicated to be
+# servable, and no directory above the tree is reachable either.
+
+spawn NetworkProvider::HttpServer web
+web.SetPort(8443)
+web.EnableTLS(/tmp/etcs-cert.pem /tmp/etcs-key.pem)
+
+# THESE TWO HEADERS ARE WHY THREADS EXIST, and without them the failure mode is
+# not a missing feature -- it is every Worker dying on
+# "can't access property buffer, wasmMemory is undefined".
+#
+# A -pthread build's memory is a SharedArrayBuffer, and a browser hands one out
+# only to a CROSS-ORIGIN ISOLATED document. These two headers are the request for
+# isolation; TLS above is the secure context it also requires. Confirm it from the
+# page's console in one line:
+#
+#     crossOriginIsolated, typeof SharedArrayBuffer
+#
+# true / "function" means memory is shareable and a Worker can be handed it.
+# false / "undefined" means it cannot be, whatever the pool size says -- and every
+# pthread_create will fail exactly that way.
+#
+# The embedded shell iframe is same-origin, so require-corp admits it with no
+# CORP header of its own.
+web.AddHeader(Cross-Origin-Opener-Policy same-origin)
+web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
+
+# "/" is the window page.
+web.spawn(NetworkProvider::StaticHtmlPage landing)
+landing.SetHtmlFromFile(./www/index.html)
+
+# The served tree: the glue, the .wasm side modules, modules.json, boot.etcs.
+web.spawn(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(./www)
+tree.SetDefaultExtension(.html)
+
+# ── the explicit mounts ──────────────────────────────────────────────────────
+#
+# ONE FILE EACH, AT ONE PATH EACH. A page can only fetch what is served, and the
+# runtime can only open what the page fetched -- so `detach window_events.etcs`
+# in the browser needs that exact name to answer over HTTP. Mounting the file
+# rather than copying it into www/ keeps ONE copy of the pump: the same text the
+# OS side runs, served from where the OS side keeps it.
+#
+# MountExternal takes a path SEGMENT and a page RID (FileHtmlPage::MountChild),
+# so each of these lands directly under "/" at the name the page asks for.
+
+web.spawn(NetworkProvider::StaticHtmlPage pump_keys)
+pump_keys.SetHtmlFromFile(./window_events.etcs)
+tree.MountExternal(window_events.etcs @pump_keys)
+
+web.spawn(NetworkProvider::StaticHtmlPage pump_ptr)
+pump_ptr.SetHtmlFromFile(./window_pointer.etcs)
+tree.MountExternal(window_pointer.etcs @pump_ptr)
+
+# The terminal view, from ShellProvider's own page -- not a copy of it. Mounted at
+# "/shell", which is what index.html's iframe points at.
+web.spawn(NetworkProvider::StaticHtmlPage shell_view)
+shell_view.SetHtmlFromFile(../../ShellProvider/scripts/www/index.html)
+tree.MountExternal(shell @shell_view)
+
+# What was actually found, which is the fastest way to catch a staging mistake: a
+# name the page asks for and this does not list is a 404 waiting to happen.
+tree.ListPaths()
+
+web.Start()
+web.IsStarted()
