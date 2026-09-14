@@ -6,15 +6,9 @@
   <title>ETCS Web Shell</title>
   <style>
     :root {
-      --bg: #0d1117;
-      --panel: #161b22;
-      --border: #30363d;
-      --fg: #c9d1d9;
-      --muted: #8b949e;
-      --accent: #58a6ff;
-      --ok: #3fb950;
-      --err: #f85149;
-      --prompt: #79c0ff;
+      --bg: #0d1117; --panel: #161b22; --border: #30363d;
+      --fg: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
+      --ok: #3fb950; --err: #f85149; --prompt: #79c0ff;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -46,6 +40,7 @@
     }
     #term .err { color: var(--err); }
     #term .sys { color: var(--muted); }
+    #term .ok { color: var(--ok); }
     #input-row {
       display: flex; gap: 0.5rem; align-items: center;
       border: 1px solid var(--border);
@@ -61,8 +56,7 @@
     }
     #cmdline:disabled { opacity: 0.5; }
     canvas#canvas {
-      display: none;
-      width: 100%; max-height: 40vh;
+      display: none; width: 100%; max-height: 40vh;
       background: #111; border: 1px solid var(--border); border-radius: 8px;
     }
     canvas#canvas.visible { display: block; }
@@ -82,7 +76,6 @@
              placeholder="waiting for runtime…" disabled/>
     </div>
   </div>
-
   <script>
 (function () {
   const term = document.getElementById('term');
@@ -97,55 +90,16 @@
     term.appendChild(span);
     term.scrollTop = term.scrollHeight;
   }
-
-  // Called from C++ (lsh::term_write) and from Module.print
   window.etcsTermWrite = function (t) {
     if (t == null) return;
     append(String(t), null);
   };
-
   function setStatus(s) { status.textContent = s; }
 
-  function pushLineToWasm(line) {
-    try {
-      if (typeof Module !== 'undefined' && Module._etcs_web_shell_push_line) {
-        // Side-module export may live under LDSO after ShellProvider loads
-        Module.ccall
-          ? Module.ccall('etcs_web_shell_push_line', null, ['string'], [line])
-          : null;
-      }
-      // Prefer direct export once MAIN resolves it; also try loaded lib
-      const LDSO = Module.LDSO;
-      const shell = LDSO && LDSO.loadedLibsByName && LDSO.loadedLibsByName['ShellProvider.wasm'];
-      const fn =
-        (Module._etcs_web_shell_push_line) ||
-        (shell && shell.exports && (
-          shell.exports.etcs_web_shell_push_line ||
-          shell.exports._etcs_web_shell_push_line
-        ));
-      if (typeof fn === 'function') {
-        // allocate UTF8 if needed — ccall handles strings; for raw export:
-        if (Module.ccall) {
-          Module.ccall('etcs_web_shell_push_line', null, ['string'], [line]);
-        } else if (Module.allocateUTF8) {
-          const p = Module.allocateUTF8(line);
-          fn(p);
-          Module._free(p);
-        }
-        return true;
-      }
-    } catch (e) {
-      append(String(e) + '\n', 'err');
-    }
-    return false;
-  }
-
-  // Robust push: use UTF8ToString path via ccall when available, else heap
   function submitLine(line) {
     append(line + '\n', null);
     const mod = window.Module;
     if (!mod) return;
-
     function tryCall(fn) {
       if (typeof fn !== 'function') return false;
       try {
@@ -155,7 +109,6 @@
         }
       } catch (_) {}
       try {
-        const alloc = mod.stringToUTF8 || mod.writeAsciiToMemory;
         const len = (line.length * 4) + 1;
         const ptr = mod._malloc(len);
         if (mod.stringToUTF8) mod.stringToUTF8(line, ptr, len);
@@ -168,10 +121,8 @@
         return false;
       }
     }
-
     if (tryCall(mod._etcs_web_shell_push_line)) return;
     if (tryCall(mod.etcs_web_shell_push_line)) return;
-
     const lib = mod.LDSO && mod.LDSO.loadedLibsByName &&
                 mod.LDSO.loadedLibsByName['ShellProvider.wasm'];
     if (lib && lib.exports) {
@@ -189,40 +140,57 @@
     submitLine(line);
   });
 
-  var Module = {
-    canvas: canvas,
-    print: function (t) { window.etcsTermWrite(t + (t.endsWith('\n') ? '' : '\n')); },
-    printErr: function (t) {
-      const span = document.createElement('span');
-      span.className = 'err';
-      span.textContent = t + (String(t).endsWith('\n') ? '' : '\n');
-      term.appendChild(span);
-      term.scrollTop = term.scrollHeight;
-    },
-    // MAIN may dlopen ShellProvider.wasm itself once DL_EXTENSION is .wasm;
-    // listing it here also preloads for dylink.
-    dynamicLibraries: ['ShellProvider.wasm'],
-    locateFile: function (path) { return path; },
-    onRuntimeInitialized: function () {
-      setStatus('runtime ready');
-      cmdline.disabled = false;
-      cmdline.placeholder = 'type an ETCS line, Enter to send';
-      cmdline.focus();
-      append('[etcs] main runtime initialized\n', 'sys');
-      const libs = Object.keys((Module.LDSO && Module.LDSO.loadedLibsByName) || {});
-      append('[etcs] loaded: ' + libs.join(', ') + '\n', 'sys');
-      // Show canvas if WindowProvider is present later
-      if (libs.some(function (n) { return /Window/i.test(n); }))
-        canvas.classList.add('visible');
-    },
-    onAbort: function (r) {
-      setStatus('aborted');
-      append('[abort] ' + r + '\n', 'err');
-    }
-  };
-  window.Module = Module;
+  // Only modules.json — no candidate fallback. Shape:
+  //   { "modules": ["ShellProvider.wasm", "WindowProvider.wasm"] }
+  //   or a bare JSON array of filenames.
+  function normalizeWasmList(raw) {
+    let arr = [];
+    if (Array.isArray(raw)) arr = raw;
+    else if (raw && Array.isArray(raw.modules)) arr = raw.modules;
+    else if (raw && Array.isArray(raw.wasm)) arr = raw.wasm;
+    return arr.map(function (x) {
+      x = String(x).trim();
+      if (!x) return null;
+      if (!/\.wasm$/i.test(x)) x += '.wasm';
+      x = x.replace(/^\.\//, '');
+      if (/^etcs(\.wasm)?$/i.test(x) || /worker/i.test(x)) return null;
+      return x;
+    }).filter(Boolean);
+  }
 
-  // Load glue: prefer etcs.js, fall back to extensionless "etcs"
+  async function resolveWasmNames() {
+    const r = await fetch('modules.json', { cache: 'no-store' });
+    if (!r.ok) {
+      throw new Error('modules.json HTTP ' + r.status + ' — required (no fallback list)');
+    }
+    const j = await r.json();
+    const list = normalizeWasmList(j);
+    if (!list.length) {
+      throw new Error('modules.json has no module entries');
+    }
+    append('[etcs] modules.json → ' + list.join(', ') + '\n', 'sys');
+    return list;
+  }
+
+  async function fetchWasmBlobs(names) {
+    const out = {};
+    for (const name of names) {
+      setStatus('fetch ' + name);
+      const r = await fetch(name, { cache: 'no-store' });
+      if (!r.ok) {
+        throw new Error('fetch ' + name + ' failed HTTP ' + r.status);
+      }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      if (buf.byteLength < 8) {
+        throw new Error(name + ' is empty');
+      }
+      out[name] = buf;
+      out['./' + name] = buf;
+      append('[etcs] staged ' + name + ' (' + buf.byteLength + ' bytes)\n', 'ok');
+    }
+    return out;
+  }
+
   function loadGlue(src) {
     return new Promise(function (resolve, reject) {
       const s = document.createElement('script');
@@ -233,12 +201,72 @@
       document.body.appendChild(s);
     });
   }
-  loadGlue('etcs.js').catch(function () {
-    append('[etcs] etcs.js missing, trying ./etcs\n', 'sys');
-    return loadGlue('etcs');
-  }).catch(function () {
-    setStatus('failed to load etcs glue');
-    append('[etcs] could not load etcs.js / etcs\n', 'err');
+
+  async function boot() {
+    setStatus('fetching modules…');
+    const names = await resolveWasmNames();
+    const blobs = await fetchWasmBlobs(names);
+    append('[etcs] ' + names.length + ' module(s) ready for MEMFS\n', 'sys');
+
+    var Module = {
+      canvas: canvas,
+      print: function (t) {
+        window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n'));
+      },
+      printErr: function (t) {
+        const span = document.createElement('span');
+        span.className = 'err';
+        span.textContent = t + (String(t).endsWith('\n') ? '' : '\n');
+        term.appendChild(span);
+        term.scrollTop = term.scrollHeight;
+      },
+      dynamicLibraries: [],
+      locateFile: function (path) { return path; },
+      preRun: [function () {
+        try {
+          for (const name of Object.keys(blobs)) {
+            const data = blobs[name];
+            try {
+              FS.writeFile(name, data);
+            } catch (e) {
+              FS.createDataFile('/', name.replace(/^\.\//, ''), data, true, true, true);
+            }
+          }
+          append('[etcs] MEMFS preload complete\n', 'sys');
+        } catch (e) {
+          append('[etcs] preRun FS error: ' + e + '\n', 'err');
+        }
+      }],
+      onRuntimeInitialized: function () {
+        setStatus('runtime ready');
+        cmdline.disabled = false;
+        cmdline.placeholder = 'type an ETCS line, Enter to send';
+        cmdline.focus();
+        append('[etcs] main runtime initialized\n', 'sys');
+        const libs = Object.keys((Module.LDSO && Module.LDSO.loadedLibsByName) || {});
+        append('[etcs] LDSO: ' + (libs.length ? libs.join(', ') : '(none yet)') + '\n', 'sys');
+        if (libs.some(function (n) { return /Window/i.test(n); }))
+          canvas.classList.add('visible');
+      },
+      onAbort: function (r) {
+        setStatus('aborted');
+        append('[abort] ' + r + '\n', 'err');
+      }
+    };
+    window.Module = Module;
+
+    setStatus('loading etcs.js…');
+    try {
+      await loadGlue('etcs.js');
+    } catch (_) {
+      append('[etcs] etcs.js missing, trying ./etcs\n', 'sys');
+      await loadGlue('etcs');
+    }
+  }
+
+  boot().catch(function (e) {
+    setStatus('boot failed');
+    append('[etcs] boot: ' + e + '\n', 'err');
   });
 })();
   </script>
