@@ -899,15 +899,40 @@ DEFINE_STREAM_FUNC_PRODUCE(HTTPParser, ProduceResponse)
     const char* body     = data.buf;
     size_t      body_len = data.written;
 
+    /*
+ * HEADERS WITH snprintf, BODY WITH memcpy -- the same split the 200 path in
+ * ServeAsset already makes, and for the same reason: %.*s stops at the first
+ * NUL, and a .wasm module's FIRST BYTE is one ("\0asm"). A binary body went out
+ * with a correct Content-Length and zero bytes after the blank line, so the
+ * client blocked forever waiting for a body that was never sent. Fixed there
+ * and left live here; a streamed response with a NUL anywhere in it hit the
+ * identical stall.
+ *
+ * snprintf returns what it WANTED to write, not what it wrote, so the header
+ * length is clamped before it is used as an offset.
+ */
     char response[ETCS::Buffer::bufsize * 4];
-    int response_len = snprintf(response, sizeof(response),
+    int hdr = snprintf(response, sizeof(response),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html\r\n"
         "Content-Length: %zu\r\n"
         "Connection: close\r\n"
-        "\r\n"
-        "%.*s",
-        body_len, static_cast<int>(body_len), body);
+        "\r\n",
+        body_len);
+    if (hdr < 0) return;
+    size_t hdr_len = static_cast<size_t>(hdr);
+    if (hdr_len >= sizeof(response)) hdr_len = sizeof(response) - 1;
+
+    if (body_len > sizeof(response) - hdr_len)
+    {
+        ETCS_LOG("HTTPParser::ProduceResponse", "body of " << body_len
+                 << " bytes does not fit one response buffer (" << sizeof(response)
+                 << " total, " << hdr_len << " of headers) -- refused rather than "
+                 "truncated. This is the case chunking exists for.");
+        return;
+    }
+    if (body_len && body) ::std::memcpy(response + hdr_len, body, body_len);
+    const int response_len = static_cast<int>(hdr_len + body_len);
 
     size_t offset = 0;
     while (offset < static_cast<size_t>(response_len))

@@ -160,13 +160,22 @@ inline std::string read_line(const std::string& prompt, ETCS::SignalContext ctx)
 
 #endif // __EMSCRIPTEN__
 
-inline void attach(const std::string& path, ETCS::SignalContext ctx)
+/*
+ * RETURNS bool, LIKE THE LINUX ONE. It returned void, and the only call site
+ * discards the result, so the divergence cost nothing -- today. The two headers
+ * are one seam (`lsh::`) selected by platform behind a single Shell, so a
+ * signature that differs between them is a call that compiles on one platform
+ * and not the other, found at the wrong time. false is also the honest answer
+ * here: there is no pty to attach to in a browser.
+ */
+inline bool attach(const std::string& path, ETCS::SignalContext ctx)
 {
     (void)ctx;
-    std::cerr << "[WebShell] attach not supported in browser: " << path << "\n";
+    std::cerr << "[Shell] attach not supported in browser: " << path << "\n";
 #if defined(__EMSCRIPTEN__)
-    term_write(std::string("[WebShell] attach not supported: ") + path + "\n");
+    term_write(std::string("[Shell] attach not supported: ") + path + "\n");
 #endif
+    return false;
 }
 
 } // namespace lsh

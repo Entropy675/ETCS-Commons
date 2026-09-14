@@ -37,38 +37,27 @@
 #include "../../ETCS.h"
 #include "module_hashes.h"
 
-#if defined(_WIN32) || defined(WIN32)
-    // Windows include would land here with WinShell.h
-#elif defined(__EMSCRIPTEN__)
-#include "Web/WebShell.h"
-#else
-#include "Linux/LinuxShell.h"
-#endif
-
 /*
- * THE CONTRACT NAME IS `Shell`. The implementation is `LinuxShell`.
+ * ONE Shell, AND THE FORK IS ONE LEVEL DOWN.
  *
- * Platform indirection, the same as MbedTLSContext -> TLSContext and
- * GLFWWindow -> Window: the concrete type is one of several possible backends
- * and the contract name is what survives the fork. A WinShell would sit behind
- * the same name and every script that spawns `ShellProvider::Shell` keeps
- * working, because what a script names is the causal role -- "the thing that
- * runs my scripts" -- not which terminal API it happens to be built on.
+ * There used to be a platform #if here choosing between WebShell.h and
+ * LinuxShell.h, and then a typedef choosing between the two class names they
+ * defined. Both files were the same file: identical apart from the class name,
+ * the include guard, and which terminal they included. The typedef was the only
+ * reason two names existed.
  *
- * WIRE_TYPE_IDENTITY keeps the two apart (ETCS_API.h): TAG stays "LinuxShell"
- * so a backtrace still names what it is standing in, while CONTRACT_TAG becomes
- * "Shell", which is what the ridMap, the module catalog and every script key on.
+ * The thing that actually has backends is the TERMINAL -- raw mode, line
+ * editing, history, completion -- so the selection moved there (Shell.h) and
+ * the contract name needs no indirection at all: `Shell` is the class. What a
+ * script names is still the causal role, "the thing that runs my scripts", and
+ * it is still the same name on every platform; there is simply no longer a
+ * second spelling underneath it to keep in step.
+ *
+ * WIRE_TYPE_IDENTITY's TAG is therefore "Shell" too, where it used to be
+ * "LinuxShell" so that a backtrace named which backend it was standing in.
+ * That information did not go away -- it moved to where the backend is. A
+ * frame in lsh::read_line names the terminal, which is the half that differs.
  */
-#if defined(_WIN32) || defined(WIN32)
-    // No WinShell yet -- the fork is declared so adding one is a file, not a
-    // redesign, and so this file states plainly what is missing.
-    #error "ShellProvider has no Windows backend yet; see Contract_ShellProvider.h"
-#elif defined(__EMSCRIPTEN__)
-    // Browser realization: WebShell (stdio / emscripten console). Same contract
-    // name Shell so scripts keep saying ShellProvider::Shell.
-    typedef WebShell Shell;
-#else
-    typedef LinuxShell Shell;
-#endif
+#include "Shell.h"
 
 #endif // SHELLPROVIDER_CONTRACT__
