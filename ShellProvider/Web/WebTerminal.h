@@ -117,14 +117,22 @@ inline std::string read_line(const std::string& prompt, ETCS::SignalContext ctx)
         if (ctx.isInterrupted() || ctx.isTerminated())
             return {};
 
-        std::unique_lock<std::mutex> lock(line_mu());
-        if (line_cv().wait_for(lock, std::chrono::milliseconds(50),
-                               [] { return !line_q().empty(); }))
         {
-            std::string line = std::move(line_q().front());
-            line_q().pop_front();
-            return line;
+            std::lock_guard<std::mutex> lock(line_mu());
+            if (!line_q().empty())
+            {
+                std::string line = std::move(line_q().front());
+                line_q().pop_front();
+                return line;
+            }
         }
+        /*
+         * Must not block the browser main thread on a condition_variable:
+         * JS never runs, so etcs_web_shell_push_line never fires.
+         * emscripten_sleep yields to the event loop when ASYNCIFY is enabled
+         * on the MAIN_MODULE link (-sASYNCIFY or -sASYNCIFY=1).
+         */
+        emscripten_sleep(50);
     }
 }
 
@@ -167,6 +175,7 @@ inline void attach(const std::string& path, ETCS::SignalContext ctx)
 // Called from the page (Module._etcs_web_shell_push_line / ccall).
 extern "C" {
 
+EMSCRIPTEN_KEEPALIVE
 __attribute__((used, visibility("default")))
 void etcs_web_shell_push_line(const char* line)
 {
@@ -174,6 +183,7 @@ void etcs_web_shell_push_line(const char* line)
     lsh::push_line(std::string(line));
 }
 
+EMSCRIPTEN_KEEPALIVE
 __attribute__((used, visibility("default")))
 void etcs_web_shell_write(const char* text)
 {
