@@ -171,26 +171,6 @@ inline void attach(const std::string& path, ETCS::SignalContext ctx)
 
 } // namespace lsh
 
-#if defined(__EMSCRIPTEN__)
-// Called from the page (Module._etcs_web_shell_push_line / ccall).
-extern "C" {
-
-EMSCRIPTEN_KEEPALIVE
-__attribute__((used, visibility("default")))
-void etcs_web_shell_push_line(const char* line)
-{
-    if (!line) return;
-    lsh::push_line(std::string(line));
-}
-
-EMSCRIPTEN_KEEPALIVE
-__attribute__((used, visibility("default")))
-void etcs_web_shell_write(const char* text)
-{
-    lsh::term_write(text ? text : "");
-}
-
-} // extern "C"
-#endif
+/* Line I/O: MAIN Module.ccall (etcs_web_shell_* in etcs.cc). */
 
 #endif // WEBSHELL_TERMINAL_H__
