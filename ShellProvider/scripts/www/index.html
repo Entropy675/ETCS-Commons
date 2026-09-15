@@ -6,16 +6,23 @@
   <title>ETCS Web Shell</title>
   <style>
     :root {
-      --bg: #0d1117; --panel: #161b22; --border: #30363d;
-      --fg: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
-      --ok: #3fb950; --err: #f85149; --prompt: #79c0ff;
+      /* Palette from chess.html (ACE Chess) so shell / window share the same surface. */
+      --light: #e8e2d5; --dark: #7a8a6f; --sel: #c9b458; --ink: #1c1c1a;
+      --bg: #14150f; --panel: #1b1c14; --line: #3b3d31; --dim: #8d907c;
+      /* Aliases used by the existing rules */
+      --border: var(--line);
+      --fg: var(--light);
+      --muted: var(--dim);
+      --accent: var(--sel);
+      --ok: #7a9a5a;
+      --err: #c45c4a;
+      --prompt: var(--sel);
     }
     * { box-sizing: border-box; }
     html, body {
       margin: 0; height: 100%;
       background: var(--bg); color: var(--fg);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 13px;
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     #layout {
       display: flex; flex-direction: column;
@@ -23,15 +30,21 @@
       padding: 0.75rem; gap: 0.75rem;
     }
     header {
-      display: flex; align-items: baseline; justify-content: space-between;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
       color: var(--muted); font-size: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+      margin: -0.75rem -0.75rem 0; /* bleed to edges of #layout padding */
     }
-    header strong { color: var(--accent); font-size: 14px; }
+    header .brand {
+      color: var(--accent); font-size: 14px; font-weight: bold;
+      letter-spacing: .12em; text-decoration: none;
+    }
+    header .brand:hover { text-decoration: underline; }
     #term {
       flex: 1; min-height: 0;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 6px;
       padding: 0.75rem;
       overflow-y: auto;
       white-space: pre-wrap;
@@ -45,7 +58,7 @@
       display: flex; gap: 0.5rem; align-items: center;
       border: 1px solid var(--border);
       background: var(--panel);
-      border-radius: 8px;
+      border-radius: 6px;
       padding: 0.5rem 0.75rem;
     }
     #input-row .ps1 { color: var(--prompt); user-select: none; }
@@ -57,7 +70,7 @@
     #cmdline:disabled { opacity: 0.5; }
     canvas#canvas {
       display: none; width: 100%; max-height: 40vh;
-      background: #111; border: 1px solid var(--border); border-radius: 8px;
+      background: #0a0b08; border: 1px solid var(--border); border-radius: 6px;
     }
     canvas#canvas.visible { display: block; }
   </style>
@@ -65,7 +78,7 @@
 <body>
   <div id="layout">
     <header>
-      <strong>ETCS</strong>
+      <a class="brand" href="/" target="_top">ETCS Shell</a>
       <span id="status">loading…</span>
     </header>
     <canvas id="canvas" width="600" height="400"></canvas>

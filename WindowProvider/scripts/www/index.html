@@ -10,16 +10,22 @@
   <link rel="icon" href="data:,"/>
   <style>
     :root {
-      --bg: #0d1117; --panel: #161b22; --border: #30363d;
-      --fg: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
-      --ok: #3fb950; --err: #f85149;
+      /* Palette from chess.html (ACE Chess) so shell / window share the same surface. */
+      --light: #e8e2d5; --dark: #7a8a6f; --sel: #c9b458; --ink: #1c1c1a;
+      --bg: #14150f; --panel: #1b1c14; --line: #3b3d31; --dim: #8d907c;
+      /* Aliases used by the existing rules */
+      --border: var(--line);
+      --fg: var(--light);
+      --muted: var(--dim);
+      --accent: var(--sel);
+      --ok: #7a9a5a;
+      --err: #c45c4a;
     }
     * { box-sizing: border-box; }
     html, body {
       margin: 0; height: 100%;
       background: var(--bg); color: var(--fg);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 13px;
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     body { overflow-y: auto; }
 
@@ -48,10 +54,16 @@
     }
     header {
       grid-area: head;
-      display: flex; align-items: baseline; justify-content: space-between;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
       color: var(--muted); font-size: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+      margin: -0.75rem -0.75rem 0;
     }
-    header strong { color: var(--accent); font-size: 14px; }
+    header .brand {
+      color: var(--accent); font-size: 14px; font-weight: bold;
+      letter-spacing: .12em; text-decoration: none;
+    }
+    header .brand:hover { text-decoration: underline; }
 
     /* Centres the canvas in whatever box the grid gave it, and min-height:0 is
        what lets that box actually shrink -- a grid item defaults to min-content,
@@ -65,8 +77,8 @@
        width/height:auto against both maxima keeps the aspect ratio while
        fitting the box. */
     canvas#canvas {
-      display: block; background: #05070a;
-      border: 1px solid var(--border); border-radius: 8px;
+      display: block; background: #0a0b08;
+      border: 1px solid var(--border); border-radius: 6px;
       max-width: 100%; max-height: 100%; width: auto; height: auto;
     }
 
@@ -89,7 +101,7 @@
        for the whole session, so it gets a guaranteed size rather than leftovers. */
     #shell {
       grid-area: term; min-height: 15rem; width: 100%; height: 100%;
-      border: 1px solid var(--border); border-radius: 8px;
+      border: 1px solid var(--border); border-radius: 6px;
       background: var(--panel);
     }
   </style>
@@ -97,7 +109,7 @@
 <body>
   <div id="layout">
     <header>
-      <strong>ETCS</strong>
+      <a class="brand" href="/" target="_top">ETCS Window</a>
       <span id="status">loading…</span>
     </header>
     <div id="stage">
