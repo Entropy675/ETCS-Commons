@@ -4,6 +4,10 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>ETCS Web Window</title>
+  <!-- Empty data: icon so the browser stops asking for /favicon.ico. The server
+       holds exactly www/ plus three named mounts, so that request was always a
+       404 -- and a permanent 404 in the console is noise a real one hides behind. -->
+  <link rel="icon" href="data:,"/>
   <style>
     :root {
       --bg: #0d1117; --panel: #161b22; --border: #30363d;
@@ -17,31 +21,74 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 13px;
     }
+    body { overflow-y: auto; }
+
+    /*
+     * GRID, AND THE TERMINAL HAS A FLOOR.
+     *
+     * The canvas is 1024x768 and the terminal was whatever was left, which on a
+     * laptop is about three lines -- unusable for the thing you actually type
+     * into. So the canvas is the elastic one now and the terminal has a minimum:
+     * 15rem stacked, which is 8 lines of 13px/1.45 text plus the shell page's own
+     * header and input row. The canvas gives up space first because it can: it
+     * scales, and its framebuffer is set by Create() regardless of display size.
+     */
     #layout {
-      display: flex; flex-direction: column;
-      height: 100%; max-width: 1180px; margin: 0 auto;
-      padding: 0.75rem; gap: 0.75rem;
+      display: grid; gap: 0.75rem; padding: 0.75rem;
+      height: 100%; max-width: 1600px; margin: 0 auto;
+      grid-template-columns: 1fr;
+      /* Stacked: the terminal takes a clamped share (never under 15rem = 8 lines
+         plus the shell page's own chrome, never more than 28rem) and the canvas
+         takes ALL the rest, shrinking to fit rather than pushing the terminal off
+         the bottom of the viewport. height:100% not min-height, so the two of
+         them fit the screen instead of making the page scroll to reach the thing
+         you type into. */
+      grid-template-rows: auto minmax(0, 1fr) clamp(15rem, 40%, 28rem);
+      grid-template-areas: "head" "stage" "term";
     }
     header {
+      grid-area: head;
       display: flex; align-items: baseline; justify-content: space-between;
-      color: var(--muted); font-size: 12px; flex: 0 0 auto;
+      color: var(--muted); font-size: 12px;
     }
     header strong { color: var(--accent); font-size: 14px; }
-    #stage { flex: 0 0 auto; }
-    /* The window's framebuffer. Create() resizes this element to whatever
-       boot.etcs asked for, so the width/height attributes below are only what
-       it looks like before the runtime is up. */
+
+    /* Centres the canvas in whatever box the grid gave it, and min-height:0 is
+       what lets that box actually shrink -- a grid item defaults to min-content,
+       which for a 768px-tall canvas means it never yields. */
+    #stage {
+      grid-area: stage; min-height: 0; min-width: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    /* The window's framebuffer. Create() resizes the ATTRIBUTES to whatever
+       boot.etcs asked for; these rules only decide how big it is drawn, and
+       width/height:auto against both maxima keeps the aspect ratio while
+       fitting the box. */
     canvas#canvas {
       display: block; background: #05070a;
       border: 1px solid var(--border); border-radius: 8px;
-      max-width: 100%;
+      max-width: 100%; max-height: 100%; width: auto; height: auto;
+    }
+
+    /* SIDE BY SIDE ONCE THERE IS ROOM. Two columns, one row: the canvas takes
+       the space the terminal does not need, and both are full height. Below this
+       the grid falls back to the stacked rows above, where the terminal's 15rem
+       floor applies. */
+    @media (min-width: 62rem) {
+      #layout {
+        height: 100%;
+        grid-template-columns: minmax(0, 1fr) minmax(24rem, 34%);
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-areas: "head head" "stage term";
+      }
+      #shell { min-height: 0; }
     }
     #status.err { color: var(--err); }
     #status.ok  { color: var(--ok); }
-    /* The shell page, embedded as the terminal. Flexed to take the rest of the
-       height -- it is the thing you interact with for the whole session. */
+    /* The shell page, embedded as the terminal -- the thing you interact with
+       for the whole session, so it gets a guaranteed size rather than leftovers. */
     #shell {
-      flex: 1 1 auto; min-height: 12rem; width: 100%;
+      grid-area: term; min-height: 15rem; width: 100%; height: 100%;
       border: 1px solid var(--border); border-radius: 8px;
       background: var(--panel);
     }

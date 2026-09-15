@@ -18,11 +18,21 @@ the other way from what you might expect — this page holds the runtime and the
 canvas, and the shell page is embedded purely as the terminal VIEW, bridged over
 `postMessage`. One runtime, one set of modules, one ETCS.
 
-ONE TEXT PANE. Boot progress goes into that same terminal, through the replay
-buffer that already existed for runtime output produced during iframe load. An
-earlier version put the first six lines in a separate box above it, which meant
-reading two places to follow one sequence for no gain -- the header keeps a
-one-LINE status (current step, red on failure) and nothing else.
+ONE TEXT PANE, WITH A FLOOR. Boot progress goes into that same terminal, through
+the replay buffer that already existed for runtime output produced during iframe
+load; the header keeps a one-LINE status (current step, red on failure) and
+nothing else.
+
+The terminal is also what the layout protects, because it is the thing you type
+into. At 62rem and wider the page is two columns -- canvas left, terminal right,
+both full height. Below that it stacks, and the terminal takes
+`clamp(15rem, 40%, 28rem)` while the canvas takes what is left and SHRINKS to fit.
+That order is deliberate: the canvas scales freely, since `Create()` sets its
+framebuffer and CSS only decides how big it is drawn, whereas a three-line
+terminal is useless -- and the first version let a 1024x768 canvas claim the
+height and handed the terminal the remainder. Measured: 45 lines at 1440x900, 39
+at 1100x800, 16 stacked at 900x800, 15 on a 420x740 phone, no page scrolling at
+any of them.
 
 The shell page detects being framed and skips its own boot entirely; served on
 its own it is unchanged and still works standalone. There is no second copy of
@@ -158,17 +168,18 @@ off the function is never generated and the line cannot throw. Both knobs are
 Makefile variables, so comparing the two is one command and no regeneration --
 `ETCS_WEB_MEMORY` and `ETCS_WEB_POOL`; the ACE patch spells out the trade.
 
+A PREWARMED POOL IS WORSE, which is why `ETCS_WEB_POOL` defaults to 0.
+`-sPTHREAD_POOL_SIZE=4` creates its workers before the first side module opens, so
+emscripten then has to replicate every `dlopen` into all of them through
+`__emscripten_dlsync_threads` -- Asyncify, nesting inside a `dlopen` that is
+itself unwinding. With an empty pool there is nothing to sync to while modules
+load. It is the same rule the deferred arming already encodes, from the other end.
+
 -sASYNCIFY HAS TO BE ON THE MODULES TOO, not only the loader. Asyncify can only
 unwind and rewind through frames it INSTRUMENTED, and every cooperative pause in
 ETCS is in a module -- `etcs_cooperative_pause_ms`'s call sites are all
-WindowProvider, none are in the loader. So with the flag on the loader alone, no
-sleep in the program is instrumented end to end. The failure is not a hang: the
-unwind leaves through uninstrumented frames and the rewind comes back wrong, as
-`TypeError: resolved is not a function` inside a dylink lazy-symbol stub under
-`doRewind`/`handleSleep`. After that the runtime is dead and never reaches
-`drive_main_loop_then_exit`, so the terminal never opens at all -- which is what
-"the canvas page's shell does not function while the standalone shell page does"
-looks like from the outside. See the ACE patch that goes with this.
+WindowProvider, none are in the loader. With the flag on the loader alone, no
+sleep in the program is instrumented end to end.
 
 `modules.json`'s `"glue"` key names the file the page loads, so whatever the web
 path emits has to match it -- `etcs.js`, as written. An extensionless `etcs` is
@@ -176,6 +187,57 @@ served as `application/octet-stream`, which the browser warns is not a valid
 JavaScript MIME type, and it lands on the same name as the NATIVE `etcs` binary in
 `bin/` -- `copy_loaders` then moves the glue over it. Naming the web output
 `etcs.js` is what keeps those two apart; see the ACE patch that goes with this.
+
+## Why the navigator did not come up on this page: 30 missing GLFW symbols
+
+The shell page worked and this one did not, and the difference was never the
+canvas, the bridge, the load order, the thread pool or Asyncify. It was a link
+error that does not fail at link time.
+
+`WindowProvider.wasm` imports 30 `glfw*` functions. `etcs.wasm` exports exactly
+one of them (`glfwGetProcAddress`) and `etcs.js` contains no GLFW at all. The
+module is built with `-sUSE_GLFW=3`, which gives it the GLFW headers so it emits
+those imports -- but `-sSIDE_MODULE` emits no JavaScript, so `library_glfw.js`
+only arrives if the MAIN link asks for it, and it was not asking.
+
+WHY THAT WAS SILENT. A `-sMAIN_MODULE` build needs
+`-sERROR_ON_UNDEFINED_SYMBOLS=0`, because a side module legitimately imports what
+it will find at runtime. So a symbol nobody defines is not rejected; emscripten
+hands the module a lazy stub instead (`proxyHandler.get` in the glue):
+
+    stubs[prop] = (...args) => { resolved ||= resolveSymbol(prop);
+                                 return resolved(...args) }
+
+`resolveSymbol` returns undefined and the program dies the first time that import
+is CALLED -- as `TypeError: resolved is not a function`, under
+`doRewind`/`handleSleep`, because the call happens inside `dlopen`'s asyncify
+rewind. Nothing in that stack names the symbol, which is why it read like a
+toolchain problem for several rounds.
+
+And it explains the two pages exactly. A stub that is never called never throws.
+The shell page never enters WindowProvider's code, so its 30 stubs sat unresolved
+and harmless; this page's `boot.etcs` calls `Window.Create` -> `CreateWindow` ->
+`glfwInit`, and dies there. `Window.Create` logs nothing on success and the throw
+is an async rejection, so the last line was "Window.Create got size" with no
+failure line after it. `run_script` never returned, `main` never fell through to
+`drive_main_loop_then_exit`, and there was no prompt.
+
+THE FIX IS IN ACE, not here: the loader's Web link now carries every JS-library
+`-s` flag any module's Web profile declares (`ETCS_WEB_JSLIBS`, generated from the
+module manifests -- `-sUSE_GLFW=3` from WindowProvider). Only the main module has
+glue, so only the main link can carry them, and the loader cannot know which
+modules will `dlopen` in, so it takes all of them.
+
+CHECKING IT WITHOUT A BROWSER. `tools/wasm_link_check.py` does the set difference
+the linker declined to do:
+
+    wasm_link_check.py bin/etcs.wasm bin/WindowProvider.wasm bin/ShellProvider.wasm
+
+It reads the wasm import and export sections directly (no emsdk, no wabt), folds
+in symbols the sibling side modules export and names the glue mentions, and lists
+what is left. On the binaries that produced this bug it prints the 30 `glfw*`
+names and reports ShellProvider as clean. Exit status is 1 when anything is
+missing, so it works as a post-build gate.
 
 ## What is not solved here
 
