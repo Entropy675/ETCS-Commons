@@ -239,6 +239,50 @@ what is left. On the binaries that produced this bug it prints the 30 `glfw*`
 names and reports ShellProvider as clean. Exit status is 1 when anything is
 missing, so it works as a post-build gate.
 
+## ASYNCIFY is not available to this program, and the REPL lives on a Worker
+
+Asyncify replaces a module's exports with JS closures, and dylink stores those as
+the library's exports (`postInstantiation` does
+`moduleExports = Asyncify.instrumentWasmExports(moduleExports)` before
+`dso.exports = exports`). When a pool thread calls a module function through a
+table slot the main thread created, emscripten's own catch-up runs
+
+    addFunction(sym, sym.sig)
+
+on a closure with no `.sig` that `setWasmTableEntry` refuses, falls through to
+`convertJsFunctionToWasm(sym, undefined)` and dies on `sig.slice`. The thread's
+table is left short, so the next indirect call reports
+`table index is out of bounds`. Calling module functions from pool threads is what
+`detach` and every `->` edge do, so this is the normal case. ETCS itself never
+calls `dlsym` off the main thread -- this is emscripten's table catch-up, not ours.
+
+So the loader and the modules both link without `-sASYNCIFY`, and the two things
+that used it are arranged differently:
+
+- `etcs_cooperative_pause_ms` returns false on the browser's main thread instead
+  of unwinding, and callers return rather than spin. There is no way to wait
+  there: `sleep_for` blocks the thread that delivers the event and `yield` never
+  returns to the loop that would deliver it.
+- the REPL's line wait runs on a Worker. `drive_main_loop_then_exit` builds the
+  session -- Root, Shell, console and loop -- on a detached thread and returns, so
+  the main thread stays on the event loop. The canvas needs that too: GLFW delivers
+  through the main thread, and the page cannot paint while a REPL sits on it.
+
+Two consequences to know. `ctx`/`root` are `static` in the emscripten build of
+`main()` (`loaders/etcs.cc`), because main returns while the REPL thread is still
+using them. And `etcs_web_shell_write` uses `MAIN_THREAD_EM_ASM`: a Worker's JS
+scope has no `window`, so output would otherwise land in a Worker console.
+
+The navigator also refuses a module it does not already have. The module set is
+fixed at boot, so an unknown name cannot be found, and letting it reach
+`ResolveEvent` meant `dlopen` failing inside the navigator plus a `RangeError` from
+emscripten's failure path.
+
+Verified in headless Chromium against a real build: cross-origin isolated, canvas
+1024x768, window created, `key edge open` and `pointer edge open` both reached,
+`Root>` live, a line typed in the embedded terminal round-tripping to the navigator
+and back, and zero page errors.
+
 ## What is not solved here
 
 `glfwMakeContextCurrent` runs on the pump's worker for a context created on the

@@ -114,9 +114,17 @@ DEFINE_WORK_FUNC_TYPED(Window, Run, (uint32_t, x), (uint32_t, y), (std::string, 
         if (ctx.isInterrupted() || ctx.isTerminated()) break;
         // Cooperative for the same reason the producers' waits are: Run holds the
         // script thread for the window's whole life, and in the browser that is
-        // the page's thread -- a real sleep here freezes the tab rather than
-        // idling it.
-        etcs_cooperative_pause_ms(16);   // ~60fps idle
+        // the page's thread -- where there is NO way to hold it and still receive
+        // the events that would end the loop. So Run is not usable from a browser
+        // script; boot.etcs spawns and Creates instead, and leaves the navigator
+        // on the main thread. Said out loud once rather than spun on.
+        if (!etcs_cooperative_pause_ms(16))   // ~60fps idle
+        {
+            ETCS_LOG("Run", "cannot idle on the browser's main thread -- Run holds "
+                     "the thread that delivers window events. Returning; drive the "
+                     "window from a detached pump instead (window_events.etcs).");
+            break;
+        }
     }
 
     self.CloseWindow();
@@ -149,7 +157,17 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
     while (!self.IsActive())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) return;
-        etcs_cooperative_pause_ms(1);
+        if (!etcs_cooperative_pause_ms(1))
+        {
+            // Only reachable if this producer was NOT detached: IsActive() flips
+            // from a DOM callback, so waiting for it on the thread that delivers
+            // that callback cannot terminate. Returning is the honest move --
+            // the edge is simply not established, and the log says why.
+            ETCS_LOG("ProduceEvents", "on the browser's main thread -- detach this pump "
+                     "(detach window_events.etcs) so the wait happens off the "
+                     "event loop. Not establishing the edge.");
+            return;
+        }
     }
 
     uint8_t id = self.RegisterKeyObserver();
@@ -183,7 +201,10 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProduceEvents)
         // Sleep, not yield: input is applied once per frame and cannot tell 1ms
         // from 0, while a yield loop holds a pool worker at 100% for the
         // window's whole life -- taken straight out of the frame edge.
-        if (!emitted) etcs_cooperative_pause_ms(1);
+        // A failed emit is retried after a pause; on the browser's main thread
+        // there is none to take, and spinning would starve the very loop that
+        // drains the consumer -- so the producer ends instead of burning it.
+        if (!emitted && !etcs_cooperative_pause_ms(1)) return;
     }
 
     if (stream.isOpen()) stream.closeWrite();
@@ -212,7 +233,17 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProducePointer)
     while (!self.IsActive())
     {
         if (ctx.isInterrupted() || ctx.isTerminated()) return;
-        etcs_cooperative_pause_ms(1);
+        if (!etcs_cooperative_pause_ms(1))
+        {
+            // Only reachable if this producer was NOT detached: IsActive() flips
+            // from a DOM callback, so waiting for it on the thread that delivers
+            // that callback cannot terminate. Returning is the honest move --
+            // the edge is simply not established, and the log says why.
+            ETCS_LOG("ProducePointer", "on the browser's main thread -- detach this pump "
+                     "(detach window_events.etcs) so the wait happens off the "
+                     "event loop. Not establishing the edge.");
+            return;
+        }
     }
 
     uint8_t id = self.RegisterPointerObserver();
@@ -235,7 +266,10 @@ DEFINE_STREAM_FUNC_PRODUCE(Window, ProducePointer)
         }
 
         if (id == INPUT_INVALID_OBSERVER) id = self.RegisterPointerObserver();
-        if (!emitted) etcs_cooperative_pause_ms(1);
+        // A failed emit is retried after a pause; on the browser's main thread
+        // there is none to take, and spinning would starve the very loop that
+        // drains the consumer -- so the producer ends instead of burning it.
+        if (!emitted && !etcs_cooperative_pause_ms(1)) return;
     }
 
     if (stream.isOpen()) stream.closeWrite();
