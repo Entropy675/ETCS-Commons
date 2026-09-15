@@ -36,15 +36,8 @@
       border: 1px solid var(--border); border-radius: 8px;
       max-width: 100%;
     }
-    #boot-log {
-      flex: 0 0 auto; max-height: 8rem; overflow-y: auto;
-      background: var(--panel); border: 1px solid var(--border);
-      border-radius: 8px; padding: 0.5rem 0.75rem;
-      white-space: pre-wrap; word-break: break-word; line-height: 1.45;
-      color: var(--muted); font-size: 12px;
-    }
-    #boot-log .err { color: var(--err); }
-    #boot-log .ok  { color: var(--ok); }
+    #status.err { color: var(--err); }
+    #status.ok  { color: var(--ok); }
     /* The shell page, embedded as the terminal. Flexed to take the rest of the
        height -- it is the thing you interact with for the whole session. */
     #shell {
@@ -63,35 +56,43 @@
     <div id="stage">
       <canvas id="canvas" width="1024" height="768"></canvas>
     </div>
-    <div id="boot-log" aria-live="polite"></div>
     <!-- The ShellProvider page, as the terminal VIEW only. It detects being
          framed and boots no runtime of its own; lines cross by postMessage.
-         See README.md for why the runtime is here and the terminal is there. -->
+         See README.md for why the runtime is here and the terminal is there.
+
+         THE ONLY TEXT PANE ON THIS PAGE. Boot progress goes here too, through
+         the same replay buffer every other line uses -- an ETCS session has one
+         log, and splitting the first six lines of it into a second box above the
+         terminal meant reading two places to follow one sequence. -->
     <iframe id="shell" src="shell" title="ETCS shell"></iframe>
   </div>
   <script>
 (function () {
-  const bootLog = document.getElementById('boot-log');
   const statusEl = document.getElementById('status');
   const canvas = document.getElementById('canvas');
   const shellFrame = document.getElementById('shell');
 
   const ORIGIN = window.location.origin;
 
-  // ── the boot log ───────────────────────────────────────────────────────
+  // ── the log ────────────────────────────────────────────────────────────
   //
-  // Separate from the terminal on purpose. Everything up to "runtime ready"
-  // happens before the iframe can be talked to, so it has nowhere else to go --
-  // and a staging failure that printed into a terminal that does not exist yet
-  // is a failure you debug by reading the network tab.
+  // ONE PANE. Boot lines and runtime lines are one sequence, so they go to one
+  // place: the terminal. The reason that works even before the iframe can be
+  // talked to is the replay buffer below -- `pending` already existed to hold
+  // runtime output produced during iframe load, and boot output is the same
+  // problem, so it is the same answer rather than a second widget.
+  //
+  // The header keeps a one-LINE status (the current step, red if it failed), so
+  // a page that dies before the terminal can render still says so somewhere
+  // that needs no scrolling.
   function log(text, cls) {
-    const span = document.createElement('span');
-    if (cls) span.className = cls;
-    span.textContent = text;
-    bootLog.appendChild(span);
-    bootLog.scrollTop = bootLog.scrollHeight;
+    termWrite(text);
+    if (cls === 'err') setStatus(text.trim().split('\n')[0], 'err');
   }
-  function setStatus(s) { statusEl.textContent = s; }
+  function setStatus(s, cls) {
+    statusEl.textContent = s;
+    statusEl.className = cls || '';
+  }
 
   // ── the bridge ─────────────────────────────────────────────────────────
   //
@@ -112,11 +113,14 @@
   // calls window.etcsTermWrite when it exists, so wiring it here is what makes
   // the runtime's own writes land in the embedded terminal rather than only in
   // Module.print.
-  window.etcsTermWrite = function (t) {
-    if (t == null) return;
-    const text = String(t);
+  function termWrite(text) {
     if (!shellReady) { pending.push(text); if (pending.length > 2000) pending.shift(); return; }
     toShell({ etcs: 'out', text: text });
+  }
+
+  window.etcsTermWrite = function (t) {
+    if (t == null) return;
+    termWrite(String(t));
   };
 
   function pushLine(line) {
@@ -237,9 +241,9 @@
         window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n'));
       },
       printErr: function (t) {
-        const s = t + (String(t).endsWith('\n') ? '' : '\n');
-        window.etcsTermWrite(s);
-        log(s, 'err');
+        // log() writes to the terminal itself now, so this is ONE write, not
+        // two -- it also lifts the first line into the status.
+        log(t + (String(t).endsWith('\n') ? '' : '\n'), 'err');
       },
       dynamicLibraries: [],
       locateFile: function (path) { return path; },
@@ -262,13 +266,13 @@
         }
       }],
       onRuntimeInitialized: function () {
-        setStatus('runtime ready');
+        setStatus('runtime ready', 'ok');
         log('[etcs] runtime initialized; boot script: '
             + (man.boot || '(none)') + '\n', 'ok');
         if (shellReady) toShell({ etcs: 'enable', enabled: true });
       },
       onAbort: function (r) {
-        setStatus('aborted');
+        setStatus('aborted', 'err');
         log('[abort] ' + r + '\n', 'err');
         if (shellReady) toShell({ etcs: 'enable', enabled: false });
       }
@@ -299,7 +303,7 @@
   }
 
   boot().catch(function (e) {
-    setStatus('boot failed');
+    setStatus('boot failed', 'err');
     log('[etcs] boot: ' + e + '\n', 'err');
   });
 })();

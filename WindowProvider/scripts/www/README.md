@@ -18,56 +18,100 @@ the other way from what you might expect — this page holds the runtime and the
 canvas, and the shell page is embedded purely as the terminal VIEW, bridged over
 `postMessage`. One runtime, one set of modules, one ETCS.
 
+ONE TEXT PANE. Boot progress goes into that same terminal, through the replay
+buffer that already existed for runtime output produced during iframe load. An
+earlier version put the first six lines in a separate box above it, which meant
+reading two places to follow one sequence for no gain -- the header keeps a
+one-LINE status (current step, red on failure) and nothing else.
+
 The shell page detects being framed and skips its own boot entirely; served on
 its own it is unchanged and still works standalone. There is no second copy of
 the terminal: it is the same file, in both roles.
 
 ## The layout: one exposed directory, everything else mounted by name
 
-    ../serve_web.etcs    the server. OUTSIDE www/, and it serves www/
-    index.html           this page      (StaticHtmlPage, so "/" lands here)
+Run the server FROM THE scripts DIRECTORY -- every path in `serve_web.etcs` is
+relative to it:
+
+    cd modules/WindowProvider/scripts && etcs serve_web.etcs
+
+The served tree is this directory:
+
+    index.html           this page      (a Directory node resolves "/" through it)
     modules.json         the include list: modules, scripts, boot, glue
     boot.etcs            handed to the runtime as argv[1]
     etcs.js  etcs.wasm   build output, copied in
     *.wasm               every provider named in modules.json
 
-and mounted FILE BY FILE by `../serve_web.etcs`, each at the exact URL the page
-fetches it from, without exposing the directory it lives in:
+and mounted into that same tree FILE BY FILE by `../serve_web.etcs`, each at the
+exact URL the page fetches it from, without exposing the directory it lives in:
 
     /window_events.etcs  <- ../window_events.etcs   (the OS-side pump, itself)
     /window_pointer.etcs <- ../window_pointer.etcs
     /shell               <- ../../../ShellProvider/scripts/www/index.html
 
+(written from `serve_web.etcs`'s own directory those last three are
+`./window_events.etcs`, `./window_pointer.etcs` and
+`../../ShellProvider/scripts/www/index.html` -- one `..` fewer, because the script
+sits one level above this file.)
+
 WHY MOUNTS AND NOT COPIES. A page can only fetch what the server serves, and the
 runtime can only open what the page staged, so `detach window_events.etcs` in the
 browser needs that exact name to answer over HTTP. The reachable-by-URL set is
-whatever `LoadFromDisk` mounted, and a file one level up is not in it. The first
-version of this directory therefore held copies of all three -- which makes "the
-same pump script as the OS side" a claim a diff has to keep true rather than a
-fact. `FileHtmlPage.MountExternal` takes a page entity and a path segment, so one
-spawn and one mount per file serves the ORIGINAL at the name the page wants, and
-there is exactly one copy of each script in the repo.
+whatever the tree holds, and a file one level up is not in it. The first version
+of this directory therefore held copies of all three -- which makes "the same pump
+script as the OS side" a claim a diff has to keep true rather than a fact.
+`FileHtmlPage.MountFile` takes one url path and one file, so one line per file
+serves the ORIGINAL at the name the page wants, and there is exactly one copy of
+each script in the repo.
 
-It also means only `www/` is ever exposed as a directory. The mounts are explicit
-and enumerable -- `tree.ListPaths()` at the end of the serve script prints the
-whole served surface, which is the fastest way to spot a name the page asks for
-and the server does not have.
+MountFile, NOT MountExternal, and the difference decides what those paths can even
+look like. MountExternal forwards to a `StaticHtmlPage`, whose `SetHtmlFromFile`
+canonicalises the path against the CURRENT WORKING DIRECTORY and refuses anything
+that leaves it -- "SECURITY VIOLATION: Path traversal blocked", then an empty page
+that resolves as a miss and 404s with no other sign. So `../..` to ShellProvider's
+page was unreachable from here by construction. It also caps at
+`ETCS_NETWORK_MAX_HEADER_SIZE`, answers `/`, `/index.html`, `/style.css` and
+`/app.js` rather than the one path asked for, and carries no extension to take a
+MIME type from -- `/window_events.etcs` came back as `text/html`, `ListPaths`
+advertised `/shell/app.js` and `/shell/style.css` that 404, and a real `.wasm`
+could not be mounted at all. `MountFile` opens the path as given and builds the
+same File-kind node `LoadFromDisk` builds: unbounded bytes, `Content-Type` from
+the disk name, one url path. MountExternal remains the right call for a page some
+other entity keeps rewriting -- it is the only mount kind that re-reads per
+request.
+
+It also means only this directory is ever exposed. The mounts are explicit and
+enumerable -- `tree.ListPaths()` at the end of the serve script prints the whole
+served surface, and a mount whose file could not be opened logs why and is ABSENT
+from that list rather than listed and empty.
+
+## One page entity, because "first match wins" is not what it sounds like
+
+`serve_web.etcs` gives the server exactly ONE `HtmlPage` child. That is a
+correctness requirement, not tidiness.
+
+`HttpServer::ResolvePath` walks its page children and takes the first that
+matches, and `run_website.etcs` says "whichever is attached first owns it". That
+holds ACROSS tags -- `typed_child_order_` really is attach order. It does NOT hold
+WITHIN one tag: that level is a `RIDList`, whose `entities` is an
+`unordered_map`, so `invoke_collect_rids` hands the siblings back in hash order.
+
+And every `StaticHtmlPage` answers `/` AND `/index.html` unconditionally, whatever
+content it was given (`kIndexPath`/`kHtmlPath`). So two `StaticHtmlPage` children
+of one server is a coin flip the hash re-tosses, and the symptom is the index page
+serving some other page's bytes -- which is exactly what
+`https://localhost:8443/index.html` returning `window_pointer.etcs` was.
+
+There is no separate landing page here because there does not need to be: a
+Directory node resolves `/` through its own `index.html` child, and this file is
+already that child. One page entity, no ordering to depend on. The same hazard is
+still latent in `run_website.etcs`, where `landing` and `chess_web.etcs`'s
+`board_page` are both `StaticHtmlPage` children of the same server.
 
 The consequence to know: the iframe's `src` is `shell`, a mount point, so this
 page expects to be served by `serve_web.etcs` rather than by any static file
 server. That is the trade for not duplicating ShellProvider's page.
-
-Build, then copy the outputs into `www/`:
-
-    ace make loader etcs -DETCS_REPL_SHELL EMSCRIPTEN=1
-    ace make module WindowProvider EMSCRIPTEN=1
-    ace make module ShellProvider  EMSCRIPTEN=1
-
-`ace` emits `etcs.js` + `etcs.wasm` on the web path now -- it used to emit an
-extensionless `etcs`, which a server hands over as application/octet-stream and
-the browser warns is not a valid JavaScript MIME type, and which forced every page
-to probe two names and log a failed fetch on the way. `modules.json` names the
-glue instead.
 
 ## Threads are fine here -- the constraint is WHEN, not whether
 
@@ -93,11 +137,45 @@ patch this page came with:
   browser's main thread, because the callback that would set it is delivered by
   the event loop the spin refuses to return to.
 
-Build (no special pool size needed):
+Build, then copy the outputs into `www/`:
 
-    ace make loader etcs -DETCS_REPL_SHELL EMSCRIPTEN=1 -DPTHREAD_POOL_SIZE=0
+    ace make loader etcs -DETCS_REPL_SHELL EMSCRIPTEN=1
     ace make module WindowProvider EMSCRIPTEN=1
     ace make module ShellProvider  EMSCRIPTEN=1
+
+No pool-size flag on that first line. `-sPTHREAD_POOL_SIZE=0` is already in the
+generated loader Makefile, and `-DPTHREAD_POOL_SIZE=0` would not set it anyway:
+`-D` is a PREPROCESSOR define and this is a linker `-s` option, so it defines a
+macro nobody reads and leaves the real setting exactly as it already was.
+
+THE WORKERS AND THE MEMORY FLAG. `growMemViews` is emitted only for
+`ALLOW_MEMORY_GROWTH` together with threads, and it opens with
+`wasmMemory.buffer` -- so in a pthread worker that has not yet been handed its
+`wasmMemory`, that first line is `undefined.buffer`. That is the
+`can't access property "buffer", wasmMemory is undefined` storm, one per worker.
+The loader therefore links with a FIXED `-sINITIAL_MEMORY` by default: with growth
+off the function is never generated and the line cannot throw. Both knobs are
+Makefile variables, so comparing the two is one command and no regeneration --
+`ETCS_WEB_MEMORY` and `ETCS_WEB_POOL`; the ACE patch spells out the trade.
+
+-sASYNCIFY HAS TO BE ON THE MODULES TOO, not only the loader. Asyncify can only
+unwind and rewind through frames it INSTRUMENTED, and every cooperative pause in
+ETCS is in a module -- `etcs_cooperative_pause_ms`'s call sites are all
+WindowProvider, none are in the loader. So with the flag on the loader alone, no
+sleep in the program is instrumented end to end. The failure is not a hang: the
+unwind leaves through uninstrumented frames and the rewind comes back wrong, as
+`TypeError: resolved is not a function` inside a dylink lazy-symbol stub under
+`doRewind`/`handleSleep`. After that the runtime is dead and never reaches
+`drive_main_loop_then_exit`, so the terminal never opens at all -- which is what
+"the canvas page's shell does not function while the standalone shell page does"
+looks like from the outside. See the ACE patch that goes with this.
+
+`modules.json`'s `"glue"` key names the file the page loads, so whatever the web
+path emits has to match it -- `etcs.js`, as written. An extensionless `etcs` is
+served as `application/octet-stream`, which the browser warns is not a valid
+JavaScript MIME type, and it lands on the same name as the NATIVE `etcs` binary in
+`bin/` -- `copy_loaders` then moves the glue over it. Naming the web output
+`etcs.js` is what keeps those two apart; see the ACE patch that goes with this.
 
 ## What is not solved here
 

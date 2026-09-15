@@ -7,10 +7,16 @@
 #     cd modules/WindowProvider/scripts && etcs serve_web.etcs
 #     then open https://localhost:8443/
 #
-# OUTSIDE www/, AND www/ IS THE ONLY DIRECTORY EXPOSED. Everything else the page
-# needs is mounted FILE BY FILE below, at the exact URL it is fetched from -- so
-# the scripts stay in their one real location and nothing is duplicated to be
-# servable, and no directory above the tree is reachable either.
+# RUN IT FROM THIS DIRECTORY. Every path below is relative to it, and nothing
+# here is canonicalised against the cwd or refused for leaving it -- both
+# LoadFromDisk and MountFile open the path as given (see the mount section for
+# why that is worth knowing), so "../.." is a normal thing to write.
+#
+# ONE PAGE ENTITY, AND THAT IS THE WHOLE STRUCTURE. www/ is the served tree;
+# everything else the page needs is mounted into that same tree FILE BY FILE, at
+# the exact URL it is fetched from. So the scripts stay in their one real
+# location, nothing is duplicated to be servable, and no directory above www/ is
+# reachable either.
 
 spawn NetworkProvider::HttpServer web
 web.SetPort(8443)
@@ -36,11 +42,24 @@ web.EnableTLS(/tmp/etcs-cert.pem /tmp/etcs-key.pem)
 web.AddHeader(Cross-Origin-Opener-Policy same-origin)
 web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
 
-# "/" is the window page.
-web.spawn(NetworkProvider::StaticHtmlPage landing)
-landing.SetHtmlFromFile(./www/index.html)
-
-# The served tree: the glue, the .wasm side modules, modules.json, boot.etcs.
+# ── the one page child ───────────────────────────────────────────────────────
+#
+# EXACTLY ONE HtmlPage CHILD, ON PURPOSE. HttpServer::ResolvePath walks its
+# HtmlPage_ children and takes the first that matches, but "first" is only well
+# defined ACROSS tags (typed_child_order_ is attach order). WITHIN one tag it is
+# a RIDList, whose `entities` is an unordered_map, so invoke_collect_rids hands
+# the siblings back in hash order.
+#
+# And every StaticHtmlPage answers "/" AND "/index.html" unconditionally,
+# whatever content it was given (StaticHtmlPage.h's kIndexPath/kHtmlPath). Two of
+# them under one server is therefore not "the first one added wins", it is a coin
+# flip the hash re-tosses -- and the symptom is the index page serving some other
+# page's bytes.
+#
+# There is no separate landing page here because there does not need to be: a
+# Directory node resolves "/" through its own index.html child (ResolveConcrete's
+# Directory branch, "index" + the default extension), and www/index.html is
+# already that child. One page entity, no ordering to depend on.
 web.spawn(NetworkProvider::FileHtmlPage tree)
 tree.LoadFromDisk(./www)
 tree.SetDefaultExtension(.html)
@@ -53,25 +72,29 @@ tree.SetDefaultExtension(.html)
 # rather than copying it into www/ keeps ONE copy of the pump: the same text the
 # OS side runs, served from where the OS side keeps it.
 #
-# MountExternal takes a path SEGMENT and a page RID (FileHtmlPage::MountChild),
-# so each of these lands directly under "/" at the name the page asks for.
-
-web.spawn(NetworkProvider::StaticHtmlPage pump_keys)
-pump_keys.SetHtmlFromFile(./window_events.etcs)
-tree.MountExternal(window_events.etcs @pump_keys)
-
-web.spawn(NetworkProvider::StaticHtmlPage pump_ptr)
-pump_ptr.SetHtmlFromFile(./window_pointer.etcs)
-tree.MountExternal(window_pointer.etcs @pump_ptr)
+# MountFile, NOT MountExternal, and the difference decides what the paths here can
+# even look like. MountExternal forwards to a StaticHtmlPage, whose
+# SetHtmlFromFile canonicalises against the cwd and REFUSES anything that leaves
+# it ("SECURITY VIOLATION: Path traversal blocked", then an empty page that
+# resolves as a miss and 404s) -- so the shell page one level up was unreachable
+# from here by construction. It also caps at ETCS_NETWORK_MAX_HEADER_SIZE, answers
+# four fixed sub-paths instead of the one asked for, and has no extension to take
+# a MIME type from. MountFile opens the path as given and builds the same
+# File-kind node LoadFromDisk builds: unbounded bytes, Content-Type from the DISK
+# name, one url path. MountExternal is still right for a page some other entity
+# keeps rewriting -- it is the only mount kind that re-reads per request.
+tree.MountFile(window_events.etcs ./window_events.etcs)
+tree.MountFile(window_pointer.etcs ./window_pointer.etcs)
 
 # The terminal view, from ShellProvider's own page -- not a copy of it. Mounted at
-# "/shell", which is what index.html's iframe points at.
-web.spawn(NetworkProvider::StaticHtmlPage shell_view)
-shell_view.SetHtmlFromFile(../../ShellProvider/scripts/www/index.html)
-tree.MountExternal(shell @shell_view)
+# "/shell", which is what index.html's iframe points at. The url name has no
+# extension and does not need one: the MIME comes from index.html.
+tree.MountFile(shell ../../ShellProvider/scripts/www/index.html)
 
 # What was actually found, which is the fastest way to catch a staging mistake: a
-# name the page asks for and this does not list is a 404 waiting to happen.
+# name the page asks for and this does not list is a 404 waiting to happen. A
+# mount whose file could not be opened logged the reason and is ABSENT here
+# rather than listed and empty.
 tree.ListPaths()
 
 web.Start()
