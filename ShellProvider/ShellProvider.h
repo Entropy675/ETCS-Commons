@@ -21,9 +21,9 @@
  * ShellProvider -- one tag, and deliberately one.
  *
  *   Shell  -- an ETCS control thread you can hand scripts to
- *             [Thread + Deletable + Lifecycle]. Implemented by `LinuxShell`;
- *             the contract name says the role, not the terminal API
- *             (Contract_ShellProvider.h).
+ *             [Thread + Deletable + Lifecycle]. One class, Shell.h; the
+ *             platform fork is the Terminal, not the Shell -- the contract
+ *             name says the role, not the terminal API (Shell.h).
  *
  * The surface is small because a shell is not a program, it is an actor: give
  * it a script, or ask it to start one alongside. Everything expressive is in

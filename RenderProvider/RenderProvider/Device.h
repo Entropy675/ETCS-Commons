@@ -5,6 +5,15 @@
 #include "../../../ontology.h"
 #include "../OS/VulkanInstance.h"
 
+static inline ETCS::Entity* rp_resolve_tag(const char* tag, ETCS::RID rid)
+{
+    if (rid == 0) return nullptr;
+    auto& ridMap = ETCS::EventNode::getInstance().ridMap;
+    auto it = ridMap.find(ETCS::Buffer(tag));
+    if (it == ridMap.end()) return nullptr;
+    return it->second.invoke_get(rid);
+}
+
 // ---------------------------------------------------------------------------
 // Device -- "this entity can reach that GPU".
 //
