@@ -86,6 +86,31 @@ tree.SetDefaultExtension(.html)
 tree.MountFile(window_events.etcs ./window_events.etcs)
 tree.MountFile(window_pointer.etcs ./window_pointer.etcs)
 
+# The paint session's own two pumps, from the modules that own them. The frame
+# pump is mounted at the PATH paint_surface.etcs names it by, not at a flat
+# name: the page stages each script at the url it fetched it from, so mounting
+# it here is what lets one `detach` line serve both substrates.
+tree.MountFile(paint_pointer.etcs ../../PaintProvider/scripts/paint_pointer.etcs)
+tree.MountFile(RenderProvider/scripts/render_frames.etcs ../../RenderProvider/scripts/render_frames.etcs)
+
+# THE SCENE SCRIPTS, at the paths they already have. Each one is a `requires`
+# header and a handful of statements against names a boot script left behind, so
+# once the substrate is up (www/boot_canvas.etcs) the navigator can specialise an
+# empty canvas with one `run` -- and the script it runs is the SAME file the OS
+# side runs, not a browser copy of it.
+#
+# Listed in modules.json as well as mounted here: the page stages every name in
+# that list into the runtime's filesystem before main(), which is also what makes
+# the navigator list them next to the modules.
+tree.MountFile(RenderProvider/scripts/scene_bars.etcs ../../RenderProvider/scripts/scene_bars.etcs)
+tree.MountFile(RenderProvider/scripts/scene_emblem.etcs ../../RenderProvider/scripts/scene_emblem.etcs)
+tree.MountFile(RenderProvider/scripts/scene_layer.etcs ../../RenderProvider/scripts/scene_layer.etcs)
+tree.MountFile(RenderProvider/scripts/scene_reset.etcs ../../RenderProvider/scripts/scene_reset.etcs)
+tree.MountFile(RenderProvider/scripts/polygon_add.etcs ../../RenderProvider/scripts/polygon_add.etcs)
+tree.MountFile(RenderProvider/scripts/polygon_draw.etcs ../../RenderProvider/scripts/polygon_draw.etcs)
+tree.MountFile(RenderProvider/scripts/scene3d.etcs ../../RenderProvider/scripts/scene3d.etcs)
+tree.MountFile(PaintProvider/scripts/paint_toolbar.etcs ../../PaintProvider/scripts/paint_toolbar.etcs)
+
 # The terminal view, from ShellProvider's own page -- not a copy of it. Mounted at
 # "/shell", which is what index.html's iframe points at. The url name has no
 # extension and does not need one: the MIME comes from index.html.

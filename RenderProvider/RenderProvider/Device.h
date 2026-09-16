@@ -3,7 +3,12 @@
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
-#include "../OS/VulkanInstance.h"
+
+// NO INSTANCE HEADER HERE. Contract_RenderProvider.h has already selected the
+// platform's concrete Instance and typedef'd it before including this file, so
+// naming `Instance` below is what keeps this header platform-invariant -- which
+// is the claim its own comment makes. Including one backend's header would make
+// that claim false for every other backend.
 
 static inline ETCS::Entity* rp_resolve_tag(const char* tag, ETCS::RID rid)
 {
@@ -70,18 +75,20 @@ public:
 
     // ── Device_ dispatch ──────────────────────────────────────────────────
 
-    // The VkDevice handle, which is the same value a Renderable on this device
-    // answers (VulkanSurface::DeviceKeyConcrete) -- equality across the two is
-    // the whole of what a key is for (ontology/Renderable.h).
+    // Whatever this platform's Instance calls its device -- the VkDevice on the
+    // Vulkan backend, the canvas identity in the browser. The value is never
+    // interpreted, only compared: a Renderable on the same device answers the
+    // same key, and that equality is the whole of what a key is for
+    // (ontology/Renderable.h).
     uint64_t DeviceKeyConcrete() const
     {
-        VulkanInstance* vi = resolve();
+        Instance* vi = resolve();
         return vi ? reinterpret_cast<uint64_t>(vi->GetDevice()) : 0;
     }
 
-    // Declared and usable are different answers: an Instance that exists but
-    // has not been Created yet has no VkDevice, and a camera must not switch
-    // to a device that cannot draw.
+    // Declared and usable are different answers: an Instance that exists but has
+    // not been Created yet has no device, and a camera must not switch to one
+    // that cannot draw.
     bool DeviceReadyConcrete() const { return DeviceKeyConcrete() != 0; }
 
     // ── Deletable_ ────────────────────────────────────────────────────────
@@ -103,10 +110,10 @@ private:
      * getTrueType(), not a static_cast off Entity*: Entity is a virtual base
      * here, so a direct downcast from it is ill-formed.
      */
-    VulkanInstance* resolve() const
+    Instance* resolve() const
     {
         ETCS::Entity* raw = rp_resolve_tag("Instance", m_instance);
-        return raw ? static_cast<VulkanInstance*>(raw->getTrueType()) : nullptr;
+        return raw ? static_cast<Instance*>(raw->getTrueType()) : nullptr;
     }
 
     ETCS::RID m_instance = 0;

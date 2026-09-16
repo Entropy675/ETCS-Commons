@@ -313,6 +313,12 @@
         // be on the filesystem the runtime sees, not just in a JS variable.
         try {
           for (const name of Object.keys(blobs)) {
+            // A NAME MAY BE A PATH, and the directories have to exist first.
+            // The point of allowing one is that a script can then be staged at
+            // the SAME relative path the OS side reads it from, so a `detach`
+            // line does not have to be spelled differently for the browser.
+            const slash = name.lastIndexOf('/');
+            if (slash > 0) { try { FS.mkdirTree(name.slice(0, slash)); } catch (e) {} }
             try { FS.writeFile(name, blobs[name]); }
             catch (e) {
               FS.createDataFile('/', name.replace(/^\.\//, ''), blobs[name], true, true, true);

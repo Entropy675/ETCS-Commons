@@ -265,7 +265,17 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
         // surface while this edge is still waiting for it to come up would
         // otherwise spin here forever on an object being reclaimed.
         if (self.Retired()) return;
-        std::this_thread::yield();
+        // Cooperative, not a yield: IsActive() flips from somewhere this thread
+        // does not control, and on the browser's main thread a yield loop never
+        // returns to the event loop that would deliver the change. A refusal
+        // there means the frame edge was not detached, which is the real mistake.
+        if (!etcs_cooperative_pause_ms(1))
+        {
+            ETCS_LOG("Surface::ProduceFrames", "on the browser's main thread -- detach "
+                     "the frame edge so the wait happens off the event loop. Not "
+                     "producing frames.");
+            return;
+        }
     }
 
     uint64_t index = 0;

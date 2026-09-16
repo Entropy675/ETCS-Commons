@@ -1,9 +1,11 @@
 #ifndef RENDERPROVIDER_CONTRACT__
 
 #if defined(__EMSCRIPTEN__)
-    // No WASM backend yet -- WebGPU would be the natural target, and it is
-    // a different enough surface that it wants its own concrete types
-    // rather than a #define around these ones.
+    #define RENDERPROVIDER_CONTRACT__
+    #include "OS/CanvasInstance.h"
+    #include "OS/CanvasSurface.h"
+    typedef CanvasInstance Instance;
+    typedef CanvasSurface  Surface;
 
 #elif defined(_WIN32) || defined(__linux__)
     #define RENDERPROVIDER_CONTRACT__

@@ -10,21 +10,38 @@
   ],
   "modules": [
     "WindowProvider.wasm",
+    "RenderProvider.wasm",
+    "PaintProvider.wasm",
     "ShellProvider.wasm"
   ],
   "_scripts": [
     "Staged into the browser's MEMFS by the page, by these names, before main()",
-    "runs -- so each name here must answer over HTTP. boot.etcs is in www/; the",
-    "two pump scripts are MOUNTED at these names from their real location one",
-    "level up (../serve_web.etcs), so nothing is duplicated to be servable and no",
-    "directory above the tree is exposed."
+    "runs -- so each name here must answer over HTTP. boot.etcs is in www/;",
+    "every pump script is MOUNTED at its name from its real location elsewhere",
+    "in the tree (../serve_web.etcs), so nothing is duplicated to be servable",
+    "and no directory above the served tree is exposed.",
+    "A NAME MAY BE A PATH. render_frames.etcs is staged at the same relative",
+    "path paint_surface.etcs reads it from on the OS side, so the `detach` line",
+    "in boot_paint.etcs is spelled once for both substrates rather than twice."
   ],
   "scripts": [
     "boot.etcs",
+    "boot_paint.etcs",
     "window_events.etcs",
-    "window_pointer.etcs"
+    "window_pointer.etcs",
+    "boot_canvas.etcs",
+    "paint_pointer.etcs",
+    "RenderProvider/scripts/render_frames.etcs",
+    "RenderProvider/scripts/scene_bars.etcs",
+    "RenderProvider/scripts/scene_emblem.etcs",
+    "RenderProvider/scripts/scene_layer.etcs",
+    "RenderProvider/scripts/scene_reset.etcs",
+    "RenderProvider/scripts/polygon_add.etcs",
+    "RenderProvider/scripts/polygon_draw.etcs",
+    "RenderProvider/scripts/scene3d.etcs",
+    "PaintProvider/scripts/paint_toolbar.etcs"
   ],
-  "boot": "boot.etcs",
+  "boot": "boot_paint.etcs",
   "_glue": [
     "The emscripten loader output. em++ -o etcs emits TWO files: 'etcs', which is",
     "JavaScript, and 'etcs.wasm'. Naming it here rather than probing removes a",

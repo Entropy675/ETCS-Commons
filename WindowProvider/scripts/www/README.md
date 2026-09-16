@@ -283,13 +283,183 @@ Verified in headless Chromium against a real build: cross-origin isolated, canva
 `Root>` live, a line typed in the embedded terminal round-tripping to the navigator
 and back, and zero page errors.
 
+## The canvas: what draws, and the five things that stopped it
+
+`boot_paint.etcs` is the worked example -- PaintProvider drawing through
+RenderProvider onto `<canvas id="canvas">`, with the pointer painting into it.
+It is also byte-for-byte the shape `PaintProvider/scripts/paint_surface.etcs`
+has on the desktop, because nothing in it is browser-specific: what differs is
+which concrete `Surface` the contract selected
+(`RenderProvider/Contract_RenderProvider.h`), and that is invisible from the
+script.
+
+Getting there took five fixes, and each one is a case of the same thing: a
+single-threaded-or-single-image assumption that the desktop happens to satisfy
+and the browser does not.
+
+**1. GLFW's state lives in ONE thread's JS scope.** emscripten implements GLFW
+in JavaScript, and its window list, hint table and callback table are properties
+of a `GLFW` object in the calling thread's scope. A pthread worker gets its own
+copy of the glue, so that object exists and is EMPTY. `glfwInit` on the main
+thread does not initialise a worker's, and the worker's calls then read and write
+state no canvas is behind:
+
+    glfwWindowHint   -> TypeError: Cannot set properties of null (setting '139265')
+    glfwSetKeyCallback, glfwGetFramebufferSize, ...  -> silently onto nothing
+
+139265 is `GLFW_CLIENT_API`. So every GLFW entry point this module reaches is
+routed to the main runtime thread through `ETCS_GLFW_MAIN` (`OS/GLFWWindow.h`),
+which is a no-op wrapper on the desktop and a synchronous hop in the browser.
+The window's whole callback registration is ONE hop rather than eleven.
+
+**2. Two threads driving one ordering loop.** There is no ordering thread in the
+browser (`EventStream::start`), so a waiter runs the loop inline -- and more than
+one waiter is the normal case, because every `resolve_module`/`changeModule`/
+`spawn_entity` waits. The REPL coming up while a boot script runs put two threads
+in `emscripten_poll` within milliseconds. Two drivers is not a slow path, it is
+corruption: both read the same `in_seq_`, both `markConsumed` the same ring slot,
+both launch it -- which is how a sequence walks past the ring and lands as
+`memory access out of bounds` inside `enqueue`, several frames from anything that
+looks responsible. The quieter half is worse: one driver consumes the event the
+other is waiting for the completion of. The loop is now CLAIMED, per thread and
+counted: another thread stands down and yields, the owner may re-enter (work the
+loop launches blocks on further events, and only the thread already inside can
+serve those), and admission publishes `in_seq_` before running anything so a
+nested pass and its caller cannot both advance over one event.
+
+**3. A module cannot drive the loader's loop through its own `stream`.** This is
+the one that stopped `main.spawn(RenderProvider::Surface view)` dead. The member
+offsets agree -- `LoaderStream` and `ModuleProxy` share the same `EventStream`
+base -- but the DISPATCH does not: `launch_slot` calls
+`static_cast<Derived*>(this)->on_event`, and `Derived` is whatever the CALLER
+compiled. So a module driving the loader's events reaches
+`ModuleProxy::on_event`, which forwards everything that is not a `TagModify`
+straight back onto the same stream. The result is a loop consuming and
+re-enqueueing at full speed with nothing completing: `in_seq_` climbing by
+hundreds of thousands, every slot Empty, and the waiter blocked forever. The poll
+now goes through `EventNode::drive_ordering`, a trampoline the OWNING image
+installs -- the only image whose `Derived` is the real one. It sits above the
+`#ifdef ETCS_LOADER` fork for the same layout reason `set_log_to_file` does.
+
+The browser also had no stall diagnostics at all, which is why a blocked
+admission read as "the script simply stopped". `EventStream::reportReorderState`
+is now shared with the ordering loop's own reporting and a web waiter asks for it
+after a second of waiting -- `pending`/`running`/`blocked` are three different
+faults and printing them together is how you tell them apart.
+
+**4. `dlsym` off the main thread blocks on every other thread.** A receiver-scoped
+spawn was the program's only `dlsym` after load, and in the browser that is not a
+lookup, it is a rendezvous: when the symbol is not yet in the calling thread's
+table, emscripten's `__dlsym` calls `_emscripten_dlsync_threads()` and blocks
+until every other live pthread has replayed the new entry. A thread replays it
+only on the way out of a futex wait (`_emscripten_yield` ->
+`_emscripten_process_dlopen_queue`), and `sched_yield` is a no-op in wasm -- so
+one thread spinning on `yield()` anywhere in the process hangs the spawn forever.
+Two changes: `<Tag>_MakeChild` is resolved with the rest of the catalog at load
+time (`ModuleBundle::makeChildFunc`), so the spawn does no lookup at all; and
+`etcs_emscripten_spin` stands down with a short SLEEP rather than a yield, which
+is the whole difference between a thread that participates in the runtime's own
+proxied work and one that merely burns.
+
+**5. The pump's per-pass hop was the flake.** With all of the above fixed the
+canvas painted, and then crashed on roughly one load in three -- always with
+input, never idle -- inside emscripten's own proxying queue:
+
+    RuntimeError: null function or function signature mismatch
+        at call_with_ctx / em_task_queue_execute / receive_notification
+
+`ShouldClose()` was asking the main thread `glfwWindowShouldClose` EVERY pass of
+the pump, and the frame edge was asking `glfwGetFramebufferSize` every frame. In
+the browser both are questions only this object knows the answer to: a canvas in
+a page has no cross, so the only writer of `shouldClose` is
+`CloseWindowConcrete`, and the only thing that can change a canvas's framebuffer
+size is `framebuffer_size_callback`, which already records it in `m_size`. Both
+now answer locally, and `glfwPollEvents` -- which is literally `() => 0` in
+emscripten, because its backend runs callbacks from DOM listeners as the events
+arrive and has no queue to drain -- is no longer proxied either. Answering the
+two locally is both cheaper and MORE correct; the flake has not recurred.
+
+The input rings needed one more thing. `InputSource`'s coalescing pair is
+single-producer by construction -- "record from inside the callback, flush once
+the queue is drained", both on the thread that pumps the OS queue. In the browser
+those are two DIFFERENT threads, so the flush moved into `noteCursor`, on the
+thread the callback arrived on. What that costs is the coalescing; what it buys
+is not having two writers on a single-producer ring.
+
+Verified in headless Chromium against a real build: cross-origin isolated, canvas
+1024x768, all three edges open (`key edge open`, `pointer edge open`,
+`Surface::ProduceFrames clock started at 16ms`), the paper layer composited to
+white, and a scripted press-drag-release leaving 12000 pixels of brush colour
+(`26,26,31` = the 0.10/0.10/0.12 the script asks for) in the same place on five
+consecutive runs, with zero page errors.
+
+## Specialising an empty canvas from the navigator
+
+`boot_canvas.etcs` is the other boot: device, window, surface, a 2D anchor and a
+frame pump, and then it stops. Everything after that is a script run from the
+prompt in the terminal -- and the navigator needs no verb for it, because a
+target ending in `.etcs` IS the run (see the script-execution branch of
+`repl_shell_loop_with`):
+
+    RenderProvider/scripts/scene_bars.etcs   anchor=scene
+    RenderProvider/scripts/polygon_draw.etcs scene=scene view=view
+
+Those are RenderProvider's own scene scripts, mounted from where RenderProvider
+keeps them (`../serve_web.etcs`) and staged into the runtime's filesystem under
+the same paths (`modules.json`), which is also what makes the navigator list them
+next to the modules. One file per scene, read by both substrates.
+
+A NAME IN `modules.json` MAY BE A PATH. The page creates the directories before
+writing (`FS.mkdirTree`), so a script can be staged at the same relative path the
+OS side reads it from -- which is why `boot_paint.etcs`'s
+`detach RenderProvider/scripts/render_frames.etcs view=view` is spelled once for
+both and not twice.
+
+Preflight works here too, and is the fastest way to find out what a scene needs:
+
+    RenderProvider/scripts/scene3d.etcs anchor=scene
+    -> will not run -- 1 unmet requirement(s):
+       'anchor' (line 25) does not carry [Drawable3D] -- RID:... carries
+       [CompositeDrawable2D, Clippable, Drawable2D, Surface, Drawable, ...]
+
 ## What is not solved here
 
-`glfwMakeContextCurrent` runs on the pump's worker for a context created on the
-main thread by `glfw_web::do_create`. A WebGL context belongs to the thread that
-created it, and that call returns `void`, so the failure is silent. The window
-gets input and the canvas stays blank until either the context is created on the
-thread that will use it, or drawing is marshalled the way the five GLFW entry
-points in `glfw_web` already are. Nothing on this page can paint until then --
-and there is no render backend for the browser yet regardless
-(`Contract_RenderProvider.h`'s `__EMSCRIPTEN__` branch is empty).
+**3D does not draw on this surface, and it is not meant to yet.** `CanvasSurface`
+is `PixelsBase`: it owns host bytes and presents them with `putImageData`.
+`Scene3D`/`Camera3D` draw through the device path (`RenderableBase`), which on
+the desktop is Vulkan and in the browser would be a WebGPU or WebGL context --
+and a canvas has exactly ONE context for its lifetime, so that is a different
+surface type on a different canvas rather than an addition to this one. The 2D
+half is what is finished; `PixelsBase` and `RenderableBase` are mutually
+exclusive under `Raster_` for exactly this reason.
+
+**A navigator script that SPAWNS can trap while the frame pump is live.** A
+spawn-free script (`polygon_draw.etcs`) runs repeatedly and cleanly against a
+presenting canvas. One that spawns (`scene_bars.etcs`) builds all its entities,
+logs every work func, and then traps as `table index is out of bounds` inside
+emscripten's nested queue execution -- `em_task_queue_execute` ->
+`call_with_ctx` -> `receive_notification` -> `em_task_queue_execute` ->
+`call_with_ctx`, with a task struct being read as an `em_proxying_ctx`. With the
+frame pump off there is no trap and the second command silently never starts, so
+there are two symptoms of one cause. The shape is the same as fix 3 above: a
+side-module function pointer (`addTagTrampoline<T>`, carried on the AddTag event)
+invoked by whichever thread happens to hold the poll claim, rather than by the
+thread whose table is known to have it. The next step is to make the driver
+identity part of the event rather than a race -- either the enqueuer serves its
+own AddTag events, or the trampoline moves into the loader the way
+`drive_ordering` did.
+
+**The remaining synchronous main-thread hops are per-frame, not per-pass.**
+`PresentConcrete` still blocks its thread on a `MAIN_THREAD_EM_ASM`, holding the
+raster mutex across the hop. `MAIN_THREAD_ASYNC_EM_ASM` would decouple the frame
+rate from main-thread latency at the cost of a possible tear, which wants a
+second raster to be correct rather than merely fast.
+
+**The build cannot do both platforms at once.** `.ace_obj/`, vendored `build/`
+directories, `$(DEPFILE)` and `module_hashes.h` are not platform-tagged, so a
+native and a web build of the same tree overwrite each other's intermediates. One
+consequence is already fixed: a NATIVE `etcs` left in `loaders/` made make
+consider the web target up to date (the recipe writes `$@$(WEB_SUFFIX)`, so the
+target name and the file differ), and the web link was silently skipped while the
+page kept loading the previous `etcs.wasm`. The web path now declares those
+targets `.PHONY`.
