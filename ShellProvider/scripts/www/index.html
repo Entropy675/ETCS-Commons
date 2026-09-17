@@ -15,6 +15,25 @@
       --muted: var(--dim);
       --accent: var(--sel);
       --ok: #7a9a5a;
+      /*
+       * THE ANSI VOCABULARY, IN THIS PAGE'S PALETTE.
+       *
+       * The runtime emits the same SGR escapes a terminal gets
+       * (ETCS::color_enabled, core/CommandExecutor.h), so the MEANINGS here are
+       * the standard eight -- 1 red, 2 green, 3 yellow, 4 blue, 5 magenta,
+       * 6 cyan -- and only the shades are this page's. An xterm's own values
+       * (#0dbc79, #cd3131) are tuned for a black terminal and fight this
+       * background; the mapping is what has to match, not the hex.
+       *
+       * 8-15 are the bold forms, because that is what a terminal shows for
+       * `1;3Xm` -- and every colour the shell emits is a bold one
+       * (COLOR_DIR is 1;36, COLOR_LIB 1;32, COLOR_WARN 1;33, COLOR_RID 1;35,
+       * COLOR_ACT 1;34), so these are the ones actually seen.
+       */
+      --ansi0:  #3b3d31; --ansi1:  #c45c4a; --ansi2:  #7a9a5a; --ansi3:  #c9b458;
+      --ansi4:  #6f8aa8; --ansi5:  #a97bb5; --ansi6:  #6fa8a0; --ansi7:  #e8e2d5;
+      --ansi8:  #5c5f4d; --ansi9:  #e07a63; --ansi10: #9dc47a; --ansi11: #e5cf7a;
+      --ansi12: #8fb0d4; --ansi13: #cf9ada; --ansi14: #8fd0c6; --ansi15: #f5f1e6;
       --err: #c45c4a;
       --prompt: var(--sel);
     }
@@ -97,11 +116,82 @@
   const status = document.getElementById('status');
   const canvas = document.getElementById('canvas');
 
-  function append(text, cls) {
+  /*
+   * ANSI SGR -> spans.
+   *
+   * WHY THE PAGE PARSES ESCAPES AT ALL. The alternative is a second colouring
+   * channel for the web -- some side band saying "this run of text is a RID" --
+   * and then two tables that have to keep agreeing about what COLOR_LIB means.
+   * The runtime already has a vocabulary for that and every other consumer
+   * reads it, so this is one more reader rather than a second scheme.
+   *
+   * STATE CARRIES ACROSS CALLS, because a write boundary is not a colour
+   * boundary: output reaches here one etcs_web_shell_write at a time, and
+   * nothing guarantees a `\033[0m` lands in the same call as the escape it
+   * closes.
+   *
+   * Everything that is not an SGR is DROPPED rather than shown. A cursor move
+   * or an erase-line has no meaning in a scrolling transcript, and printing the
+   * bytes is strictly worse than ignoring them.
+   */
+  const ANSI_RE = /\x1b\[([0-9;?]*)([A-Za-z])/g;
+  let sgr = { fg: null, bold: false, faint: false, underline: false };
+
+  function sgrApply(params) {
+    // An empty parameter list means 0 -- `\033[m` is a reset.
+    const codes = (params === '' ? '0' : params).split(';');
+    for (const raw of codes) {
+      const n = parseInt(raw, 10);
+      if (isNaN(n) || n === 0) { sgr = { fg: null, bold: false, faint: false, underline: false }; continue; }
+      if (n === 1) { sgr.bold = true; continue; }
+      if (n === 2) { sgr.faint = true; continue; }
+      if (n === 4) { sgr.underline = true; continue; }
+      if (n === 22) { sgr.bold = false; sgr.faint = false; continue; }
+      if (n === 24) { sgr.underline = false; continue; }
+      if (n === 39) { sgr.fg = null; continue; }
+      if (n >= 30 && n <= 37) { sgr.fg = n - 30; continue; }
+      if (n >= 90 && n <= 97) { sgr.fg = n - 90 + 8; continue; }
+      // Backgrounds and 256/truecolour are deliberately not handled: nothing in
+      // this runtime emits them, and a transcript with painted backgrounds is
+      // harder to read rather than richer.
+    }
+  }
+
+  function sgrSpan(text) {
     const span = document.createElement('span');
-    if (cls) span.className = cls;
     span.textContent = text;
-    term.appendChild(span);
+    if (sgr.fg != null) {
+      // Bold selects the bright half, which is what a terminal shows for 1;3Xm
+      // and therefore what every COLOR_* macro in the runtime is asking for.
+      const idx = (sgr.bold && sgr.fg < 8) ? sgr.fg + 8 : sgr.fg;
+      span.style.color = 'var(--ansi' + idx + ')';
+    }
+    if (sgr.bold) span.style.fontWeight = '600';
+    if (sgr.faint) span.style.opacity = '0.7';
+    if (sgr.underline) span.style.textDecoration = 'underline';
+    return span;
+  }
+
+  function append(text, cls) {
+    // The page's own lines (sys/err/ok) keep their class and are never scanned:
+    // they are written here, contain no escapes, and a class is a stronger
+    // statement about them than any colour the runtime could ask for.
+    if (cls) {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = text;
+      term.appendChild(span);
+      term.scrollTop = term.scrollHeight;
+      return;
+    }
+    ANSI_RE.lastIndex = 0;
+    let last = 0, m;
+    while ((m = ANSI_RE.exec(text)) !== null) {
+      if (m.index > last) term.appendChild(sgrSpan(text.slice(last, m.index)));
+      if (m[2] === 'm') sgrApply(m[1]);
+      last = ANSI_RE.lastIndex;
+    }
+    if (last < text.length) term.appendChild(sgrSpan(text.slice(last)));
     term.scrollTop = term.scrollHeight;
   }
   window.etcsTermWrite = function (t) {

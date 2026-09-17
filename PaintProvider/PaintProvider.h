@@ -768,6 +768,18 @@ public:
  *
  * Deliberately NOT a second implementation. Anything these did differently
  * from the stream path would be a test of the wrong thing.
+ *
+ * WHICH IS WHY THEY ROUTE. These called HandleEvent directly, so a machine with
+ * a root bound routed everything that arrived on an edge and nothing that
+ * arrived from a script -- and routing is a property of how the machine is
+ * CONFIGURED (BindRoot), not of which transport delivered the event. RouteEvent
+ * falls through to HandleEvent when no root is bound, so an unrouted machine
+ * behaves exactly as it did.
+ *
+ * It is also what makes a browser toolbar work at all: a canvas beside the
+ * window is a separate DOM element, its clicks are not in the window's stream,
+ * and the page hands them here through PaintInput.Pointer/Press
+ * (etcs_web_call, loaders/etcs.cc).
  */
     void ScriptPointer(int32_t x, int32_t y)
     {
@@ -775,21 +787,38 @@ public:
         ev.action = INPUT_MOTION;
         ev.x = static_cast<int16_t>(x);
         ev.y = static_cast<int16_t>(y);
-        HandleEvent(ev);
+        // Both halves of what the routed consumer does with a position, in the
+        // same order: record it as the routed cursor (a press carries no
+        // coordinates and routes on the last position THIS path delivered --
+        // see NoteRoutedCursor) and then route it.
+        NoteRoutedCursor(ev.x, ev.y);
+        RouteEvent(ev);
     }
 
+    /*
+     * A PRESS CARRIES NO POSITION -- x/y are meaningful for INPUT_MOTION only
+     * (ontology/InputSource.h) -- so routing one on its own coordinates picks
+     * whatever sits at the origin, which is nothing. The last position this path
+     * delivered is where the press happened, which is the same assumption the
+     * routed key edge makes (ConsumeRouted) and the same one absolute positions
+     * make safe. Filled in here so the two paths route a press identically.
+     */
     void ScriptPress()
     {
         InputEvent ev{};
         ev.action = INPUT_DOWN;
-        HandleEvent(ev);
+        ev.x = static_cast<int16_t>(RoutedCursorX());
+        ev.y = static_cast<int16_t>(RoutedCursorY());
+        RouteEvent(ev);
     }
 
     void ScriptRelease()
     {
         InputEvent ev{};
         ev.action = INPUT_UP;
-        HandleEvent(ev);
+        ev.x = static_cast<int16_t>(RoutedCursorX());
+        ev.y = static_cast<int16_t>(RoutedCursorY());
+        RouteEvent(ev);
     }
 
     bool StrokeActive() const { return m_tool && m_tool->active(); }

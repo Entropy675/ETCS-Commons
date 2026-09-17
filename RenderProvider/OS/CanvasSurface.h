@@ -112,7 +112,78 @@ public:
         this->FollowResize(m_parentResizable);
         this->addTag("active");
         ETCS_LOG("CanvasSurface", "ready (RID:" << getRID() << ") " << size.width
-                 << "x" << size.height << " -- presenting to the page canvas.");
+                 << "x" << size.height << " -- presenting to #" << m_target
+                 << (TargetExists() ? "." : " (NO SUCH ELEMENT on the page yet)."));
+        return true;
+    }
+
+    /*
+     * WHICH CANVAS THIS SURFACE PRESENTS TO, and the whole of what makes more
+     * than one of them possible.
+     *
+     * A page can hold any number of canvases and a session any number of
+     * surfaces; what was missing was the link between a particular surface and a
+     * particular element. It belongs on the SURFACE rather than on the window:
+     * emscripten's GLFW owns exactly one canvas (`Browser.getCanvas()`), every
+     * one of its event handlers drops events whose target is not that canvas, and
+     * `glfwCreateWindow` makes each new window the active one -- so a second GLFW
+     * window cannot host a second canvas, it can only take the first one's input
+     * away. A second SURFACE has none of those problems: presenting is a
+     * putImageData, and nothing about it is global.
+     *
+     * Named, not numbered. An index into the page's canvases would make the
+     * script depend on the order elements appear in the HTML; an id is what the
+     * page already calls the thing.
+     *
+     * The Vulkan backend has this verb too, where it names the presentation
+     * target and there is currently one -- see VulkanSurface::SetTarget.
+     */
+    bool SetTarget(const std::string& element_id)
+    {
+        if (element_id.empty())
+        {
+            ETCS_LOG("CanvasSurface", "SetTarget: an empty id names nothing -- keeping #"
+                     << m_target << ".");
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_rasterMutex);
+            m_target = element_id;
+        }
+        ETCS_LOG("CanvasSurface", "target -> #" << m_target
+                 << (TargetExists() ? "" : " (NO SUCH ELEMENT on the page)"));
+        return true;
+    }
+
+    const std::string& Target() const { return m_target; }
+
+    /*
+     * AN EXPLICIT SIZE WINS OVER THE WINDOW'S, which is what lets a surface be a
+     * REGION rather than the whole frame -- a toolbar strip beside the page it
+     * belongs to, for instance.
+     *
+     * Following and being told are the two ways a surface can get its size and
+     * they cannot both be live: PollResize would snap an explicitly sized surface
+     * back to the window's dimensions at the next frame boundary. So this drops
+     * the follow, which also states the precedence in one place instead of a flag
+     * every reader has to correlate.
+     */
+    bool ResizeTo(WindowSize sz) override
+    {
+        if (sz.width == 0 || sz.height == 0)
+        {
+            ETCS_LOG("CanvasSurface", "ResizeTo: a zero dimension is not a size ("
+                     << sz.width << "x" << sz.height << ").");
+            return false;
+        }
+        if (sz.width == PixelWidth() && sz.height == PixelHeight()) return true;
+
+        std::lock_guard<std::mutex> lock(m_rasterMutex);
+        ETCS_LOG("CanvasSurface", "resize (explicit) " << PixelWidth() << "x"
+                 << PixelHeight() << " -> " << sz.width << "x" << sz.height
+                 << " -- no longer following the window.");
+        m_parentResizable = nullptr;
+        Allocate(sz.width, sz.height);
         return true;
     }
 
@@ -193,7 +264,9 @@ public:
         const uint8_t* data = PixelData();
         const uint32_t w = PixelWidth();
         const uint32_t h = PixelHeight();
+        const std::string target = m_target;
         if (!data || w == 0 || h == 0) return;
+        (void)target;
 
 #if defined(__EMSCRIPTEN__)
         /*
@@ -207,8 +280,13 @@ public:
         MAIN_THREAD_EM_ASM({
             var w = $1;
             var h = $2;
-            var canvas = (typeof Module !== 'undefined' && Module.canvas)
-                       ? Module.canvas : document.getElementById('canvas');
+            var id = UTF8ToString($3);
+            // BY ID, never Module.canvas. Module.canvas is the ONE canvas
+            // emscripten's own machinery points at, so falling back to it would
+            // quietly draw this surface over whichever one that is -- exactly the
+            // bug a second canvas exists to avoid. A missing element draws
+            // nothing; Create already said so in the log.
+            var canvas = document.getElementById(id);
             if (!canvas) return;
             // The framebuffer is authoritative: a canvas whose backing store is a
             // different size would scale the bytes instead of showing them.
@@ -219,7 +297,7 @@ public:
             var img = ctx.createImageData(w, h);
             img.data.set(HEAPU8.subarray($0, $0 + w * h * 4));
             ctx.putImageData(img, 0, 0);
-        }, data, w, h);
+        }, data, w, h, target.c_str());
 #endif
         notePresent();
     }
@@ -344,6 +422,23 @@ private:
         Allocate(want.width, want.height);
     }
 
+    /*
+     * Whether the page actually has the element this surface is aimed at. Asked
+     * once at Create and once per SetTarget, purely so a typo in an id reads as a
+     * named complaint in the log rather than as a canvas that stays blank for no
+     * stated reason.
+     */
+    bool TargetExists() const
+    {
+#if defined(__EMSCRIPTEN__)
+        return MAIN_THREAD_EM_ASM_INT({
+            return document.getElementById(UTF8ToString($0)) ? 1 : 0;
+        }, m_target.c_str()) != 0;
+#else
+        return false;
+#endif
+    }
+
     void notePresent()
     {
         using clock = ::std::chrono::steady_clock;
@@ -363,6 +458,17 @@ private:
 
     CanvasInstance* m_instance        = nullptr;
     Resizable_*     m_parentResizable = nullptr;
+    /*
+     * The canvas element this surface presents to. Defaults to "canvas" because
+     * that is the id emscripten's own machinery assumes and the id every page in
+     * this tree has used so far, so a session that never mentions a target
+     * behaves exactly as it did before targets existed.
+     *
+     * Under m_rasterMutex with the pixels, not beside them: Present reads the
+     * bytes and the destination together, and a SetTarget landing between the two
+     * would put one surface's raster on another surface's canvas for a frame.
+     */
+    std::string     m_target          = "canvas";
 
     // One mutex over the raster. Every entry point either writes pixels or reads
     // them all at once, so there is nothing finer to lock.

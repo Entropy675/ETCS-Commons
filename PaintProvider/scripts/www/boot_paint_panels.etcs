@@ -1,0 +1,113 @@
+#!/usr/bin/env etcs
+
+# TWO CANVASES: the sheet, and the palette beside the terminal.
+#
+# The difference from paint_surface.etcs (the OS-side session) is one surface and
+# three lines. Everything else -- the document, the layers, the tool, the input
+# machine -- is the same, because a second output is not a second session.
+#
+# WHY A SECOND SURFACE AND NOT A SECOND WINDOW. In the browser a window cannot
+# host a second canvas: emscripten's GLFW owns exactly one (`Browser.getCanvas()`),
+# every one of its event handlers drops events whose target is not that canvas,
+# and `glfwCreateWindow` makes each new window the active one -- so a second
+# window would take the first one's input away and resize its canvas. A second
+# SURFACE has none of those properties. Presenting is a putImageData and nothing
+# about it is global, which is why the target belongs to the surface
+# (RenderProvider/OS/CanvasSurface.h).
+#
+# On the OS side the same three lines describe a REGION of the one window, which
+# is what a toolbar is there. The script does not change; what the target names
+# does.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS Paint)
+
+# ── the sheet ────────────────────────────────────────────────────────────────
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+view.Clear(0.13, 0.13, 0.15, 1.0)
+
+# ── the palette strip ────────────────────────────────────────────────────────
+#
+# Its own element, its own size. ResizeTo drops the follow, so this surface stays
+# 640x64 while the sheet tracks the window (CanvasSurface::ResizeTo) -- being told
+# a size and following one cannot both be live.
+main.spawn(RenderProvider::Surface bar_view)
+bar_view.Create(@gpu)
+bar_view.SetTarget(toolbar)
+bar_view.ResizeTo(640, 64)
+bar_view.Clear(0.16, 0.16, 0.19, 1.0)
+
+# ── the document: paper under ink ────────────────────────────────────────────
+spawn PaintProvider::PaintLayer paper
+paper.Create(1024, 768)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+
+spawn PaintProvider::PaintLayer ink
+ink.Create(1024, 768)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+
+spawn PaintProvider::PaintDocument doc
+doc.Create(1024, 768, browser)
+doc.AddLayer(@paper)
+doc.AddLayer(@ink)
+doc.SetActiveLayer(@ink)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(6.0)
+brush.SetColor(0.10, 0.10, 0.12, 1.0)
+
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@view)
+canvas.AttachDocument(@doc)
+canvas.Render()
+
+# ── the palette, as shapes and meanings ──────────────────────────────────────
+#
+# `bar` is an ordinary 2D composite and the swatches are ordinary polygons in its
+# space -- PaintProvider grows no raster backend for a row of coloured squares
+# (paint_toolbar.etcs says why at length). The palette is the mapping from picked
+# node to tool setting and nothing else.
+spawn RenderProvider::CompositeDrawable2D bar
+bar.Create(640, 64)
+
+spawn PaintProvider::PaintPalette palette
+palette.BindTool(@brush)
+
+run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette
+
+# Bound as the compose root, so every frame clears and re-walks the tree rather
+# than retaining whatever was drawn once. A swatch changing colour then shows up
+# without anything having to know it should redraw.
+bar_view.Compose(@bar)
+
+# ── two input machines, because there are two spaces ─────────────────────────
+#
+# `input` is the sheet: positions arrive from the window's own pointer stream.
+# `bar_input` is the strip, and its positions arrive from the PAGE
+# (etcs_web_call -> PaintInput.Pointer/Press, loaders/etcs.cc): a click on a
+# separate DOM element is not in the window's stream and there is nothing to route
+# it from. BindRoot/BindPalette are what make a press at a point mean "that
+# swatch" rather than "draw here".
+spawn PaintProvider::PaintInput input
+input.Create(@doc, @brush, @canvas)
+input.SetBrush(6.0, 0.10, 0.10, 0.12, 1.0)
+
+spawn PaintProvider::PaintInput bar_input
+bar_input.Create(@doc, @brush, @canvas)
+bar_input.BindRoot(@bar)
+bar_input.BindPalette(@palette)
+
+# ── the pumps ────────────────────────────────────────────────────────────────
+#
+# One frame edge per surface: each presents its own raster to its own element, and
+# neither knows the other exists. The last edge blocks this thread, which in the
+# browser is a detached worker.
+detach RenderProvider/scripts/render_frames.etcs view=view
+detach RenderProvider/scripts/render_frames.etcs view=bar_view
+detach paint_pointer.etcs window=main input=input
+
+main.ProduceEvents() -> input.ConsumeInput()

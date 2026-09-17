@@ -26,7 +26,7 @@ ETCS_TAG_BLOCK_BASIC(Device,
 // GPU queue, and ProduceFrames/ConsumeFrames is that same Present driven by
 // a clock on another thread.
 ETCS_TAG_BLOCK_HYBRID(Surface,
-    (Create, Clear, DrawRect, Blit, Compose, Present, Delete, RunDemo),
+    (Create, SetTarget, ResizeTo, Clear, DrawRect, Blit, Compose, Present, Delete, RunDemo),
     (ProduceFrames, ConsumeFrames))
 
 // An offscreen CPU-backed surface -- a layer. Same drawing verbs, no

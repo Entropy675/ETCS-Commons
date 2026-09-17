@@ -1,0 +1,7 @@
+# BUILD OUTPUT, COPIED IN. The page fetches the wasm and the glue from here by
+# name (modules.json), but they are produced by `ace wasm make`, not edited, and a
+# 2MB binary per provider does not belong in the history of the page that loads
+# them. See README.md for the deploy step.
+etcs.js
+etcs.wasm
+*.wasm
