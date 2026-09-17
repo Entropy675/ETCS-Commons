@@ -144,8 +144,9 @@ static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
 // GLFW's numbering, which is what arrives on the pointer ring (pushButton takes
 // the platform's index unchanged). Named here so the input edge does not test a
 // bare 1 and leave the reader to guess which button that is.
-static constexpr uint16_t PAINT_BUTTON_LEFT  = 0;
-static constexpr uint16_t PAINT_BUTTON_RIGHT = 1;
+static constexpr uint16_t PAINT_BUTTON_LEFT   = 0;
+static constexpr uint16_t PAINT_BUTTON_RIGHT  = 1;  // GLFW right
+static constexpr uint16_t PAINT_BUTTON_MIDDLE = 2;  // GLFW middle -- pan, like right
 
 enum class PaintToolKind : uint8_t
 {
@@ -1219,6 +1220,11 @@ public:
         // document keeps whatever the last frame left there and panning smears.
         if (view) view->Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
+        // ONE mark for the finished picture. CanvasSurface draws do not mark
+        // (composition boundary); Present snapshots the back buffer when this
+        // edge wakes ConsumeFrames. Same module -- Surface_ only, no concrete
+        // backend type.
+        paint_mark_pixel_path(m_target);
     }
 
     // WHAT THE SURFACE'S OWN LAYER LOOKS LIKE -- not a "background", which would
@@ -2457,8 +2463,10 @@ public:
      * the ordinary paths with a right button held is how a pan ends up drawing
      * a line across the picture.
      */
+        // Pan: right (GLFW 1) or middle (GLFW 2). Middle is the natural pan
+        // button in the browser -- right opens the context menu there.
         if ((ev.action == INPUT_BUTTON_DOWN || ev.action == INPUT_BUTTON_UP)
-            && ev.key == PAINT_BUTTON_RIGHT)
+            && (ev.key == PAINT_BUTTON_RIGHT || ev.key == PAINT_BUTTON_MIDDLE))
         {
             if (ev.action == INPUT_BUTTON_DOWN)
             {

@@ -191,6 +191,76 @@ tool_glyph.SetFill(0.90, 0.90, 0.94, 1.0)
 tool_glyph.SetOrder(1)
 palette.AddTool(@tool_glyph, glyph)
 
+
+# ── tool labels ──────────────────────────────────────────────────────────
+#
+# Short TextLabel under each tool. Coloured rects alone are hard to tell
+# apart; the built-in 5x8 font at cell scale 1 fits under a 24px button.
+
+bar.spawn(RenderProvider::TextLabel label_brush)
+label_brush.Create()
+label_brush.SetPosition(620, 40)
+label_brush.SetSize(1)
+label_brush.SetColor(0.90, 0.90, 0.88, 1.0)
+label_brush.SetText(brush)
+label_brush.SetOrder(2)
+
+bar.spawn(RenderProvider::TextLabel label_line)
+label_line.Create()
+label_line.SetPosition(654, 40)
+label_line.SetSize(1)
+label_line.SetColor(0.90, 0.90, 0.88, 1.0)
+label_line.SetText(line)
+label_line.SetOrder(2)
+
+bar.spawn(RenderProvider::TextLabel label_rect)
+label_rect.Create()
+label_rect.SetPosition(686, 40)
+label_rect.SetSize(1)
+label_rect.SetColor(0.90, 0.90, 0.88, 1.0)
+label_rect.SetText(rect)
+label_rect.SetOrder(2)
+
+bar.spawn(RenderProvider::TextLabel label_ellipse)
+label_ellipse.Create()
+label_ellipse.SetPosition(716, 40)
+label_ellipse.SetSize(1)
+label_ellipse.SetColor(0.90, 0.90, 0.88, 1.0)
+label_ellipse.SetText(oval)
+label_ellipse.SetOrder(2)
+
+bar.spawn(RenderProvider::TextLabel label_fill)
+label_fill.Create()
+label_fill.SetPosition(750, 40)
+label_fill.SetSize(1)
+label_fill.SetColor(0.90, 0.90, 0.88, 1.0)
+label_fill.SetText(fill)
+label_fill.SetOrder(2)
+
+bar.spawn(RenderProvider::TextLabel label_smudge)
+label_smudge.Create()
+label_smudge.SetPosition(780, 40)
+label_smudge.SetSize(1)
+label_smudge.SetColor(0.90, 0.90, 0.88, 1.0)
+label_smudge.SetText(smear)
+label_smudge.SetOrder(2)
+
+bar.spawn(RenderProvider::TextLabel label_ruler)
+label_ruler.Create()
+label_ruler.SetPosition(812, 40)
+label_ruler.SetSize(1)
+label_ruler.SetColor(0.90, 0.90, 0.88, 1.0)
+label_ruler.SetText(rule)
+label_ruler.SetOrder(2)
+
+bar.spawn(RenderProvider::TextLabel label_glyph)
+label_glyph.Create()
+label_glyph.SetPosition(846, 40)
+label_glyph.SetSize(1)
+label_glyph.SetColor(0.90, 0.90, 0.88, 1.0)
+label_glyph.SetText(text)
+label_glyph.SetOrder(2)
+
 bar.spawn(RenderProvider::PolygonDrawable2D nib_fine)
 nib_fine.Create()
 nib_fine.AddPoint(420, 26)
