@@ -166,11 +166,14 @@ private:
 
 class GLFWWindow :
     public WindowBase<GLFWWindow>, public InputSourceBase<GLFWWindow>,
+    public PointerBase<GLFWWindow>,
     public ResizableBase<GLFWWindow>, public DeletableBase<GLFWWindow>
 {
 private:
     // Position changes matter to nothing here any more -- see noteCursor --
     // but the window's own placement is still worth logging.
+    static void scroll_callback(GLFWwindow* window, double dx, double dy);
+
     static void window_pos_callback(GLFWwindow* window, int x, int y)
     {
         auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
@@ -439,6 +442,9 @@ public:
                 // Buttons were never wired at all, so anything wanting "press
                 // here" had to borrow the keyboard -- see InputSource.h.
                 glfwSetMouseButtonCallback(created, mouse_button_callback);
+                // Registered beside the other pointer callbacks: a wheel is a
+                // pointer event (ontology/Pointer.h), not a key one.
+                glfwSetScrollCallback(created, scroll_callback);
                 // Focus is tracked so capture can be re-applied on regaining it;
                 // enter/leave only reports whether the pointer is over the frame.
                 glfwSetCursorEnterCallback(created, cursor_enter_callback);
@@ -935,6 +941,60 @@ public:
  * against the camera's own frame (Scene3D::PointerPosition), so a window that
  * moves changes nothing.
  */
+    /*
+ * ── Pointer_ dispatch ────────────────────────────────────────────────────
+ *
+ * "Where is it now", as against InputSource's "what happened". Both are true of
+ * a window and they do not overlap: a frame loop asks this every frame and
+ * never misses anything by not listening; a tool that only acts on input reads
+ * the ring. The family's own header makes the argument at length.
+ *
+ * Position is the last one RECORDED rather than the ring's tail, deliberately:
+ * a poller must not consume events a stream reader is also owed, and the ring
+ * is single-producer-multi-reader for exactly that reason.
+ *
+ * SCROLL IS CONSUMED BY READING, which is the honest behaviour for a delta and
+ * is why ReadPointer returns a value instead of exposing fields -- two readers
+ * of one pointer will not both see the same notch, and pretending otherwise
+ * would apply it twice.
+ */
+    PointerState ReadPointerConcrete() override
+    {
+        PointerState st{};
+        st.x = this->currentPointerX();
+        st.y = this->currentPointerY();
+        st.buttons  = m_buttons.load(::std::memory_order_acquire);
+        st.scroll_x = this->takeScrollX();
+        st.scroll_y = this->takeScrollY();
+        return st;
+    }
+
+    /*
+ * Whether the cursor is over this window's own region -- which the coordinates
+ * cannot answer, since a position clamped to the edge and a position just
+ * outside it read the same. Maintained by the enter/leave callback, because
+ * that is the only thing that knows.
+ */
+    bool PointerInsideConcrete() override
+    {
+        return m_pointer_inside.load(::std::memory_order_acquire);
+    }
+
+    // Set from the button callback, read by Pointer_::ReadPointer. Bit 0 is the
+    // primary button; the rest are the platform's numbering unchanged.
+    void noteButtonState(int button, bool down)
+    {
+        if (button < 0 || button > 31) return;
+        const uint32_t bit = 1u << button;
+        if (down) m_buttons.fetch_or(bit, ::std::memory_order_release);
+        else      m_buttons.fetch_and(~bit, ::std::memory_order_release);
+    }
+
+    void notePointerInside(bool inside)
+    {
+        m_pointer_inside.store(inside, ::std::memory_order_release);
+    }
+
     void noteCursor(double x, double y)
     {
         notePointerAt(static_cast<int>(x), static_cast<int>(y));
@@ -997,6 +1057,16 @@ private:
     // the authority here.
     ::std::atomic<bool> m_should_close{ false };
 #endif
+    /*
+ * WHAT Pointer_ NEEDS THAT THE RING DOES NOT CARRY.
+ *
+ * The ring is a log of edges; these two are the current state, and neither can
+ * be recovered from the log by a reader that started late or missed a lap. Bit
+ * 0 is the primary button on every device that has one, which ontology/
+ * Pointer.h fixes and nothing else about the mask.
+ */
+    ::std::atomic<uint32_t> m_buttons{ 0 };
+    ::std::atomic<bool>     m_pointer_inside{ false };
 public:
 
     // Runs inside WindowProvider.so, against the GLFW copy that called
@@ -1143,6 +1213,27 @@ static inline GLFWWindow* input_ready(GLFWwindow* window)
     return handler;
 }
 
+/*
+ * THE WHEEL, which had no home until Pointer_ turned out to have one.
+ *
+ * It travels the pointer ring beside the buttons, because a notch happens AT a
+ * position and means different things depending on where -- and it accumulates
+ * into the deltas Pointer_::ReadPointer hands back, because a per-frame consumer
+ * wants "how much since I last looked" rather than a replay of notches. Both
+ * readers, one source (ontology/InputSource.h::pushScroll).
+ *
+ * GLFW reports a wheel as a two-axis offset already normalised to notches, so
+ * there is no unit conversion to do here -- which is the shape the ontology
+ * asked for: a device converts once, at its own edge, and this device's units
+ * are already the right ones.
+ */
+void GLFWWindow::scroll_callback(GLFWwindow* window, double dx, double dy)
+{
+    auto handler = input_ready(window);
+    if (!handler) return;
+    handler->pushScroll(static_cast<float>(dx), static_cast<float>(dy));
+}
+
 void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
 {
     auto handler = input_ready(window);
@@ -1167,6 +1258,9 @@ void GLFWWindow::mouse_button_callback(GLFWwindow* window, int button, int actio
     if (!handler) return;
     double mx = 0.0, my = 0.0;
     glfwGetCursorPos(window, &mx, &my);
+    // The MASK is state, the ring entry is an edge -- see m_buttons. Updated
+    // here because this is the only place that knows which way the edge went.
+    handler->noteButtonState(button, action == GLFW_PRESS);
     handler->pushButton(button, action == GLFW_PRESS,
                         static_cast<int>(mx), static_cast<int>(my));
 }
@@ -1174,10 +1268,15 @@ void GLFWWindow::mouse_button_callback(GLFWwindow* window, int button, int actio
 // Leaving is as important as entering: the cursor moves while it is away, and
 // the first report after it comes back would otherwise measure against where
 // it was when it left. Both edges re-prime for the same reason.
-void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int /*entered*/)
+void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
+
+    // The one thing Pointer_::PointerInside can be answered from. A position
+    // clamped to the edge and a position just outside it are the same numbers,
+    // so the coordinates genuinely cannot say -- only this edge can.
+    handler->notePointerInside(entered != 0);
 
     // NOTHING TO CHECK HERE ANY MORE. A pointer leaving the window used to be
     // evidence that a grab had been refused, because a relative control depends

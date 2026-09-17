@@ -23,8 +23,9 @@
   ],
   "scripts": [
     "boot_paint_panels.etcs",
-    "paint_pointer.etcs",
+    "paint_routed_pointer.etcs",
     "PaintProvider/scripts/paint_toolbar.etcs",
+    "PaintProvider/scripts/paint_wheel.etcs",
     "RenderProvider/scripts/render_frames.etcs"
   ],
   "boot": "boot_paint_panels.etcs",

@@ -76,10 +76,37 @@
        boot.etcs asked for; these rules only decide how big it is drawn, and
        width/height:auto against both maxima keeps the aspect ratio while
        fitting the box. */
+    /* ASPECT IS STATED, not left to the intrinsic size.
+       max-width/max-height with width/height:auto looks like it preserves the
+       framebuffer's shape and does not: measured across the breakpoint this box
+       came out 959x420 at one width and 632x768 at the next -- squashed one way,
+       then the other, with the scale differing per axis by up to 1.8x.
+       Two things went wrong with that. A point converted with one scale factor
+       lands in the wrong place, and worse, a box taller than the row it sits in
+       is CLIPPED -- and clipped content is not hit-testable, so controls near the
+       bottom of the document simply stopped responding at some window sizes
+       while the same controls worked at others.
+       aspect-ratio pins the shape to the framebuffer's, and min-height:0 lets
+       the box actually shrink to the row instead of overflowing it. */
     canvas#canvas {
       display: block; background: #0a0b08;
       border: 1px solid var(--border); border-radius: 6px;
-      max-width: 100%; max-height: 100%; width: auto; height: auto;
+      aspect-ratio: 1024 / 768;
+      max-width: 100%; max-height: 100%;
+      /* !important IS LOAD-BEARING HERE, and it is not a shortcut.
+         emscripten's GLFW writes an INLINE style on the canvas it owns --
+         style="width: 1024px; height: 768px" -- from adjustCanvasDimensions,
+         and re-writes it on resize and on a device-pixel-ratio change. An
+         inline declaration outranks a stylesheet one, so `width: auto` was
+         being ignored: the measured box stayed 768 CSS tall whatever the row
+         could give it, which is what clipped the bottom of the document and
+         made controls there unreachable.
+         Overriding it is the only way to keep the page's layout in charge of
+         the box while GLFW stays in charge of the FRAMEBUFFER, which is the
+         division that should hold: the framebuffer is the drawing surface's
+         business, the box is the document's. */
+      width: auto !important; height: auto !important;
+      min-height: 0;
       box-shadow: -1px -1px 5px rgba(100, 0, 228, 0.7), 1px 1px 5px rgba(0, 0, 255, 0.7);
     }
 
@@ -150,7 +177,7 @@
          log, and splitting the first six lines of it into a second box above the
          terminal meant reading two places to follow one sequence. -->
     <div id="barwrap">
-      <canvas id="toolbar" width="640" height="64"></canvas>
+      <canvas id="toolbar" width="960" height="64"></canvas>
     </div>
     <iframe id="shell" src="shell" title="ETCS shell"></iframe>
   </div>
@@ -322,6 +349,26 @@
       etcsCall('bar_input', 'Release', '');
     });
   })();
+
+  /*
+   * ── the one thing about the sheet the page still owns ──────────────────
+   *
+   * THE CONTEXT MENU, and nothing else.
+   *
+   * It used to be this plus a wheel handler that converted client coordinates
+   * into framebuffer pixels and called ZoomBy. That handler is gone, and the
+   * reason it could go is worth recording: the wheel was not missing a channel,
+   * it was missing an IMPLEMENTOR. ontology/Pointer.h already carried scroll
+   * deltas and said in as many words that a device converts to the surface's
+   * space once, at its own edge -- so the right fix was for the window to claim
+   * Pointer_ and register a GLFW scroll callback, not for the page to do
+   * arithmetic GLFW was already doing correctly next door.
+   *
+   * What is left here genuinely cannot be a verb: the browser opens its own
+   * menu on a right press, before anything in the runtime can have an opinion,
+   * and right-drag is how the sheet pans.
+   */
+  canvas.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
 
   window.addEventListener('message', function (ev) {
     if (ev.origin !== ORIGIN) return;

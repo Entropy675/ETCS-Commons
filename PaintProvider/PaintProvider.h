@@ -1084,13 +1084,91 @@ public:
  * view impossible and would also mean saving a file wrote down where the
  * scrollbars were.
  */
-    void SetPan(int32_t x, int32_t y) { m_pan_x = x; m_pan_y = y; }
-    void PanBy(int32_t dx, int32_t dy) { m_pan_x += dx; m_pan_y += dy; }
+    void SetPan(int32_t x, int32_t y) { m_pan_x = x; m_pan_y = y; ClampPan(); }
+    void PanBy(int32_t dx, int32_t dy) { m_pan_x += dx; m_pan_y += dy; ClampPan(); }
+
+    /*
+ * ── how far the projection reaches ───────────────────────────────────────
+ *
+ * THERE IS NO EMPTY SHEET. What lies outside the document is not absence, it is
+ * the surface's own layer -- the window is a layer too, and an "empty" one is
+ * just a layer nothing has been drawn on. So panning off the edge of the drawing
+ * does not take you nowhere; it takes you onto the layer underneath, which is as
+ * real a place to stand as the page is.
+ *
+ * THE PROJECTION EXTENDS PAST THE PAGE BY THE PAGE'S OWN EXTENT, in every
+ * direction. That is what makes the pivot target ALWAYS PRESENT: you can put the
+ * corner of the page in the middle of the view and turn about it, or work right
+ * up to an edge with room beyond it, without the thing you are pivoting about
+ * having to be somewhere the drawing happens to reach. A bound tighter than this
+ * would make some pivots unreachable; no bound at all -- which is what this had
+ * -- lets the page leave the view entirely and leaves nothing to pivot about,
+ * which is the same failure from the other end.
+ *
+ * So the pannable region is the page grown by one page in each direction, and
+ * the clamp keeps the VIEW inside it rather than keeping the page inside the
+ * view. Those are different rules and only the first one lets an edge sit in the
+ * middle of the screen.
+ */
+    void ClampPan()
+    {
+        const uint32_t dw = m_document ? m_document->width()  : 0;
+        const uint32_t dh = m_document ? m_document->height() : 0;
+        if (dw == 0 || dh == 0) return;
+
+        // The view's own size, asked of the surface rather than remembered: it
+        // follows the window, and a cached copy would clamp against yesterday's.
+        // By the RESIZABLE family, which is where GetSize lives -- a Surface
+        // composes Resizable but does not re-declare it, so asking the wrong
+        // family for it is a compile error rather than a wrong answer.
+        WindowSize vs{ 0, 0 };
+        if (Resizable_* v = ETCS::resolve_in_family<Resizable_>("Resizable", m_target))
+            vs = v->GetSize();
+        if (vs.width == 0 || vs.height == 0) return;
+
+        const float pw = dw * m_zoom;      // the page, in view pixels
+        const float ph = dh * m_zoom;
+
+        // Page grown by one page each way: document space [-dw, 2*dw].
+        const int32_t max_x = static_cast<int32_t>(pw);
+        const int32_t min_x = static_cast<int32_t>(vs.width)  - static_cast<int32_t>(2.0f * pw);
+        const int32_t max_y = static_cast<int32_t>(ph);
+        const int32_t min_y = static_cast<int32_t>(vs.height) - static_cast<int32_t>(2.0f * ph);
+
+        // A page smaller than the view makes min > max -- every position is
+        // inside the region, so the clamp has nothing to say and must not
+        // invent an answer by applying the bounds in the wrong order.
+        if (min_x <= max_x) m_pan_x = std::clamp(m_pan_x, min_x, max_x);
+        if (min_y <= max_y) m_pan_y = std::clamp(m_pan_y, min_y, max_y);
+    }
+
+    /*
+ * THE READOUT, pushed rather than polled.
+ *
+ * Whoever changed the zoom is not always whoever can update a label: the wheel
+ * gesture belongs to the page, the +/- buttons are resolved inside PaintPalette,
+ * and a script may set a zoom outright. If the label were the caller's
+ * responsibility each of those three would have to remember, and the one that
+ * forgot would leave a number on screen that used to be true.
+ *
+ * So the surface tells the label, because the surface is the one thing all three
+ * go through. By verb name over Entity::call -- the same cross-module seam
+ * PaintLayerPanel uses for its row names, and for the same reason: this module
+ * cannot and should not know what a TextLabel is.
+ */
+    void BindZoomLabel(ETCS::RID label) { m_zoom_label = label; m_zoom_label_pushed = -1; push_zoom_label(); }
 
     // Clamped to something usable at both ends: below 1/16 a document is a
     // speck and the sample step stops resolving it, above 32 one pixel fills a
     // tile and panning gets unusable long before anything breaks.
-    void SetZoom(float z) { m_zoom = std::clamp(z, 0.0625f, 32.0f); }
+    void SetZoom(float z)
+    {
+        m_zoom = std::clamp(z, 0.0625f, 32.0f);
+        // The region is measured in view pixels and therefore moves with the
+        // zoom: a pan that was inside it at 400% can be outside it at 50%.
+        ClampPan();
+        push_zoom_label();
+    }
 
     /*
  * ZOOM ABOUT A POINT, which is the only kind a wheel can sensibly do.
@@ -1108,6 +1186,7 @@ public:
         SetZoom(z);
         m_pan_x = static_cast<int32_t>(std::lround(vx - dx * m_zoom));
         m_pan_y = static_cast<int32_t>(std::lround(vy - dy * m_zoom));
+        ClampPan();
     }
 
     void ZoomBy(float factor, int32_t vx, int32_t vy) { ZoomAt(m_zoom * factor, vx, vy); }
@@ -1142,8 +1221,10 @@ public:
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
     }
 
-    // What shows around the document. Its own colour rather than the view's
-    // clear colour, so the pane reads as a mat the sheet sits on.
+    // WHAT THE SURFACE'S OWN LAYER LOOKS LIKE -- not a "background", which would
+    // imply the page is the only real thing and the rest is absence. It is the
+    // layer the page sits on, it is always there, and panning onto it is a
+    // legitimate place to be (see ClampPan).
     void SetBackground(float r, float g, float b, float a)
     { m_bg[0] = r; m_bg[1] = g; m_bg[2] = b; m_bg[3] = a; }
 
@@ -1166,8 +1247,34 @@ public:
     ETCS::RID target() const { return m_target; }
 
 private:
+    /*
+ * Only when the whole percent actually CHANGED. Zoom moves continuously under a
+ * wheel and a label redrawn per event is a cross-module call per event to write
+ * the same three characters; the readout is integral, so the compare is exact
+ * rather than a tolerance.
+ */
+    void push_zoom_label()
+    {
+        if (m_zoom_label == 0) return;
+        const int32_t pct = zoomPercent();
+        if (pct == m_zoom_label_pushed) return;
+        m_zoom_label_pushed = pct;
+
+        ETCS::Held<Drawable2D_> node = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_zoom_label);
+        if (!node) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(node.get());
+        if (!e) return;
+        ETCS::Buffer action;
+        action.write((e->getSourceTag().toString() + ".SetText").c_str());
+        ETCS::Buffer payload;
+        payload.write((std::to_string(pct) + "%").c_str());
+        try { e->call(action, payload); } catch (...) {}
+    }
+
     PaintDocument* m_document = nullptr;
     ETCS::RID m_target = 0;
+    ETCS::RID m_zoom_label = 0;
+    int32_t   m_zoom_label_pushed = -1;   // -1 is "never pushed", not a zoom
     // The projection -- see the block above for why it lives here and not on
     // the document.
     int32_t m_pan_x = 0;
@@ -2204,6 +2311,15 @@ public:
 
     void RouteEvent(const InputEvent& ev)
     {
+        /*
+     * BEFORE THE PICK, because a scroll has no point to pick with -- its x/y
+     * are the delta. The router already decided this pane is the one under the
+     * pointer, which is the whole of the routing decision a wheel needs; what
+     * is left is a view change on this pane's surface, and that is not a
+     * question about which NODE was hit.
+     */
+        if (ev.action == INPUT_SCROLL) { HandleEvent(ev); return; }
+
         if (m_root == 0) { HandleEvent(ev); return; }   // unrouted: the old path
 
         // Held for the walk, not merely resolved: PickAt descends somebody
@@ -2367,10 +2483,41 @@ public:
             {
                 m_surface->PanBy(ev.x - m_pan_from_x, ev.y - m_pan_from_y);
                 repaint_view();
+                static int n = 0;
+                if ((n++ % 8) == 0)
+                    ETCS_LOG("PaintInput", "pan " << m_surface->panX()
+                             << "," << m_surface->panY());
             }
             m_pan_from_x = ev.x;
             m_pan_from_y = ev.y;
             m_cursor_seen = false;       // the stroke's continuity does not survive a pan
+            return;
+        }
+
+        /*
+     * ── the wheel ────────────────────────────────────────────────────────
+     *
+     * ZOOM ABOUT THE POINTER, which is the only thing a wheel can sensibly mean
+     * over a projected document -- zooming about anything else walks what you
+     * were looking at off the edge.
+     *
+     * The notch arrives on the pointer ring with its delta in x/y
+     * (ontology/InputSource.h::INPUT_SCROLL), and the position to hold fixed is
+     * the last one routed -- a wheel carries no position of its own, for the
+     * same reason a button press used to carry none.
+     *
+     * IN VIEW SPACE, unconverted: ZoomAt solves the pan so that the document
+     * point currently under that view point stays under it, so handing it a
+     * document coordinate would hold the wrong thing still.
+     */
+        if (ev.action == INPUT_SCROLL)
+        {
+            if (!m_surface) return;
+            const float factor = (ev.y > 0 || ev.x > 0) ? 1.25f : 0.8f;
+            m_surface->ZoomBy(factor, RoutedCursorX(), RoutedCursorY());
+            m_surface->Render();
+            ETCS_LOG("PaintInput", "wheel -> " << m_surface->zoomPercent() << "%"
+                     << " about " << RoutedCursorX() << "," << RoutedCursorY());
             return;
         }
 
@@ -2946,6 +3093,23 @@ public:
     {
         if (m_panes.empty()) return;
 
+        /*
+     * A SCROLL CARRIES A DELTA, NOT A POSITION, which makes it the one event
+     * here that cannot say where it happened. Everything below -- containment,
+     * the pick, the translation -- is a question about a POINT, so the point
+     * used is the last one this router saw. That is not a fallback: a wheel
+     * notch happens wherever the pointer already is, and asking it to carry a
+     * position would mean inventing one.
+     *
+     * Kept as the router's own rather than read back from a pane, because the
+     * router is what has seen every position regardless of which pane consumed
+     * it.
+     */
+        const bool positional = (ev.action != INPUT_SCROLL);
+        if (positional) { m_x = ev.x; m_y = ev.y; }
+        const int32_t at_x = positional ? ev.x : m_x;
+        const int32_t at_y = positional ? ev.y : m_y;
+
         // (Order, index) so the sort is on the number and the tie-break is the
         // order panes were added, matching every other ordered read here.
         std::vector<std::pair<int32_t, size_t>> ranked;
@@ -2977,7 +3141,7 @@ public:
             for (Pane& pane : m_panes)
             {
                 ETCS::Held<Drawable2D_> root = ETCS::resolve_held<Drawable2D_>("Drawable2D", pane.root);
-                const bool inside = root && root->ContainsLocal(ev.x, ev.y);
+                const bool inside = root && root->ContainsLocal(at_x, at_y);
                 if (pane.inside && !inside)
                 {
                     if (ETCS::Entity* raw = paint_resolve_tag("PaintInput", pane.input))
@@ -2995,7 +3159,7 @@ public:
 
             ETCS::Held<Drawable2D_> root = ETCS::resolve_held<Drawable2D_>("Drawable2D", pane.root);
             if (!root) continue;
-            if (!root->ContainsLocal(ev.x, ev.y)) continue;
+            if (!root->ContainsLocal(at_x, at_y)) continue;
 
             ETCS::Entity* raw = paint_resolve_tag("PaintInput", pane.input);
             if (!raw) continue;
@@ -3006,7 +3170,9 @@ public:
             // over in the frame the router received it and PaintInput::RouteEvent
             // does the descent and the translation -- one place that knows how to
             // turn a window coordinate into a node's own, not two.
-            input->NoteRoutedCursor(ev.x, ev.y);
+            // Not for a scroll: its x/y are a delta, and writing that in as the
+            // routed cursor would move the point the next press routes against.
+            if (positional) input->NoteRoutedCursor(ev.x, ev.y);
             input->RouteEvent(ev);
             --left;
         }
@@ -3380,6 +3546,10 @@ DEFINE_WORK_FUNC_TYPED(PaintSurface, ZoomAt,
     (void)ctx;
     self.ZoomAt(zoom, vx, vy);
     self.Render();
+    // Logged because the usual caller is the page's wheel handler, and a verb
+    // driven from outside the runtime is one you cannot otherwise watch.
+    ETCS_LOG("PaintSurface", "zoom " << self.zoomPercent() << "%  pan "
+             << self.panX() << "," << self.panY() << "  (about " << vx << "," << vy << ")");
 }
 
 // ZoomBy <factor> <vx> <vy> -- multiplicative, because zoom is perceived that
@@ -3390,6 +3560,19 @@ DEFINE_WORK_FUNC_TYPED(PaintSurface, ZoomBy,
     (void)ctx;
     self.ZoomBy(factor, vx, vy);
     self.Render();
+    ETCS_LOG("PaintSurface", "zoom " << self.zoomPercent() << "%  pan "
+             << self.panX() << "," << self.panY() << "  (x" << factor
+             << " about " << vx << "," << vy << ")");
+}
+
+// The TextLabel (or any Drawable2D exporting SetText) that shows the zoom. See
+// PaintSurface::BindZoomLabel on why the surface pushes it.
+DEFINE_WORK_FUNC(PaintSurface, BindZoomLabel)
+{
+    (void)ctx;
+    ETCS::RID label = 0;
+    data >> label;
+    self.BindZoomLabel(label);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintSurface, SetBackground,
@@ -3870,7 +4053,7 @@ DEFINE_STREAM_FUNC_CONSUME(PaintRouter, ConsumePointer)
 
         InputEvent ev{};
         slot.readRaw(&ev, sizeof(InputEvent));
-        if (ev.action != INPUT_MOTION
+        if (ev.action != INPUT_MOTION && ev.action != INPUT_SCROLL
             && ev.action != INPUT_BUTTON_DOWN && ev.action != INPUT_BUTTON_UP) continue;
         self.Route(ev);
     }

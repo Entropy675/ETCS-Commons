@@ -30,7 +30,8 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
 // re-composite: pan and zoom are what Render draws WITH.
 ETCS_TAG_BLOCK_BASIC(PaintSurface,
     Create, AttachDocument, SetTarget, Render,
-    SetPan, PanBy, SetZoom, ZoomAt, ZoomBy, SetBackground, ZoomPercent, Delete)
+    SetPan, PanBy, SetZoom, ZoomAt, ZoomBy, SetBackground,
+    ZoomPercent, BindZoomLabel, Delete)
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,

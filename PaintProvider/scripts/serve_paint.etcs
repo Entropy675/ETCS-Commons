@@ -35,8 +35,9 @@ tree.SetDefaultExtension(.html)
 # Each at the path the page stages it under (www/modules.json), which is the path
 # the OS side reads it from -- so boot_paint_panels.etcs's `detach` and `run`
 # lines are spelled once for both substrates instead of twice.
-tree.MountFile(paint_pointer.etcs ./paint_pointer.etcs)
+tree.MountFile(paint_routed_pointer.etcs ./paint_routed_pointer.etcs)
 tree.MountFile(PaintProvider/scripts/paint_toolbar.etcs ./paint_toolbar.etcs)
+tree.MountFile(PaintProvider/scripts/paint_wheel.etcs ./paint_wheel.etcs)
 tree.MountFile(RenderProvider/scripts/render_frames.etcs ../../RenderProvider/scripts/render_frames.etcs)
 
 # The terminal view, from ShellProvider's own page rather than a copy of it.
