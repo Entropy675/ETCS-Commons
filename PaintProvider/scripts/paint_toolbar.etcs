@@ -100,6 +100,97 @@ palette.AddColor(@swatch_paper, 1.0, 1.0, 1.0, 1.0)
 # than circles because the shape leaf takes points and a circle is a lot of
 # them for a thing whose only job is to say "this big".
 
+# ── the tools ────────────────────────────────────────────────────────────
+#
+# A tool button is a rectangle that MEANS a tool, exactly as a swatch is one
+# that means a colour -- same node, same pick, same Apply. What varies between
+# the eight is the shape of the whole gesture (PaintToolKind), not which nib is
+# loaded, so selecting one leaves the colour and the radius alone.
+#
+# Drawn as small glyph-ish marks rather than labels: the toolbar is 64 tall and
+# a TextLabel at a legible size would not fit beside the swatches. A row of
+# distinguishable shapes is enough to pick from, and the log names the tool.
+
+bar.spawn(RenderProvider::PolygonDrawable2D tool_brush)
+tool_brush.Create()
+tool_brush.AddPoint(620, 12)
+tool_brush.AddPoint(644, 12)
+tool_brush.AddPoint(644, 36)
+tool_brush.AddPoint(620, 36)
+tool_brush.SetFill(0.55, 0.55, 0.62, 1.0)
+tool_brush.SetOrder(1)
+palette.AddTool(@tool_brush, brush)
+
+bar.spawn(RenderProvider::PolygonDrawable2D tool_line)
+tool_line.Create()
+tool_line.AddPoint(652, 12)
+tool_line.AddPoint(676, 12)
+tool_line.AddPoint(676, 36)
+tool_line.AddPoint(652, 36)
+tool_line.SetFill(0.45, 0.60, 0.80, 1.0)
+tool_line.SetOrder(1)
+palette.AddTool(@tool_line, line)
+
+bar.spawn(RenderProvider::PolygonDrawable2D tool_rect)
+tool_rect.Create()
+tool_rect.AddPoint(684, 12)
+tool_rect.AddPoint(708, 12)
+tool_rect.AddPoint(708, 36)
+tool_rect.AddPoint(684, 36)
+tool_rect.SetFill(0.40, 0.70, 0.60, 1.0)
+tool_rect.SetOrder(1)
+palette.AddTool(@tool_rect, rect)
+
+bar.spawn(RenderProvider::PolygonDrawable2D tool_ellipse)
+tool_ellipse.Create()
+tool_ellipse.AddPoint(716, 12)
+tool_ellipse.AddPoint(740, 12)
+tool_ellipse.AddPoint(740, 36)
+tool_ellipse.AddPoint(716, 36)
+tool_ellipse.SetFill(0.70, 0.55, 0.80, 1.0)
+tool_ellipse.SetOrder(1)
+palette.AddTool(@tool_ellipse, ellipse)
+
+bar.spawn(RenderProvider::PolygonDrawable2D tool_fill)
+tool_fill.Create()
+tool_fill.AddPoint(748, 12)
+tool_fill.AddPoint(772, 12)
+tool_fill.AddPoint(772, 36)
+tool_fill.AddPoint(748, 36)
+tool_fill.SetFill(0.85, 0.65, 0.25, 1.0)
+tool_fill.SetOrder(1)
+palette.AddTool(@tool_fill, fill)
+
+bar.spawn(RenderProvider::PolygonDrawable2D tool_smudge)
+tool_smudge.Create()
+tool_smudge.AddPoint(780, 12)
+tool_smudge.AddPoint(804, 12)
+tool_smudge.AddPoint(804, 36)
+tool_smudge.AddPoint(780, 36)
+tool_smudge.SetFill(0.60, 0.50, 0.45, 1.0)
+tool_smudge.SetOrder(1)
+palette.AddTool(@tool_smudge, smudge)
+
+bar.spawn(RenderProvider::PolygonDrawable2D tool_ruler)
+tool_ruler.Create()
+tool_ruler.AddPoint(812, 12)
+tool_ruler.AddPoint(836, 12)
+tool_ruler.AddPoint(836, 36)
+tool_ruler.AddPoint(812, 36)
+tool_ruler.SetFill(0.95, 0.80, 0.20, 1.0)
+tool_ruler.SetOrder(1)
+palette.AddTool(@tool_ruler, ruler)
+
+bar.spawn(RenderProvider::PolygonDrawable2D tool_glyph)
+tool_glyph.Create()
+tool_glyph.AddPoint(844, 12)
+tool_glyph.AddPoint(868, 12)
+tool_glyph.AddPoint(868, 36)
+tool_glyph.AddPoint(844, 36)
+tool_glyph.SetFill(0.90, 0.90, 0.94, 1.0)
+tool_glyph.SetOrder(1)
+palette.AddTool(@tool_glyph, glyph)
+
 bar.spawn(RenderProvider::PolygonDrawable2D nib_fine)
 nib_fine.Create()
 nib_fine.AddPoint(420, 26)

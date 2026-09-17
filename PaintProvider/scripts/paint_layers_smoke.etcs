@@ -1,0 +1,205 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE LAYER WINDOW, DRIVEN THROUGH THE POINTER, without a window.
+#
+#     etcs paint_layers_smoke.etcs
+#
+# Every assertion here goes through the SAME path a real click takes -- router,
+# pass budget, PickAt, PaintInput::RouteEvent, PaintLayerPanel -- rather than
+# by calling the panel's verbs directly. A test that pokes the panel proves the
+# panel works; this proves the panel is REACHABLE, which is the half that broke
+# last time (two PaintInputs both acting, nobody arbitrating).
+#
+# It also exercises the pass budget against the layer stack in one session,
+# which is the point: pane order and layer order are the same relation asked of
+# different things, and a change that broke one while leaving the other would
+# be invisible in a test that only looked at one.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn RenderProvider::ImageSurface view
+view.Create(640, 480)
+
+# ── two panes: the sheet, and the layer window over its top-left ─────────
+#
+# Overlapping on purpose. A point inside the panel is inside the sheet too, so
+# the budget is the only thing deciding who hears about it.
+
+spawn RenderProvider::CompositeDrawable2D sheet
+sheet.Create(640, 480)
+sheet.SetPosition(0, 0)
+sheet.SetOrder(0)
+
+spawn RenderProvider::CompositeDrawable2D panel
+panel.Create(240, 224)
+panel.SetPosition(0, 0)
+panel.SetOrder(10)
+
+# ── a document with four layers, deliberately out of order ───────────────
+#
+# Orders 30/20/10/0, spawned in that same (inverted) sequence, so the stack as
+# BUILT is not the stack as STATED.
+
+spawn PaintProvider::PaintDocument doc
+doc.Create(640, 480, sheet)
+
+# SPAWNED IN THE WRONG ORDER ON PURPOSE -- notes first, paper last -- while the
+# order KEYS say the opposite. Membership is parenthood, so insertion order is
+# what ties break on; if OrderedLayers were reading insertion instead of the
+# relation the window would show these four upside down and every row assertion
+# below would move.
+doc.spawn(PaintProvider::PaintLayer notes)
+notes.Create(640, 480)
+notes.Clear(0.0, 0.0, 0.0, 0.0)
+notes.SetName(Notes)
+notes.SetOrder(30)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(640, 480)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(20)
+
+doc.spawn(PaintProvider::PaintLayer under)
+under.Create(640, 480)
+under.Clear(0.0, 0.0, 0.0, 0.0)
+under.SetName(Underpaint)
+under.SetOrder(10)
+
+doc.spawn(PaintProvider::PaintLayer paper)
+paper.Create(640, 480)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+paper.SetName(Paper)
+paper.SetOrder(0)
+
+doc.SetActiveLayer(@ink)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(3.0)
+brush.SetColor(0.9, 0.2, 0.2, 1.0)
+
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@view)
+canvas.AttachDocument(@doc)
+
+# ── the window, and the inputs ───────────────────────────────────────────
+
+spawn PaintProvider::PaintLayerPanel list
+run PaintProvider/scripts/paint_layers.etcs panel=panel doc=doc list=list
+
+spawn PaintProvider::PaintInput sheet_input
+sheet_input.Create(@doc, @brush, @canvas)
+sheet_input.BindRoot(@sheet)
+
+spawn PaintProvider::PaintInput panel_input
+panel_input.Create(@doc, @brush, @canvas)
+panel_input.BindRoot(@panel)
+panel_input.BindPanel(@list)
+
+spawn PaintProvider::PaintRouter router
+router.Create(1)
+router.AddPane(@panel, @panel_input)
+router.AddPane(@sheet, @sheet_input)
+router.Report()
+
+# ── what the window says before anything is clicked ──────────────────────
+#
+# Rows read TOP-FIRST while the stack composites bottom-first, so row 0 must be
+# Notes (order 30) and row 3 Paper (order 0). Getting this backwards is the
+# classic layer-panel bug and it is invisible until two layers overlap.
+
+doc.Report()
+list.Report()
+
+# ── select: a press on row 2's body, at (120, 73) ────────────────────────
+#
+# Row 2 is Underpaint. The active layer must move there, and -- this is the
+# part the router is for -- the sheet must NOT be inked, because the panel is
+# the topmost pane containing the point and the budget is 1.
+
+router.Pointer(120, 73)
+router.Press()
+router.Release()
+doc.Report()
+
+# ── hide: a press on row 0's eye, at (16, 17) ────────────────────────────
+#
+# Notes only. Every other layer's visibility is untouched, and nothing is
+# inked.
+
+router.Pointer(16, 17)
+router.Press()
+router.Release()
+doc.Report()
+
+# ── hover: motion over row 3, at (120, 101) ──────────────────────────────
+#
+# Paper at full strength, everything else dimmed to 0.25. dim moves, opacity
+# does not -- that separation is what stops a hover from saving itself into the
+# picture.
+
+router.Pointer(120, 101)
+doc.Report()
+
+# Moving off the panel entirely clears it. That edge comes from the ROUTER, not
+# from the panel noticing an unfamiliar node: with a pass budget a pane is never
+# offered an event it does not contain, so from inside the panel the pointer
+# never leaves -- it just stops arriving. See PaintRouter::Route.
+router.Pointer(500, 400)
+doc.Report()
+
+# ── rename: two presses on row 1's label, then the text ──────────────────
+#
+# Row 1 is Ink. The first press selects, the second arms -- "pressed twice with
+# nothing else in between", which is stricter than a timer and needs none.
+
+# x=40, INSIDE the label: a TextLabel is only as wide as its text (the 5x8 font
+# at size 2 puts "Ink" at roughly x 32..62), so x=120 is the row BODY and both
+# presses would be selections. Worth stating, because the failure looked like
+# the rename not arming rather than like a miss.
+router.Pointer(40, 45)
+router.Press()
+router.Release()
+router.Pointer(40, 45)
+router.Press()
+router.Release()
+list.CommitRename(Line art)
+doc.Report()
+
+# ── drag: press row 0 (Notes, top) and release over row 3 (Paper, bottom) ─
+#
+# The dragged layer takes the depth of the row it was released over, and the
+# stack is renumbered densely so a second drag means the same thing. Notes must
+# end up at the BOTTOM, order 0, with everything else pushed up one.
+
+router.Pointer(120, 17)
+router.Press()
+router.Pointer(120, 101)
+router.Release()
+doc.Report()
+list.Report()
+
+# ── delete: a press on row 0's x, at (224, 17) ───────────────────────────
+#
+# Row 0 after the drag is Ink (renamed). Out of the document, not out of
+# existence -- the entity is still alive, it is simply no longer composited.
+
+router.Pointer(224, 17)
+router.Press()
+router.Release()
+doc.Report()
+
+# ── and the sheet still works ────────────────────────────────────────────
+#
+# A stroke well clear of the panel reaches the sheet, which is the other half
+# of the budget: the panel consumes only what lands on it.
+
+router.Pointer(400, 300)
+router.Press()
+router.Pointer(430, 330)
+router.Release()
+doc.Report()
+
+exit

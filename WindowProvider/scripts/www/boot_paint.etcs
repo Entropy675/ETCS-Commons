@@ -27,18 +27,21 @@ view.Clear(0.13, 0.13, 0.15, 1.0)
 
 # Two layers: paper underneath, ink on top. Both are CPU rasters (Pixels_), and
 # the browser surface composites them with the same Blit the device backend uses.
-spawn PaintProvider::PaintLayer paper
-paper.Create(1024, 768)
-paper.Clear(1.0, 1.0, 1.0, 1.0)
-
-spawn PaintProvider::PaintLayer ink
-ink.Create(1024, 768)
-ink.Clear(0.0, 0.0, 0.0, 0.0)
-
 spawn PaintProvider::PaintDocument doc
 doc.Create(1024, 768, browser)
-doc.AddLayer(@paper)
-doc.AddLayer(@ink)
+
+doc.spawn(PaintProvider::PaintLayer paper)
+paper.Create(1024, 768)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+paper.SetName(Paper)
+paper.SetOrder(0)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(1024, 768)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(1)
+
 doc.SetActiveLayer(@ink)
 
 spawn PaintProvider::PaintTool brush

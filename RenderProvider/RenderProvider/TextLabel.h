@@ -127,16 +127,39 @@ public:
                                      int32_t x, int32_t y,
                                      float r, float g, float b, float a) override
     {
-        Surface_* dst = ETCS::resolve_in_family<Surface_>("Surface", target);
-        if (!dst)
-        {
-            ETCS_LOG("TextLabel", "RasterizeText target RID:" << target
-                     << " does not resolve as a Surface -- nothing drawn.");
-            return TextExtent{0, 0, 0};
-        }
+        /*
+     * PIXELS FIRST, SURFACE SECOND, and the order is the family's contract
+     * rather than a preference. Glyphs_ says in as many words that a run is
+     * rasterised INTO something that owns pixels -- that is what lets text
+     * reach a screen through the Blit that already exists, with no font stack
+     * added to any Surface implementation.
+     *
+     * Resolving only Surface silently excluded every Pixels leaf that is not
+     * also a Surface. PaintProvider's PaintLayer is exactly that -- a raster
+     * that is composited BY a surface rather than being one -- so placing text
+     * into a paint layer logged a miss and drew nothing, which is the bug this
+     * ordering fixes.
+     *
+     * The Surface path stays as the fallback because it is not redundant: a
+     * window's swapchain surface owns no host-addressable bytes at all
+     * (Renderable, not Pixels), and drawing a label onto one is an ordinary
+     * thing to want.
+     */
         const uint32_t scale = size_px ? (size_px / CELL_H ? size_px / CELL_H : 1) : m_scale;
-        drawRun(dst, text, x, y, scale, r, g, b, a);
-        return MeasureTextConcrete(text, font, size_px);
+
+        if (Pixels_* px = ETCS::resolve_in_family<Pixels_>("Pixels", target))
+        {
+            drawRunPixels(px, text, x, y, scale, r, g, b, a);
+            return MeasureTextConcrete(text, font, size_px);
+        }
+        if (Surface_* dst = ETCS::resolve_in_family<Surface_>("Surface", target))
+        {
+            drawRun(dst, text, x, y, scale, r, g, b, a);
+            return MeasureTextConcrete(text, font, size_px);
+        }
+        ETCS_LOG("TextLabel", "RasterizeText target RID:" << target
+                 << " owns neither Pixels nor a Surface -- nothing drawn.");
+        return TextExtent{0, 0, 0};
     }
 
     // ── Drawable2D_ dispatch ─────────────────────────────────────────────
@@ -257,6 +280,50 @@ private:
  * instead of hundreds. That matters because these land in a retained
  * composition (VulkanSurface) where every rect is a draw command.
  */
+    /*
+ * THE SAME RUN, WRITTEN STRAIGHT INTO A BUFFER.
+ *
+ * Identical walk to drawRun below -- same glyph, same column-major bits, same
+ * vertical run-collapsing -- differing only in what it calls to put the span
+ * down. Pixels_::FillRect is source-over and clipped, which is exactly what
+ * Surface_::DrawRect promised, so the two produce the same marks.
+ *
+ * Written twice rather than templated on the primitive: the two families share
+ * no base and a template over "something with a rect-filling method" would name
+ * neither of them, which is a worse statement of the relationship than a
+ * duplicated ten-line loop that says plainly there are two backends.
+ */
+    void drawRunPixels(Pixels_* dst, const char* text, int32_t x, int32_t y,
+                       uint32_t scale, float r, float g, float b, float a)
+    {
+        if (!dst || !text) return;
+        const int32_t s = static_cast<int32_t>(scale);
+        int32_t pen = x;
+
+        for (const char* p = text; *p; ++p, pen += static_cast<int32_t>(ADVANCE) * s)
+        {
+            const uint8_t* col = glyph(*p);
+            if (!col) continue;
+            for (uint32_t c = 0; c < CELL_W; ++c)
+            {
+                uint8_t bits = col[c];
+                uint32_t row = 0;
+                while (row < CELL_H)
+                {
+                    if (!(bits & (1u << row))) { ++row; continue; }
+                    uint32_t run = 0;
+                    while (row + run < CELL_H && (bits & (1u << (row + run)))) ++run;
+                    dst->FillRect(pen + static_cast<int32_t>(c) * s,
+                                  y + static_cast<int32_t>(row) * s,
+                                  static_cast<uint32_t>(s),
+                                  static_cast<uint32_t>(run) * scale,
+                                  r, g, b, a);
+                    row += run;
+                }
+            }
+        }
+    }
+
     void drawRun(Surface_* dst, const char* text, int32_t x, int32_t y,
                  uint32_t scale, float r, float g, float b, float a)
     {

@@ -5,28 +5,63 @@
 // control-thread edge from Window::ProduceEvents (first detached script
 // thread / OS event pump affinity).
 ETCS_MODULE_EXPORT_MAIN(PaintProvider,
-    "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette")
+    "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette "
+    "PaintRouter PaintLayerPanel PaintColorWheel")
 
+// SetKind is what makes one tool eight: radius/colour/hardness vary
+// independently of it, and the kind is the shape of the whole gesture rather
+// than which nib is loaded. See PaintToolKind.
 ETCS_TAG_BLOCK_BASIC(PaintTool,
-    SetRadius, SetColor,
+    SetRadius, SetColor, SetKind, SetText, SetTextSize, SetTolerance,
     BeginStroke, MoveStroke, EndStroke, CancelStroke, Delete)
 
+// SetOrder is the layer's whole contribution to stacking -- the order is a
+// relation on the leaf, not a container operation (see PaintLayer).
 ETCS_TAG_BLOCK_BASIC(PaintLayer,
-    Create, Clear, DrawPixel, DrawLine, Delete)
+    Create, Clear, DrawPixel, DrawLine,
+    SetOrder, SetName, SetVisible, ToggleVisible, SetOpacity, Report, Delete)
 
 ETCS_TAG_BLOCK_BASIC(PaintDocument,
-    Create, AddLayer, SetActiveLayer, ClearLayer, RenderToSurface, Delete)
+    Create, SetActiveLayer, ClearLayer, RenderToSurface,
+    MoveLayerTo, RenameLayer, RemoveLayer, IsolateLayer, ClearIsolate,
+    Report, Delete)
 
+// The projection verbs sit beside Render because every one of them ends in a
+// re-composite: pan and zoom are what Render draws WITH.
 ETCS_TAG_BLOCK_BASIC(PaintSurface,
-    Create, AttachDocument, SetTarget, Render, Delete)
+    Create, AttachDocument, SetTarget, Render,
+    SetPan, PanBy, SetZoom, ZoomAt, ZoomBy, SetBackground, ZoomPercent, Delete)
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
-     BindRoot, BindCanvas, BindPalette,
+     BindRoot, BindCanvas, BindPalette, BindPanel, BindGlyphs,
+     BindWheel, SetWheelPane,
      Pointer, Press, Release, Report, Delete),
     (ConsumeInput, ConsumePointer, ConsumeRouted, ConsumeRoutedPointer))
 
 // A mapping from picked node to tool setting, and nothing else -- it owns no
 // pixels, because the 2D tree it points into already does. See PaintPalette.
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
-    BindTool, AddColor, AddSize, Report, Delete)
+    BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
+    SetColorOf, Report, Delete)
+
+// A mapping from picked node to layer action, and nothing else -- it owns no
+// pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
+ETCS_TAG_BLOCK_BASIC(PaintLayerPanel,
+    Create, BindDocument, AddRow, SetHoverDim, SetEyeColors, SetRowColors,
+    Scroll, Refresh, CommitRename,
+    SelectRow, ToggleRow, RemoveRow, MoveRow, ArmRename, HoverRow,
+    Report, Delete)
+
+// A region where POSITION means colour, rather than a node meaning one -- which
+// is why it is not a PaintPalette entry. See PaintColorWheel.
+ETCS_TAG_BLOCK_BASIC(PaintColorWheel,
+    Create, BindTool, BindPalette, BindRouter, BindPane, SetValue,
+    Open, Close, Pick, Report, Delete)
+
+// HYBRID for the same reason PaintInput is: its consume edges are the standing
+// control-thread ends of the window's producers, not one-shot calls.
+ETCS_TAG_BLOCK_HYBRID(PaintRouter,
+    (Create, AddPane, RemovePane, SetPassBudget,
+     Pointer, Press, Release, PressButton, ReleaseButton, Report, Delete),
+    (ConsumePointer, ConsumeInput))

@@ -42,18 +42,25 @@ bar_view.ResizeTo(640, 64)
 bar_view.Clear(0.16, 0.16, 0.19, 1.0)
 
 # ── the document: paper under ink ────────────────────────────────────────────
-spawn PaintProvider::PaintLayer paper
-paper.Create(1024, 768)
-paper.Clear(1.0, 1.0, 1.0, 1.0)
-
-spawn PaintProvider::PaintLayer ink
-ink.Create(1024, 768)
-ink.Clear(0.0, 0.0, 0.0, 0.0)
-
+#
+# The layers are the document's CHILDREN, which is what makes them its layers --
+# membership is parenthood, so the stack is read out of the typed-children list
+# that already holds them rather than out of a second list saying the same thing.
 spawn PaintProvider::PaintDocument doc
 doc.Create(1024, 768, browser)
-doc.AddLayer(@paper)
-doc.AddLayer(@ink)
+
+doc.spawn(PaintProvider::PaintLayer paper)
+paper.Create(1024, 768)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+paper.SetName(Paper)
+paper.SetOrder(0)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(1024, 768)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(1)
+
 doc.SetActiveLayer(@ink)
 
 spawn PaintProvider::PaintTool brush
