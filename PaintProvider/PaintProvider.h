@@ -7,6 +7,7 @@
 #include "Contract_PaintProvider.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -147,6 +148,11 @@ static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
 static constexpr uint16_t PAINT_BUTTON_LEFT   = 0;
 static constexpr uint16_t PAINT_BUTTON_RIGHT  = 1;  // GLFW right
 static constexpr uint16_t PAINT_BUTTON_MIDDLE = 2;  // GLFW middle -- pan, like right
+
+// Continuous motion used to rebuild the view on every sample. At high pointer
+// rates that is both the cost and the flicker. Coalesce to this interval;
+// button-up always flushes so the final sample is never dropped.
+static constexpr double PAINT_MOTION_COALESCE_MS = 100;
 
 enum class PaintToolKind : uint8_t
 {
@@ -2473,32 +2479,27 @@ public:
                 m_panning  = true;
                 m_pan_from_x = ev.x;
                 m_pan_from_y = ev.y;
+                m_last_motion_ms = 0;    // allow an immediate first pan sample
                 if (m_tool && m_tool->active()) m_tool->CancelStroke();
                 repaint_view();          // drop any preview the cancelled gesture left
             }
             else
             {
+                flush_coalesced_motion(); // apply the last pending pan delta
                 m_panning = false;
             }
             return;
         }
         if (ev.action == INPUT_MOTION && m_panning)
         {
-            // In VIEW pixels, unscaled: dragging the sheet should move it one
-            // screen pixel per screen pixel of hand movement at every zoom,
-            // which is what makes panning feel like dragging paper.
-            if (m_surface)
-            {
-                m_surface->PanBy(ev.x - m_pan_from_x, ev.y - m_pan_from_y);
-                repaint_view();
-                static int n = 0;
-                if ((n++ % 8) == 0)
-                    ETCS_LOG("PaintInput", "pan " << m_surface->panX()
-                             << "," << m_surface->panY());
-            }
-            m_pan_from_x = ev.x;
-            m_pan_from_y = ev.y;
-            m_cursor_seen = false;       // the stroke's continuity does not survive a pan
+            // Accumulate view-space samples; rebuild the sheet on the coalesce
+            // interval only (see PAINT_MOTION_COALESCE_MS).
+            m_pending_view_x = ev.x;
+            m_pending_view_y = ev.y;
+            m_motion_pending = true;
+            m_motion_kind = MotionKind::Pan;
+            if (motion_coalesce_due())
+                flush_coalesced_motion();
             return;
         }
 
@@ -2531,48 +2532,24 @@ public:
 
         if (ev.action == INPUT_MOTION)
         {
-            // TAKEN, NOT ACCUMULATED. The event carries where the pointer is,
-            // in content-area pixels -- the same space the canvas is in -- so
-            // there is nothing to integrate and nothing to drift.
+            // Position is still taken from the event (not integrated). Only the
+            // expensive follow-up -- preview rebuild / segment stamp -- is
+            // coalesced so a high-rate pointer does not clear+composite every
+            // sample (see PAINT_MOTION_COALESCE_MS).
             m_cursor_x = to_doc_x(ev.x);
             m_cursor_y = to_doc_y(ev.y);
             m_cursor_seen = true;
+            m_pending_view_x = ev.x;
+            m_pending_view_y = ev.y;
 
             if (m_tool && m_tool->active())
             {
                 m_tool->MoveStroke(m_cursor_x, m_cursor_y);
-                /*
-             * WHICH OF THE THREE THINGS A DRAG DOES, decided by the tool's kind
-             * rather than by a flag the input edge keeps.
-             *
-             * An ANCHORED tool has not made a mark yet and must not: what it
-             * shows while the pointer moves is a PREVIEW on the view surface,
-             * wiped by the next composite, so dragging out a rectangle does not
-             * leave forty rectangles behind it. The commit happens once, on
-             * release (see below), which is also what makes such a stroke a
-             * single undoable thing rather than a smear of them.
-             *
-             * A CONTINUOUS tool marks here, because that is what continuous
-             * means -- and interpolates, because the pointer is sampled once per
-             * poll pass and a hand moves further than one pixel in that time.
-             * Stamping only where samples land gives a dotted line at any speed
-             * above a crawl; joining consecutive samples is what makes a stroke
-             * a stroke.
-             *
-             * A PLACED tool did its work on the press and ignores the drag
-             * entirely -- dragging after a flood fill is not a second fill.
-             */
-                const PaintToolKind k = m_tool->kind();
-                if (paint_kind_is_anchored(k))
-                    preview_anchored(k, m_tool->anchorX(), m_tool->anchorY(),
-                                     m_cursor_x, m_cursor_y);
-                else if (k == PaintToolKind::Smudge)
-                    apply_smudge(m_last_x, m_last_y, m_cursor_x, m_cursor_y);
-                else if (!paint_kind_is_placed(k))
-                    apply_segment(m_last_x, m_last_y, m_cursor_x, m_cursor_y);
+                m_motion_pending = true;
+                m_motion_kind = MotionKind::Stroke;
+                if (motion_coalesce_due())
+                    flush_coalesced_motion();
             }
-            m_last_x = m_cursor_x;
-            m_last_y = m_cursor_y;
         }
         else if (ev.action == INPUT_DOWN || ev.action == INPUT_BUTTON_DOWN)
         {
@@ -2618,6 +2595,9 @@ public:
          * letting go of it simply removes the measurement -- which is what a
          * ruler you have finished with should do.
          */
+            // Drain any motion held by the coalesce timer so the release
+            // position is the one that was committed / previewed last.
+            flush_coalesced_motion();
             if (m_tool)
             {
                 const PaintToolKind k = m_tool->kind();
@@ -2707,6 +2687,75 @@ public:
     int32_t cursorY() const { return m_cursor_y; }
 
 private:
+
+    enum class MotionKind : uint8_t { None, Pan, Stroke };
+
+    static double now_ms()
+    {
+        using clock = ::std::chrono::steady_clock;
+        return ::std::chrono::duration<double, ::std::milli>(
+            clock::now().time_since_epoch()).count();
+    }
+
+    bool motion_coalesce_due()
+    {
+        const double t = now_ms();
+        if (m_last_motion_ms <= 0.0 || (t - m_last_motion_ms) >= PAINT_MOTION_COALESCE_MS)
+        {
+            m_last_motion_ms = t;
+            return true;
+        }
+        return false;
+    }
+
+    /*
+     * Apply the latest pending pointer sample to the document / view. Called
+     * when the coalesce interval elapses and again on button-up so the final
+     * tip is never discarded. Between flushes, motion events only update the
+     * pending coordinates.
+     */
+    void flush_coalesced_motion()
+    {
+        if (!m_motion_pending) return;
+        m_motion_pending = false;
+
+        if (m_motion_kind == MotionKind::Pan)
+        {
+            if (m_surface)
+            {
+                m_surface->PanBy(m_pending_view_x - m_pan_from_x,
+                                 m_pending_view_y - m_pan_from_y);
+                repaint_view();
+            }
+            m_pan_from_x = m_pending_view_x;
+            m_pan_from_y = m_pending_view_y;
+            m_cursor_seen = false;
+            m_motion_kind = MotionKind::None;
+            return;
+        }
+
+        if (m_motion_kind == MotionKind::Stroke && m_tool && m_tool->active())
+        {
+            /*
+             * WHICH OF THE THREE THINGS A DRAG DOES -- same split as before,
+             * but once per coalesce window instead of once per OS sample.
+             * apply_segment still interpolates from m_last_* to the tip, so a
+             * fast stroke stays continuous rather than dotted.
+             */
+            const PaintToolKind k = m_tool->kind();
+            if (paint_kind_is_anchored(k))
+                preview_anchored(k, m_tool->anchorX(), m_tool->anchorY(),
+                                 m_cursor_x, m_cursor_y);
+            else if (k == PaintToolKind::Smudge)
+                apply_smudge(m_last_x, m_last_y, m_cursor_x, m_cursor_y);
+            else if (!paint_kind_is_placed(k))
+                apply_segment(m_last_x, m_last_y, m_cursor_x, m_cursor_y);
+            m_last_x = m_cursor_x;
+            m_last_y = m_cursor_y;
+        }
+        m_motion_kind = MotionKind::None;
+    }
+
     void apply_sample(int32_t x, int32_t y)
     {
         if (!m_tool) return;
@@ -3003,6 +3052,13 @@ private:
     bool    m_panning = false;
     int32_t m_pan_from_x = 0;
     int32_t m_pan_from_y = 0;   // a press landed on the panel; its release is not a stroke
+
+    // Motion coalesce -- see PAINT_MOTION_COALESCE_MS / flush_coalesced_motion.
+    bool       m_motion_pending = false;
+    MotionKind m_motion_kind    = MotionKind::None;
+    int32_t    m_pending_view_x = 0;
+    int32_t    m_pending_view_y = 0;
+    double     m_last_motion_ms = 0.0;
 };
 
 /*
