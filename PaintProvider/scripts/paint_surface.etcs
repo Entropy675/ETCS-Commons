@@ -60,18 +60,33 @@ view.Clear(0.13, 0.13, 0.15, 1.0)
 # Two layers rather than one, because a paint program's first real question is
 # "undo the drawing without losing the paper" and a stack answers it by being a
 # stack. `ink` starts fully transparent so the paper shows through it.
-spawn PaintProvider::PaintLayer paper
-paper.Create(1280, 800)
-paper.Clear(1.0, 1.0, 1.0, 1.0)
-
-spawn PaintProvider::PaintLayer ink
-ink.Create(1280, 800)
-ink.Clear(0.0, 0.0, 0.0, 0.0)
-
+#
+# SPAWNED AS CHILDREN OF THE DOCUMENT, which is what puts them in it. Membership
+# is parenthood here -- there is no AddLayer any more, because a second list
+# saying the same thing is a second list that can be wrong. The document reads
+# its stack out of the typed-children list that already holds them, ordered by
+# the layers' own relation (PaintDocument::OrderedLayers).
+#
+# ORDER IS STATED, not inferred from the order these lines appear. Ties keep
+# insertion order, so paper-then-ink would composite correctly without either
+# SetOrder -- but "the paper is underneath" is a fact about the picture, and a
+# fact about the picture belongs in the file rather than in the order two
+# statements happen to be written.
 spawn PaintProvider::PaintDocument doc
 doc.Create(1280, 800, 'untitled')
-doc.AddLayer(@paper)
-doc.AddLayer(@ink)
+
+doc.spawn(PaintProvider::PaintLayer paper)
+paper.Create(1280, 800)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+paper.SetName(Paper)
+paper.SetOrder(0)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(1280, 800)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(1)
+
 doc.SetActiveLayer(@ink)
 
 spawn PaintProvider::PaintTool brush

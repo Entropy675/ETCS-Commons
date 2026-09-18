@@ -1,0 +1,126 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# SERVE THE WEB WINDOW PAGE over TLS, with the headers a threaded wasm build
+# needs in order to have threads at all.
+#
+#     cd modules/WindowProvider/scripts && etcs serve_web.etcs
+#     then open https://localhost:8443/
+#
+# RUN IT FROM THIS DIRECTORY. Every path below is relative to it, and nothing
+# here is canonicalised against the cwd or refused for leaving it -- both
+# LoadFromDisk and MountFile open the path as given (see the mount section for
+# why that is worth knowing), so "../.." is a normal thing to write.
+#
+# ONE PAGE ENTITY, AND THAT IS THE WHOLE STRUCTURE. www/ is the served tree;
+# everything else the page needs is mounted into that same tree FILE BY FILE, at
+# the exact URL it is fetched from. So the scripts stay in their one real
+# location, nothing is duplicated to be servable, and no directory above www/ is
+# reachable either.
+
+spawn NetworkProvider::HttpServer web
+web.SetPort(8443)
+web.EnableTLS(/tmp/etcs-cert.pem /tmp/etcs-key.pem)
+
+# THESE TWO HEADERS ARE WHY THREADS EXIST, and without them the failure mode is
+# not a missing feature -- it is every Worker dying on
+# "can't access property buffer, wasmMemory is undefined".
+#
+# A -pthread build's memory is a SharedArrayBuffer, and a browser hands one out
+# only to a CROSS-ORIGIN ISOLATED document. These two headers are the request for
+# isolation; TLS above is the secure context it also requires. Confirm it from the
+# page's console in one line:
+#
+#     crossOriginIsolated, typeof SharedArrayBuffer
+#
+# true / "function" means memory is shareable and a Worker can be handed it.
+# false / "undefined" means it cannot be, whatever the pool size says -- and every
+# pthread_create will fail exactly that way.
+#
+# The embedded shell iframe is same-origin, so require-corp admits it with no
+# CORP header of its own.
+web.AddHeader(Cross-Origin-Opener-Policy same-origin)
+web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
+
+# ── the one page child ───────────────────────────────────────────────────────
+#
+# EXACTLY ONE HtmlPage CHILD, ON PURPOSE. HttpServer::ResolvePath walks its
+# HtmlPage_ children and takes the first that matches, but "first" is only well
+# defined ACROSS tags (typed_child_order_ is attach order). WITHIN one tag it is
+# a RIDList, whose `entities` is an unordered_map, so invoke_collect_rids hands
+# the siblings back in hash order.
+#
+# And every StaticHtmlPage answers "/" AND "/index.html" unconditionally,
+# whatever content it was given (StaticHtmlPage.h's kIndexPath/kHtmlPath). Two of
+# them under one server is therefore not "the first one added wins", it is a coin
+# flip the hash re-tosses -- and the symptom is the index page serving some other
+# page's bytes.
+#
+# There is no separate landing page here because there does not need to be: a
+# Directory node resolves "/" through its own index.html child (ResolveConcrete's
+# Directory branch, "index" + the default extension), and www/index.html is
+# already that child. One page entity, no ordering to depend on.
+web.spawn(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(./www)
+tree.SetDefaultExtension(.html)
+
+# ── the explicit mounts ──────────────────────────────────────────────────────
+#
+# ONE FILE EACH, AT ONE PATH EACH. A page can only fetch what is served, and the
+# runtime can only open what the page fetched -- so `detach window_events.etcs`
+# in the browser needs that exact name to answer over HTTP. Mounting the file
+# rather than copying it into www/ keeps ONE copy of the pump: the same text the
+# OS side runs, served from where the OS side keeps it.
+#
+# MountFile, NOT MountExternal, and the difference decides what the paths here can
+# even look like. MountExternal forwards to a StaticHtmlPage, whose
+# SetHtmlFromFile canonicalises against the cwd and REFUSES anything that leaves
+# it ("SECURITY VIOLATION: Path traversal blocked", then an empty page that
+# resolves as a miss and 404s) -- so the shell page one level up was unreachable
+# from here by construction. It also caps at ETCS_NETWORK_MAX_HEADER_SIZE, answers
+# four fixed sub-paths instead of the one asked for, and has no extension to take
+# a MIME type from. MountFile opens the path as given and builds the same
+# File-kind node LoadFromDisk builds: unbounded bytes, Content-Type from the DISK
+# name, one url path. MountExternal is still right for a page some other entity
+# keeps rewriting -- it is the only mount kind that re-reads per request.
+tree.MountFile(window_events.etcs ./window_events.etcs)
+tree.MountFile(window_pointer.etcs ./window_pointer.etcs)
+
+# The paint session's own two pumps, from the modules that own them. The frame
+# pump is mounted at the PATH paint_surface.etcs names it by, not at a flat
+# name: the page stages each script at the url it fetched it from, so mounting
+# it here is what lets one `detach` line serve both substrates.
+tree.MountFile(paint_pointer.etcs ../../PaintProvider/scripts/paint_pointer.etcs)
+tree.MountFile(RenderProvider/scripts/render_frames.etcs ../../RenderProvider/scripts/render_frames.etcs)
+
+# THE SCENE SCRIPTS, at the paths they already have. Each one is a `requires`
+# header and a handful of statements against names a boot script left behind, so
+# once the substrate is up (www/boot_canvas.etcs) the navigator can specialise an
+# empty canvas with one `run` -- and the script it runs is the SAME file the OS
+# side runs, not a browser copy of it.
+#
+# Listed in modules.json as well as mounted here: the page stages every name in
+# that list into the runtime's filesystem before main(), which is also what makes
+# the navigator list them next to the modules.
+tree.MountFile(RenderProvider/scripts/scene_bars.etcs ../../RenderProvider/scripts/scene_bars.etcs)
+tree.MountFile(RenderProvider/scripts/scene_emblem.etcs ../../RenderProvider/scripts/scene_emblem.etcs)
+tree.MountFile(RenderProvider/scripts/scene_layer.etcs ../../RenderProvider/scripts/scene_layer.etcs)
+tree.MountFile(RenderProvider/scripts/scene_reset.etcs ../../RenderProvider/scripts/scene_reset.etcs)
+tree.MountFile(RenderProvider/scripts/polygon_add.etcs ../../RenderProvider/scripts/polygon_add.etcs)
+tree.MountFile(RenderProvider/scripts/polygon_draw.etcs ../../RenderProvider/scripts/polygon_draw.etcs)
+tree.MountFile(RenderProvider/scripts/scene3d.etcs ../../RenderProvider/scripts/scene3d.etcs)
+tree.MountFile(PaintProvider/scripts/paint_toolbar.etcs ../../PaintProvider/scripts/paint_toolbar.etcs)
+
+# The terminal view, from ShellProvider's own page -- not a copy of it. Mounted at
+# "/shell", which is what index.html's iframe points at. The url name has no
+# extension and does not need one: the MIME comes from index.html.
+tree.MountFile(shell ../../ShellProvider/scripts/www/index.html)
+
+# What was actually found, which is the fastest way to catch a staging mistake: a
+# name the page asks for and this does not list is a 404 waiting to happen. A
+# mount whose file could not be opened logged the reason and is ABSENT here
+# rather than listed and empty.
+tree.ListPaths()
+
+web.Start()
+web.IsStarted()

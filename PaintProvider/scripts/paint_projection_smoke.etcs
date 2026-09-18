@@ -1,0 +1,189 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE DOCUMENT AS A PROJECTION INSIDE THE VIEW.
+#
+#     etcs paint_projection_smoke.etcs
+#
+# The claim under test is that a click means a DOCUMENT coordinate, not a view
+# one -- so the same screen position lands somewhere different in the picture
+# once the view has been panned or zoomed, and the same DOCUMENT position can be
+# reached from two different screen positions.
+#
+# Asserted by painting single dabs and reading the layer back, because that is
+# the only way to tell "the projection was applied" from "the projection was
+# computed and ignored". A report of pan and zoom would pass either way.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn RenderProvider::ImageSurface view
+view.Create(400, 300)
+
+spawn RenderProvider::CompositeDrawable2D pane
+pane.Create(400, 300)
+pane.SetPosition(0, 0)
+pane.SetOrder(0)
+
+spawn PaintProvider::PaintDocument doc
+doc.Create(200, 150, projection)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(200, 150)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(0)
+
+doc.SetActiveLayer(@ink)
+
+# A one-pixel nib, so a dab marks a spot rather than a region and the counts
+# below are readable as "how many dabs landed".
+spawn PaintProvider::PaintTool pen
+pen.SetRadius(1.0)
+pen.SetColor(0.9, 0.2, 0.2, 1.0)
+
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@view)
+canvas.AttachDocument(@doc)
+canvas.SetBackground(0.10, 0.10, 0.12, 1.0)
+
+spawn PaintProvider::PaintInput input
+input.Create(@doc, @pen, @canvas)
+input.BindRoot(@pane)
+
+spawn PaintProvider::PaintRouter router
+router.Create(1)
+router.AddPane(@pane, @input)
+
+canvas.ZoomPercent()
+
+# ── identity: a click is a document coordinate ───────────────────────────
+#
+# Pan 0, zoom 1. A press at view (40,40) must mark document (40,40) -- the two
+# frames coincide, which is the case every earlier test ran in.
+
+router.Pointer(40, 40)
+router.Press()
+router.Release()
+ink.Report()
+
+# ── pan: the same screen point is now a different document point ─────────
+#
+# Move the document's origin to (100,60) in view space. A press at view
+# (140,100) is now document (40,40) -- the pixel already marked -- so the count
+# must NOT move. That is a sharper assertion than marking somewhere new: it says
+# the conversion is exact, not merely applied.
+
+canvas.SetPan(100, 60)
+canvas.Render()
+canvas.ZoomPercent()
+router.Pointer(140, 100)
+router.Press()
+router.Release()
+ink.Report()
+
+# And a press at the SAME screen point as the first one is now document
+# (-60,-20), which is off the sheet entirely and must mark nothing.
+
+router.Pointer(40, 40)
+router.Press()
+router.Release()
+ink.Report()
+
+# ── zoom: one document pixel becomes four view pixels ────────────────────
+#
+# ZoomAt holds a view point fixed, which is what a wheel does. Zooming to 400%
+# about (140,100) keeps document (40,40) under that same screen position, so the
+# press below lands on the marked pixel again and the count still must not move.
+
+canvas.ZoomAt(4.0, 140, 100)
+canvas.ZoomPercent()
+router.Pointer(140, 100)
+router.Press()
+router.Release()
+ink.Report()
+
+# Four view pixels to the right at 400% is ONE document pixel across, so this
+# marks a new pixel -- the count goes up by one dab's worth. At zoom 1 the same
+# 4px step would have moved four document pixels.
+
+router.Pointer(144, 100)
+router.Press()
+router.Release()
+ink.Report()
+
+# ── the right button clears and pans, and never draws ────────────────────
+#
+# A right press, a drag, and a release. The count must be unchanged afterwards,
+# and the pan must have moved -- a right button that drew would show up here as
+# a line across the picture.
+
+canvas.ZoomPercent()
+router.Pointer(200, 200)
+router.PressButton(1)
+router.Pointer(260, 240)
+router.ReleaseButton(1)
+canvas.ZoomPercent()
+ink.Report()
+
+# ── the zoom widget: two nodes that mean a zoom step ─────────────────────
+#
+# Mapped by PaintPalette, picked exactly as a swatch is. Bottom-left of the
+# pane, deliberately small and semi-transparent -- it is a readout you reach for
+# occasionally, not a control that should compete with the picture.
+
+spawn PaintProvider::PaintPalette zoombar
+zoombar.BindTool(@pen)
+zoombar.BindSurface(@canvas)
+
+pane.spawn(RenderProvider::PolygonDrawable2D zoom_out)
+zoom_out.Create()
+zoom_out.AddPoint(8, 270)
+zoom_out.AddPoint(28, 270)
+zoom_out.AddPoint(28, 290)
+zoom_out.AddPoint(8, 290)
+zoom_out.SetFill(0.85, 0.85, 0.88, 0.35)
+zoom_out.SetOrder(5)
+zoombar.AddZoom(@zoom_out, 0.8)
+
+pane.spawn(RenderProvider::PolygonDrawable2D zoom_in)
+zoom_in.Create()
+zoom_in.AddPoint(34, 270)
+zoom_in.AddPoint(54, 270)
+zoom_in.AddPoint(54, 290)
+zoom_in.AddPoint(34, 290)
+zoom_in.SetFill(0.85, 0.85, 0.88, 0.35)
+zoom_in.SetOrder(5)
+zoombar.AddZoom(@zoom_in, 1.25)
+
+pane.spawn(RenderProvider::TextLabel zoom_label)
+zoom_label.Create()
+zoom_label.SetPosition(62, 274)
+zoom_label.SetSize(2)
+zoom_label.SetColor(0.85, 0.85, 0.88, 1.0)
+zoom_label.SetText(400%)
+zoom_label.SetOrder(5)
+
+input.BindPalette(@zoombar)
+
+# Three steps out from 400%: 320, 256, 205 (rounded). Each is a press on the
+# same node, which is what a repeated click on a widget is.
+router.Pointer(18, 280)
+router.Press()
+router.Release()
+canvas.ZoomPercent()
+router.Pointer(18, 280)
+router.Press()
+router.Release()
+canvas.ZoomPercent()
+
+# And one step back in.
+router.Pointer(44, 280)
+router.Press()
+router.Release()
+canvas.ZoomPercent()
+
+# Nothing the widget did may have painted.
+ink.Report()
+
+exit

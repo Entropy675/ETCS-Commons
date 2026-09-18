@@ -1,0 +1,46 @@
+#!/usr/bin/env etcs
+
+# THE BROWSER'S BOOT SCRIPT: a window on the page's canvas, with its input pump
+# already running by the time anyone can type.
+#
+# Handed to the runtime as argv[1] by index.html, so it runs BEFORE the
+# navigator opens -- script mode and REPL mode are not alternatives in this
+# binary, the script runs and then main falls through to the terminal
+# (drive_main_loop_then_exit, core/CommandExecutor.h). That is the whole reason
+# the pump can exist "on load" without anything new in C++: the boot path for a
+# page is the boot path for a script, and it already ended in a prompt.
+#
+# NO `#IMPORT ACE_ROOT/modules`, and that is the one line every other script
+# has. In the browser the providers are already bound before main() runs
+# (ETCS::preload_web_modules, loaders/etcs.cc) from the .wasm files the page
+# staged into MEMFS -- so there is no directory to import from and nothing left
+# for an import to do. The names below resolve out of the catalog those loads
+# already filled.
+
+# The window IS the canvas. 1024x768 matches index.html's element; Create calls
+# emscripten_set_canvas_element_size on "#canvas" with exactly these numbers
+# (OS/GLFWWindow.h), so the element is resized to match rather than the reverse
+# -- which is why the page can state a size in CSS and still get a correctly
+# sized framebuffer.
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS Web)
+
+# THE SAME PUMP SCRIPT THE OS SIDE USES, unmodified and by name. Not a browser
+# variant: window_events.etcs states `window.ProduceEvents() -> window.ConsumeEvents()`
+# and detaches the pointer channel, and neither half knows what platform it is
+# on -- a window is an InputSource either way, and the GLFW entry points that
+# have to touch the DOM are marshalled to the main thread by glfw_web
+# (OS/GLFWWindow.h) rather than being avoided here.
+#
+# DETACHED BECAUSE ProduceEvents BLOCKS. It is the OS message pump as well as
+# the event source: a `while (IsActive())` loop around PollEvents, which on the
+# page's own thread would stop the page. So it runs on its own thread and the
+# navigator keeps the main one.
+#
+# AND A THREAD IS SAFE HERE BECAUSE OF WHERE THIS SCRIPT RUNS. What the browser
+# cannot survive is a Worker starting while the main module is still inside
+# loadDynamicLibrary -- the reason for the deferred static init and for
+# etcs_boot_runtime_threads. This script is argv[1], so every module is already
+# loaded and the pool is already armed by the time this line is read. The
+# constraint was never "no threads", it was "not yet".
+detach window_events.etcs window=main

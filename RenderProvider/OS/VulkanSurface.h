@@ -1389,12 +1389,43 @@ private:
  * pull is worth having: the one call that must not happen on the poll thread
  * is now structurally unable to.
  */
+    /*
+ * PUBLIC, and the pair below is why. Resizable_ dispatches ResizeTo through the
+ * base, so a private override served it for as long as nothing else called it --
+ * but the family's work functions call the CONCRETE type (`self.ResizeTo(...)`,
+ * RenderProvider.h), which is the point of the work-func trampolines. Both verbs
+ * are now part of the surface's own surface.
+ */
+public:
     bool ResizeTo(WindowSize sz) override
     {
         recreateSwapchain(sz);
         return true;
     }
 
+    /*
+     * NAMES THE PRESENTATION TARGET, of which a swapchain has exactly one: the
+     * surface handed to it by the window it was made from (VkSurfaceKHR, taken in
+     * Create). There is no second one to select and no way to retarget this
+     * swapchain at another, so a name other than the window's own is refused
+     * rather than remembered -- a stored value nothing reads is worse than a
+     * complaint, because it reads as configured.
+     *
+     * The verb is here because the browser backend genuinely has several targets
+     * (CanvasSurface::SetTarget: a page can hold any number of canvases) and a
+     * work function exists on the family, not on a backend. Answering honestly
+     * from this side is the point of having it on both.
+     */
+    bool SetTarget(const std::string& element_id)
+    {
+        if (element_id.empty() || element_id == "window") return true;
+        ETCS_LOG("VulkanSurface", "SetTarget('" << element_id << "'): a swapchain "
+                 "presents to the one VkSurfaceKHR its window gave it. Ignoring -- "
+                 "named targets are the browser backend's (CanvasSurface).");
+        return false;
+    }
+
+private:
     void recreateSwapchain(WindowSize sz)
     {
         if (!m_instance || m_surface == VK_NULL_HANDLE) return;

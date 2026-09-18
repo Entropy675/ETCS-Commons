@@ -1,0 +1,234 @@
+#!/usr/bin/env etcs
+
+# ONE CANVAS: the sheet, with the toolbar drawn on top at the bottom edge.
+#
+# The toolbar is a CompositeDrawable2D child of sheet_root (order 20), not a
+# second Surface / DOM element. Every pointer event comes through the window's
+# GLFW stream; a press on a swatch is a pick inside the same tree as the picture.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS Paint)
+
+# ── the sheet ────────────────────────────────────────────────────────────────
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+view.Clear(0.13, 0.13, 0.15, 1.0)
+
+# ── the document: paper under ink ────────────────────────────────────────────
+#
+# The layers are the document's CHILDREN, which is what makes them its layers --
+# membership is parenthood, so the stack is read out of the typed-children list
+# that already holds them rather than out of a second list saying the same thing.
+spawn PaintProvider::PaintDocument doc
+doc.Create(1024, 768, browser)
+
+doc.spawn(PaintProvider::PaintLayer paper)
+paper.Create(1024, 768)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+paper.SetName(Paper)
+paper.SetOrder(0)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(1024, 768)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(1)
+
+doc.SetActiveLayer(@ink)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(6.0)
+brush.SetColor(0.10, 0.10, 0.12, 1.0)
+
+
+# ── the sheet's own pane ─────────────────────────────────────────────────────
+#
+# The sheet needed no 2D tree while it was the only thing on it: `input` ran
+# unrouted and every position was a position on the picture. A popup over the
+# canvas changes that -- a pane has to exist for the wheel to be ON TOP of, and
+# the wheel has to be a pane for opening it to mean anything (PaintColorWheel:
+# open is membership of the routing set, because a drawable that is merely
+# invisible still swallows clicks).
+#
+# So the sheet gets a root at order 0, the same size as the document, and
+# BindCanvas names it as the thing that IS the picture -- anything else picked
+# inside it is scenery and does not draw.
+spawn RenderProvider::CompositeDrawable2D sheet_root
+sheet_root.Create(1024, 768)
+sheet_root.SetPosition(0, 0)
+sheet_root.SetOrder(0)
+
+# RETAINED, and this one line is what makes an overlay possible at all.
+#
+# A composite normally CLEARS its buffer before drawing its children, because
+# normally the buffer is derived from the tree and nothing else may write it.
+# Here two things write it: the paint document blits the picture in, and the
+# recompose draws the readout on top. Without retain the recompose wipes the
+# picture -- which reads as the sheet going blank the moment anything is
+# composed over it, and is exactly what it did before this line existed.
+#
+# Safe because the CLEAR still happens, from the other side: PaintSurface::Render
+# clears the target to its own background before blitting, so panning does not
+# smear. Retain moves the responsibility for clearing to the one writer that
+# knows when the whole surface is being redrawn.
+sheet_root.SetRetain(1)
+
+# ── the document draws INTO the pane, not beside it ──────────────────────────
+#
+# This is the one ordering that works, and the alternative is worth stating
+# because it looks right and is not. Leaving the document pointed at `view` and
+# composing sheet_root into the same surface gives two writers: the frame pump
+# rebuilds `view` from the tree every frame, which wipes whatever Render blitted.
+#
+# So the pane is the TARGET. canvas clears and blits the document into
+# sheet_root's own raster (a CompositeDrawable2D is a Surface and owns Pixels),
+# the compose walk then draws sheet_root's children -- the zoom readout -- on top
+# of the picture, and `view` presents the one composed result. One writer per
+# buffer, and the widget is over the sheet because the tree says so rather than
+# because of which call ran last.
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@sheet_root)
+canvas.AttachDocument(@doc)
+canvas.SetBackground(0.13, 0.13, 0.15, 1.0)
+canvas.Render()
+
+# ── the toolbar, ON the sheet ───────────────────────────────────────────────
+sheet_root.spawn(RenderProvider::PolygonDrawable2D bar_bg)
+bar_bg.Create()
+bar_bg.AddPoint(0, 704)
+bar_bg.AddPoint(1024, 704)
+bar_bg.AddPoint(1024, 768)
+bar_bg.AddPoint(0, 768)
+bar_bg.SetFill(0.16, 0.16, 0.19, 1.0)
+bar_bg.SetOrder(19)
+
+sheet_root.spawn(RenderProvider::CompositeDrawable2D bar)
+bar.Create(960, 64)
+bar.SetPosition(32, 704)
+bar.SetOrder(20)
+
+spawn PaintProvider::PaintPalette palette
+palette.BindTool(@brush)
+palette.BindSurface(@canvas)
+
+run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette
+
+
+# ── the zoom readout, bottom-left of the drawing pane ────────────────────────
+#
+# Two steps and a percentage, deliberately faint: it is a thing you reach for
+# occasionally and should not compete with the picture. Children of sheet_root,
+# so they move with the pane and are picked in its space.
+#
+# The steps are PaintPalette entries -- a node that means a zoom, mapped by the
+# same type that maps a node meaning a colour (AddZoom says why a view setting
+# lives there). The label is pushed by the surface rather than by whoever zoomed,
+# so the wheel, these buttons and a script all keep it honest.
+sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_out)
+zoom_out.Create()
+zoom_out.AddPoint(12, 668)
+zoom_out.AddPoint(36, 668)
+zoom_out.AddPoint(36, 692)
+zoom_out.AddPoint(12, 692)
+zoom_out.SetFill(0.85, 0.85, 0.88, 0.30)
+zoom_out.SetOrder(21)
+palette.AddZoom(@zoom_out, 0.8)
+
+sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_in)
+zoom_in.Create()
+zoom_in.AddPoint(44, 668)
+zoom_in.AddPoint(68, 668)
+zoom_in.AddPoint(68, 692)
+zoom_in.AddPoint(44, 692)
+zoom_in.SetFill(0.85, 0.85, 0.88, 0.30)
+zoom_in.SetOrder(21)
+palette.AddZoom(@zoom_in, 1.25)
+
+sheet_root.spawn(RenderProvider::TextLabel zoom_label)
+zoom_label.Create()
+zoom_label.SetPosition(78, 672)
+zoom_label.SetSize(2)
+zoom_label.SetColor(0.80, 0.80, 0.84, 1.0)
+zoom_label.SetText(100%)
+zoom_label.SetOrder(21)
+
+canvas.BindZoomLabel(@zoom_label)
+
+# ── the colour wheel's pane ──────────────────────────────────────────────────
+#
+# Order 30, above everything, because a popup that is not on top is not a popup.
+# NOT added to the router here: the wheel does that when it opens, which is what
+# makes "is it open" and "does it receive clicks" one fact instead of two that
+# can disagree.
+spawn RenderProvider::CompositeDrawable2D wheel_pane
+wheel_pane.Create(220, 220)
+wheel_pane.SetPosition(340, 260)
+wheel_pane.SetOrder(30)
+
+wheel_pane.spawn(RenderProvider::PolygonDrawable2D wheel_back)
+wheel_back.Create()
+wheel_back.AddPoint(0, 0)
+wheel_back.AddPoint(220, 0)
+wheel_back.AddPoint(220, 220)
+wheel_back.AddPoint(0, 220)
+wheel_back.SetFill(0.10, 0.10, 0.13, 0.94)
+wheel_back.SetOrder(1)
+
+# The disc is drawn as a ring of wedges by the script; the PICK is computed from
+# the centre and radius below, so a different picker -- a square, a strip,
+# somebody else's gradient -- works by stating the same two numbers.
+run PaintProvider/scripts/paint_wheel.etcs pane=wheel_pane
+
+spawn PaintProvider::PaintColorWheel wheel
+wheel.Create(110, 110, 96)
+wheel.BindTool(@brush)
+wheel.BindPalette(@palette)
+wheel.SetValue(1.0)
+
+# ── one input machine for the sheet (toolbar is scenery inside it) ──────────
+spawn PaintProvider::PaintInput input
+input.Create(@doc, @brush, @canvas)
+input.SetBrush(6.0, 0.10, 0.10, 0.12, 1.0)
+input.BindRoot(@sheet_root)
+input.BindCanvas(@sheet_root)
+input.BindPalette(@palette)
+input.BindWheel(@wheel)
+input.SetWheelPane(0)
+
+spawn PaintProvider::PaintInput wheel_input
+wheel_input.Create(@doc, @brush, @canvas)
+wheel_input.BindRoot(@wheel_pane)
+wheel_input.BindWheel(@wheel)
+wheel_input.SetWheelPane(1)
+
+# ── the arbiter ──────────────────────────────────────────────────────────────
+#
+# Budget 1: the topmost pane containing the point, and nobody below it. That is
+# what stops a press on the wheel from also landing on the picture underneath.
+spawn PaintProvider::PaintRouter router
+router.Create(1)
+router.AddPane(@sheet_root, @input)
+
+wheel.BindRouter(@router)
+wheel.BindPane(@wheel_pane, @wheel_input)
+
+# `view` presents whatever sheet_root composed -- the document plus the readout
+# over it. Retained, so a zoom or a stroke shows up without anything having to
+# be told to redraw.
+view.Compose(@sheet_root)
+
+# ── the pumps ────────────────────────────────────────────────────────────────
+#
+# One frame edge per surface: each presents its own raster to its own element, and
+# neither knows the other exists. The last edge blocks this thread, which in the
+# browser is a detached worker.
+detach RenderProvider/scripts/render_frames.etcs view=view
+# Routed now, because there is more than one pane: the router decides which one
+# the pointer is over before anything interprets it. paint_pointer.etcs is still
+# the right script for a single-pane session -- see paint_routed_pointer.etcs.
+detach paint_routed_pointer.etcs window=main router=router
+
+main.ProduceEvents() -> router.ConsumeInput()

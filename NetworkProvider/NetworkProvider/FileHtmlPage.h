@@ -44,6 +44,13 @@
 //      the same "always re-read current content" property NetworkProvider
 //      .h's TestPage already relies on for StaticHtmlPage.
 //
+// Three ways a File-kind leaf gets into the tree, and the difference is
+// only WHO CHOSE THE NAME: LoadFromDisk takes the names a directory
+// already has, MountFile takes one name you give it for one file you
+// name, and InitAsFile is what both of them call. A mount is therefore
+// not a fourth kind of thing — Kind::Mount above is the only genuinely
+// different one, because it is the only one that re-reads.
+//
 // What a FileHtmlPage node is NEVER used for: holding a real file's own
 // bytes across the html/css/js triple it inherits from HtmlPageBase. That
 // triple is deliberately left UNUSED for Directory/File/Mount-kind nodes
@@ -177,6 +184,117 @@ public:
         child->InitAsMount(segment_name, target_rid);
         children_by_name_[segment_name] = child;
         return child;
+    }
+
+    // --- Serve ONE FILE from disk at ONE url path ---
+    //
+    // The single-file counterpart to LoadFromDisk. LoadFromDisk exposes a whole
+    // directory and takes the names it finds; this takes one name you choose and
+    // one file you name, and exposes nothing else -- so a file can be served
+    // without the directory it lives in becoming reachable.
+    //
+    // WHY NOT MountExternal FOR THIS. That one forwards to a StaticHtmlPage,
+    // which is a PAGE, not a file: its bytes go through an NBuffer (a hard
+    // ETCS_NETWORK_MAX_HEADER_SIZE ceiling -- LoadFileIntoBuffer refuses
+    // anything larger), its path is canonicalised against the CURRENT WORKING
+    // DIRECTORY and refused if it leaves it, it answers "/", "/index.html",
+    // "/style.css" and "/app.js" rather than the one path asked for, and it
+    // carries no extension to derive a MIME type from, so everything it serves
+    // is text/html. Mounting a .wasm that way gets you the wrong Content-Type
+    // on the small ones and nothing at all on the real ones. MountExternal is
+    // for a LIVE page some other entity keeps rewriting; that is the job it is
+    // good at, and it is not this one.
+    //
+    // This makes a File-kind node instead -- exactly what LoadFromDisk builds
+    // for a real file, with the same unbounded std::string storage and the same
+    // MimeForExtension lookup, just chosen by hand instead of found by a walk.
+    //
+    // url_path may contain '/': intermediate Directory nodes are created as
+    // needed, so "assets/etcs.wasm" works with no matching directory on disk.
+    // Read once, here, like LoadFromDisk -- a later edit to the file needs a
+    // re-mount, which is the trade for not re-reading on every request.
+    bool MountFile(const std::string& url_path, const std::string& disk_path)
+    {
+        std::vector<std::string> segments;
+        size_t start = 0;
+        while (start <= url_path.size())
+        {
+            size_t slash = url_path.find('/', start);
+            std::string seg = (slash == std::string::npos)
+                ? url_path.substr(start)
+                : url_path.substr(start, slash - start);
+            if (!seg.empty()) segments.push_back(seg);
+            if (slash == std::string::npos) break;
+            start = slash + 1;
+        }
+        if (segments.empty())
+        {
+            ETCS_LOG("FileHtmlPage", "MountFile: empty url path for '"
+                     << disk_path << "' -- nothing mounted.");
+            return false;
+        }
+
+        // READ FIRST, mutate second. A failed open must not leave new Directory
+        // nodes behind on a path that will never resolve -- ListPaths would then
+        // advertise a 404 as a served path, which is the one thing it exists to
+        // rule out.
+        std::ifstream in(disk_path, std::ios::binary);
+        if (!in.is_open())
+        {
+            ETCS_LOG("FileHtmlPage", "MountFile: failed to open '" << disk_path
+                     << "' -- nothing mounted at '" << url_path << "'.");
+            return false;
+        }
+        std::string bytes((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+
+        FileHtmlPage* node = this;
+        for (size_t i = 0; i + 1 < segments.size(); ++i)
+        {
+            auto it = node->children_by_name_.find(segments[i]);
+            if (it != node->children_by_name_.end())
+            {
+                // Refused rather than descended into: a File or a Mount has no
+                // children Resolve would ever consult on the way past it, so
+                // hanging a leaf under one mounts something unreachable and
+                // reports success.
+                if (it->second->kind_ != Kind::Directory)
+                {
+                    ETCS_LOG("FileHtmlPage", "MountFile: '" << segments[i]
+                             << "' on the way to '" << url_path
+                             << "' is not a directory -- nothing mounted.");
+                    return false;
+                }
+                node = it->second;
+                continue;
+            }
+            FileHtmlPage* dir = node->addTag<FileHtmlPage>();
+            dir->kind_         = Kind::Directory;
+            dir->segment_name_ = segments[i];
+            node->children_by_name_[segments[i]] = dir;
+            node = dir;
+        }
+
+        // MIME from the DISK name, not the url name, because the url name is
+        // the part a caller is free to invent: mounting index.html at "shell"
+        // still serves text/html.
+        const std::string& leaf = segments.back();
+        // Said out loud rather than silently won: the displaced node stays
+        // attached as a typed child and only leaves the name index, so a mount
+        // that shadows a real file looks like it worked and the file looks like
+        // it vanished. Same overwrite LoadFromDisk's own index does, made visible.
+        if (node->children_by_name_.count(leaf))
+            ETCS_LOG("FileHtmlPage", "MountFile: '" << url_path
+                     << "' replaces an entry already at that path.");
+
+        FileHtmlPage* child = node->addTag<FileHtmlPage>();
+        child->InitAsFile(leaf, std::move(bytes), MimeForExtension(disk_path));
+        node->children_by_name_[leaf] = child;
+
+        ETCS_LOG("FileHtmlPage", "MountFile: '" << disk_path << "' -> '/" << url_path
+                 << "' (" << child->content_.size() << " bytes, " << child->mime_type_
+                 << ") under RID:" << getRID());
+        return true;
     }
 
     // --- Tree construction from disk ---

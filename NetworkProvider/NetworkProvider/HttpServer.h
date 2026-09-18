@@ -243,6 +243,28 @@ public:
 
     void SetRunContext(const ETCS::SignalContext& ctx) { run_ctx_ = ctx; }
 
+    void AddHeader(const std::string& key, const std::string& value)
+    {
+        if (key.empty()) return;
+        for (auto& h : custom_headers_)
+        {
+            if (h.first == key)
+            {
+                h.second = value; // Overwrite if key already exists
+                return;
+            }
+        }
+        custom_headers_.push_back({key, value});
+        ETCS_LOG("HttpServer", "AddHeader: '" << key << ": " << value 
+                 << "' on RID:" << getRID());
+    }
+
+    void ClearHeaders() { custom_headers_.clear(); }
+    const std::vector<std::pair<std::string, std::string>>& GetCustomHeaders() const 
+    { 
+        return custom_headers_; 
+    }
+
     // An out-of-tree recipient for connections. Stored as config and forwarded
     // to the gate on Start, so handlers can be declared in any order relative
     // to everything else and the wiring happens once, at a known point.
@@ -311,10 +333,17 @@ public:
     static ETCS::Entity* resolveRID(ETCS::RID rid)
     {
         if (rid == 0) return nullptr;
-        auto& ridMap = ETCS::getLoader().ridMap;
-        for (auto& [key, handle] : ridMap)
-            if (ETCS::Entity* e = handle.invoke_get(rid)) return e;
-        return nullptr;
+        /*
+ * THE LOADER'S VIEW, THROUGH THE ACCESSOR RATHER THAN BY HAND.
+ *
+ * This used to iterate ETCS::getLoader().ridMap directly. That map is the
+ * loader's OWN lists; a module's lists reach it through the mirror, so the
+ * hand-written loop stopped finding anything the moment the mirror existed --
+ * a registered subscriber that "no longer resolved" at dispatch and got
+ * self-healed out of its own list. The same three lines were copied into four
+ * modules, and none of them noticed. See etcs_resolve_rid_anywhere (Entity.h).
+ */
+        return ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
     }
 
     // "<SourceTag>.<Action>". getSourceTag() returns by VALUE, so the temporary
@@ -408,10 +437,7 @@ public:
         return false;
     }
 
-    // Resolve a request path against this server's own pages, in attach order,
-    // first match wins. The ENTIRE routing implementation -- previously four
-    // near-identical consumers each hardcoded their own, which is what made
-    // adding a page type mean editing every server.
+    // Resolve a request path against this server's own pages, attach order, first match wins.
     HtmlPage_::ResolvedAsset ResolvePath(const std::string& path) const
     {
         std::vector<std::pair<ETCS::Buffer, ETCS::RID>> children;
@@ -471,7 +497,8 @@ private:
     std::string          tls_cert_;
     std::string          tls_key_;
     std::vector<Handler> handlers_;
-    std::vector<Route>   routes_;
+    std::vector<Route>   routes_; // TODO: switch all std::vector -> ETCS::vector (when ETCS::vector done)
+    std::vector<std::pair<std::string, std::string>> custom_headers_;
     ETCS::SignalContext  run_ctx_;
 };
 

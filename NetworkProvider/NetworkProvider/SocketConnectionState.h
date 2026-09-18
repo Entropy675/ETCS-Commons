@@ -119,7 +119,21 @@ private:
     // which would now just be sizeof(char*) = 8) — same fix PicoHTTPParser's
     // own accum_ needed for the identical reason.
     static constexpr size_t kRecvBufSize = ETCS_NETWORK_MAX_HEADER_SIZE;
-    static constexpr size_t kSendBufSize = ETCS_NETWORK_MAX_HEADER_SIZE * 4;
+    /*
+ * THE ONLY BUFFER AN ASSET HAS TO FIT IN, until the send path can chunk.
+ *
+ * Sized off ETCS_NETWORK_MAX_ASSET_SIZE rather than off the header constant,
+ * because a whole .wasm goes out in one send and a request header does not.
+ * They were the same macro, so raising it for the binary raised recv, both
+ * cipher buffers and the parser accumulator with it -- four buffers that never
+ * needed a byte more, on every pooled connection, memset in the constructor
+ * below and therefore resident. Measured at 160 MiB of RSS for an idle server.
+ *
+ * STILL THE WRONG SHAPE, and ETCS_API.h says why: this should grow and shrink
+ * on the same rebalance ConnectionManager already runs over its slots, not be
+ * fixed at whatever the largest asset happens to be.
+ */
+    static constexpr size_t kSendBufSize = ETCS_NETWORK_MAX_ASSET_SIZE;
     // TLS ciphertext staging, in and out. ETCS_NETWORK_MAX_HEADER_SIZE
     // (64KB) comfortably covers several max-size (~16KB) TLS records
     // queued at once -- same "named constant, not sizeof(...)" discipline

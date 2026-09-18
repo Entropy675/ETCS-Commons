@@ -176,10 +176,17 @@ private:
     static ETCS::Entity* resolveRID(ETCS::RID rid)
     {
         if (rid == 0) return nullptr;
-        auto& ridMap = ETCS::getLoader().ridMap;
-        for (auto& [key, handle] : ridMap)
-            if (ETCS::Entity* e = handle.invoke_get(rid)) return e;
-        return nullptr;
+        /*
+ * THE LOADER'S VIEW, THROUGH THE ACCESSOR RATHER THAN BY HAND.
+ *
+ * This used to iterate ETCS::getLoader().ridMap directly. That map is the
+ * loader's OWN lists; a module's lists reach it through the mirror, so the
+ * hand-written loop stopped finding anything the moment the mirror existed --
+ * a registered subscriber that "no longer resolved" at dispatch and got
+ * self-healed out of its own list. The same three lines were copied into four
+ * modules, and none of them noticed. See etcs_resolve_rid_anywhere (Entity.h).
+ */
+        return ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
     }
 
     // "<SourceTag>.<Action>". getSourceTag() returns by VALUE, so the temporary

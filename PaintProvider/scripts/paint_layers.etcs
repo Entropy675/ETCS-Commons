@@ -1,0 +1,226 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A LAYER WINDOW, and like the toolbar it is a script rather than a widget.
+#
+#     run paint_layers.etcs panel=<Drawable2D> doc=<PaintDocument> list=<PaintLayerPanel>
+#
+# EVERY ROW IS ORDINARY RECTANGLES AND A LABEL in the caller's 2D tree, which
+# is the same bargain paint_toolbar.etcs strikes: PaintProvider owns no raster
+# backend and grows none for a list of names. RenderProvider's shape and text
+# leaves already know how to draw one, where it is and whether a point is on
+# it; what PaintProvider adds is the only part that is about layers -- this
+# node means that row, that part of it means that action -- and
+# PaintLayerPanel is that mapping and nothing else.
+#
+# So the appearance of the window is a file you can edit. Restyling it, making
+# the rows taller, dropping the delete button or adding a thumbnail is an edit
+# here and to no C++ at all.
+#
+# WHY THERE IS A ROW COUNT AT ALL. Not a cap on layers: a window shows the ones
+# NEAR the one you are looking at, a neighbourhood in the stack's own order
+# (ontology/Layer.h), and scrolling moves the frame of reference while these
+# same rows are re-bound. The count is the resident set, which is what the
+# window's height divided by the row height already was. The bytes behind the
+# churn are the arena's and are already recycled -- every ArenaAllocator-backed
+# container returns exact-size slots to its scope's free list -- so nothing
+# here pools anything.
+#
+# NAMES NO ABSOLUTE POSITION, like every component here: each node is placed in
+# `panel`'s space, so moving the panel moves the window with nothing here
+# recomputed, and the input that finds these nodes arrives already translated
+# into the same space they were laid out in (Drawable2D_::PickAt).
+
+requires panel [Drawable2D]
+requires doc   [PaintDocument]
+requires list  [PaintLayerPanel]
+
+list.Create()
+list.BindDocument(@doc)
+
+# The look, stated once. Eye colours are shown/hidden; row colours are
+# selected/idle. The hover dim is how far every OTHER layer recedes while a row
+# is under the pointer -- 0.25 rather than 0 so the rest of the picture stays
+# legible as context, since isolating a layer is a way of finding it.
+list.SetEyeColors(0.85, 0.85, 0.88, 0.30, 0.30, 0.34)
+list.SetRowColors(0.28, 0.30, 0.38, 0.18, 0.18, 0.22)
+list.SetHoverDim(0.25)
+
+# ── the frame ────────────────────────────────────────────────────────────
+#
+# A backing rectangle rather than a background on the composite, so the window
+# reads as a panel with an edge even before it has any rows. Order 0: every row
+# sits above it.
+
+panel.spawn(RenderProvider::PolygonDrawable2D layers_back)
+layers_back.Create()
+layers_back.AddPoint(0, 0)
+layers_back.AddPoint(240, 0)
+layers_back.AddPoint(240, 224)
+layers_back.AddPoint(0, 224)
+layers_back.SetFill(0.13, 0.13, 0.16, 1.0)
+layers_back.SetOrder(0)
+
+# ── the rows ─────────────────────────────────────────────────────────────
+#
+# Eight rows of 28, top of the window first -- the order AddRow wants and the
+# order somebody reading this file sees them on screen.
+#
+# A row is [eye][name..................][x], and the three are separate nodes
+# because they are three different questions. The body rectangle underneath
+# them answers the fourth ("select this layer") and is ordered below the other
+# three so a press on the eye hits the eye rather than the body -- PickAt walks
+# the ordered list backwards, so higher wins.
+
+panel.spawn(RenderProvider::PolygonDrawable2D row0_bg)
+row0_bg.Create()
+row0_bg.AddPoint(4, 4)
+row0_bg.AddPoint(236, 4)
+row0_bg.AddPoint(236, 30)
+row0_bg.AddPoint(4, 30)
+row0_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row0_bg.SetOrder(1)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row0_eye)
+row0_eye.Create()
+row0_eye.AddPoint(8, 9)
+row0_eye.AddPoint(24, 9)
+row0_eye.AddPoint(24, 25)
+row0_eye.AddPoint(8, 25)
+row0_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row0_eye.SetOrder(2)
+
+panel.spawn(RenderProvider::TextLabel row0_name)
+row0_name.Create()
+row0_name.SetPosition(32, 11)
+row0_name.SetSize(2)
+row0_name.SetColor(0.90, 0.90, 0.94, 1.0)
+row0_name.SetText(-)
+row0_name.SetOrder(2)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row0_del)
+row0_del.Create()
+row0_del.AddPoint(216, 9)
+row0_del.AddPoint(232, 9)
+row0_del.AddPoint(232, 25)
+row0_del.AddPoint(216, 25)
+row0_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row0_del.SetOrder(2)
+
+list.AddRow(@row0_bg, @row0_eye, @row0_name, @row0_del)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row1_bg)
+row1_bg.Create()
+row1_bg.AddPoint(4, 32)
+row1_bg.AddPoint(236, 32)
+row1_bg.AddPoint(236, 58)
+row1_bg.AddPoint(4, 58)
+row1_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row1_bg.SetOrder(1)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row1_eye)
+row1_eye.Create()
+row1_eye.AddPoint(8, 37)
+row1_eye.AddPoint(24, 37)
+row1_eye.AddPoint(24, 53)
+row1_eye.AddPoint(8, 53)
+row1_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row1_eye.SetOrder(2)
+
+panel.spawn(RenderProvider::TextLabel row1_name)
+row1_name.Create()
+row1_name.SetPosition(32, 39)
+row1_name.SetSize(2)
+row1_name.SetColor(0.90, 0.90, 0.94, 1.0)
+row1_name.SetText(-)
+row1_name.SetOrder(2)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row1_del)
+row1_del.Create()
+row1_del.AddPoint(216, 37)
+row1_del.AddPoint(232, 37)
+row1_del.AddPoint(232, 53)
+row1_del.AddPoint(216, 53)
+row1_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row1_del.SetOrder(2)
+
+list.AddRow(@row1_bg, @row1_eye, @row1_name, @row1_del)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row2_bg)
+row2_bg.Create()
+row2_bg.AddPoint(4, 60)
+row2_bg.AddPoint(236, 60)
+row2_bg.AddPoint(236, 86)
+row2_bg.AddPoint(4, 86)
+row2_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row2_bg.SetOrder(1)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row2_eye)
+row2_eye.Create()
+row2_eye.AddPoint(8, 65)
+row2_eye.AddPoint(24, 65)
+row2_eye.AddPoint(24, 81)
+row2_eye.AddPoint(8, 81)
+row2_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row2_eye.SetOrder(2)
+
+panel.spawn(RenderProvider::TextLabel row2_name)
+row2_name.Create()
+row2_name.SetPosition(32, 67)
+row2_name.SetSize(2)
+row2_name.SetColor(0.90, 0.90, 0.94, 1.0)
+row2_name.SetText(-)
+row2_name.SetOrder(2)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row2_del)
+row2_del.Create()
+row2_del.AddPoint(216, 65)
+row2_del.AddPoint(232, 65)
+row2_del.AddPoint(232, 81)
+row2_del.AddPoint(216, 81)
+row2_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row2_del.SetOrder(2)
+
+list.AddRow(@row2_bg, @row2_eye, @row2_name, @row2_del)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row3_bg)
+row3_bg.Create()
+row3_bg.AddPoint(4, 88)
+row3_bg.AddPoint(236, 88)
+row3_bg.AddPoint(236, 114)
+row3_bg.AddPoint(4, 114)
+row3_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row3_bg.SetOrder(1)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row3_eye)
+row3_eye.Create()
+row3_eye.AddPoint(8, 93)
+row3_eye.AddPoint(24, 93)
+row3_eye.AddPoint(24, 109)
+row3_eye.AddPoint(8, 109)
+row3_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row3_eye.SetOrder(2)
+
+panel.spawn(RenderProvider::TextLabel row3_name)
+row3_name.Create()
+row3_name.SetPosition(32, 95)
+row3_name.SetSize(2)
+row3_name.SetColor(0.90, 0.90, 0.94, 1.0)
+row3_name.SetText(-)
+row3_name.SetOrder(2)
+
+panel.spawn(RenderProvider::PolygonDrawable2D row3_del)
+row3_del.Create()
+row3_del.AddPoint(216, 93)
+row3_del.AddPoint(232, 93)
+row3_del.AddPoint(232, 109)
+row3_del.AddPoint(216, 109)
+row3_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row3_del.SetOrder(2)
+
+list.AddRow(@row3_bg, @row3_eye, @row3_name, @row3_del)
+
+# Bind the stack to the rows now that all of them exist. Called again by the
+# panel itself after anything that changes what the window should say, so a
+# script only has to say it once.
+list.Refresh()

@@ -131,6 +131,35 @@ DEFINE_WORK_FUNC(Surface, Create)
         ETCS_LOG("Surface::Create", "surface bring-up failed.");
 }
 
+/*
+ * WHICH OUTPUT THIS SURFACE PRESENTS TO, by name.
+ *
+ * One session, several surfaces, several destinations: in the browser the name is
+ * a canvas element's id and a page may hold as many as it likes, which is what
+ * makes a toolbar strip beside the main view possible at all
+ * (CanvasSurface::SetTarget explains why this belongs to the surface and not to
+ * the window). The device backend has one target per swapchain and says so
+ * (VulkanSurface::SetTarget) rather than storing a name nothing reads.
+ */
+DEFINE_WORK_FUNC_TYPED(Surface, SetTarget, (std::string, element_id))
+{
+    (void)ctx;
+    self.SetTarget(element_id);
+}
+
+/*
+ * An explicit size, which a surface following its window does not have. Stating
+ * one makes this surface a REGION of the page rather than the whole frame, and on
+ * the browser backend it also stops the follow -- being told and following cannot
+ * both be live (CanvasSurface::ResizeTo).
+ */
+DEFINE_WORK_FUNC_TYPED(Surface, ResizeTo, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    if (!self.ResizeTo(WindowSize{ w, h }))
+        ETCS_LOG("Surface::ResizeTo", "the surface declined " << w << "x" << h << ".");
+}
+
 DEFINE_WORK_FUNC_TYPED(Surface, Clear, (float, r), (float, g), (float, b), (float, a))
 {
     (void)ctx;
@@ -265,7 +294,17 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
         // surface while this edge is still waiting for it to come up would
         // otherwise spin here forever on an object being reclaimed.
         if (self.Retired()) return;
-        std::this_thread::yield();
+        // Cooperative, not a yield: IsActive() flips from somewhere this thread
+        // does not control, and on the browser's main thread a yield loop never
+        // returns to the event loop that would deliver the change. A refusal
+        // there means the frame edge was not detached, which is the real mistake.
+        if (!etcs_cooperative_pause_ms(1))
+        {
+            ETCS_LOG("Surface::ProduceFrames", "on the browser's main thread -- detach "
+                     "the frame edge so the wait happens off the event loop. Not "
+                     "producing frames.");
+            return;
+        }
     }
 
     uint64_t index = 0;

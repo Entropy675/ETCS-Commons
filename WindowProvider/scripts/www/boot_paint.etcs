@@ -1,0 +1,82 @@
+#!/usr/bin/env etcs
+
+# THE CANVAS DEMO: PaintProvider drawing through RenderProvider onto the page.
+#
+# Self-contained on purpose. The OS-side equivalents split the frame edge and
+# the pointer edge into their own detachable scripts (RenderProvider's
+# render_frames.etcs, PaintProvider's paint_pointer.etcs), and each of those
+# would have to be mounted at its own URL for the browser to open it. Both are
+# one `->` statement, so stating them here costs a line each and removes two
+# mounts from the serve script.
+#
+# Nothing in this file is browser-specific. The same statements run on the OS
+# side; what differs is which concrete Surface the contract selected
+# (Contract_RenderProvider.h), and that is invisible from here.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS Paint)
+
+# A typed CHILD of the window, because Surface::Create walks getParent() for the
+# window it draws into -- the parent link IS that binding.
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+view.Clear(0.13, 0.13, 0.15, 1.0)
+
+# Two layers: paper underneath, ink on top. Both are CPU rasters (Pixels_), and
+# the browser surface composites them with the same Blit the device backend uses.
+spawn PaintProvider::PaintDocument doc
+doc.Create(1024, 768, browser)
+
+doc.spawn(PaintProvider::PaintLayer paper)
+paper.Create(1024, 768)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+paper.SetName(Paper)
+paper.SetOrder(0)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(1024, 768)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(1)
+
+doc.SetActiveLayer(@ink)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(6.0)
+brush.SetColor(0.10, 0.10, 0.12, 1.0)
+
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@view)
+canvas.AttachDocument(@doc)
+canvas.Render()
+
+spawn PaintProvider::PaintInput input
+input.Create(@doc, @brush, @canvas)
+input.SetBrush(6.0, 0.10, 0.10, 0.12, 1.0)
+
+# ── the three pumps ──────────────────────────────────────────────────────────
+#
+# AN EDGE BLOCKS THE THREAD THAT STATES IT, so only the LAST one can be stated
+# here. The first two are detached, and they are the OS side's own scripts read
+# from where the OS side keeps them -- the browser page stages them at these
+# same relative paths (modules.json), so these two lines are the same lines
+# paint_surface.etcs has.
+#
+# Nothing draws without the first. A Surface is RETAINED: Clear/Blit build a
+# composition and something has to present it, so with no frame pump the window
+# comes up, strokes accumulate into the layer, and the canvas stays blank --
+# which reads as "painting is broken" rather than "nobody asked for a frame".
+detach RenderProvider/scripts/render_frames.etcs view=view
+
+# Positions on their own thread, presses on this one: the two channels are
+# independent by construction (ontology/InputSource.h), so a press never queues
+# behind a burst of pointer movement.
+detach paint_pointer.etcs window=main input=input
+
+# The press channel, and the OS message pump with it. Holds this thread until
+# the window closes -- which in the browser is a detached worker, so the page
+# stays live underneath it.
+main.ProduceEvents() -> input.ConsumeInput()
