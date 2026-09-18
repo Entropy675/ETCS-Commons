@@ -17,6 +17,11 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__EMSCRIPTEN__)
+extern "C" void etcs_web_shell_write(const char* text);
+extern "C" int  etcs_web_shell_try_pop_line(char* out, int cap);
+#endif
+
 // PaintProvider is intentionally a thin ontology layer on top of the existing
 // RenderProvider::Surface family. It does not invent a second render backend; it
 // composes the existing window- and image-surface verbs and adds a Pinta-like
@@ -2949,8 +2954,6 @@ private:
     {
         const char* prompt = "glyph text> ";
 #if defined(__EMSCRIPTEN__)
-        extern "C" void etcs_web_shell_write(const char* text);
-        extern "C" int  etcs_web_shell_try_pop_line(char* out, int cap);
         etcs_web_shell_write(prompt);
         ::std::cout << prompt << ::std::flush;
         char buf[4096];
