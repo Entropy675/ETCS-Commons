@@ -1389,7 +1389,7 @@ public:
     {
         if (node == 0 || radius <= 0.0f) return;
         Entry e{ Kind::Size, {}, radius, PaintToolKind::Brush };
-        e.idle[0] = 0.22f; e.idle[1] = 0.22f; e.idle[2] = 0.26f; e.idle[3] = 1.0f;
+        e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
         m_entries[node] = e;
     }
 
@@ -1397,7 +1397,7 @@ public:
     {
         if (node == 0 || delta == 0.0f) return;
         Entry e{ Kind::RadiusDelta, {}, delta, PaintToolKind::Brush };
-        e.idle[0] = 0.22f; e.idle[1] = 0.22f; e.idle[2] = 0.26f; e.idle[3] = 1.0f;
+        e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
         m_entries[node] = e;
     }
 
@@ -1405,7 +1405,7 @@ public:
     {
         if (node == 0 || delta_ms == 0.0f) return;
         Entry e{ Kind::CoalesceDelta, {}, delta_ms, PaintToolKind::Brush };
-        e.idle[0] = 0.22f; e.idle[1] = 0.22f; e.idle[2] = 0.26f; e.idle[3] = 1.0f;
+        e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
         m_entries[node] = e;
     }
 
@@ -1416,7 +1416,7 @@ public:
     {
         if (node == 0) return;
         Entry e{ Kind::Tool, {}, 0.0f, paint_tool_kind_from(kind) };
-        e.idle[0] = 0.22f; e.idle[1] = 0.22f; e.idle[2] = 0.26f; e.idle[3] = 1.0f;
+        e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
         m_entries[node] = e;
     }
 
@@ -1478,6 +1478,18 @@ public:
     bool Apply(ETCS::RID node)
     {
         auto it = m_entries.find(node);
+        if (it == m_entries.end() && node != 0)
+        {
+            ETCS::Held<Drawable2D_> node_e =
+                ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+            ETCS::Entity* e = node_e
+                ? static_cast<ETCS::Entity*>(node_e.get()) : nullptr;
+            for (; e; e = e->getParent())
+            {
+                it = m_entries.find(e->getRID());
+                if (it != m_entries.end()) break;
+            }
+        }
         if (it == m_entries.end()) return false;
         if (!m_tool)
         {
@@ -1502,11 +1514,14 @@ public:
         {
             const float next = std::max(1.0f, m_tool->brush().radius_px + e.radius);
             m_tool->SetRadius(next);
+            set_node_text(m_radius_readout, std::to_string(static_cast<int>(next + 0.5f)));
             ETCS_LOG("PaintPalette", "radius delta " << e.radius << " -> " << next);
         }
         else if (e.kind == Kind::CoalesceDelta)
         {
             m_tool->AdjustMotionCoalesceMs(static_cast<double>(e.radius));
+            set_node_text(m_coalesce_readout,
+                          std::to_string(static_cast<int>(m_tool->motionCoalesceMs() + 0.5)));
             ETCS_LOG("PaintPalette", "coalesce -> " << m_tool->motionCoalesceMs() << " ms");
         }
         else if (e.kind == Kind::Tool)
@@ -1537,28 +1552,41 @@ public:
     {
         if (node == m_hovering) return;
 
-        // Restore every entry that was lit (tool labels share a group with
-        // their slice rect -- only one m_hovering was not enough).
         for (const auto& [rid, e] : m_entries)
             set_node_fill(rid, e.idle[0], e.idle[1], e.idle[2], e.idle[3]);
         m_hovering = 0;
         if (node == 0) return;
 
         auto it = m_entries.find(node);
+        if (it == m_entries.end())
+        {
+            ETCS::Held<Drawable2D_> node_e =
+                ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+            ETCS::Entity* e = node_e
+                ? static_cast<ETCS::Entity*>(node_e.get()) : nullptr;
+            for (; e; e = e->getParent())
+            {
+                it = m_entries.find(e->getRID());
+                if (it != m_entries.end()) { node = e->getRID(); break; }
+            }
+        }
         if (it == m_entries.end()) return;
         m_hovering = node;
         const Entry& ref = it->second;
-        const float t = (ref.kind == Kind::Color) ? 0.25f : 0.45f;
+        const float t = (ref.kind == Kind::Color) ? 0.40f : 0.60f;
         for (const auto& [rid, e] : m_entries)
         {
-            if (!same_hover_group(ref, e)) continue;
+            if (rid != node && !same_hover_group(ref, e)) continue;
             set_node_fill(rid,
                           e.idle[0] + (1.0f - e.idle[0]) * t,
                           e.idle[1] + (1.0f - e.idle[1]) * t,
                           e.idle[2] + (1.0f - e.idle[2]) * t,
-                          e.idle[3]);
+                          1.0f);
         }
     }
+
+    void SetRadiusReadout(ETCS::RID label) { m_radius_readout = label; }
+    void SetCoalesceReadout(ETCS::RID label) { m_coalesce_readout = label; }
 
 void Report() const
     {
@@ -1581,17 +1609,17 @@ private:
         float rgba[4];
         float radius;
         PaintToolKind tool;
-        float idle[4] = { 0.22f, 0.22f, 0.26f, 1.0f };
+        float idle[4] = { 0.16f, 0.16f, 0.20f, 1.0f };
     };
 
     static bool same_hover_group(const Entry& a, const Entry& b)
     {
         if (a.kind != b.kind) return false;
         if (a.kind == Kind::Tool) return a.tool == b.tool;
-        if (a.kind == Kind::RadiusDelta || a.kind == Kind::CoalesceDelta
-            || a.kind == Kind::Size || a.kind == Kind::Zoom)
+        if (a.kind == Kind::RadiusDelta || a.kind == Kind::CoalesceDelta)
+            return std::fabs(a.radius) == std::fabs(b.radius);
+        if (a.kind == Kind::Size || a.kind == Kind::Zoom)
             return a.radius == b.radius;
-        // Colour: only the exact swatch (each has its own identity fill).
         return false;
     }
 
@@ -1602,20 +1630,42 @@ private:
         if (!node_e) return;
         ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
         if (!e) return;
-        // Slice rects only (PolygonDrawable2D.SetFill). Labels stay readable;
-        // same_hover_group still lights the rect when the pointer is on the label.
+        const std::string tag = e->getSourceTag().toString();
+        if (tag.find("PolygonDrawable2D") == std::string::npos) return;
         ETCS::Buffer action;
-        action.write((e->getSourceTag().toString() + ".SetFill").c_str());
+        action.write((tag + ".SetFill").c_str());
         ETCS::Buffer payload;
         payload.write((std::to_string(r) + " " + std::to_string(g) + " "
                      + std::to_string(b) + " " + std::to_string(a)).c_str());
         try { e->call(action, payload); } catch (...) {}
+        // sheet_root is retained: mark the whole parent chain or the bar
+        // never gets re-blitted into the sheet and fills look like a no-op.
+        for (ETCS::Entity* n = e; n; n = n->getParent())
+            etcs_mark_observed(n);
+    }
+
+    static void set_node_text(ETCS::RID node, const std::string& text)
+    {
+        if (node == 0) return;
+        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+        if (!node_e) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
+        if (!e) return;
+        ETCS::Buffer action;
+        action.write((e->getSourceTag().toString() + ".SetText").c_str());
+        ETCS::Buffer payload;
+        payload.write(text.c_str());
+        try { e->call(action, payload); } catch (...) {}
+        for (ETCS::Entity* n = e; n; n = n->getParent())
+            etcs_mark_observed(n);
     }
 
     std::unordered_map<ETCS::RID, Entry> m_entries;
     PaintTool* m_tool = nullptr;
     PaintSurface* m_surface = nullptr;
     ETCS::RID m_hovering = 0;
+    ETCS::RID m_radius_readout = 0;
+    ETCS::RID m_coalesce_readout = 0;
     mutable ETCS::RID m_last_color = 0;
 };
 
@@ -3976,6 +4026,18 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddCoalesceDelta, (ETCS::RID, node), (float
 {
     (void)ctx;
     self.AddCoalesceDelta(node, delta_ms);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPalette, SetRadiusReadout, (ETCS::RID, label))
+{
+    (void)ctx;
+    self.SetRadiusReadout(label);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPalette, SetCoalesceReadout, (ETCS::RID, label))
+{
+    (void)ctx;
+    self.SetCoalesceReadout(label);
 }
 
 // AddTool <node_rid> <kind> -- a third thing a toolbar node can mean.
