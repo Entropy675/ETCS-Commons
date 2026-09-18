@@ -369,11 +369,14 @@
    * and right-drag is how the sheet pans.
    */
   canvas.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
-  // Middle button pans (PaintInput treats it like right). Block browser autoscroll.
-  canvas.addEventListener('auxclick', function (ev) { if (ev.button === 1) ev.preventDefault(); });
-  canvas.addEventListener('pointerdown', function (ev) {
+  function blockMiddleDefault(ev) {
     if (ev.button === 1) ev.preventDefault();
-  });
+  }
+  canvas.addEventListener('mousedown', blockMiddleDefault, { capture: true });
+  canvas.addEventListener('mouseup', blockMiddleDefault, { capture: true });
+  canvas.addEventListener('auxclick', blockMiddleDefault, { capture: true });
+  canvas.addEventListener('pointerdown', blockMiddleDefault, { capture: true });
+  canvas.addEventListener('pointerup', blockMiddleDefault, { capture: true });
 
   window.addEventListener('message', function (ev) {
     if (ev.origin !== ORIGIN) return;

@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
+#include <thread>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -134,7 +136,8 @@ static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
  *   CONTINUOUS   Brush, Smudge      every sample marks, segments interpolated
  *   ANCHORED     Line, Rect, Ellipse   two points; preview while dragging,
  *                                      committed on release
- *   PLACED       Fill, Glyph        one point, one commit, no drag at all
+ *   PLACED       Fill               one point, one commit, no drag at all
+ *   ANCHORED     Glyph              drag a box; text is prompted and fitted in it
  *   MEASURED     Ruler              nothing is ever committed
  *
  * That grouping is what the input edge switches on, and it is why Ruler is a
@@ -149,10 +152,10 @@ static constexpr uint16_t PAINT_BUTTON_LEFT   = 0;
 static constexpr uint16_t PAINT_BUTTON_RIGHT  = 1;  // GLFW right
 static constexpr uint16_t PAINT_BUTTON_MIDDLE = 2;  // GLFW middle -- pan, like right
 
-// Continuous motion used to rebuild the view on every sample. At high pointer
-// rates that is both the cost and the flicker. Coalesce to this interval;
-// button-up always flushes so the final sample is never dropped.
-static constexpr double PAINT_MOTION_COALESCE_MS = 100;
+// Default motion-coalesce interval (ms). Live value is on PaintTool
+// (SetMotionCoalesceMs) so the toolbar can tune it; PaintInput reads it each
+// flush. Button-up always flushes so the final sample is never dropped.
+static constexpr double PAINT_MOTION_COALESCE_DEFAULT_MS = 100.0;
 
 enum class PaintToolKind : uint8_t
 {
@@ -163,7 +166,7 @@ enum class PaintToolKind : uint8_t
     Fill,       // flood from the point, bounded by colour
     Smudge,     // carry pixels along the stroke instead of laying new ones
     Ruler,      // measure and show; commit nothing
-    Glyph       // place text at the point
+    Glyph       // drag a box; prompt for text; fit the run inside it
 };
 
 inline const char* paint_tool_kind_name(PaintToolKind k)
@@ -205,11 +208,17 @@ inline PaintToolKind paint_tool_kind_from(const std::string& name)
 inline bool paint_kind_is_anchored(PaintToolKind k)
 {
     return k == PaintToolKind::Line || k == PaintToolKind::Rect
-        || k == PaintToolKind::Ellipse || k == PaintToolKind::Ruler;
+        || k == PaintToolKind::Ellipse || k == PaintToolKind::Ruler
+        || k == PaintToolKind::Glyph;
 }
 inline bool paint_kind_is_placed(PaintToolKind k)
 {
-    return k == PaintToolKind::Fill || k == PaintToolKind::Glyph;
+    return k == PaintToolKind::Fill;
+}
+
+inline bool paint_is_pan_button(uint16_t key)
+{
+    return key == PAINT_BUTTON_RIGHT || key == PAINT_BUTTON_MIDDLE;
 }
 inline bool paint_kind_commits(PaintToolKind k)
 {
@@ -269,6 +278,17 @@ public:
         m_brush.color = PaintColor{r, g, b, a};
     }
 
+    // How often continuous pointer motion may rebuild the view (ms).
+    void SetMotionCoalesceMs(double ms)
+    {
+        m_motion_coalesce_ms = (ms < 1.0) ? 1.0 : ms;
+    }
+    void AdjustMotionCoalesceMs(double delta_ms)
+    {
+        SetMotionCoalesceMs(m_motion_coalesce_ms + delta_ms);
+    }
+    double motionCoalesceMs() const { return m_motion_coalesce_ms; }
+
     void SetHardness(float hardness)
     {
         m_brush.hardness = std::clamp(hardness, 0.0f, 1.0f);
@@ -324,6 +344,7 @@ private:
     PaintToolKind m_kind = PaintToolKind::Brush;
     std::string m_text = "Text";
     uint32_t m_text_px = 16;
+    double m_motion_coalesce_ms = PAINT_MOTION_COALESCE_DEFAULT_MS;
     uint32_t m_tolerance = 24;
     bool m_active = false;
     std::vector<PaintStrokePoint> m_points;
@@ -1346,6 +1367,18 @@ public:
         m_entries[node] = Entry{ Kind::Size, {}, radius, PaintToolKind::Brush };
     }
 
+    void AddRadiusDelta(ETCS::RID node, float delta)
+    {
+        if (node == 0 || delta == 0.0f) return;
+        m_entries[node] = Entry{ Kind::RadiusDelta, {}, delta, PaintToolKind::Brush };
+    }
+
+    void AddCoalesceDelta(ETCS::RID node, float delta_ms)
+    {
+        if (node == 0 || delta_ms == 0.0f) return;
+        m_entries[node] = Entry{ Kind::CoalesceDelta, {}, delta_ms, PaintToolKind::Brush };
+    }
+
     // A third thing a node can mean, alongside a colour and a size: which TOOL
     // it selects. Same mapping, same Apply, so a tool button is a rectangle in
     // the toolbar script exactly as a swatch is.
@@ -1433,6 +1466,17 @@ public:
             m_tool->SetRadius(e.radius);
             ETCS_LOG("PaintPalette", "radius -> " << e.radius);
         }
+        else if (e.kind == Kind::RadiusDelta)
+        {
+            const float next = std::max(1.0f, m_tool->brush().radius_px + e.radius);
+            m_tool->SetRadius(next);
+            ETCS_LOG("PaintPalette", "radius delta " << e.radius << " -> " << next);
+        }
+        else if (e.kind == Kind::CoalesceDelta)
+        {
+            m_tool->AdjustMotionCoalesceMs(static_cast<double>(e.radius));
+            ETCS_LOG("PaintPalette", "coalesce -> " << m_tool->motionCoalesceMs() << " ms");
+        }
         else if (e.kind == Kind::Tool)
         {
             m_tool->SetKind(paint_tool_kind_name(e.tool));
@@ -1471,7 +1515,8 @@ public:
     }
 
 private:
-    enum class Kind : uint8_t { Color, Size, Tool, Zoom };
+    enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, CoalesceDelta };
+    // radius: absolute size, zoom factor, or signed delta (Radius/CoalesceDelta).
     struct Entry { Kind kind; float rgba[4]; float radius; PaintToolKind tool; };
 
     std::unordered_map<ETCS::RID, Entry> m_entries;
@@ -2472,28 +2517,30 @@ public:
         // Pan: right (GLFW 1) or middle (GLFW 2). Middle is the natural pan
         // button in the browser -- right opens the context menu there.
         if ((ev.action == INPUT_BUTTON_DOWN || ev.action == INPUT_BUTTON_UP)
-            && (ev.key == PAINT_BUTTON_RIGHT || ev.key == PAINT_BUTTON_MIDDLE))
+            && paint_is_pan_button(ev.key))
         {
             if (ev.action == INPUT_BUTTON_DOWN)
             {
                 m_panning  = true;
+                m_pan_button = ev.key;
                 m_pan_from_x = ev.x;
                 m_pan_from_y = ev.y;
                 m_last_motion_ms = 0;    // allow an immediate first pan sample
                 if (m_tool && m_tool->active()) m_tool->CancelStroke();
                 repaint_view();          // drop any preview the cancelled gesture left
             }
-            else
+            else if (ev.key == m_pan_button || m_pan_button == 0)
             {
                 flush_coalesced_motion(); // apply the last pending pan delta
                 m_panning = false;
+                m_pan_button = 0;
             }
             return;
         }
         if (ev.action == INPUT_MOTION && m_panning)
         {
             // Accumulate view-space samples; rebuild the sheet on the coalesce
-            // interval only (see PAINT_MOTION_COALESCE_MS).
+            // interval only (see PAINT_MOTION_COALESCE_DEFAULT_MS).
             m_pending_view_x = ev.x;
             m_pending_view_y = ev.y;
             m_motion_pending = true;
@@ -2535,7 +2582,7 @@ public:
             // Position is still taken from the event (not integrated). Only the
             // expensive follow-up -- preview rebuild / segment stamp -- is
             // coalesced so a high-rate pointer does not clear+composite every
-            // sample (see PAINT_MOTION_COALESCE_MS).
+            // sample (see PAINT_MOTION_COALESCE_DEFAULT_MS).
             m_cursor_x = to_doc_x(ev.x);
             m_cursor_y = to_doc_y(ev.y);
             m_cursor_seen = true;
@@ -2699,8 +2746,11 @@ private:
 
     bool motion_coalesce_due()
     {
+        const double interval = (m_tool)
+            ? m_tool->motionCoalesceMs()
+            : PAINT_MOTION_COALESCE_DEFAULT_MS;
         const double t = now_ms();
-        if (m_last_motion_ms <= 0.0 || (t - m_last_motion_ms) >= PAINT_MOTION_COALESCE_MS)
+        if (m_last_motion_ms <= 0.0 || (t - m_last_motion_ms) >= interval)
         {
             m_last_motion_ms = t;
             return true;
@@ -2833,6 +2883,12 @@ private:
         case PaintToolKind::Ruler:
             preview_ruler(view, vax, vay, vbx, vby, ax, ay, bx, by, z);
             break;
+        case PaintToolKind::Glyph:
+            preview_line(view, vax, vay, vbx, vay, c, w);
+            preview_line(view, vbx, vay, vbx, vby, c, w);
+            preview_line(view, vbx, vby, vax, vby, c, w);
+            preview_line(view, vax, vby, vax, vay, c, w);
+            break;
         default: break;
         }
         paint_mark_pixel_path(target);
@@ -2851,6 +2907,7 @@ private:
         case PaintToolKind::Line:    layer->StrokeLine(ax, ay, bx, by, brush); break;
         case PaintToolKind::Rect:    layer->DrawRectOutline(ax, ay, bx, by, brush); break;
         case PaintToolKind::Ellipse: layer->DrawEllipseOutline(ax, ay, bx, by, brush); break;
+        case PaintToolKind::Glyph:   place_glyphs_in_box(layer, ax, ay, bx, by); break;
         default: break;
         }
     }
@@ -2871,10 +2928,6 @@ private:
                                               m_tool->tolerance());
             ETCS_LOG("PaintInput", "fill at " << x << "," << y << " -> " << n << " px");
         }
-        else if (kind == PaintToolKind::Glyph)
-        {
-            place_glyphs(layer, x, y);
-        }
         repaint_view();
     }
 
@@ -2892,7 +2945,35 @@ private:
  * CENTRED on the click: placing text by its top-left corner means aiming at a
  * spot and watching the text appear somewhere below and to the right of it.
  */
-    void place_glyphs(PaintLayer* layer, int32_t x, int32_t y)
+    bool prompt_glyph_text(std::string& out)
+    {
+        const char* prompt = "glyph text> ";
+#if defined(__EMSCRIPTEN__)
+        extern "C" void etcs_web_shell_write(const char* text);
+        extern "C" int  etcs_web_shell_try_pop_line(char* out, int cap);
+        etcs_web_shell_write(prompt);
+        ::std::cout << prompt << ::std::flush;
+        char buf[4096];
+        for (;;)
+        {
+            if (etcs_web_shell_try_pop_line(buf, (int)sizeof(buf)))
+            {
+                out.assign(buf);
+                while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+                    out.pop_back();
+                return true;
+            }
+            ::std::this_thread::sleep_for(::std::chrono::milliseconds(50));
+        }
+#else
+        ::std::cout << prompt << ::std::flush;
+        if (!::std::getline(::std::cin, out)) return false;
+        return true;
+#endif
+    }
+
+    void place_glyphs_in_box(PaintLayer* layer, int32_t ax, int32_t ay,
+                             int32_t bx, int32_t by)
     {
         if (m_glyphs == 0) { ETCS_LOG("PaintInput", "glyph tool with no glyph "
                                       "provider bound -- BindGlyphs first."); return; }
@@ -2900,15 +2981,50 @@ private:
         if (!g) { ETCS_LOG("PaintInput", "glyph provider RID:" << m_glyphs
                            << " is gone."); return; }
 
-        const std::string& text = m_tool->text();
-        const uint32_t px = m_tool->textSize();
-        const TextExtent e = g->MeasureText(text.c_str(), 0, px);
+        std::string text;
+        if (!prompt_glyph_text(text))
+        {
+            ETCS_LOG("PaintInput", "glyph prompt cancelled or shell closed.");
+            return;
+        }
+        if (text.empty())
+            text = m_tool->text();
+        if (text.empty())
+        {
+            ETCS_LOG("PaintInput", "glyph: empty string -- nothing to place.");
+            return;
+        }
+        m_tool->SetText(text);
+
+        int32_t x0 = std::min(ax, bx), y0 = std::min(ay, by);
+        int32_t x1 = std::max(ax, bx), y1 = std::max(ay, by);
+        const int32_t box_w = std::max(1, x1 - x0);
+        const int32_t box_h = std::max(1, y1 - y0);
+
+        uint32_t best_px = 1;
+        TextExtent best_e = g->MeasureText(text.c_str(), 0, 1);
+        const uint32_t max_px = static_cast<uint32_t>(std::max(1, box_h));
+        for (uint32_t px = 1; px <= max_px; ++px)
+        {
+            const TextExtent e = g->MeasureText(text.c_str(), 0, px);
+            if (static_cast<int32_t>(e.width)  <= box_w
+             && static_cast<int32_t>(e.height) <= box_h)
+            {
+                best_px = px;
+                best_e  = e;
+            }
+            else if (px > 1)
+                break;
+        }
+
+        const int32_t tx = x0 + (box_w - static_cast<int32_t>(best_e.width))  / 2;
+        const int32_t ty = y0 + (box_h - static_cast<int32_t>(best_e.height)) / 2;
         const PaintColor& c = m_tool->brush().color;
-        g->RasterizeText(layer->getRID(), text.c_str(), 0, px,
-                         x - static_cast<int32_t>(e.width) / 2,
-                         y - static_cast<int32_t>(e.height) / 2,
-                         c.r, c.g, c.b, c.a);
+        g->RasterizeText(layer->getRID(), text.c_str(), 0, best_px,
+                         tx, ty, c.r, c.g, c.b, c.a);
         etcs_mark_observed(layer);
+        ETCS_LOG("PaintInput", "glyph \"" << text << "\" size " << best_px
+                 << " in " << box_w << "x" << box_h);
     }
 
     // Smudge carries pixels, so it needs both ends of the step rather than one
@@ -3049,11 +3165,12 @@ private:
     bool    m_on_panel = false;
     // The right-button pan. Tracked in VIEW pixels because that is the frame a
     // drag is felt in -- see the motion branch.
-    bool    m_panning = false;
-    int32_t m_pan_from_x = 0;
-    int32_t m_pan_from_y = 0;   // a press landed on the panel; its release is not a stroke
+    bool     m_panning = false;
+    uint16_t m_pan_button = 0;
+    int32_t  m_pan_from_x = 0;
+    int32_t  m_pan_from_y = 0;   // a press landed on the panel; its release is not a stroke
 
-    // Motion coalesce -- see PAINT_MOTION_COALESCE_MS / flush_coalesced_motion.
+    // Motion coalesce -- interval from PaintTool::motionCoalesceMs().
     bool       m_motion_pending = false;
     MotionKind m_motion_kind    = MotionKind::None;
     int32_t    m_pending_view_x = 0;
@@ -3325,6 +3442,12 @@ DEFINE_WORK_FUNC(PaintTool, SetRadius)
     float radius = 0.0f;
     data >> radius;
     self.SetRadius(radius);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTool, SetMotionCoalesceMs, (double, ms))
+{
+    (void)ctx;
+    self.SetMotionCoalesceMs(ms);
 }
 
 // SetKind <brush|line|rect|ellipse|fill|smudge|ruler|glyph>
@@ -3746,6 +3869,18 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddSize, (ETCS::RID, node), (float, radius)
 {
     (void)ctx;
     self.AddSize(node, radius);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPalette, AddRadiusDelta, (ETCS::RID, node), (float, delta))
+{
+    (void)ctx;
+    self.AddRadiusDelta(node, delta);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPalette, AddCoalesceDelta, (ETCS::RID, node), (float, delta_ms))
+{
+    (void)ctx;
+    self.AddCoalesceDelta(node, delta_ms);
 }
 
 // AddTool <node_rid> <kind> -- a third thing a toolbar node can mean.
