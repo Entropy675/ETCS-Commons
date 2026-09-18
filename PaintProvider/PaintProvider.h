@@ -230,6 +230,19 @@ inline bool paint_kind_commits(PaintToolKind k)
     return k != PaintToolKind::Ruler;
 }
 
+inline double paint_tool_default_coalesce_ms(PaintToolKind k)
+{
+    const double base = PAINT_MOTION_COALESCE_DEFAULT_MS;
+    switch (k)
+    {
+    case PaintToolKind::Brush:   return base / 50.0;
+    case PaintToolKind::Smudge:  return base / 30.0;
+    case PaintToolKind::Rect:
+    case PaintToolKind::Ellipse: return base + 50.0;
+    default:                     return base;
+    }
+}
+
 
 
 
@@ -247,7 +260,11 @@ public:
     PaintTool() = default;
     bool DeleteConcrete() override { return true; }
 
-    void SetKind(const std::string& name) { m_kind = paint_tool_kind_from(name); }
+    void SetKind(const std::string& name)
+    {
+        m_kind = paint_tool_kind_from(name);
+        SetMotionCoalesceMs(paint_tool_default_coalesce_ms(m_kind));
+    }
     PaintToolKind kind() const { return m_kind; }
 
     /*
@@ -349,7 +366,7 @@ private:
     PaintToolKind m_kind = PaintToolKind::Brush;
     std::string m_text = "Text";
     uint32_t m_text_px = 16;
-    double m_motion_coalesce_ms = PAINT_MOTION_COALESCE_DEFAULT_MS;
+    double m_motion_coalesce_ms = PAINT_MOTION_COALESCE_DEFAULT_MS / 50.0;
     uint32_t m_tolerance = 24;
     bool m_active = false;
     std::vector<PaintStrokePoint> m_points;
@@ -1363,25 +1380,33 @@ public:
     void AddColor(ETCS::RID node, float r, float g, float b, float a)
     {
         if (node == 0) return;
-        m_entries[node] = Entry{ Kind::Color, { r, g, b, a }, 0.0f, PaintToolKind::Brush };
+        Entry e{ Kind::Color, { r, g, b, a }, 0.0f, PaintToolKind::Brush };
+        e.idle[0] = r; e.idle[1] = g; e.idle[2] = b; e.idle[3] = a;
+        m_entries[node] = e;
     }
 
     void AddSize(ETCS::RID node, float radius)
     {
         if (node == 0 || radius <= 0.0f) return;
-        m_entries[node] = Entry{ Kind::Size, {}, radius, PaintToolKind::Brush };
+        Entry e{ Kind::Size, {}, radius, PaintToolKind::Brush };
+        e.idle[0] = 0.22f; e.idle[1] = 0.22f; e.idle[2] = 0.26f; e.idle[3] = 1.0f;
+        m_entries[node] = e;
     }
 
     void AddRadiusDelta(ETCS::RID node, float delta)
     {
         if (node == 0 || delta == 0.0f) return;
-        m_entries[node] = Entry{ Kind::RadiusDelta, {}, delta, PaintToolKind::Brush };
+        Entry e{ Kind::RadiusDelta, {}, delta, PaintToolKind::Brush };
+        e.idle[0] = 0.22f; e.idle[1] = 0.22f; e.idle[2] = 0.26f; e.idle[3] = 1.0f;
+        m_entries[node] = e;
     }
 
     void AddCoalesceDelta(ETCS::RID node, float delta_ms)
     {
         if (node == 0 || delta_ms == 0.0f) return;
-        m_entries[node] = Entry{ Kind::CoalesceDelta, {}, delta_ms, PaintToolKind::Brush };
+        Entry e{ Kind::CoalesceDelta, {}, delta_ms, PaintToolKind::Brush };
+        e.idle[0] = 0.22f; e.idle[1] = 0.22f; e.idle[2] = 0.26f; e.idle[3] = 1.0f;
+        m_entries[node] = e;
     }
 
     // A third thing a node can mean, alongside a colour and a size: which TOOL
@@ -1390,7 +1415,9 @@ public:
     void AddTool(ETCS::RID node, const std::string& kind)
     {
         if (node == 0) return;
-        m_entries[node] = Entry{ Kind::Tool, {}, 0.0f, paint_tool_kind_from(kind) };
+        Entry e{ Kind::Tool, {}, 0.0f, paint_tool_kind_from(kind) };
+        e.idle[0] = 0.22f; e.idle[1] = 0.22f; e.idle[2] = 0.26f; e.idle[3] = 1.0f;
+        m_entries[node] = e;
     }
 
     /*
@@ -1505,7 +1532,35 @@ public:
         return true;
     }
 
-    void Report() const
+
+    void Hover(ETCS::RID node)
+    {
+        if (node == m_hovering) return;
+
+        // Restore every entry that was lit (tool labels share a group with
+        // their slice rect -- only one m_hovering was not enough).
+        for (const auto& [rid, e] : m_entries)
+            set_node_fill(rid, e.idle[0], e.idle[1], e.idle[2], e.idle[3]);
+        m_hovering = 0;
+        if (node == 0) return;
+
+        auto it = m_entries.find(node);
+        if (it == m_entries.end()) return;
+        m_hovering = node;
+        const Entry& ref = it->second;
+        const float t = (ref.kind == Kind::Color) ? 0.25f : 0.45f;
+        for (const auto& [rid, e] : m_entries)
+        {
+            if (!same_hover_group(ref, e)) continue;
+            set_node_fill(rid,
+                          e.idle[0] + (1.0f - e.idle[0]) * t,
+                          e.idle[1] + (1.0f - e.idle[1]) * t,
+                          e.idle[2] + (1.0f - e.idle[2]) * t,
+                          e.idle[3]);
+        }
+    }
+
+void Report() const
     {
         ETCS_LOG("PaintPalette", m_entries.size() << " entries, tool "
                  << (m_tool ? "bound" : "UNBOUND"));
@@ -1521,15 +1576,46 @@ public:
 
 private:
     enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, CoalesceDelta };
-    // radius: absolute size, zoom factor, or signed delta (Radius/CoalesceDelta).
-    struct Entry { Kind kind; float rgba[4]; float radius; PaintToolKind tool; };
+    struct Entry {
+        Kind kind;
+        float rgba[4];
+        float radius;
+        PaintToolKind tool;
+        float idle[4] = { 0.22f, 0.22f, 0.26f, 1.0f };
+    };
+
+    static bool same_hover_group(const Entry& a, const Entry& b)
+    {
+        if (a.kind != b.kind) return false;
+        if (a.kind == Kind::Tool) return a.tool == b.tool;
+        if (a.kind == Kind::RadiusDelta || a.kind == Kind::CoalesceDelta
+            || a.kind == Kind::Size || a.kind == Kind::Zoom)
+            return a.radius == b.radius;
+        // Colour: only the exact swatch (each has its own identity fill).
+        return false;
+    }
+
+    static void set_node_fill(ETCS::RID node, float r, float g, float b, float a)
+    {
+        if (node == 0) return;
+        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+        if (!node_e) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
+        if (!e) return;
+        // Slice rects only (PolygonDrawable2D.SetFill). Labels stay readable;
+        // same_hover_group still lights the rect when the pointer is on the label.
+        ETCS::Buffer action;
+        action.write((e->getSourceTag().toString() + ".SetFill").c_str());
+        ETCS::Buffer payload;
+        payload.write((std::to_string(r) + " " + std::to_string(g) + " "
+                     + std::to_string(b) + " " + std::to_string(a)).c_str());
+        try { e->call(action, payload); } catch (...) {}
+    }
 
     std::unordered_map<ETCS::RID, Entry> m_entries;
     PaintTool* m_tool = nullptr;
-    // For the zoom entries only -- see AddZoom on why a view setting is mapped
-    // by the same type that maps tool settings.
     PaintSurface* m_surface = nullptr;
-    // The slot a colour wheel would replace -- see lastColorNode.
+    ETCS::RID m_hovering = 0;
     mutable ETCS::RID m_last_color = 0;
 };
 
@@ -2369,6 +2455,7 @@ public:
     {
         m_cursor_seen = false;
         if (m_panel) m_panel->Left();
+        if (m_palette) m_palette->Hover(0);
     }
 
     void RouteEvent(const InputEvent& ev)
@@ -2406,6 +2493,9 @@ public:
      */
         const bool is_press   = (ev.action == INPUT_DOWN || ev.action == INPUT_BUTTON_DOWN);
         const bool is_release  = (ev.action == INPUT_UP   || ev.action == INPUT_BUTTON_UP);
+
+        if (m_palette && ev.action == INPUT_MOTION)
+            m_palette->Hover(hit_rid);
 
         if (m_palette && is_press && m_palette->Apply(hit_rid))
         {
@@ -2751,9 +2841,11 @@ private:
 
     bool motion_coalesce_due()
     {
-        const double interval = (m_tool)
+        double interval = (m_tool)
             ? m_tool->motionCoalesceMs()
             : PAINT_MOTION_COALESCE_DEFAULT_MS;
+        if (m_panning || m_motion_kind == MotionKind::Pan)
+            interval = PAINT_MOTION_COALESCE_DEFAULT_MS + 50.0;
         const double t = now_ms();
         if (m_last_motion_ms <= 0.0 || (t - m_last_motion_ms) >= interval)
         {

@@ -1,23 +1,10 @@
 #!/usr/bin/env etcs
 
-# TWO CANVASES: the sheet, and the palette beside the terminal.
+# ONE CANVAS: the sheet, with the toolbar drawn on top at the bottom edge.
 #
-# The difference from paint_surface.etcs (the OS-side session) is one surface and
-# three lines. Everything else -- the document, the layers, the tool, the input
-# machine -- is the same, because a second output is not a second session.
-#
-# WHY A SECOND SURFACE AND NOT A SECOND WINDOW. In the browser a window cannot
-# host a second canvas: emscripten's GLFW owns exactly one (`Browser.getCanvas()`),
-# every one of its event handlers drops events whose target is not that canvas,
-# and `glfwCreateWindow` makes each new window the active one -- so a second
-# window would take the first one's input away and resize its canvas. A second
-# SURFACE has none of those properties. Presenting is a putImageData and nothing
-# about it is global, which is why the target belongs to the surface
-# (RenderProvider/OS/CanvasSurface.h).
-#
-# On the OS side the same three lines describe a REGION of the one window, which
-# is what a toolbar is there. The script does not change; what the target names
-# does.
+# The toolbar is a CompositeDrawable2D child of sheet_root (order 20), not a
+# second Surface / DOM element. Every pointer event comes through the window's
+# GLFW stream; a press on a swatch is a pick inside the same tree as the picture.
 
 spawn RenderProvider::Instance gpu
 gpu.Create()
@@ -29,22 +16,6 @@ main.Create(1024, 768, ETCS Paint)
 main.spawn(RenderProvider::Surface view)
 view.Create(@gpu)
 view.Clear(0.13, 0.13, 0.15, 1.0)
-
-# ── the palette strip ────────────────────────────────────────────────────────
-#
-# Its own element, its own size. ResizeTo drops the follow, so this surface stays
-# 640x64 while the sheet tracks the window (CanvasSurface::ResizeTo) -- being told
-# a size and following one cannot both be live.
-main.spawn(RenderProvider::Surface bar_view)
-bar_view.Create(@gpu)
-bar_view.SetTarget(toolbar)
-# 960, NOT 640. The strip started at 640 for six swatches and four nibs; eight
-# tool buttons do not fit beside them, and content laid out past the width is not
-# merely clipped -- it is UNREACHABLE, because a click outside the element never
-# becomes a pick at all. The failure reads as "the tool bar does not work", and
-# the swatches keep working, which is what makes it confusing.
-bar_view.ResizeTo(960, 64)
-bar_view.Clear(0.16, 0.16, 0.19, 1.0)
 
 # ── the document: paper under ink ────────────────────────────────────────────
 #
@@ -72,25 +43,6 @@ spawn PaintProvider::PaintTool brush
 brush.SetRadius(6.0)
 brush.SetColor(0.10, 0.10, 0.12, 1.0)
 
-
-# ── the palette, as shapes and meanings ──────────────────────────────────────
-#
-# `bar` is an ordinary 2D composite and the swatches are ordinary polygons in its
-# space -- PaintProvider grows no raster backend for a row of coloured squares
-# (paint_toolbar.etcs says why at length). The palette is the mapping from picked
-# node to tool setting and nothing else.
-spawn RenderProvider::CompositeDrawable2D bar
-bar.Create(960, 64)
-
-spawn PaintProvider::PaintPalette palette
-palette.BindTool(@brush)
-
-run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette
-
-# Bound as the compose root, so every frame clears and re-walks the tree rather
-# than retaining whatever was drawn once. A swatch changing colour then shows up
-# without anything having to know it should redraw.
-bar_view.Compose(@bar)
 
 # ── the sheet's own pane ─────────────────────────────────────────────────────
 #
@@ -143,6 +95,28 @@ canvas.AttachDocument(@doc)
 canvas.SetBackground(0.13, 0.13, 0.15, 1.0)
 canvas.Render()
 
+# ── the toolbar, ON the sheet ───────────────────────────────────────────────
+sheet_root.spawn(RenderProvider::PolygonDrawable2D bar_bg)
+bar_bg.Create()
+bar_bg.AddPoint(0, 704)
+bar_bg.AddPoint(1024, 704)
+bar_bg.AddPoint(1024, 768)
+bar_bg.AddPoint(0, 768)
+bar_bg.SetFill(0.16, 0.16, 0.19, 1.0)
+bar_bg.SetOrder(19)
+
+sheet_root.spawn(RenderProvider::CompositeDrawable2D bar)
+bar.Create(960, 64)
+bar.SetPosition(32, 704)
+bar.SetOrder(20)
+
+spawn PaintProvider::PaintPalette palette
+palette.BindTool(@brush)
+palette.BindSurface(@canvas)
+
+run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette
+
+
 # ── the zoom readout, bottom-left of the drawing pane ────────────────────────
 #
 # Two steps and a percentage, deliberately faint: it is a thing you reach for
@@ -153,37 +127,33 @@ canvas.Render()
 # same type that maps a node meaning a colour (AddZoom says why a view setting
 # lives there). The label is pushed by the surface rather than by whoever zoomed,
 # so the wheel, these buttons and a script all keep it honest.
-spawn PaintProvider::PaintPalette zoombar
-zoombar.BindTool(@brush)
-zoombar.BindSurface(@canvas)
-
 sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_out)
 zoom_out.Create()
-zoom_out.AddPoint(12, 726)
-zoom_out.AddPoint(36, 726)
-zoom_out.AddPoint(36, 750)
-zoom_out.AddPoint(12, 750)
+zoom_out.AddPoint(12, 668)
+zoom_out.AddPoint(36, 668)
+zoom_out.AddPoint(36, 692)
+zoom_out.AddPoint(12, 692)
 zoom_out.SetFill(0.85, 0.85, 0.88, 0.30)
-zoom_out.SetOrder(5)
-zoombar.AddZoom(@zoom_out, 0.8)
+zoom_out.SetOrder(21)
+palette.AddZoom(@zoom_out, 0.8)
 
 sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_in)
 zoom_in.Create()
-zoom_in.AddPoint(44, 726)
-zoom_in.AddPoint(68, 726)
-zoom_in.AddPoint(68, 750)
-zoom_in.AddPoint(44, 750)
+zoom_in.AddPoint(44, 668)
+zoom_in.AddPoint(68, 668)
+zoom_in.AddPoint(68, 692)
+zoom_in.AddPoint(44, 692)
 zoom_in.SetFill(0.85, 0.85, 0.88, 0.30)
-zoom_in.SetOrder(5)
-zoombar.AddZoom(@zoom_in, 1.25)
+zoom_in.SetOrder(21)
+palette.AddZoom(@zoom_in, 1.25)
 
 sheet_root.spawn(RenderProvider::TextLabel zoom_label)
 zoom_label.Create()
-zoom_label.SetPosition(78, 730)
+zoom_label.SetPosition(78, 672)
 zoom_label.SetSize(2)
 zoom_label.SetColor(0.80, 0.80, 0.84, 1.0)
 zoom_label.SetText(100%)
-zoom_label.SetOrder(5)
+zoom_label.SetOrder(21)
 
 canvas.BindZoomLabel(@zoom_label)
 
@@ -218,31 +188,15 @@ wheel.BindTool(@brush)
 wheel.BindPalette(@palette)
 wheel.SetValue(1.0)
 
-# ── three input machines, because there are three spaces ─────────────────────
-#
-# `input` is the sheet: positions arrive from the window's own pointer stream,
-# now through the router. `bar_input` is the strip, and its positions arrive from
-# the PAGE (etcs_web_call -> PaintInput.Pointer/Press, loaders/etcs.cc): a click
-# on a separate DOM element is not in the window's stream and there is nothing to
-# route it from. `wheel_input` is the popup.
-#
-# The wheel is bound to TWO of them and means something different on each: on its
-# own pane a press picks, on the sheet a press dismisses. "Clicking anywhere on
-# the canvas closes it" is a statement about the canvas, so the canvas is where
-# it is implemented.
+# ── one input machine for the sheet (toolbar is scenery inside it) ──────────
 spawn PaintProvider::PaintInput input
 input.Create(@doc, @brush, @canvas)
 input.SetBrush(6.0, 0.10, 0.10, 0.12, 1.0)
 input.BindRoot(@sheet_root)
 input.BindCanvas(@sheet_root)
-input.BindPalette(@zoombar)
+input.BindPalette(@palette)
 input.BindWheel(@wheel)
 input.SetWheelPane(0)
-
-spawn PaintProvider::PaintInput bar_input
-bar_input.Create(@doc, @brush, @canvas)
-bar_input.BindRoot(@bar)
-bar_input.BindPalette(@palette)
 
 spawn PaintProvider::PaintInput wheel_input
 wheel_input.Create(@doc, @brush, @canvas)
@@ -272,7 +226,6 @@ view.Compose(@sheet_root)
 # neither knows the other exists. The last edge blocks this thread, which in the
 # browser is a detached worker.
 detach RenderProvider/scripts/render_frames.etcs view=view
-detach RenderProvider/scripts/render_frames.etcs view=bar_view
 # Routed now, because there is more than one pane: the router decides which one
 # the pointer is over before anything interprets it. paint_pointer.etcs is still
 # the right script for a single-pane session -- see paint_routed_pointer.etcs.

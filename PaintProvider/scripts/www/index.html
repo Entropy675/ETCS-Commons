@@ -49,8 +49,8 @@
          the bottom of the viewport. height:100% not min-height, so the two of
          them fit the screen instead of making the page scroll to reach the thing
          you type into. */
-      grid-template-rows: auto minmax(0, 1fr) auto clamp(15rem, 40%, 28rem);
-      grid-template-areas: "head" "stage" "bar" "term";
+      grid-template-rows: auto minmax(0, 1fr) clamp(15rem, 40%, 28rem);
+      grid-template-areas: "head" "stage" "term";
     }
     header {
       grid-area: head;
@@ -120,15 +120,6 @@
       grid-area: bar; min-width: 0;
       display: flex; align-items: center; justify-content: center;
     }
-    canvas#toolbar {
-      display: block; background: #14150f;
-      border: 1px solid var(--border); border-radius: 6px;
-      width: 100%; height: auto; max-width: 640px;
-      /* The strip is the one surface you aim at rather than draw on, so it says
-         so on hover instead of leaving the arrow cursor. */
-      cursor: pointer;
-      touch-action: none;
-    }
 
     /* SIDE BY SIDE ONCE THERE IS ROOM. Two columns, one row: the canvas takes
        the space the terminal does not need, and both are full height. Below this
@@ -144,7 +135,7 @@
            drawn height follows its aspect ratio and the row follows the canvas
            instead of the other way round. */
         grid-template-rows: auto auto minmax(0, 1fr);
-        grid-template-areas: "head head" "stage bar" "stage term";
+        grid-template-areas: "head head" "stage term" "stage term";
       }
       #shell { min-height: 0; }
     }
@@ -177,8 +168,7 @@
          log, and splitting the first six lines of it into a second box above the
          terminal meant reading two places to follow one sequence. -->
     <div id="barwrap">
-      <canvas id="toolbar" width="960" height="64"></canvas>
-    </div>
+</div>
     <iframe id="shell" src="shell" title="ETCS shell"></iframe>
   </div>
   <script>
@@ -262,93 +252,6 @@
       log('[etcs] push_line failed: ' + e + '\n', 'err');
     }
   }
-
-  /*
-   * ── THE STRIP'S INPUT, THROUGH WORK FUNCTIONS ─────────────────────────────
-   *
-   * The sheet gets its pointer from the window's own stream (an edge, on a
-   * worker). The strip cannot: it is a separate DOM element, so its events never
-   * enter that stream -- emscripten's GLFW drops anything whose target is not the
-   * one canvas it owns -- and there is nothing to route them from.
-   *
-   * So the page drives it the way a script would, one work function at a time:
-   *
-   *     etcs_web_call("bar_input", "Pointer", "412, 22")
-   *     etcs_web_call("bar_input", "Press",   "")
-   *
-   * is the JS spelling of `bar_input.Pointer(412, 22)` / `bar_input.Press()`.
-   * Nothing in the bridge knows what a palette is (loaders/etcs.cc): it resolves
-   * the global name a boot script introduced and dispatches. Every verb a module
-   * exports is reachable this way the moment the module is loaded, with no
-   * per-verb glue to keep in step.
-   *
-   * DISCRETE EVENTS ONLY. The call is synchronous on the calling thread, which
-   * here is the page's, so a call per pointer MOVE would put the event loop
-   * behind the module's stream for every sample. Presses are what a palette is
-   * about; moves are forwarded only while the button is down, which is what makes
-   * dragging across swatches work without paying for hover.
-   */
-  function etcsCall(name, work, args) {
-    const mod = window.Module;
-    if (!mod || !mod.ccall) return false;
-    try {
-      return mod.ccall('etcs_web_call', 'number',
-                       ['string', 'string', 'string'],
-                       [name, work, args || '']) !== 0;
-    } catch (e) {
-      log('[etcs] ' + name + '.' + work + ' failed: ' + e + '\n', 'err');
-      return false;
-    }
-  }
-
-  (function wireStrip() {
-    const bar = document.getElementById('toolbar');
-    if (!bar) return;
-    let down = false;
-
-    /*
-     * CSS pixels -> framebuffer pixels, which are the coordinates the bar's 2D
-     * tree was laid out in. The canvas is drawn scaled (width:100%, height:auto),
-     * so the ratio is the only thing between a click and a swatch -- and because
-     * the aspect ratio is preserved, both axes share it.
-     */
-    function at(ev) {
-      const r = bar.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) return null;
-      const x = Math.round((ev.clientX - r.left) * (bar.width  / r.width));
-      const y = Math.round((ev.clientY - r.top)  * (bar.height / r.height));
-      return x + ', ' + y;
-    }
-
-    bar.addEventListener('pointerdown', function (ev) {
-      const p = at(ev); if (!p) return;
-      ev.preventDefault();
-      down = true;
-      // Position BEFORE press, always: a press with no position ever delivered is
-      // refused on purpose (PaintInput::HandleEvent) and refused silently.
-      etcsCall('bar_input', 'Pointer', p);
-      etcsCall('bar_input', 'Press', '');
-      if (bar.setPointerCapture) { try { bar.setPointerCapture(ev.pointerId); } catch (e) {} }
-    });
-    bar.addEventListener('pointermove', function (ev) {
-      if (!down) return;                 // see DISCRETE EVENTS ONLY above
-      const p = at(ev); if (!p) return;
-      etcsCall('bar_input', 'Pointer', p);
-    });
-    // On window, not on the canvas: a release outside the strip is still a
-    // release, and leaving the machine pressed would make the next click read as
-    // a drag that started somewhere nobody pointed at.
-    window.addEventListener('pointerup', function () {
-      if (!down) return;
-      down = false;
-      etcsCall('bar_input', 'Release', '');
-    });
-    window.addEventListener('pointercancel', function () {
-      if (!down) return;
-      down = false;
-      etcsCall('bar_input', 'Release', '');
-    });
-  })();
 
   /*
    * ── the one thing about the sheet the page still owns ──────────────────
