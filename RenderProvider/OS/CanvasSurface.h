@@ -269,7 +269,7 @@ public:
     void BlitConcrete(Surface_* source, int32_t x, int32_t y,
                        uint32_t w, uint32_t h, float opacity) override
     {
-        (void)w; (void)h;
+
         if (!source) { ETCS_LOG("CanvasSurface", "Blit called with no source."); return; }
         Pixels_* px = static_cast<Pixels_*>(source->getInterfacePointer(ETCS::Buffer("Pixels")));
         if (!px)
@@ -287,6 +287,14 @@ public:
         std::lock_guard<std::mutex> lock(m_rasterMutex);
         // Composite marks; do the blend here without marking.
         if (PixelBytes() == 0 || px->PixelBytes() == 0 || opacity <= 0.0f) return;
+        // w/h are the destination extent when they differ from the source's own
+        // size (ontology/ScaledComposite.h). Still no mark: on this
+        // surface a draw is not a frame -- Present is (see the class comment).
+        if (render_blit_is_scaled(*px, w, h))
+        {
+            render_composite_scaled(*this, *px, x, y, w, h, opacity);
+            return;
+        }
         const uint32_t dw = PixelWidth();
         const uint32_t dh = PixelHeight();
         const uint32_t sw = px->PixelWidth();

@@ -5,6 +5,7 @@
 #include "../../../ontology.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -53,6 +54,13 @@
 // forever. That is why the self-observation in Create is not ceremony -- it is
 // this node's own subscription, and forgetting it means TakeObserved answers
 // true for an unregistered observer and the tree recomposes every frame.
+//
+// WHAT LEAVES IS NOT THE BUFFER. A destination is handed the last PUBLISHED
+// frame, a copy taken at an instant somebody declared the raster whole, and the
+// two triggers are the two ways that happens: the end of a recompose, and a mark
+// whose origin is this node (MarkObserved), which is what a foreign writer into
+// these pixels says when it has finished. The raster stays unlocked and the
+// reader stops seeing into the middle of a composition. See publish().
 //
 // WHAT IT IS NOT. Its shape is its rectangle -- a compositor is a buffer, and
 // a buffer is rectangular. A non-rectangular merge wants the shape as a mask
@@ -290,8 +298,82 @@ public:
             recompose();
         }
 
+        /*
+ * THE EDGE TO THIS DESTINATION, which is a SECOND question and the reason a
+ * published frame can exist at all.
+ *
+ *   TakeObserved(getRID())   "did my subtree change"   -> do I recompose
+ *   MarkObserved(getRID())   "your raster is finished" -> take the snapshot
+ *
+ * The second is a mark, not a poll, and it is where the OTHER publish lives
+ * (MarkObserved below). It has to be: a foreign writer's sequence of writes is
+ * whole only at the instant it says so, and only that writer's own thread knows
+ * when that is. A reader that snapshots when it notices a mark can arrive after
+ * the next sequence has begun, which measured as bare paper through the ink on a
+ * smear -- rarely, and that is the worst kind.
+ *
+ * Registering the destination is still done here, because this is where the
+ * destination becomes known, and it is what makes a device's upload edge work
+ * (Observe is idempotent; an unregistered observer is answered true, so a
+ * destination's first sight of this node always gets a frame).
+ */
+        const uint64_t dst_rid = dst->getRID();
+        this->Observe(dst_rid);
+        (void)TakeObserved(dst_rid);   // spent: the frame below is that answer
+
         const Point2D base = parentAbsoluteOrigin();
+
+        /*
+ * FROM THE PUBLISHED FRAME. The buffer everyone writes is no longer the buffer
+ * anyone reads: a destination gets the last WHOLE composition, never the raster
+ * with half of one in it.
+ *
+ * A device destination has no host address to blend into, so it takes the
+ * family verb and reads the live raster -- the old behaviour, and the only one
+ * available there.
+ */
+        if (Pixels_* dpx = static_cast<Pixels_*>(
+                dst->getInterfacePointer(ETCS::Buffer("Pixels"))))
+        {
+            std::lock_guard<std::mutex> g(m_front_mtx);
+            if (m_front.empty()) publishLocked();   // first sight of this node
+            if (!m_front.empty() && m_front_w && m_front_h)
+            {
+                render_composite_raw(*dpx, m_front.data(), m_front_w, m_front_h,
+                                     base.x + m_x, base.y + m_y, 1.0f);
+                etcs_mark_observed(dpx);
+                return;
+            }
+        }
         dst->Blit(this, base.x + m_x, base.y + m_y, m_w, m_h, 1.0f);
+    }
+
+    /*
+     * ── WHERE A FRAME BECOMES PUBLISHABLE ────────────────────────────────
+     *
+     * A mark whose origin is THIS NODE means somebody just wrote these pixels
+     * from outside and has stopped: etcs_mark_observed(x) passes x's own RID,
+     * so origin == getRID() is exactly "my raster was written", where a
+     * descendant's change arrives with the descendant's RID instead. The
+     * distinction is already in the semantics; this reads it.
+     *
+     * SO THE SNAPSHOT IS TAKEN ON THE WRITER'S THREAD, at the one instant the
+     * writer has declared the picture whole, rather than by a reader that
+     * noticed afterwards. That is the whole difference between a feed of frames
+     * and a feed of mostly-frames: PaintSurface::Render clears, blits every
+     * layer and marks, and the next Render can begin immediately -- a reader
+     * snapshotting "on the mark" races that next clear and loses sometimes.
+     *
+     * Not during a recompose: that writes these same pixels through the same
+     * Pixels_ path, so every child's draw marks with origin=this and would
+     * publish a half-composed tree. recompose publishes once, itself, when it
+     * is done.
+     */
+    void MarkObserved(uint64_t origin_rid) override
+    {
+        ObservableBase<CompositeDrawable2D>::MarkObserved(origin_rid);
+        if (origin_rid == getRID() && !m_composing.load(std::memory_order_acquire))
+            publish();
     }
 
     // ── Resizable_ / Deletable_ ──────────────────────────────────────────
@@ -406,6 +488,11 @@ private:
 
     void recompose()
     {
+        // Every child's draw below writes these pixels through Pixels_, and each
+        // of those writes marks with origin=this -- which is the publish trigger
+        // (MarkObserved). Held off for the duration and paid once at the end, or
+        // a destination would be handed the tree half-drawn, repeatedly.
+        m_composing.store(true, std::memory_order_release);
         applyPendingGeometry();
         ++m_recompositions;
         // Logged because it is the observable form of this class's only
@@ -425,6 +512,9 @@ private:
         for (Drawable_* child : ordered) child->DrawInto(this);
 
         PopClip();
+
+        m_composing.store(false, std::memory_order_release);
+        publish();          // one frame for the whole tree, on this thread
     }
 
     /*
@@ -473,6 +563,63 @@ private:
     uint32_t m_h = 0;
     // See SetRetain.
     bool m_retain = false;
+
+    /*
+     * ── THE PUBLISHED FRAME ──────────────────────────────────────────────
+     *
+     * A compositor's output is a FEED, and a half-assembled frame in it is not
+     * a lesser frame -- it is a wrong one. Assembling takes many writes and the
+     * reader is another thread; nothing made those two agree about when a frame
+     * was whole. Measured on a smear, sampling one pixel inside an inked band
+     * once per displayed frame, 15 frames in 494 showed bare paper: the reader
+     * caught the raster after the paper layer had landed and before the ink did.
+     * Publishing on the writer's own mark (MarkObserved) took that to 3 in 1535.
+     *
+     * WHAT THE REMAINING 3 ARE, stated because it is not this mechanism: TWO
+     * THREADS WRITE THIS RASTER AND NOTHING SERIALISES THEM. recompose runs on
+     * the frame edge, a projected document arrives on the pointer thread, and
+     * under retain neither clears first, so a recompose can land in the middle of
+     * the other's sequence and publish what it finds. Closing it means one writer
+     * -- either the projection moves onto the frame edge as a drawable child, or
+     * a writer gets a way to hold this raster for the length of a sequence, which
+     * is a hold this class does not offer today. A per-call lock would not do it;
+     * the sequence, not the call, is the unit that has to be whole.
+     *
+     * A COPY, NOT A POINTER FLIP, and retain is what forces that. A retained
+     * compositor's buffer IS the picture (SetRetain), so flipping would hand the
+     * next frame a stale one to accumulate onto. One pass over memory, once per
+     * published frame, against the many passes assembling it already costs.
+     *
+     * THE ONE LOCK, and it is deliberately not on the raster. Guarding the raster
+     * would put a lock on every pixel operation in the system to serialise
+     * against a copy; guarding the PUBLISHED frame costs two full-frame passes
+     * that were happening anyway, and is sufficient, because nothing writes the
+     * published frame except a publish. It never nests with the pixel path.
+     */
+    void publish()
+    {
+        std::lock_guard<std::mutex> g(m_front_mtx);
+        publishLocked();
+    }
+
+    void publishLocked()
+    {
+        const uint8_t* src = PixelData();
+        const size_t   n   = PixelBytes();
+        if (!src || n == 0) { m_front.clear(); m_front_w = m_front_h = 0; return; }
+        m_front.resize(n);
+        std::memcpy(m_front.data(), src, n);
+        m_front_w = m_w;
+        m_front_h = m_h;
+    }
+
+    std::vector<uint8_t>  m_front;
+    uint32_t              m_front_w = 0;
+    uint32_t              m_front_h = 0;
+    std::mutex            m_front_mtx;
+    // Set for the length of a recompose, read by MarkObserved on whatever thread
+    // marks -- see recompose.
+    std::atomic<bool>     m_composing{false};
 
     // Geometry the layout has asked for, not yet applied. Guarded because
     // the writer is the event pump and the reader is the frame edge; the

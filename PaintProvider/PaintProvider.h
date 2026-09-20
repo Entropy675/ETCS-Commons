@@ -821,44 +821,78 @@ public:
 
         const uint32_t pw = this->PixelWidth();
         const uint32_t ph = this->PixelHeight();
-        const size_t   bytes = this->PixelBytes();
-        const uint32_t draw_w = (w == 0) ? pw : std::min(w, pw);
-        const uint32_t draw_h = (h == 0) ? ph : std::min(h, ph);
 
         /*
-     * THE PROJECTION IS APPLIED HERE, which is the only place it can be: the
-     * layer's pixels are in DOCUMENT space and the surface wants VIEW space, and
-     * this is the one function that touches both.
+     * THE PROJECTION IS APPLIED BY THE SURFACE, which is the only place it can
+     * be done once and exactly: the layer's pixels are in DOCUMENT space, the
+     * surface wants VIEW space, and Surface_::Blit has carried the destination
+     * extent in its w/h since it was written.
      *
-     * The sample step shrinks as the zoom grows, so a magnified document is
-     * sampled more finely rather than drawn as bigger blocks -- otherwise zooming
-     * in would reveal the subsample grid instead of the picture. Clamped at 1:
-     * below that the step would be finer than the pixels are.
+     * IT USED TO BE APPROXIMATED HERE, and that was the whole of the pixelation.
+     * This walked the SOURCE and emitted one virtual DrawRect per sample, so how
+     * much of the picture survived was bounded by how many calls it could
+     * afford: `step = 4/zoom` meant every 4th pixel at 100%, each drawn as a 5x5
+     * block -- a sixteenth of the stored resolution, with thin marks either
+     * missed or fattened into squares, and 1:1 only above 400% zoom. A brush
+     * dab looked crisp while StampBrush drew it live at view scale and went
+     * blocky the instant anything re-rendered the document through here.
      *
-     * Rects are drawn one sample wider and taller than the step, deliberately.
-     * At a fractional zoom consecutive samples land a fractional distance apart,
-     * and a rect exactly `step*zoom` across leaves a seam wherever that rounds
-     * down. Overdrawing by one covers it, and costs nothing because the
-     * neighbour paints over it anyway.
+     * One call now, and the write is a destination-driven resample
+     * (ontology/ScaledComposite.h). Full resolution at every zoom, one pass over
+     * memory instead of ~786k virtual calls.
+     *
+     * w/h ARE THE DESTINATION EXTENT, the same thing they mean on Surface_::Blit
+     * -- zero for "whatever the zoom makes it". They used to clamp the SOURCE
+     * here, which no caller ever asked for and which gave one name two meanings
+     * across a call boundary a projected document crosses every frame.
      */
         const float z = (zoom <= 0.0f) ? 1.0f : zoom;
+        const uint32_t dw = (w != 0) ? w : std::max(1u, static_cast<uint32_t>(pw * z + 0.5f));
+        const uint32_t dh = (h != 0) ? h : std::max(1u, static_cast<uint32_t>(ph * z + 0.5f));
+
+        /*
+     * NOT THROUGH Surface_::Blit, and the reason is a family boundary rather
+     * than a preference. Blit's source parameter is a Surface_, and a layer is
+     * not one: the lineage puts Layer ABOVE Surface, and Orderable is claimed
+     * once in it, so composing SurfaceBase here would give PaintLayer a second
+     * LayerBase subobject and every comparison on it would be ambiguous. A
+     * layer owns pixels and an order; it is deliberately not a surface.
+     *
+     * So the projection is done against the destination's own bytes, with the
+     * resample every Blit implementor shares (ontology/ScaledComposite.h) -- one
+     * output pixel written once, from an inverse-mapped source. A layer is a
+     * Pixels_, so it IS a valid source for it; only "surface" is what it lacks.
+     *
+     * NO MARK HERE. One layer landing is not a finished picture, and this is
+     * called once per visible layer from PaintDocument::RenderToSurface, which
+     * marks once when the whole stack is down (PaintSurface::Render). Marking
+     * per layer published the paper with no ink on it: a mark is what a
+     * compositor takes as "that frame is ready to copy", and it was true four
+     * layers early.
+     */
+        if (Pixels_* dpx = ETCS::resolve_in_family<Pixels_>("Pixels", target))
+        {
+            render_composite_scaled(*dpx, *this, ox, oy, dw, dh, alpha);
+            return;
+        }
+
+        // A device-backed destination has no address to blend into, so it keeps
+        // the old approximation: one DrawRect per sample, coarse by necessity.
+        const size_t bytes = this->PixelBytes();
         const uint32_t step = std::max(1u, static_cast<uint32_t>(4.0f / z));
         const uint32_t rw = std::max(1u, static_cast<uint32_t>(step * z + 1.0f));
-
-        for (uint32_t y = 0; y < draw_h; y += step)
+        for (uint32_t y = 0; y < ph; y += step)
         {
-            for (uint32_t x = 0; x < draw_w; x += step)
+            for (uint32_t x = 0; x < pw; x += step)
             {
                 size_t i = (static_cast<size_t>(y) * pw + x) * 4;
                 if (i + 3 >= bytes) continue;
                 if (px[i + 3] == 0) continue;
-                const float pr = px[i + 0] / 255.0f;
-                const float pg = px[i + 1] / 255.0f;
-                const float pb = px[i + 2] / 255.0f;
-                const float pa = (px[i + 3] / 255.0f) * alpha;
                 surface->DrawRect(ox + static_cast<int32_t>(x * z),
                                   oy + static_cast<int32_t>(y * z),
-                                  rw, rw, pr, pg, pb, pa);
+                                  rw, rw,
+                                  px[i] / 255.0f, px[i + 1] / 255.0f,
+                                  px[i + 2] / 255.0f, (px[i + 3] / 255.0f) * alpha);
             }
         }
     }
@@ -1269,10 +1303,15 @@ public:
         // document keeps whatever the last frame left there and panning smears.
         if (view) view->Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
-        // ONE mark for the finished picture. CanvasSurface draws do not mark
-        // (composition boundary); Present snapshots the back buffer when this
-        // edge wakes ConsumeFrames. Same module -- Surface_ only, no concrete
-        // backend type.
+        // ONE mark for the finished picture, AND THE CLEAR PLUS EVERY LAYER MUST
+        // BE SILENT FOR IT TO MEAN THAT. A mark is what a compositor reads as
+        // "there is a whole frame here to copy" (CompositeDrawable2D's published
+        // frame), so any mark between the clear above and the last layer below
+        // publishes a picture that is missing layers -- measurably, as bare paper
+        // through the ink on a smear. CanvasSurface draws do not mark and neither
+        // does a composite's Clear/Blit; PaintLayer::BlitTo says why it does not
+        // either. Present snapshots the back buffer when this edge wakes
+        // ConsumeFrames. Same module -- Surface_ only, no concrete backend type.
         paint_mark_pixel_path(m_target);
     }
 
