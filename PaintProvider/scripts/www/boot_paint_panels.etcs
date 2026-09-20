@@ -163,7 +163,12 @@ canvas.BindZoomLabel(@zoom_label)
 # NOT added to the router here: the wheel does that when it opens, which is what
 # makes "is it open" and "does it receive clicks" one fact instead of two that
 # can disagree.
-spawn RenderProvider::CompositeDrawable2D wheel_pane
+# A CHILD OF THE SHEET, which it was not, and that was the whole of why nobody
+# had seen this wheel. Spawned at top level it had no drawable parent, so no
+# compose walk ever reached it: order 30 ranks it against siblings it did not
+# have. It was still ROUTED when open, so clicks over it were swallowed by an
+# invisible panel -- the worst of both.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D wheel_pane)
 wheel_pane.Create(220, 220)
 wheel_pane.SetPosition(340, 260)
 wheel_pane.SetOrder(30)
@@ -186,7 +191,11 @@ spawn PaintProvider::PaintColorWheel wheel
 wheel.Create(110, 110, 96)
 wheel.BindTool(@brush)
 wheel.BindPalette(@palette)
+wheel.BindSurface(@canvas)
 wheel.SetValue(1.0)
+# And the palette reaches back, so a swatch's own arrow can open the wheel above
+# it and aim the pick at that swatch (PaintPalette::AddWheelArrow).
+palette.BindWheel(@wheel)
 
 # ── one input machine for the sheet (toolbar is scenery inside it) ──────────
 spawn PaintProvider::PaintInput input

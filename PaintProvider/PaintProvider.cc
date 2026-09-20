@@ -54,7 +54,7 @@ ETCS_TAG_BLOCK_HYBRID(PaintInput,
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
-    SetColorOf, Report, Delete)
+    BindWheel, AddWheelArrow, SetColorOf, Report, Delete)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
@@ -67,8 +67,8 @@ ETCS_TAG_BLOCK_BASIC(PaintLayerPanel,
 // A region where POSITION means colour, rather than a node meaning one -- which
 // is why it is not a PaintPalette entry. See PaintColorWheel.
 ETCS_TAG_BLOCK_BASIC(PaintColorWheel,
-    Create, BindTool, BindPalette, BindRouter, BindPane, SetValue,
-    Open, Close, Pick, Report, Delete)
+    Create, BindTool, BindPalette, BindRouter, BindPane, BindSurface, SetValue,
+    Open, OpenAt, SetTargetSlot, Close, Pick, Report, Delete)
 
 // HYBRID for the same reason PaintInput is: its consume edges are the standing
 // control-thread ends of the window's producers, not one-shot calls.

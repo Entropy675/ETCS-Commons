@@ -211,6 +211,66 @@ label_glyph.SetText(text)
 label_glyph.SetOrder(2)
 palette.AddTool(@label_glyph, glyph)
 
+
+# ── the wheel arrows ─────────────────────────────────────────────────────────
+#
+# One per swatch, at the TOP of it, pointing up: pressing it opens the colour
+# wheel above that swatch and the pick replaces THAT swatch. A single shared
+# wheel button had to guess which colour was meant from whatever was selected
+# last; naming the target here means it cannot guess wrong.
+#
+# Order 2 so it sits over the swatch's own fill (order 1), same as the labels.
+# Small on purpose -- it shares its cell with the swatch, which is still pressable
+# everywhere the arrow is not.
+bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_ink)
+wheel_arrow_ink.Create()
+wheel_arrow_ink.AddPoint(30, 3)
+wheel_arrow_ink.AddPoint(37, 13)
+wheel_arrow_ink.AddPoint(23, 13)
+wheel_arrow_ink.SetFill(0.92, 0.92, 0.90, 0.85)
+wheel_arrow_ink.SetOrder(2)
+palette.AddWheelArrow(@wheel_arrow_ink, @swatch_ink)
+bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_red)
+wheel_arrow_red.Create()
+wheel_arrow_red.AddPoint(90, 3)
+wheel_arrow_red.AddPoint(97, 13)
+wheel_arrow_red.AddPoint(83, 13)
+wheel_arrow_red.SetFill(0.92, 0.92, 0.90, 0.85)
+wheel_arrow_red.SetOrder(2)
+palette.AddWheelArrow(@wheel_arrow_red, @swatch_red)
+bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_amber)
+wheel_arrow_amber.Create()
+wheel_arrow_amber.AddPoint(150, 3)
+wheel_arrow_amber.AddPoint(157, 13)
+wheel_arrow_amber.AddPoint(143, 13)
+wheel_arrow_amber.SetFill(0.92, 0.92, 0.90, 0.85)
+wheel_arrow_amber.SetOrder(2)
+palette.AddWheelArrow(@wheel_arrow_amber, @swatch_amber)
+bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_green)
+wheel_arrow_green.Create()
+wheel_arrow_green.AddPoint(210, 3)
+wheel_arrow_green.AddPoint(217, 13)
+wheel_arrow_green.AddPoint(203, 13)
+wheel_arrow_green.SetFill(0.92, 0.92, 0.90, 0.85)
+wheel_arrow_green.SetOrder(2)
+palette.AddWheelArrow(@wheel_arrow_green, @swatch_green)
+bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_blue)
+wheel_arrow_blue.Create()
+wheel_arrow_blue.AddPoint(270, 3)
+wheel_arrow_blue.AddPoint(277, 13)
+wheel_arrow_blue.AddPoint(263, 13)
+wheel_arrow_blue.SetFill(0.92, 0.92, 0.90, 0.85)
+wheel_arrow_blue.SetOrder(2)
+palette.AddWheelArrow(@wheel_arrow_blue, @swatch_blue)
+bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_paper)
+wheel_arrow_paper.Create()
+wheel_arrow_paper.AddPoint(330, 3)
+wheel_arrow_paper.AddPoint(337, 13)
+wheel_arrow_paper.AddPoint(323, 13)
+wheel_arrow_paper.SetFill(0.92, 0.92, 0.90, 0.85)
+wheel_arrow_paper.SetOrder(2)
+palette.AddWheelArrow(@wheel_arrow_paper, @swatch_paper)
+
 bar.spawn(RenderProvider::PolygonDrawable2D radius_plus)
 radius_plus.Create()
 radius_plus.AddPoint(840, 0)

@@ -93,6 +93,57 @@ static inline uint8_t paint_to_byte(float v)
     return static_cast<uint8_t>(v * 255.0f + 0.5f);
 }
 
+/*
+ * Where a node's top-left sits in ROOT space -- the space a floating pane is
+ * positioned in, which is the only reason this exists.
+ *
+ * Accumulates each ancestor's own offset all the way up, THROUGH compositors
+ * rather than stopping at one. That is deliberately not the rule a drawable uses
+ * to paint itself (a compositor is a coordinate origin, so a child painting into
+ * it stops there -- PolygonDrawable2D::parentAbsoluteOrigin). Here the question
+ * is different: a popup is a sibling of the toolbar's compositor, not a child of
+ * it, so it needs the toolbar's offset included to be placed against something
+ * inside it.
+ */
+static inline Point2D paint_root_origin(ETCS::RID node)
+{
+    Point2D acc{ 0, 0 };
+    ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+    if (!h) return acc;
+    for (ETCS::Entity* e = static_cast<ETCS::Entity*>(h.get()); e; e = e->getParent())
+    {
+        void* d2 = e->getInterfacePointer(ETCS::Buffer("Drawable2D"));
+        if (!d2) break;
+        const Rect2D b = static_cast<Drawable2D_*>(d2)->Bounds();
+        acc.x += b.x;
+        acc.y += b.y;
+    }
+    return acc;
+}
+
+/*
+ * Does this pane contain a point given in ROOT space?
+ *
+ * ContainsLocal answers in the node's OWN coordinates, so asking it directly
+ * with a root-space point is only correct for a pane that sits at the origin.
+ * Every pane did -- the sheet root is 0,0 -- so a moved pane was simply never
+ * offered the event: the colour wheel's popup could be opened, was drawn, was
+ * top of the routing order, and still received nothing, because containment was
+ * tested 493 pixels away from where it had been placed. The press then fell
+ * through to the canvas underneath, whose job on a press outside the wheel is to
+ * dismiss it, so the popup closed the instant it was aimed at.
+ *
+ * Same translation PaintInput::RouteEvent makes before picking, and it has to be
+ * the same one, or a pane could be offered an event it then picks nothing from.
+ */
+static inline bool paint_pane_contains(ETCS::RID root, int32_t x, int32_t y)
+{
+    ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", root);
+    if (!h) return false;
+    const Point2D at = paint_root_origin(root);
+    return h->ContainsLocal(x - at.x, y - at.y);
+}
+
 static inline ETCS::Entity* paint_resolve_tag(const char* tag, ETCS::RID rid)
 {
     if (rid == 0) return nullptr;
@@ -1562,6 +1613,31 @@ public:
         m_entries[node] = e;
     }
 
+    // The wheel this palette opens. By RID and called by verb name, because
+    // PaintColorWheel is declared below this type -- the same hop the wheel makes
+    // to reach its router.
+    void BindWheel(ETCS::RID wheel) { m_wheel = wheel; }
+
+    /*
+ * AN ARROW THAT OPENS THE WHEEL FOR ONE SWATCH.
+ *
+ * The wheel used to be reached by a single button and replaced whichever colour
+ * entry happened to be selected last, which meant the user had to press a swatch
+ * and then a separate control, and a mis-remembered selection silently
+ * overwrote the wrong one. An arrow that BELONGS to a swatch removes both: the
+ * target is named here, at layout time, and cannot be the wrong one.
+ *
+ * `slot` is a colour entry's node; anything else is refused at press time rather
+ * than here, because the script is free to declare the arrow before the swatch.
+ */
+    void AddWheelArrow(ETCS::RID node, ETCS::RID slot)
+    {
+        if (node == 0) return;
+        Entry e{ Kind::WheelArrow, {}, 0.0f, PaintToolKind::Brush };
+        e.slot = slot;
+        m_entries[node] = e;
+    }
+
     // A third thing a node can mean, alongside a colour and a size: which TOOL
     // it selects. Same mapping, same Apply, so a tool button is a rectangle in
     // the toolbar script exactly as a swatch is.
@@ -1609,12 +1685,26 @@ public:
  * one (see this type's header note). Returns false for a node that is not a
  * colour entry, so a caller can tell "there is no such swatch" from "done".
  */
+    /*
+ * REPLACE A SWATCH'S COLOUR -- the value it applies AND the way it looks.
+ *
+ * It used to set only the value, on the reasoning that a palette owns no
+ * drawables and a script should restyle the swatch from lastSlot(). Nothing ever
+ * did, so a picked colour applied to the tool while the swatch went on showing
+ * the colour it had replaced -- and the reasoning was already untrue, since
+ * Hover paints every entry through this same seam. A control that does not show
+ * its own state is the bug, not the layering.
+ *
+ * `idle` moves with it, or the next hover-out would restore the old colour.
+ */
     bool SetColorOf(ETCS::RID node, float r, float g, float b, float a)
     {
         auto it = m_entries.find(node);
         if (it == m_entries.end() || it->second.kind != Kind::Color) return false;
-        it->second.rgba[0] = r; it->second.rgba[1] = g;
-        it->second.rgba[2] = b; it->second.rgba[3] = a;
+        Entry& e = it->second;
+        e.rgba[0] = r; e.rgba[1] = g; e.rgba[2] = b; e.rgba[3] = a;
+        e.idle[0] = r; e.idle[1] = g; e.idle[2] = b; e.idle[3] = a;
+        if (m_hovering != node) set_node_fill(node, r, g, b, a);
         return true;
     }
 
@@ -1669,6 +1759,10 @@ public:
             m_tool->SetRadius(next);
             set_node_text(m_radius_readout, std::to_string(static_cast<int>(next + 0.5f)));
             ETCS_LOG("PaintPalette", "radius delta " << e.radius << " -> " << next);
+        }
+        else if (e.kind == Kind::WheelArrow)
+        {
+            open_wheel_for(it->first, e.slot);
         }
         else if (e.kind == Kind::AlphaDelta)
         {
@@ -1773,13 +1867,16 @@ void Report() const
     }
 
 private:
-    enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, AlphaDelta };
+    enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, AlphaDelta, WheelArrow };
     struct Entry {
         Kind kind;
         float rgba[4];
         float radius;
         PaintToolKind tool;
         float idle[4] = { 0.16f, 0.16f, 0.20f, 1.0f };
+        // WheelArrow only: the colour entry this arrow picks FOR. An arrow is a
+        // control for a specific swatch, not for "whatever was pressed last".
+        ETCS::RID slot = 0;
     };
 
     static bool same_hover_group(const Entry& a, const Entry& b)
@@ -1791,6 +1888,42 @@ private:
         if (a.kind == Kind::Size || a.kind == Kind::Zoom)
             return a.radius == b.radius;
         return false;
+    }
+
+    /*
+ * Open the bound wheel directly above `arrow`, aimed at `slot`.
+ *
+ * The POSITION is computed here rather than laid out in the script because it is
+ * a relation between two things the script places independently -- "above that
+ * arrow" stays true when either moves, where a hard-coded pane position does
+ * not. Root space, since that is where a floating pane is positioned; see
+ * paint_root_origin for why that walk differs from a drawable's own.
+ */
+    void open_wheel_for(ETCS::RID arrow, ETCS::RID slot)
+    {
+        if (m_wheel == 0)
+        {
+            ETCS_LOG("PaintPalette", "wheel arrow on RID:" << arrow
+                     << " pressed with no wheel bound -- BindWheel first.");
+            return;
+        }
+        if (slot != 0)
+        {
+            auto sit = m_entries.find(slot);
+            if (sit == m_entries.end() || sit->second.kind != Kind::Color)
+            {
+                ETCS_LOG("PaintPalette", "wheel arrow on RID:" << arrow
+                         << " names RID:" << slot << ", which is not a colour entry.");
+                return;
+            }
+        }
+        ETCS::Entity* w = paint_resolve_tag("PaintColorWheel", m_wheel);
+        if (!w) return;
+        const Point2D at = paint_root_origin(arrow);
+        ETCS::Buffer act; act.write("PaintColorWheel.OpenAt");
+        ETCS::Buffer arg; arg.write((std::to_string(at.x) + ", " + std::to_string(at.y)
+                                   + ", " + std::to_string(slot)).c_str());
+        try { w->call(act, arg); } catch (...) {}
     }
 
     static void set_node_fill(ETCS::RID node, float r, float g, float b, float a)
@@ -1836,6 +1969,7 @@ private:
     ETCS::RID m_hovering = 0;
     ETCS::RID m_radius_readout = 0;
     ETCS::RID m_alpha_readout = 0;
+    ETCS::RID m_wheel = 0;
     mutable ETCS::RID m_last_color = 0;
 };
 
@@ -2381,6 +2515,21 @@ public:
         if (raw) m_palette = static_cast<PaintPalette*>(raw->getTrueType());
     }
 
+    /*
+ * The view to repaint when this popup MOVES or CLOSES -- and it needs one.
+ *
+ * The sheet is retained, so nothing clears it: whatever the wheel last covered
+ * keeps showing the wheel. The picture underneath is only restored by the one
+ * writer that clears before drawing, which is PaintSurface::Render. Without this
+ * the wheel leaves a copy of itself wherever it has been, which reads as the
+ * popup not closing at all.
+ */
+    void BindSurface(ETCS::RID surface)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintSurface", surface);
+        if (raw) m_surface = static_cast<PaintSurface*>(raw->getTrueType());
+    }
+
     // The router this wheel appears in, and the pane it appears as. Held by RID
     // because opening and closing are calls on somebody else's entity.
     void BindRouter(ETCS::RID router) { m_router = router; }
@@ -2399,12 +2548,52 @@ public:
         ETCS_LOG("PaintColorWheel", "opened over the canvas.");
     }
 
+    /*
+ * OPEN ABOVE A POINT, FOR A NAMED SWATCH.
+ *
+ * (x, y) is the top-left of the control that asked, in root space, and the disc
+ * is placed so its BOTTOM edge sits just above that -- a popup belongs over the
+ * thing that summoned it, and a toolbar at the bottom of the window means "over"
+ * is upward. The pane carries the wedges with it, because they are its children
+ * and their coordinates are its own (paint_wheel.etcs says so); nothing is
+ * recomputed here but the pane's position.
+ *
+ * Clamped to the origin so a control near the top edge opens partly over itself
+ * rather than off-screen, where it would be unreachable and look like a control
+ * that does nothing.
+ */
+    void OpenAt(int32_t x, int32_t y, ETCS::RID slot)
+    {
+        m_target = slot;
+        if (m_root != 0)
+        {
+            const int32_t gap = 8;
+            int32_t px = x - m_cx;
+            int32_t py = y - gap - m_cy - static_cast<int32_t>(m_radius);
+            if (px < 0) px = 0;
+            if (py < 0) py = 0;
+            move_pane(px, py);
+            // The old position is somebody else's picture again.
+            if (m_surface) m_surface->Render();
+            ETCS_LOG("PaintColorWheel", "pane to " << px << "," << py
+                     << " (asked above " << x << "," << y << ") for swatch RID:" << slot);
+        }
+        Open();
+    }
+
+    // Which swatch the next pick replaces, when something more specific than
+    // "the last one selected" is known. 0 restores the old behaviour.
+    void SetTargetSlot(ETCS::RID slot) { m_target = slot; }
+
     void Close()
     {
         if (!m_open || m_router == 0) return;
         if (ETCS::Entity* raw = paint_resolve_tag("PaintRouter", m_router))
             route_remove(raw);
         m_open = false;
+        // See BindSurface: closing a popup over a retained sheet does not by
+        // itself put back what it was covering.
+        if (m_surface) m_surface->Render();
         ETCS_LOG("PaintColorWheel", "closed.");
     }
 
@@ -2451,7 +2640,9 @@ public:
         m_slot = 0;
         if (m_palette)
         {
-            const ETCS::RID slot = m_palette->lastColorNode();
+            // The arrow that opened this wheel named its swatch (OpenAt); only
+            // fall back to "the last one selected" when nothing did.
+            const ETCS::RID slot = (m_target != 0) ? m_target : m_palette->lastColorNode();
             if (slot != 0 && m_palette->SetColorOf(slot, r, g, b, a)) m_slot = slot;
         }
         ETCS_LOG("PaintColorWheel", "picked " << r << ", " << g << ", " << b
@@ -2492,6 +2683,18 @@ private:
         try { router->call(act, arg); } catch (...) {}
     }
 
+    // The pane is somebody else's drawable, so it moves by verb name like
+    // everything else this type reaches across.
+    void move_pane(int32_t x, int32_t y)
+    {
+        ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_root);
+        if (!h) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(h.get());
+        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetPosition").c_str());
+        ETCS::Buffer arg; arg.write((std::to_string(x) + ", " + std::to_string(y)).c_str());
+        try { e->call(act, arg); } catch (...) {}
+    }
+
     void route_remove(ETCS::Entity* router)
     {
         ETCS::Buffer act;  act.write("PaintRouter.RemovePane");
@@ -2529,6 +2732,10 @@ private:
     float    m_value = 1.0f;
     bool     m_open  = false;
     ETCS::RID m_slot = 0;
+    // The swatch an arrow named when it opened this wheel -- see OpenAt. 0 means
+    // nothing named one, and the last selected colour entry is the target.
+    ETCS::RID m_target = 0;
+    PaintSurface* m_surface = nullptr;
     float    m_picked[4] = { 0, 0, 0, 1 };
 };
 
@@ -2702,7 +2909,20 @@ public:
             return;
         }
 
-        const Pick2D hit = root->PickAt(Point2D{ ev.x, ev.y });
+        /*
+     * INTO THE PANE'S OWN SPACE FIRST. A routed event carries a point in ROOT
+     * space, and PickAt takes one in the space of the node it is called on --
+     * the same point only when that node sits at the origin.
+     *
+     * Every pane that worked did sit at the origin (sheet_root is 0,0), so the
+     * distinction cost nothing and stayed invisible until a pane that moves
+     * needed it: the colour wheel's popup picked against unshifted coordinates
+     * and answered for whatever happened to be under the wrong point.
+     */
+        const Point2D pane_at = paint_root_origin(m_root);
+        const Point2D pane_pt{ ev.x - pane_at.x, ev.y - pane_at.y };
+
+        const Pick2D hit = root->PickAt(pane_pt);
         if (!hit) return;                       // outside the tree entirely
         const ETCS::RID hit_rid = hit.node->getRID();
 
@@ -2749,9 +2969,17 @@ public:
         {
             if (m_is_wheel_pane)
             {
-                // Inside the disc picks and closes; outside it, on the popup's
-                // own backing, just closes. Either way the press is spent.
-                m_wheel->Pick(hit.local.x, hit.local.y);
+                /*
+             * IN THE PANE'S SPACE, not the hit node's. A wheel measures a pick
+             * from the centre and radius it was given (PaintColorWheel::Create),
+             * both stated in the pane's coordinates -- and hit.local is local to
+             * whatever was actually struck, which for a drawn wheel is one of
+             * twelve wedges. Measured from a wedge's own origin, every point in
+             * the disc reads as far outside it, so the pick always missed and the
+             * press only ever dismissed. The wheel is drawn from the pane's
+             * coordinates, so it has to be picked in them.
+             */
+                m_wheel->Pick(pane_pt.x, pane_pt.y);
                 m_wheel->Close();
                 return;
             }
@@ -3635,7 +3863,7 @@ public:
             for (Pane& pane : m_panes)
             {
                 ETCS::Held<Drawable2D_> root = ETCS::resolve_held<Drawable2D_>("Drawable2D", pane.root);
-                const bool inside = root && root->ContainsLocal(at_x, at_y);
+                const bool inside = root && paint_pane_contains(pane.root, at_x, at_y);
                 if (pane.inside && !inside)
                 {
                     if (ETCS::Entity* raw = paint_resolve_tag("PaintInput", pane.input))
@@ -3653,7 +3881,7 @@ public:
 
             ETCS::Held<Drawable2D_> root = ETCS::resolve_held<Drawable2D_>("Drawable2D", pane.root);
             if (!root) continue;
-            if (!root->ContainsLocal(at_x, at_y)) continue;
+            if (!paint_pane_contains(m_panes[r.second].root, at_x, at_y)) continue;
 
             ETCS::Entity* raw = paint_resolve_tag("PaintInput", pane.input);
             if (!raw) continue;
@@ -4197,6 +4425,19 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddRadiusDelta, (ETCS::RID, node), (float, 
     self.AddRadiusDelta(node, delta);
 }
 
+DEFINE_WORK_FUNC_TYPED(PaintPalette, BindWheel, (ETCS::RID, wheel))
+{
+    (void)ctx;
+    self.BindWheel(wheel);
+}
+
+// AddWheelArrow <arrow node> <colour entry it picks for>
+DEFINE_WORK_FUNC_TYPED(PaintPalette, AddWheelArrow, (ETCS::RID, node), (ETCS::RID, slot))
+{
+    (void)ctx;
+    self.AddWheelArrow(node, slot);
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintPalette, AddAlphaDelta, (ETCS::RID, node), (float, delta_pct))
 {
     (void)ctx;
@@ -4447,6 +4688,26 @@ DEFINE_WORK_FUNC_TYPED(PaintColorWheel, SetValue, (float, v))
 {
     (void)ctx;
     self.SetValue(v);
+}
+
+// OpenAt <x> <y> <slot> -- open the wheel above a control, aimed at one swatch.
+DEFINE_WORK_FUNC_TYPED(PaintColorWheel, OpenAt,
+                       (int32_t, x), (int32_t, y), (ETCS::RID, slot))
+{
+    (void)ctx;
+    self.OpenAt(x, y, slot);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintColorWheel, BindSurface, (ETCS::RID, surface))
+{
+    (void)ctx;
+    self.BindSurface(surface);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintColorWheel, SetTargetSlot, (ETCS::RID, slot))
+{
+    (void)ctx;
+    self.SetTargetSlot(slot);
 }
 
 DEFINE_WORK_FUNC(PaintColorWheel, Open)
