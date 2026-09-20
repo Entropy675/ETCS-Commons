@@ -1,7 +1,17 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# THE COLOUR DISC, drawn as wedges.
+# THE COLOUR DISC, drawn as wedges -- SUPERSEDED, and kept for the record.
+#
+# NOT USED BY THE PAINT PAGE ANY MORE. PaintColorWheel paints the pane's own
+# raster now: a continuous spectrum plus a brightness strip, from exactly the
+# conversion the pick runs, so what you click is what you get. The note below
+# about twelve wedges being "enough to aim with" was the thing that turned out to
+# be wrong in practice -- the pick was continuous and the picture was not, so the
+# colour you got was almost never the colour under the pointer.
+#
+# Still a working example of building a picker out of 2D shapes, which is why it
+# is here rather than deleted; a script that wants one can still run it.
 #
 #     run paint_wheel.etcs pane=<Drawable2D>
 #

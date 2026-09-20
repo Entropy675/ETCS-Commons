@@ -100,6 +100,9 @@ spawn PaintProvider::PaintSurface canvas
 canvas.Create(@sheet_root)
 canvas.AttachDocument(@doc)
 canvas.SetBackground(0.13, 0.13, 0.15, 1.0)
+# For the edge ruler's numbers -- a second consumer of the same provider the
+# document uses, because the ruler describes the WINDOW and the boxes the page.
+canvas.BindGlyphs(@glyph_src)
 canvas.Render()
 
 # ── the toolbar, ON the sheet ───────────────────────────────────────────────
@@ -176,7 +179,9 @@ canvas.BindZoomLabel(@zoom_label)
 # have. It was still ROUTED when open, so clicks over it were swallowed by an
 # invisible panel -- the worst of both.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D wheel_pane)
-wheel_pane.Create(220, 220)
+# 240 wide, not 220: the disc is 192 across and the brightness strip lives to the
+# right of it (PaintColorWheel::in_value_strip derives its x from the radius).
+wheel_pane.Create(240, 220)
 wheel_pane.SetPosition(340, 260)
 wheel_pane.SetOrder(30)
 # Hidden until opened. It is a child of the sheet now, so without this it would
@@ -184,19 +189,16 @@ wheel_pane.SetOrder(30)
 # open as one fact covering both routing and appearance.
 wheel_pane.SetHidden(1)
 
-wheel_pane.spawn(RenderProvider::PolygonDrawable2D wheel_back)
-wheel_back.Create()
-wheel_back.AddPoint(0, 0)
-wheel_back.AddPoint(220, 0)
-wheel_back.AddPoint(220, 220)
-wheel_back.AddPoint(0, 220)
-wheel_back.SetFill(0.10, 0.10, 0.13, 0.94)
-wheel_back.SetOrder(1)
-
-# The disc is drawn as a ring of wedges by the script; the PICK is computed from
-# the centre and radius below, so a different picker -- a square, a strip,
-# somebody else's gradient -- works by stating the same two numbers.
-run PaintProvider/scripts/paint_wheel.etcs pane=wheel_pane
+# RETAINED, and it has no children at all -- because the PICKER IS THE RASTER.
+#
+# The disc used to be twelve polygons drawn by a script over a backing rectangle,
+# and the number twelve was the bug: the pick was continuous while the picture was
+# not, so the colour you got was almost never the colour you clicked. Now
+# PaintColorWheel paints the pane's own pixels -- hue around, saturation outward,
+# a brightness strip down the right edge -- from exactly the conversion the pick
+# runs. Retain is what stops the compose walk clearing it, and having no children
+# is what stops anything drawing over it: one writer per buffer.
+wheel_pane.SetRetain(1)
 
 spawn PaintProvider::PaintColorWheel wheel
 wheel.Create(110, 110, 96)

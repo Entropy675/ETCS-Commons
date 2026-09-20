@@ -350,12 +350,35 @@ inline bool paint_kind_commits(PaintToolKind k)
     return k != PaintToolKind::Ruler;
 }
 
-// One interval for every kind. The per-kind spread existed because the tools
-// that re-rendered the whole document flickered worst, which was a property of
-// the frame feed and not of the tool -- see PAINT_MOTION_COALESCE_DEFAULT_MS.
-inline double paint_tool_default_coalesce_ms(PaintToolKind)
+/*
+ * ONE INTERVAL PER KIND, AND THE SPLIT IS NOW ABOUT COST RATHER THAN FLICKER.
+ *
+ * The old spread was a flicker band-aid and is gone. This one is not the same
+ * thing returning: it divides the tools by WHAT A SAMPLE COSTS, which is a real
+ * difference and was always the honest reason to coalesce.
+ *
+ *   CONTINUOUS (brush, smudge)  a sample stamps ONE dab, incrementally, onto the
+ *                               view and the layer. Nothing is rebuilt, so every
+ *                               sample is worth having -- dropping them loses
+ *                               the middle of a fast stroke and nothing else.
+ *
+ *   ANCHORED (line, rect, ellipse, ruler, glyph)  a sample throws the whole
+ *                               preview away and rebuilds it: repaint_view
+ *                               re-composites the entire document, then the new
+ *                               outline is drawn over it. At one sample per
+ *                               millisecond that is a full-view rebuild per
+ *                               millisecond, which is what made dragging these
+ *                               feel heavy -- reported as laggy drags on the
+ *                               ruler and the rectangle.
+ *
+ * SO THE ANCHORED KINDS GET ONE FRAME. 16ms is not a tuning knob picked by feel:
+ * a rebuild that is not presented is work nobody sees, and the frame edge
+ * presents at most one image per frame. Cheaper than that is invisible; more
+ * often than that is wasted. The number to change if a display runs faster.
+ */
+inline double paint_tool_default_coalesce_ms(PaintToolKind k)
 {
-    return PAINT_MOTION_COALESCE_DEFAULT_MS;
+    return paint_kind_is_anchored(k) ? 16.0 : PAINT_MOTION_COALESCE_DEFAULT_MS;
 }
 
 
@@ -1711,6 +1734,10 @@ public:
         // document keeps whatever the last frame left there and panning smears.
         if (view) view->Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
+        // The window's own edge, marked out. After the document, because it is
+        // chrome over the picture rather than part of it.
+        draw_edge_ruler(view);
+
         // Redundant while `frame` is held -- the batch closing below makes this
         // exact statement -- and kept for the case where it is not held: a view
         // that never claimed Observable is not batched (etcs_observed_batch), and
@@ -1733,6 +1760,15 @@ public:
  * previewed at its document size would be the wrong size on screen at any zoom
  * but 1, which reads as the brush changing when you scroll.
  */
+    // Whatever leaf claiming Glyphs labels the edge ruler. Its own rather than
+    // the document's: the ruler is a property of the VIEW, and a surface may be
+    // asked to draw one with no document attached yet.
+    void BindGlyphs(ETCS::RID glyphs) { m_glyphs = glyphs; }
+
+    // Off is a legitimate thing to want -- it is chrome, and a screenshot of the
+    // picture should be able to not have it.
+    void ShowEdgeRuler(bool on) { m_edge_ruler = on; }
+
     void StampBrush(int32_t x, int32_t y, const PaintBrushState& brush)
     {
         if (m_target == 0) return;
@@ -1743,6 +1779,87 @@ public:
 
     PaintDocument* document() const { return m_document; }
     ETCS::RID target() const { return m_target; }
+
+private:
+    /*
+ * ── THE WINDOW'S EDGE, MARKED EVERY 100 PIXELS ───────────────────────────
+ *
+ * TWO THINGS IT IS FOR, and they are both about having a reference at all. The
+ * size of the view is otherwise only knowable by measuring the window with
+ * something else, and the ruler tool reports distances with nothing on screen to
+ * check them against -- a number with no scale beside it.
+ *
+ * IN VIEW PIXELS, NOT DOCUMENT PIXELS, and that is the choice worth stating. The
+ * ticks describe the WINDOW: at 100% zoom with no pan the two spaces coincide, and
+ * when they do not, these still answer "how big is this view" rather than drifting
+ * off with the page. The ruler tool measures the document, so under zoom the two
+ * disagree on purpose -- one is the paper, the other is the frame around it.
+ *
+ * DRAWN, NOT SPAWNED. A script could place these as nodes, and the first resize
+ * would leave them wrong: the tick spacing is a function of the surface's current
+ * extent, which only the thing being drawn into knows. Four edges, so a mark near
+ * a corner is reachable from either side of it.
+ */
+    void draw_edge_ruler(Surface_* view)
+    {
+        if (!m_edge_ruler || !view) return;
+
+        WindowSize vs{ 0, 0 };
+        if (Resizable_* v = ETCS::resolve_in_family<Resizable_>("Resizable", m_target))
+            vs = v->GetSize();
+        if (vs.width == 0 || vs.height == 0) return;
+
+        const int32_t w = static_cast<int32_t>(vs.width);
+        const int32_t h = static_cast<int32_t>(vs.height);
+        const int32_t step  = 100;
+        const int32_t major = 10;    // tick length at a labelled mark
+        const int32_t minor = 5;     // and at the halfway one
+
+        // Light, and alpha'd: it has to read on white paper and on the dark
+        // background outside the page, without competing with either.
+        const float r = 0.35f, g = 0.55f, b = 0.95f, a = 0.85f;
+
+        ETCS::Held<Glyphs_> glyphs;
+        if (m_glyphs != 0) glyphs = ETCS::resolve_held<Glyphs_>("Glyphs", m_glyphs);
+
+        for (int32_t x = 0; x <= w; x += step)
+        {
+            const int32_t px = (x >= w) ? w - 1 : x;
+            view->DrawRect(px, 0, 1, static_cast<uint32_t>(major), r, g, b, a);
+            view->DrawRect(px, h - major, 1, static_cast<uint32_t>(major), r, g, b, a);
+            if (x + step / 2 < w)
+            {
+                view->DrawRect(x + step / 2, 0, 1, static_cast<uint32_t>(minor), r, g, b, a);
+                view->DrawRect(x + step / 2, h - minor, 1, static_cast<uint32_t>(minor), r, g, b, a);
+            }
+            if (glyphs && x > 0)
+                glyphs->RasterizeText(m_target, std::to_string(x).c_str(), 0, 8,
+                                      px + 3, major + 2, r, g, b, a);
+        }
+        for (int32_t y = 0; y <= h; y += step)
+        {
+            const int32_t py = (y >= h) ? h - 1 : y;
+            view->DrawRect(0, py, static_cast<uint32_t>(major), 1, r, g, b, a);
+            view->DrawRect(w - major, py, static_cast<uint32_t>(major), 1, r, g, b, a);
+            if (y + step / 2 < h)
+            {
+                view->DrawRect(0, y + step / 2, static_cast<uint32_t>(minor), 1, r, g, b, a);
+                view->DrawRect(w - minor, y + step / 2, static_cast<uint32_t>(minor), 1, r, g, b, a);
+            }
+            if (glyphs && y > 0)
+                glyphs->RasterizeText(m_target, std::to_string(y).c_str(), 0, 8,
+                                      major + 2, py + 3, r, g, b, a);
+        }
+
+        // The extent itself, where the two labelled axes meet -- the one number
+        // somebody reading the edge actually wanted.
+        if (glyphs)
+            glyphs->RasterizeText(m_target,
+                                  (std::to_string(w) + "x" + std::to_string(h)).c_str(),
+                                  0, 8, major + 2, major + 2, r, g, b, a);
+    }
+
+public:
 
 private:
     /*
@@ -1779,6 +1896,10 @@ private:
     int32_t m_pan_y = 0;
     float   m_zoom  = 1.0f;
     float   m_bg[4] = { 0.13f, 0.13f, 0.15f, 1.0f };
+    // The edge ruler: on by default, because a view with no scale on it is the
+    // state this was added to fix. See draw_edge_ruler.
+    bool      m_edge_ruler = true;
+    ETCS::RID m_glyphs     = 0;
 };
 
 /*
@@ -2036,6 +2157,7 @@ public:
             m_surface->Render();
             ETCS_LOG("PaintPalette", "zoom -> " << m_surface->zoomPercent() << "%");
         }
+
         return true;
     }
 
@@ -2216,6 +2338,7 @@ private:
     ETCS::RID m_radius_readout = 0;
     ETCS::RID m_alpha_readout = 0;
     ETCS::RID m_wheel = 0;
+
     mutable ETCS::RID m_last_color = 0;
 };
 
@@ -2730,6 +2853,17 @@ private:
  * which makes "is it open" and "does it receive clicks" the same fact rather
  * than two that can disagree.
  */
+/*
+ * WHAT A PRESS ON THE WHEEL WAS. Three answers, because the caller has three
+ * different things to do with them and a bool could only carry two.
+ *
+ *   Missed    not the picker at all -- the popup's backing. Dismiss.
+ *   Adjusted  the value strip: the disc just changed brightness. STAY OPEN,
+ *             because nobody sets the brightness in order to stop choosing.
+ *   Picked    a colour. Take it and dismiss.
+ */
+enum class PaintPick : uint8_t { Missed, Adjusted, Picked };
+
 class PaintColorWheel : public DeletableBase<PaintColorWheel>
 {
 public:
@@ -2747,6 +2881,83 @@ public:
         m_open = false;
         this->addTag("active");
         return true;
+    }
+
+    /*
+ * ── THE DISC IS PAINTED, NOT ASSEMBLED ───────────────────────────────────
+ *
+ * It used to be twelve polygons in a script, and the number twelve was the
+ * problem: the PICK was continuous -- computed from the angle and the distance --
+ * while the PICTURE was twelve flat wedges, so the colour you got was almost
+ * never the colour you clicked on. A picker whose output does not match its own
+ * appearance is not a picker, it is a guess with a legend.
+ *
+ * So the pane's own raster IS the spectrum. Hue around, saturation outward,
+ * brightness from the strip down the right edge, and every pixel written from
+ * exactly the conversion Pick will run on the coordinates of that pixel. What
+ * you click is what you get, by construction rather than by agreement.
+ *
+ * WHY IT CAN BE A ONE-SHOT WRITE rather than a drawable that redraws per frame:
+ * the pane is a retained compositor, so nothing clears it, and the picture only
+ * depends on the value. Painted when it is created and again whenever the value
+ * changes, which is every moment it could have become wrong.
+ *
+ * ~50k pixels of trigonometry, once per open. A per-frame version of this would
+ * be the wrong shape twice over: it would cost that every frame, and it would
+ * make a popup that is not moving into an animating node.
+ */
+    void PaintDisc()
+    {
+        Pixels_* px = ETCS::resolve_in_family<Pixels_>("Pixels", m_root);
+        if (!px) return;
+        uint8_t* d = px->PixelData();
+        if (!d) return;
+
+        const int32_t w = static_cast<int32_t>(px->PixelWidth());
+        const int32_t h = static_cast<int32_t>(px->PixelHeight());
+        const uint32_t stride = px->PixelStride();
+        const double PI = 3.14159265358979323846;
+        const double rad = static_cast<double>(m_radius);
+
+        for (int32_t y = 0; y < h; ++y)
+        {
+            uint8_t* row = d + static_cast<size_t>(y) * stride;
+            for (int32_t x = 0; x < w; ++x)
+            {
+                uint8_t* p = row + static_cast<size_t>(x) * 4;
+                float r = 0, g = 0, b = 0, a = 1.0f;
+
+                if (in_value_strip(x, y))
+                {
+                    // Black at the bottom, the pure hue-plane brightness at the
+                    // top: the axis the disc cannot show, because a disc has two
+                    // dimensions and a colour has three.
+                    const float v = strip_value_at(y);
+                    r = g = b = v;
+                }
+                else
+                {
+                    const double dx = x - m_cx, dy = y - m_cy;
+                    const double dist = std::sqrt(dx * dx + dy * dy);
+                    if (dist <= rad)
+                    {
+                        double ang = std::atan2(dy, dx);
+                        if (ang < 0) ang += 2.0 * PI;
+                        hsv_to_rgb(static_cast<float>(ang / (2.0 * PI)),
+                                   static_cast<float>(dist / rad), m_value, r, g, b);
+                    }
+                    else
+                    {
+                        // The popup's own backing, so the pane needs no separate
+                        // rectangle behind the disc -- one writer per buffer.
+                        r = 0.10f; g = 0.10f; b = 0.13f; a = 0.94f;
+                    }
+                }
+                p[0] = paint_to_byte(r); p[1] = paint_to_byte(g);
+                p[2] = paint_to_byte(b); p[3] = paint_to_byte(a);
+            }
+        }
+        etcs_mark_observed(px);
     }
 
     void BindTool(ETCS::RID tool)
@@ -2779,9 +2990,21 @@ public:
     // The router this wheel appears in, and the pane it appears as. Held by RID
     // because opening and closing are calls on somebody else's entity.
     void BindRouter(ETCS::RID router) { m_router = router; }
-    void BindPane(ETCS::RID root, ETCS::RID input) { m_root = root; m_input = input; }
+    // Painted here rather than in Create, because Create runs before a script
+    // has said which pane this is -- and the disc needs the pane's pixels.
+    void BindPane(ETCS::RID root, ETCS::RID input)
+    {
+        m_root = root; m_input = input;
+        PaintDisc();
+    }
 
-    void SetValue(float v) { m_value = std::clamp(v, 0.0f, 1.0f); }
+    // Repaints, because the disc IS the value: leaving the picture behind after
+    // changing what it means is the bug this whole rework is about.
+    void SetValue(float v)
+    {
+        m_value = std::clamp(v, 0.0f, 1.0f);
+        PaintDisc();
+    }
 
     bool open() const { return m_open; }
 
@@ -2795,6 +3018,9 @@ public:
         // a popup that did not hide itself would sit over the middle of the
         // picture permanently. See ontology/DrawableBase.h.
         set_pane_hidden(false);
+        // Cheap insurance: a pane resized or cleared by anything else since the
+        // last open would otherwise show a stale or empty picker.
+        PaintDisc();
         m_open = true;
         ETCS_LOG("PaintColorWheel", "opened over the canvas.");
     }
@@ -2857,11 +3083,20 @@ public:
  * caller treat "missed the disc" the same way it treats "clicked the canvas",
  * which is what makes the wheel feel like a popup rather than a trap.
  */
-    bool Pick(int32_t x, int32_t y)
+    PaintPick Pick(int32_t x, int32_t y)
     {
+        // The strip first: it overlaps nothing, and a press in it is a change of
+        // brightness rather than a choice of colour, so it must not dismiss.
+        if (in_value_strip(x, y))
+        {
+            SetValue(strip_value_at(y));
+            ETCS_LOG("PaintColorWheel", "value -> " << m_value);
+            return PaintPick::Adjusted;
+        }
+
         const double dx = x - m_cx, dy = y - m_cy;
         const double dist = std::sqrt(dx * dx + dy * dy);
-        if (dist > m_radius) return false;
+        if (dist > m_radius) return PaintPick::Missed;
 
         const double PI = 3.14159265358979323846;
         double ang = std::atan2(dy, dx);              // -PI..PI
@@ -2870,9 +3105,11 @@ public:
         const float sat = static_cast<float>(std::min(1.0, dist / m_radius));
 
         float r = 0, g = 0, b = 0;
+        // THE SAME CONVERSION PaintDisc RAN FOR THIS PIXEL, on the same inputs.
+        // That identity is the whole point -- see PaintDisc.
         hsv_to_rgb(h, sat, m_value, r, g, b);
         Apply(r, g, b, 1.0f);
-        return true;
+        return PaintPick::Picked;
     }
 
     /*
@@ -2962,6 +3199,36 @@ private:
         ETCS::Buffer act;  act.write("PaintRouter.RemovePane");
         ETCS::Buffer arg;  arg.write(std::to_string(m_root).c_str());
         try { router->call(act, arg); } catch (...) {}
+    }
+
+    /*
+ * THE VALUE STRIP, down the right edge of the pane.
+ *
+ * A disc carries two of a colour's three numbers -- hue around, saturation out --
+ * and there is nowhere on it for the third. Without somewhere to put brightness
+ * the picker offers tints of full-bright hues and no shades at all: no browns, no
+ * maroons, nothing dark. That is the "wheel of pre-selected options" complaint in
+ * its real form, and it is not fixed by drawing the disc more finely.
+ *
+ * Geometry derived from the disc's rather than stated separately, so a script
+ * that changes Create's centre and radius does not have to know this exists.
+ */
+    bool in_value_strip(int32_t x, int32_t y) const
+    {
+        const int32_t x0 = m_cx + static_cast<int32_t>(m_radius) + 8;
+        const int32_t y0 = m_cy - static_cast<int32_t>(m_radius);
+        const int32_t y1 = m_cy + static_cast<int32_t>(m_radius);
+        return x >= x0 && x < x0 + 14 && y >= y0 && y <= y1;
+    }
+
+    // Top of the strip is full brightness, bottom is black.
+    float strip_value_at(int32_t y) const
+    {
+        const int32_t y0 = m_cy - static_cast<int32_t>(m_radius);
+        const int32_t span = 2 * static_cast<int32_t>(m_radius);
+        if (span <= 0) return 1.0f;
+        const float t = static_cast<float>(y - y0) / static_cast<float>(span);
+        return std::clamp(1.0f - t, 0.0f, 1.0f);
     }
 
     // Standard sextant conversion. Here rather than in a shared header because
@@ -3241,8 +3508,14 @@ public:
              * press only ever dismissed. The wheel is drawn from the pane's
              * coordinates, so it has to be picked in them.
              */
-                m_wheel->Pick(pane_pt.x, pane_pt.y);
-                m_wheel->Close();
+                /*
+             * THREE ANSWERS, NOT TWO. A press on the value strip changes the
+             * disc's brightness and must leave the popup open -- closing on it
+             * would make the third dimension of the colour unreachable in
+             * practice, since choosing a shade takes two presses.
+             */
+                const PaintPick r = m_wheel->Pick(pane_pt.x, pane_pt.y);
+                if (r != PaintPick::Adjusted) m_wheel->Close();
                 return;
             }
             if (m_wheel->open())
@@ -3388,6 +3661,21 @@ public:
         // passes, rather than by a notification that does not exist.
         sync_text_affordance();
 
+        if (ev.action == INPUT_MOTION && m_text_drag != 0 && m_document)
+        {
+            // Carrying a box. Not a stroke, not a preview, and deliberately not
+            // coalesced: it is one field assignment and a re-composite, which is
+            // what every other tool's sample already costs.
+            PaintTextBox* b = m_document->FindTextBox(m_text_drag);
+            if (!b) { m_text_drag = 0; return; }
+            b->x = to_doc_x(ev.x) - m_text_grab_x;
+            b->y = to_doc_y(ev.y) - m_text_grab_y;
+            m_cursor_x = to_doc_x(ev.x);
+            m_cursor_y = to_doc_y(ev.y);
+            repaint_view();
+            return;
+        }
+
         if (ev.action == INPUT_MOTION)
         {
             // Position is still taken from the event (not integrated). Only the
@@ -3440,6 +3728,21 @@ public:
                 if (hit_box != 0)
                 {
                     m_document->SelectTextBox(hit_box);
+                    /*
+                 * AND IT BECOMES DRAGGABLE FROM HERE. A press inside a box is
+                 * ambiguous until the pointer either moves or does not, so it
+                 * arms a move rather than choosing between the two: hold still
+                 * and it was a selection, drag and the box follows. The grab
+                 * OFFSET is what makes it follow rather than jump -- moving the
+                 * box's corner to the pointer would teleport it by however far
+                 * in you happened to press.
+                 */
+                    if (const PaintTextBox* b = m_document->FindTextBox(hit_box))
+                    {
+                        m_text_drag   = hit_box;
+                        m_text_grab_x = m_cursor_x - b->x;
+                        m_text_grab_y = m_cursor_y - b->y;
+                    }
                     ETCS_LOG("PaintInput", "text box " << hit_box << " selected for typing");
                     repaint_view();
                     return;
@@ -3466,6 +3769,14 @@ public:
         }
         else if (ev.action == INPUT_UP || ev.action == INPUT_BUTTON_UP)
         {
+            // Letting go of a carried box. Checked before the commit below,
+            // because a carry never began a stroke and there is nothing to commit.
+            if (m_text_drag != 0)
+            {
+                ETCS_LOG("PaintInput", "text box " << m_text_drag << " moved");
+                m_text_drag = 0;
+                return;
+            }
             /*
          * THE COMMIT, and the only place an anchored tool ever writes to the
          * document. Read the anchor before EndStroke, which is what clears the
@@ -4022,6 +4333,11 @@ private:
     // Whether the document is currently showing its text-box outlines, so the
     // reconcile above is a comparison rather than a call per event.
     bool m_text_affordance = false;
+    // The box being carried, and where inside it the pointer took hold. 0 is
+    // "nothing is being carried" -- see the press branch.
+    uint32_t m_text_drag   = 0;
+    int32_t  m_text_grab_x = 0;
+    int32_t  m_text_grab_y = 0;
     // Whatever leaf claiming Glyphs the script bound -- RenderProvider's
     // TextLabel today. By RID and resolved per use, since it is another
     // module's entity (see place_glyphs).
@@ -4714,6 +5030,20 @@ DEFINE_WORK_FUNC_TYPED(PaintSurface, ZoomBy,
 
 // The TextLabel (or any Drawable2D exporting SetText) that shows the zoom. See
 // PaintSurface::BindZoomLabel on why the surface pushes it.
+// The glyph provider the edge ruler's numbers come from.
+DEFINE_WORK_FUNC_TYPED(PaintSurface, BindGlyphs, (ETCS::RID, glyphs))
+{
+    (void)ctx;
+    self.BindGlyphs(glyphs);
+}
+
+// ShowEdgeRuler <0|1> -- the marks every 100 px around the view's own edge.
+DEFINE_WORK_FUNC_TYPED(PaintSurface, ShowEdgeRuler, (int32_t, on))
+{
+    (void)ctx;
+    self.ShowEdgeRuler(on != 0);
+}
+
 DEFINE_WORK_FUNC(PaintSurface, BindZoomLabel)
 {
     (void)ctx;
@@ -5136,10 +5466,15 @@ DEFINE_WORK_FUNC(PaintColorWheel, Close)
 
 // Pick <x> <y> in the wheel's own space -- the pointer path calls this itself,
 // so this verb is for a page or a test that has a coordinate and no pointer.
+// Pick <x> <y>, in the pane's own space. Logs which of the three things it was,
+// because "nothing happened" and "the brightness moved" look the same otherwise.
 DEFINE_WORK_FUNC_TYPED(PaintColorWheel, Pick, (int32_t, x), (int32_t, y))
 {
     (void)ctx;
-    self.Pick(x, y);
+    const PaintPick r = self.Pick(x, y);
+    ETCS_LOG("PaintColorWheel", "pick at " << x << "," << y << " -> "
+             << (r == PaintPick::Picked   ? "colour"
+               : r == PaintPick::Adjusted ? "value strip" : "missed"));
 }
 
 DEFINE_WORK_FUNC(PaintColorWheel, Report)
