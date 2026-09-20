@@ -81,6 +81,18 @@ struct PaintBrushState
     bool enabled = true;
 };
 
+// A float channel as a byte, rounded -- identical to Pixels_::toByte, which is
+// not reachable from here (it is that family's private helper) and must not be
+// re-derived differently: a colour that converts one way when a tool commits it
+// and another way when the ontology composites it is a mark that changes when
+// the document re-renders.
+static inline uint8_t paint_to_byte(float v)
+{
+    if (v <= 0.0f) return 0;
+    if (v >= 1.0f) return 255;
+    return static_cast<uint8_t>(v * 255.0f + 0.5f);
+}
+
 static inline ETCS::Entity* paint_resolve_tag(const char* tag, ETCS::RID rid)
 {
     if (rid == 0) return nullptr;
@@ -186,10 +198,20 @@ static constexpr uint16_t PAINT_BUTTON_LEFT   = 0;
 static constexpr uint16_t PAINT_BUTTON_RIGHT  = 1;  // GLFW right
 static constexpr uint16_t PAINT_BUTTON_MIDDLE = 2;  // GLFW middle -- pan, like right
 
-// Default motion-coalesce interval (ms). Live value is on PaintTool
-// (SetMotionCoalesceMs) so the toolbar can tune it; PaintInput reads it each
-// flush. Button-up always flushes so the final sample is never dropped.
-static constexpr double PAINT_MOTION_COALESCE_DEFAULT_MS = 100.0;
+/*
+ * Motion-coalesce interval (ms), and it is 1 -- which is to say, EVERY SAMPLE.
+ *
+ * This was 100ms scaled per tool, and it was never about input: it was a
+ * flicker band-aid. A half-composed frame reached the screen on every re-render,
+ * so dropping samples dropped re-renders and the tearing was merely rarer. The
+ * frame feed is whole now (CompositeDrawable2D's published frame, batched marks),
+ * so there is nothing left to hide and throwing away pointer samples only costs
+ * fidelity -- a fast stroke measurably loses its middle.
+ *
+ * Kept as a knob rather than deleted (PaintTool::SetMotionCoalesceMs) because a
+ * genuinely slow destination may still want it; nothing sets it any more.
+ */
+static constexpr double PAINT_MOTION_COALESCE_DEFAULT_MS = 1.0;
 
 enum class PaintToolKind : uint8_t
 {
@@ -259,17 +281,12 @@ inline bool paint_kind_commits(PaintToolKind k)
     return k != PaintToolKind::Ruler;
 }
 
-inline double paint_tool_default_coalesce_ms(PaintToolKind k)
+// One interval for every kind. The per-kind spread existed because the tools
+// that re-rendered the whole document flickered worst, which was a property of
+// the frame feed and not of the tool -- see PAINT_MOTION_COALESCE_DEFAULT_MS.
+inline double paint_tool_default_coalesce_ms(PaintToolKind)
 {
-    const double base = PAINT_MOTION_COALESCE_DEFAULT_MS;
-    switch (k)
-    {
-    case PaintToolKind::Brush:   return base / 50.0;
-    case PaintToolKind::Smudge:  return base / 30.0;
-    case PaintToolKind::Rect:
-    case PaintToolKind::Ellipse: return base + 50.0;
-    default:                     return base;
-    }
+    return PAINT_MOTION_COALESCE_DEFAULT_MS;
 }
 
 
@@ -324,10 +341,50 @@ public:
         m_brush.radius_px = std::max(1.0f, radius);
     }
 
+    /*
+ * SETTING A COLOUR DOES NOT SET THE OPACITY IT IS LAID DOWN AT.
+ *
+ * Alpha is held separately from the swatch it came with, because the two are
+ * chosen at different moments and by different controls: a palette press or a
+ * wheel pick says WHICH colour, the alpha control says how strongly. Letting a
+ * swatch carry alpha through would reset the strength every time somebody
+ * changed colour, which is the opposite of what a strength control is for.
+ *
+ * So a picked colour keeps its rgb and takes the tool's current alpha. A caller
+ * that genuinely means "this colour at this opacity" -- an eyedropper restoring
+ * a sampled pixel, say -- uses SetColorWithAlpha.
+ */
     void SetColor(float r, float g, float b, float a)
     {
-        m_brush.color = PaintColor{r, g, b, a};
+        (void)a;
+        m_brush.color = PaintColor{r, g, b, m_alpha};
     }
+
+    void SetColorWithAlpha(float r, float g, float b, float a)
+    {
+        m_alpha = std::clamp(a, 0.0f, 1.0f);
+        m_brush.color = PaintColor{r, g, b, m_alpha};
+    }
+
+    /*
+ * OPACITY AS A WHOLE PERCENT, because that is the unit the control reads in and
+ * the readout shows -- keeping it as a float here and rounding at the label
+ * would let the number drift off the value actually in use.
+ *
+ * WHERE IT APPLIES: every tool that lays down the tool's colour -- brush, line,
+ * rect, ellipse, fill, glyph. Smudge carries no colour of its own, so it is
+ * unaffected, which is what "if applicable" amounts to: this sets one field, and
+ * the tools that do not read that field do not change.
+ */
+    void SetAlphaPercent(int32_t pct)
+    {
+        const int32_t c = (pct < 0) ? 0 : (pct > 100 ? 100 : pct);
+        m_alpha_pct = c;
+        m_alpha = static_cast<float>(c) / 100.0f;
+        m_brush.color.a = m_alpha;
+    }
+    void AdjustAlphaPercent(int32_t delta) { SetAlphaPercent(m_alpha_pct + delta); }
+    int32_t alphaPercent() const { return m_alpha_pct; }
 
     // How often continuous pointer motion may rebuild the view (ms).
     void SetMotionCoalesceMs(double ms)
@@ -395,7 +452,11 @@ private:
     PaintToolKind m_kind = PaintToolKind::Brush;
     std::string m_text = "Text";
     uint32_t m_text_px = 16;
-    double m_motion_coalesce_ms = PAINT_MOTION_COALESCE_DEFAULT_MS / 50.0;
+    double m_motion_coalesce_ms = PAINT_MOTION_COALESCE_DEFAULT_MS;
+    // Opacity, kept as the percent the control speaks in plus the float the
+    // brush needs -- see SetAlphaPercent. Fully opaque until somebody says not.
+    int32_t m_alpha_pct = 100;
+    float   m_alpha     = 1.0f;
     uint32_t m_tolerance = 24;
     bool m_active = false;
     std::vector<PaintStrokePoint> m_points;
@@ -573,10 +634,16 @@ public:
             return;
 
         size_t i = (static_cast<size_t>(y) * this->PixelWidth() + static_cast<size_t>(x)) * 4;
-        px[i + 0] = static_cast<uint8_t>(std::clamp(r, 0.0f, 1.0f) * 255.0f);
-        px[i + 1] = static_cast<uint8_t>(std::clamp(g, 0.0f, 1.0f) * 255.0f);
-        px[i + 2] = static_cast<uint8_t>(std::clamp(b, 0.0f, 1.0f) * 255.0f);
-        px[i + 3] = static_cast<uint8_t>(std::clamp(a, 0.0f, 1.0f) * 255.0f);
+        // ROUNDED, the same way the ontology converts a float channel
+        // (Pixels_::toByte). Truncating here biased every channel down by up to a
+        // full level and put the committed mark one step away from the live one
+        // that previewed it: a 25% dab read 191 under the pointer and 192 once the
+        // document re-rendered, because 0.25*255 is 63.75 and the two paths
+        // disagreed about which side of it to land on.
+        px[i + 0] = paint_to_byte(r);
+        px[i + 1] = paint_to_byte(g);
+        px[i + 2] = paint_to_byte(b);
+        px[i + 3] = paint_to_byte(a);
     }
 
     void DrawBrush(int32_t cx, int32_t cy, const PaintBrushState& brush)
@@ -1480,11 +1547,18 @@ public:
         m_entries[node] = e;
     }
 
-    void AddCoalesceDelta(ETCS::RID node, float delta_ms)
+    /*
+ * A STEP IN THE TOOL'S OPACITY, in whole percent.
+ *
+ * This control used to step the motion-coalesce interval, which was a flicker
+ * band-aid and is now pinned at every sample
+ * (PAINT_MOTION_COALESCE_DEFAULT_MS). The geometry it occupies is the natural
+ * home for the setting a painter actually reaches for next to size.
+ */
+    void AddAlphaDelta(ETCS::RID node, float delta_pct)
     {
-        if (node == 0 || delta_ms == 0.0f) return;
-        Entry e{ Kind::CoalesceDelta, {}, delta_ms, PaintToolKind::Brush };
-        e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
+        if (node == 0) return;
+        Entry e{ Kind::AlphaDelta, {}, delta_pct, PaintToolKind::Brush };
         m_entries[node] = e;
     }
 
@@ -1596,12 +1670,11 @@ public:
             set_node_text(m_radius_readout, std::to_string(static_cast<int>(next + 0.5f)));
             ETCS_LOG("PaintPalette", "radius delta " << e.radius << " -> " << next);
         }
-        else if (e.kind == Kind::CoalesceDelta)
+        else if (e.kind == Kind::AlphaDelta)
         {
-            m_tool->AdjustMotionCoalesceMs(static_cast<double>(e.radius));
-            set_node_text(m_coalesce_readout,
-                          std::to_string(static_cast<int>(m_tool->motionCoalesceMs() + 0.5)));
-            ETCS_LOG("PaintPalette", "coalesce -> " << m_tool->motionCoalesceMs() << " ms");
+            m_tool->AdjustAlphaPercent(static_cast<int32_t>(e.radius));
+            set_node_text(m_alpha_readout, std::to_string(m_tool->alphaPercent()));
+            ETCS_LOG("PaintPalette", "alpha -> " << m_tool->alphaPercent() << "%");
         }
         else if (e.kind == Kind::Tool)
         {
@@ -1627,17 +1700,29 @@ public:
     }
 
 
+    /*
+ * RESOLVE FIRST, THEN COMPARE, THEN REPAINT -- the same order PaintLayerPanel's
+ * Hover uses, and for a reason measured rather than guessed.
+ *
+ * This used to compare the RAW node against the last one and repaint before
+ * resolving. A node that is not a palette entry at all -- the canvas pane, which
+ * is what arrives on every pointer sample while somebody is painting -- misses
+ * the early return, rewrites the fill of EVERY entry back to idle, and then
+ * leaves without recording itself, so the next sample does it again. Every
+ * SetFill marks the tree, so a stroke rewrote seven toolbar swatches per pointer
+ * event and made the bar's compositor rebuild ~1,300 glyph rects each time, for
+ * a picture that had not changed.
+ *
+ * What the guard has to compare is the resolved TARGET, because "the pointer is
+ * over something that is not mine" and "the pointer is over nothing" are the
+ * same fact to a palette, and neither is news twice.
+ */
     void Hover(ETCS::RID node)
     {
-        if (node == m_hovering) return;
-
-        for (const auto& [rid, e] : m_entries)
-            set_node_fill(rid, e.idle[0], e.idle[1], e.idle[2], e.idle[3]);
-        m_hovering = 0;
-        if (node == 0) return;
-
+        ETCS::RID target = 0;
         auto it = m_entries.find(node);
-        if (it == m_entries.end())
+        if (it != m_entries.end()) { target = node; }
+        else if (node != 0)
         {
             ETCS::Held<Drawable2D_> node_e =
                 ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
@@ -1646,11 +1731,17 @@ public:
             for (; e; e = e->getParent())
             {
                 it = m_entries.find(e->getRID());
-                if (it != m_entries.end()) { node = e->getRID(); break; }
+                if (it != m_entries.end()) { target = e->getRID(); break; }
             }
         }
-        if (it == m_entries.end()) return;
-        m_hovering = node;
+        if (target == m_hovering) return;
+
+        for (const auto& [rid, e] : m_entries)
+            set_node_fill(rid, e.idle[0], e.idle[1], e.idle[2], e.idle[3]);
+        m_hovering = target;
+        if (target == 0) return;
+
+        node = target;
         const Entry& ref = it->second;
         const float t = (ref.kind == Kind::Color) ? 0.40f : 0.60f;
         for (const auto& [rid, e] : m_entries)
@@ -1665,7 +1756,7 @@ public:
     }
 
     void SetRadiusReadout(ETCS::RID label) { m_radius_readout = label; }
-    void SetCoalesceReadout(ETCS::RID label) { m_coalesce_readout = label; }
+    void SetAlphaReadout(ETCS::RID label) { m_alpha_readout = label; }
 
 void Report() const
     {
@@ -1682,7 +1773,7 @@ void Report() const
     }
 
 private:
-    enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, CoalesceDelta };
+    enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, AlphaDelta };
     struct Entry {
         Kind kind;
         float rgba[4];
@@ -1695,7 +1786,7 @@ private:
     {
         if (a.kind != b.kind) return false;
         if (a.kind == Kind::Tool) return a.tool == b.tool;
-        if (a.kind == Kind::RadiusDelta || a.kind == Kind::CoalesceDelta)
+        if (a.kind == Kind::RadiusDelta || a.kind == Kind::AlphaDelta)
             return std::fabs(a.radius) == std::fabs(b.radius);
         if (a.kind == Kind::Size || a.kind == Kind::Zoom)
             return a.radius == b.radius;
@@ -1744,7 +1835,7 @@ private:
     PaintSurface* m_surface = nullptr;
     ETCS::RID m_hovering = 0;
     ETCS::RID m_radius_readout = 0;
-    ETCS::RID m_coalesce_readout = 0;
+    ETCS::RID m_alpha_readout = 0;
     mutable ETCS::RID m_last_color = 0;
 };
 
@@ -2973,8 +3064,6 @@ private:
         double interval = (m_tool)
             ? m_tool->motionCoalesceMs()
             : PAINT_MOTION_COALESCE_DEFAULT_MS;
-        if (m_panning || m_motion_kind == MotionKind::Pan)
-            interval = PAINT_MOTION_COALESCE_DEFAULT_MS + 50.0;
         const double t = now_ms();
         if (m_last_motion_ms <= 0.0 || (t - m_last_motion_ms) >= interval)
         {
@@ -3674,6 +3763,13 @@ DEFINE_WORK_FUNC_TYPED(PaintTool, SetMotionCoalesceMs, (double, ms))
     self.SetMotionCoalesceMs(ms);
 }
 
+// SetAlphaPercent <0..100> -- the opacity the tool's colour is laid down at.
+DEFINE_WORK_FUNC_TYPED(PaintTool, SetAlphaPercent, (int32_t, pct))
+{
+    (void)ctx;
+    self.SetAlphaPercent(pct);
+}
+
 // SetKind <brush|line|rect|ellipse|fill|smudge|ruler|glyph>
 DEFINE_WORK_FUNC(PaintTool, SetKind)
 {
@@ -4101,10 +4197,10 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddRadiusDelta, (ETCS::RID, node), (float, 
     self.AddRadiusDelta(node, delta);
 }
 
-DEFINE_WORK_FUNC_TYPED(PaintPalette, AddCoalesceDelta, (ETCS::RID, node), (float, delta_ms))
+DEFINE_WORK_FUNC_TYPED(PaintPalette, AddAlphaDelta, (ETCS::RID, node), (float, delta_pct))
 {
     (void)ctx;
-    self.AddCoalesceDelta(node, delta_ms);
+    self.AddAlphaDelta(node, delta_pct);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintPalette, SetRadiusReadout, (ETCS::RID, label))
@@ -4113,10 +4209,10 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, SetRadiusReadout, (ETCS::RID, label))
     self.SetRadiusReadout(label);
 }
 
-DEFINE_WORK_FUNC_TYPED(PaintPalette, SetCoalesceReadout, (ETCS::RID, label))
+DEFINE_WORK_FUNC_TYPED(PaintPalette, SetAlphaReadout, (ETCS::RID, label))
 {
     (void)ctx;
-    self.SetCoalesceReadout(label);
+    self.SetAlphaReadout(label);
 }
 
 // AddTool <node_rid> <kind> -- a third thing a toolbar node can mean.

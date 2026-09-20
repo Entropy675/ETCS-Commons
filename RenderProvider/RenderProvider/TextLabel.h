@@ -207,15 +207,39 @@ public:
         const int32_t ox = base.x + m_x;
         const int32_t oy = base.y + m_y;
 
+        /*
+     * ONE STATEMENT, AND THE SHORT PATH WHERE THERE IS ONE.
+     *
+     * A run is emitted as one fill per vertical run of lit pixels per column,
+     * which is already far fewer than one per pixel -- but it is still tens of
+     * fills per character, every one of them a dispatched call that marks the
+     * destination when it lands. A bar of readouts and captions came to ~1,300
+     * per redraw, so a compositor above it heard about one unchanged label 1,300
+     * times and anything derived from a mark ran that often.
+     *
+     * Batched, the whole run is one change (ObservableBase::BeginBatch). And when
+     * the destination owns host bytes -- which every offscreen compositor does --
+     * the fills go straight to Pixels_ rather than back out through the Surface
+     * verb and its clip, which is the same short path RasterizeText already took
+     * for the same reason. A device-backed destination keeps the verb, because
+     * there are no bytes to write.
+     */
+        etcs_observed_batch run(static_cast<ETCS::Entity*>(dst));
+        Pixels_* dpx = static_cast<Pixels_*>(
+            dst->getInterfacePointer(ETCS::Buffer("Pixels")));
+
         if (m_bg[3] > 0.0f)
         {
             const Rect2D b = BoundsConcrete();
-            dst->DrawRect(ox, oy, b.w, b.h, m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            if (dpx) dpx->FillRect(ox, oy, b.w, b.h, m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            else     dst->DrawRect(ox, oy, b.w, b.h, m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         }
-        drawRun(dst, shown.c_str(),
-                ox + static_cast<int32_t>(m_pad),
-                oy + static_cast<int32_t>(m_pad),
-                m_scale, m_color[0], m_color[1], m_color[2], m_color[3]);
+        const int32_t tx = ox + static_cast<int32_t>(m_pad);
+        const int32_t ty = oy + static_cast<int32_t>(m_pad);
+        if (dpx) drawRunPixels(dpx, shown.c_str(), tx, ty, m_scale,
+                               m_color[0], m_color[1], m_color[2], m_color[3]);
+        else     drawRun(dst, shown.c_str(), tx, ty, m_scale,
+                         m_color[0], m_color[1], m_color[2], m_color[3]);
 
         drawChildren(dst);
     }

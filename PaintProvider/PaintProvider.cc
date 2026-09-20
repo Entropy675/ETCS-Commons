@@ -13,7 +13,7 @@ ETCS_MODULE_EXPORT_MAIN(PaintProvider,
 // than which nib is loaded. See PaintToolKind.
 ETCS_TAG_BLOCK_BASIC(PaintTool,
     SetRadius, SetColor, SetKind, SetText, SetTextSize, SetTolerance,
-    SetMotionCoalesceMs,
+    SetMotionCoalesceMs, SetAlphaPercent,
     BeginStroke, MoveStroke, EndStroke, CancelStroke, Delete)
 
 // SetOrder is the layer's whole contribution to stacking -- the order is a
@@ -53,7 +53,7 @@ ETCS_TAG_BLOCK_HYBRID(PaintInput,
 // controls were dead while every other control on the same bar worked.
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
-    AddRadiusDelta, AddCoalesceDelta, SetRadiusReadout, SetCoalesceReadout,
+    AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
     SetColorOf, Report, Delete)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
