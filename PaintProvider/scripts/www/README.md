@@ -16,7 +16,7 @@ outputs into `www/`:
     ace wasm make module RenderProvider
     ace wasm make module PaintProvider
     ace wasm make module ShellProvider
-    ace wasm make loader etcs -DETCS_REPL_SHELL
+    ace wasm make loader etcs
     cp bin/etcs.js bin/etcs.wasm bin/{Window,Render,Paint,Shell}Provider.wasm \
        modules/PaintProvider/scripts/www/
 
@@ -120,15 +120,43 @@ has to match.
 Only the status line strips escapes, because it is `textContent` on one element,
 where an escape is bytes on screen rather than a colour.
 
-## Deploying: `ace make loaders` is not the interactive loader
+## The drawing area is INSET, and the ruler lives in the margin
 
-`ace make loader etcs -DETCS_REPL_SHELL` and `ace make loaders` produce different
-binaries, and only the first one serves. Without the define
-`drive_main_loop_then_exit` takes the drain path, so `serve_paint.etcs` runs every
-line — the server starts, the mounts resolve, `ListPaths` prints — and then
-`wait_for_environment_drain` reports "all detached executors finished" and the
-process exits, because an `HttpServer` thread is not a detached executor. The
-symptom is a serve script that looks like it worked and left nothing listening.
+`paper_pane` is a 952x632 pane at (36, 36) inside `sheet_root`, and the band around
+it is where the edge ruler's marks every 100 px go. They used to be drawn along the
+inside of the drawing area, which put them on the picture — over the paper near the
+edges, and paintable, so a stroke near a corner went through the scale it was being
+checked against.
+
+Nothing enforces that the band is unpaintable; two facts already in the tree do it:
+
+* `input.BindCanvas(@paper_pane)` — only a pick that lands on the canvas node is
+  the picture, so a press in the margin is scenery and no tool sees it. The router
+  pane stays `sheet_root`, so the toolbar and the zoom steps are picked as before.
+* the pane is its own raster — the document blit is clipped by that buffer's extent
+  rather than by a check, so the picture cannot reach the band in the first place.
+
+`canvas.BindRulerFrame(@sheet_root)` is what tells the surface which raster to mark;
+with nothing bound the ruler falls back to the inside of the pane, which is all a
+page with no margin can have. The band sizes itself per side from the room the page
+left (the toolbar takes the bottom strip, so there is no bottom band) and measures
+its own labels, so the numbers are not clipped by a provider with a wider advance.
+
+## Deploying
+
+`ace make loader etcs` and `ace make loaders` both now produce the INTERACTIVE
+loader: `-DETCS_REPL_SHELL` is on by default for every loader build, because a wasm
+loader that has returned from `main` is a page nothing can call into.
+
+It used to be per-spelling, and the failure that made was quiet: without the define
+`drive_main_loop_then_exit` takes the drain path, so `serve_paint.etcs` ran every
+line — the server started, the mounts resolved, `ListPaths` printed — and then
+`wait_for_environment_drain` reported "all detached executors finished" and the
+process exited, because an `HttpServer` thread is not a detached executor. A serve
+script that looked like it worked and left nothing listening.
+
+Pass `-UETCS_REPL_SHELL` for the draining loader, which is the only way to ask for
+it now.
 
 ## What is not solved here
 

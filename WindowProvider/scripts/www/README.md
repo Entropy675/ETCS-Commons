@@ -149,7 +149,7 @@ patch this page came with:
 
 Build, then copy the outputs into `www/`:
 
-    ace make loader etcs -DETCS_REPL_SHELL EMSCRIPTEN=1
+    ace make loader etcs EMSCRIPTEN=1
     ace make module WindowProvider EMSCRIPTEN=1
     ace make module ShellProvider  EMSCRIPTEN=1
 

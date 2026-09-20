@@ -83,6 +83,33 @@ sheet_root.SetOrder(0)
 # knows when the whole surface is being redrawn.
 sheet_root.SetRetain(1)
 
+# ── the drawable pane, INSET, so the ruler has somewhere to be ───────────────
+#
+# THE MARGIN IS THE POINT, and it is 36 px on three sides. The edge ruler used to
+# be drawn along the inside of the drawing area, which put it on the picture: over
+# the paper near the edges, and paintable, so a stroke near a corner went through
+# the scale you were checking it against. Inset, the band between this pane and
+# sheet_root belongs to nobody who draws -- so the marks go there
+# (canvas.BindRulerFrame) and cannot be drawn on.
+#
+# AND NOTHING HAS TO ENFORCE THAT, which is why it is a pane rather than a rule.
+# The router hit-tests panes and PaintInput only treats a hit on the CANVAS node
+# as the picture (BindCanvas, below): a point in the margin is inside sheet_root
+# and outside this, so it reaches the toolbar's pick and never reaches a tool. The
+# document cannot spill into the band either -- this pane is its own raster, so
+# the blit is clipped by the buffer's extent rather than by a check.
+#
+# 704 rather than 768 on the bottom because the toolbar has that strip; the
+# ruler's own band sizes itself per side and simply draws nothing where a page
+# left no room (draw_edge_ruler).
+sheet_root.spawn(RenderProvider::CompositeDrawable2D paper_pane)
+paper_pane.Create(952, 632)
+paper_pane.SetPosition(36, 36)
+paper_pane.SetOrder(1)
+# Retained for the same reason sheet_root is: PaintSurface::Render is the one
+# writer of this buffer and clears it itself.
+paper_pane.SetRetain(1)
+
 # ── the document draws INTO the pane, not beside it ──────────────────────────
 #
 # This is the one ordering that works, and the alternative is worth stating
@@ -97,12 +124,15 @@ sheet_root.SetRetain(1)
 # buffer, and the widget is over the sheet because the tree says so rather than
 # because of which call ran last.
 spawn PaintProvider::PaintSurface canvas
-canvas.Create(@sheet_root)
+canvas.Create(@paper_pane)
 canvas.AttachDocument(@doc)
 canvas.SetBackground(0.13, 0.13, 0.15, 1.0)
 # For the edge ruler's numbers -- a second consumer of the same provider the
-# document uses, because the ruler describes the WINDOW and the boxes the page.
+# document uses, because the ruler describes the PANE and the boxes the page.
 canvas.BindGlyphs(@glyph_src)
+# The ruler is drawn on the frame, in the margin around the pane, rather than
+# inside the pane. See the inset above.
+canvas.BindRulerFrame(@sheet_root)
 canvas.Render()
 
 # ── the toolbar, ON the sheet ───────────────────────────────────────────────
@@ -215,7 +245,11 @@ spawn PaintProvider::PaintInput input
 input.Create(@doc, @brush, @canvas)
 input.SetBrush(6.0, 0.10, 0.10, 0.12, 1.0)
 input.BindRoot(@sheet_root)
-input.BindCanvas(@sheet_root)
+# THE PANE, NOT THE SHEET. This one line is what makes the ruler's margin
+# unpaintable: a press in the band picks sheet_root, which is not the canvas, so
+# it is scenery and no tool sees it (PaintInput::RouteEvent). The root stays the
+# sheet so the toolbar and the zoom steps are still reachable by the same pick.
+input.BindCanvas(@paper_pane)
 input.BindPalette(@palette)
 input.BindWheel(@wheel)
 input.SetWheelPane(0)

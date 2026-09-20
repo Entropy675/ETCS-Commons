@@ -34,7 +34,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
 ETCS_TAG_BLOCK_BASIC(PaintSurface,
     Create, AttachDocument, SetTarget, Render,
     SetPan, PanBy, SetZoom, ZoomAt, ZoomBy, SetBackground,
-    ZoomPercent, BindZoomLabel, BindGlyphs, ShowEdgeRuler, Delete)
+    ZoomPercent, BindZoomLabel, BindGlyphs, ShowEdgeRuler, BindRulerFrame, Delete)
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,

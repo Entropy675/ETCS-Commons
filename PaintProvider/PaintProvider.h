@@ -371,14 +371,19 @@ inline bool paint_kind_commits(PaintToolKind k)
  *                               feel heavy -- reported as laggy drags on the
  *                               ruler and the rectangle.
  *
- * SO THE ANCHORED KINDS GET ONE FRAME. 16ms is not a tuning knob picked by feel:
- * a rebuild that is not presented is work nobody sees, and the frame edge
- * presents at most one image per frame. Cheaper than that is invisible; more
- * often than that is wasted. The number to change if a display runs faster.
+ * SO THE ANCHORED KINDS GET 100ms, AND THE FRAME RATE IS NOT WHAT SETS IT.
+ * One frame (16ms) was the first answer here, on the reasoning that a rebuild
+ * nobody presents is work nobody sees. That reasoning is sound and the number
+ * was still wrong, because it assumed a full-view rebuild FITS in a frame: it
+ * does not, so at 16ms the drag asks for another one before the last has landed
+ * and the rect and the ruler still felt heavy. 100ms is the interval the rebuild
+ * can actually keep, measured by dragging them. A preview is feedback, not the
+ * picture -- ten of them a second is enough to aim with, and the committed shape
+ * is exact regardless, because release flushes (flush_coalesced_motion).
  */
 inline double paint_tool_default_coalesce_ms(PaintToolKind k)
 {
-    return paint_kind_is_anchored(k) ? 16.0 : PAINT_MOTION_COALESCE_DEFAULT_MS;
+    return paint_kind_is_anchored(k) ? 100.0 : PAINT_MOTION_COALESCE_DEFAULT_MS;
 }
 
 
@@ -1729,21 +1734,39 @@ public:
          * frame edge from compositing while this runs.
          */
         etcs_observed_batch frame(view ? static_cast<ETCS::Entity*>(view) : nullptr);
+        /*
+         * A SECOND BATCH, FOR A SECOND RASTER. The ruler is drawn in the margin
+         * OUTSIDE the pane, which is the frame's pixels rather than the pane's
+         * (draw_edge_ruler), so its DrawRects mark the frame -- four band clears
+         * and a few dozen ticks, each one of them a change on the frame's edges
+         * unless they are gathered. Held here rather than inside the ruler so the
+         * mark lands after the pane's own picture has been stated too, and so a
+         * page with no frame bound holds nothing extra.
+         */
+        ETCS::Entity* frame_e = (m_ruler_frame != 0 && m_ruler_frame != m_target)
+            ? static_cast<ETCS::Entity*>(
+                  ETCS::resolve_in_family<Surface_>("Surface", m_ruler_frame))
+            : nullptr;
+        etcs_observed_batch margin(frame_e);
+
         // CLEARED FIRST, which a full-view document never needed. A projection
         // does not cover the surface, so without this the area outside the
         // document keeps whatever the last frame left there and panning smears.
         if (view) view->Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
-        // The window's own edge, marked out. After the document, because it is
-        // chrome over the picture rather than part of it.
+        // The pane's own edge, marked out. After the document because it is chrome
+        // rather than part of the picture -- and, with a frame bound, not on the
+        // picture's raster at all.
         draw_edge_ruler(view);
 
-        // Redundant while `frame` is held -- the batch closing below makes this
-        // exact statement -- and kept for the case where it is not held: a view
-        // that never claimed Observable is not batched (etcs_observed_batch), and
-        // then this is the only mark the picture gets. Marking twice costs one
-        // extra edge update; marking zero times loses the frame.
+        // Redundant while the batches are held -- closing them makes these exact
+        // statements -- and kept for the case where they are not: a surface that
+        // never claimed Observable is not batched (etcs_observed_batch), and then
+        // this is the only mark the picture gets. Marking twice costs one extra
+        // edge update; marking zero times loses the frame.
         paint_mark_pixel_path(m_target);
+        if (m_ruler_frame != 0 && m_ruler_frame != m_target)
+            paint_mark_pixel_path(m_ruler_frame);
     }
 
     // WHAT THE SURFACE'S OWN LAYER LOOKS LIKE -- not a "background", which would
@@ -1769,6 +1792,13 @@ public:
     // picture should be able to not have it.
     void ShowEdgeRuler(bool on) { m_edge_ruler = on; }
 
+    // THE RASTER THE EDGE RULER IS DRAWN ON: the frame the drawable pane sits
+    // inside, not the pane. Bound rather than derived from the tree, because a
+    // node's parent is a tree fact and where chrome belongs is a composition
+    // choice -- and the frame is only the parent when a page nests them that way.
+    // Unbound, the marks fall back inside the pane; see draw_edge_ruler.
+    void BindRulerFrame(ETCS::RID frame) { m_ruler_frame = frame; }
+
     void StampBrush(int32_t x, int32_t y, const PaintBrushState& brush)
     {
         if (m_target == 0) return;
@@ -1782,81 +1812,218 @@ public:
 
 private:
     /*
- * ── THE WINDOW'S EDGE, MARKED EVERY 100 PIXELS ───────────────────────────
+ * ── THE DRAWABLE PANE'S EDGE, MARKED EVERY 100 PIXELS ────────────────────
  *
  * TWO THINGS IT IS FOR, and they are both about having a reference at all. The
- * size of the view is otherwise only knowable by measuring the window with
- * something else, and the ruler tool reports distances with nothing on screen to
- * check them against -- a number with no scale beside it.
+ * size of the drawing area is otherwise only knowable by measuring the window
+ * with something else, and the ruler tool reports distances with nothing on
+ * screen to check them against -- a number with no scale beside it.
  *
- * IN VIEW PIXELS, NOT DOCUMENT PIXELS, and that is the choice worth stating. The
- * ticks describe the WINDOW: at 100% zoom with no pan the two spaces coincide, and
- * when they do not, these still answer "how big is this view" rather than drifting
- * off with the page. The ruler tool measures the document, so under zoom the two
- * disagree on purpose -- one is the paper, the other is the frame around it.
+ * OUTSIDE THE PANE, IN THE MARGIN AROUND IT, when the page gives it one
+ * (BindRulerFrame). That is the correction: these used to be drawn INSIDE the
+ * pane, along its inner edge, which put them on the picture -- over the paper
+ * near the edges, and paintable, so the first stroke near a corner went through
+ * the scale you were checking it against. A pane inset inside a frame has a band
+ * that belongs to nobody who draws: the router hands presses to the PANE
+ * (PaintInput::BindCanvas), so a point in the band is not the picture, and marks
+ * there cannot be drawn on. The ticks point OUTWARD from the pane's edge, so the
+ * pane's boundary is the zero line for both axes.
+ *
+ * WITH NO FRAME BOUND they fall back inside the pane, which is what a page with
+ * no margin can have; it is not the intended arrangement and the fallback is
+ * here so that such a page still gets a scale rather than nothing.
+ *
+ * IN PANE PIXELS, NOT DOCUMENT PIXELS, and that is the choice worth stating. The
+ * ticks describe the DRAWING AREA: at 100% zoom with no pan the two spaces
+ * coincide, and when they do not, these still answer "how big is the area I am
+ * drawing in" rather than drifting off with the page. The ruler tool measures the
+ * document, so under zoom the two disagree on purpose -- one is the paper, the
+ * other is the frame around it.
  *
  * DRAWN, NOT SPAWNED. A script could place these as nodes, and the first resize
- * would leave them wrong: the tick spacing is a function of the surface's current
- * extent, which only the thing being drawn into knows. Four edges, so a mark near
- * a corner is reachable from either side of it.
+ * would leave them wrong: the tick spacing and the band's width are functions of
+ * the pane's current extent, which only the thing being drawn into knows. Four
+ * edges, so a mark near a corner is reachable from either side of it.
  */
-    void draw_edge_ruler(Surface_* view)
+    void draw_edge_ruler(Surface_* pane_view)
     {
-        if (!m_edge_ruler || !view) return;
+        if (!m_edge_ruler) return;
 
-        WindowSize vs{ 0, 0 };
+        // The pane's extent, always: it is what the numbers count, whichever
+        // raster they end up on.
+        WindowSize ps{ 0, 0 };
         if (Resizable_* v = ETCS::resolve_in_family<Resizable_>("Resizable", m_target))
-            vs = v->GetSize();
-        if (vs.width == 0 || vs.height == 0) return;
+            ps = v->GetSize();
+        if (ps.width == 0 || ps.height == 0) return;
+        const int32_t pw = static_cast<int32_t>(ps.width);
+        const int32_t ph = static_cast<int32_t>(ps.height);
 
-        const int32_t w = static_cast<int32_t>(vs.width);
-        const int32_t h = static_cast<int32_t>(vs.height);
+        // The raster to mark, and where the pane sits on it. Defaults are the
+        // pane itself at its own origin -- the no-frame fallback above.
+        Surface_* dst     = pane_view;
+        ETCS::RID dst_rid = m_target;
+        int32_t   ox = 0, oy = 0;      // pane origin in dst's space
+        int32_t   dw = pw, dh = ph;    // dst's extent
+        bool      outside = false;
+
+        if (m_ruler_frame != 0 && m_ruler_frame != m_target)
+        {
+            Surface_*    frame = ETCS::resolve_in_family<Surface_>("Surface", m_ruler_frame);
+            Drawable2D_* pane  = ETCS::resolve_in_family<Drawable2D_>("Drawable2D", m_target);
+            WindowSize   fs{ 0, 0 };
+            if (Resizable_* fv = ETCS::resolve_in_family<Resizable_>("Resizable", m_ruler_frame))
+                fs = fv->GetSize();
+            // Bounds(), so the offset is whatever the tree currently says rather
+            // than a margin the script also had to tell this object about.
+            if (frame && pane && fs.width != 0 && fs.height != 0)
+            {
+                const Rect2D pr = pane->Bounds();
+                dst = frame; dst_rid = m_ruler_frame;
+                ox = pr.x;   oy = pr.y;
+                dw = static_cast<int32_t>(fs.width);
+                dh = static_cast<int32_t>(fs.height);
+                outside = true;
+            }
+        }
+        if (!dst) return;
+
         const int32_t step  = 100;
         const int32_t major = 10;    // tick length at a labelled mark
         const int32_t minor = 5;     // and at the halfway one
+        const uint32_t label_px = 8;
 
-        // Light, and alpha'd: it has to read on white paper and on the dark
-        // background outside the page, without competing with either.
+        // Light, and alpha'd: it has to read on the margin and on white paper
+        // (the fallback draws over the page) without competing with either.
         const float r = 0.35f, g = 0.55f, b = 0.95f, a = 0.85f;
 
         ETCS::Held<Glyphs_> glyphs;
         if (m_glyphs != 0) glyphs = ETCS::resolve_held<Glyphs_>("Glyphs", m_glyphs);
 
-        for (int32_t x = 0; x <= w; x += step)
+        // How wide the band must be to hold a tick and the widest number beside
+        // it. MEASURED, not computed from the size: the advance width is the
+        // provider's, and a band sized by arithmetic here clips the labels on any
+        // provider that disagrees.
+        int32_t label_w = 0;
+        if (glyphs)
         {
-            const int32_t px = (x >= w) ? w - 1 : x;
-            view->DrawRect(px, 0, 1, static_cast<uint32_t>(major), r, g, b, a);
-            view->DrawRect(px, h - major, 1, static_cast<uint32_t>(major), r, g, b, a);
-            if (x + step / 2 < w)
-            {
-                view->DrawRect(x + step / 2, 0, 1, static_cast<uint32_t>(minor), r, g, b, a);
-                view->DrawRect(x + step / 2, h - minor, 1, static_cast<uint32_t>(minor), r, g, b, a);
-            }
-            if (glyphs && x > 0)
-                glyphs->RasterizeText(m_target, std::to_string(x).c_str(), 0, 8,
-                                      px + 3, major + 2, r, g, b, a);
+            const int32_t biggest = (std::max(pw, ph) / step) * step;
+            const TextExtent e = glyphs->MeasureText(std::to_string(biggest).c_str(),
+                                                     0, label_px);
+            label_w = static_cast<int32_t>(e.width);
         }
-        for (int32_t y = 0; y <= h; y += step)
+        const int32_t band = major + 4 + std::max(label_w, 12);
+
+        // Per side, because a page is free to leave a margin on some edges and
+        // not others -- the toolbar takes the bottom of this one's frame. Capped
+        // at the band rather than filling the room, so the ruler is the same
+        // width everywhere and does not swallow whatever else is out there.
+        const int32_t bl = outside ? std::clamp(ox, 0, band) : 0;
+        const int32_t bt = outside ? std::clamp(oy, 0, band) : 0;
+        const int32_t br = outside ? std::clamp(dw - (ox + pw), 0, band) : 0;
+        const int32_t bb = outside ? std::clamp(dh - (oy + ph), 0, band) : 0;
+
+        // THE BAND IS THE RULER'S TO CLEAR. It is chrome on a raster somebody
+        // else retains, so without this a resize leaves the previous extent's
+        // marks sitting beside the new ones.
+        if (outside)
         {
-            const int32_t py = (y >= h) ? h - 1 : y;
-            view->DrawRect(0, py, static_cast<uint32_t>(major), 1, r, g, b, a);
-            view->DrawRect(w - major, py, static_cast<uint32_t>(major), 1, r, g, b, a);
-            if (y + step / 2 < h)
+            const uint32_t span = static_cast<uint32_t>(bl + pw + br);
+            if (bt > 0) dst->DrawRect(ox - bl, oy - bt, span, static_cast<uint32_t>(bt),
+                                      m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            if (bb > 0) dst->DrawRect(ox - bl, oy + ph, span, static_cast<uint32_t>(bb),
+                                      m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            if (bl > 0) dst->DrawRect(ox - bl, oy, static_cast<uint32_t>(bl),
+                                      static_cast<uint32_t>(ph),
+                                      m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            if (br > 0) dst->DrawRect(ox + pw, oy, static_cast<uint32_t>(br),
+                                      static_cast<uint32_t>(ph),
+                                      m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        }
+
+        // One tick length per side, so a side with a narrow margin gets a short
+        // tick instead of one that runs off the frame.
+        const int32_t tl = outside ? std::min(major, bl) : major;
+        const int32_t tt = outside ? std::min(major, bt) : major;
+        const int32_t tr = outside ? std::min(major, br) : major;
+        const int32_t tb = outside ? std::min(major, bb) : major;
+
+        for (int32_t x = 0; x <= pw; x += step)
+        {
+            const int32_t cx = ox + ((x >= pw) ? pw - 1 : x);
+            const int32_t hx = ox + x + step / 2;
+            const bool    half = (x + step / 2 < pw);
+            if (outside)
             {
-                view->DrawRect(0, y + step / 2, static_cast<uint32_t>(minor), 1, r, g, b, a);
-                view->DrawRect(w - minor, y + step / 2, static_cast<uint32_t>(minor), 1, r, g, b, a);
+                if (tt > 0) dst->DrawRect(cx, oy - tt, 1, static_cast<uint32_t>(tt), r, g, b, a);
+                if (tb > 0) dst->DrawRect(cx, oy + ph, 1, static_cast<uint32_t>(tb), r, g, b, a);
+                if (half && bt >= minor)
+                    dst->DrawRect(hx, oy - minor, 1, static_cast<uint32_t>(minor), r, g, b, a);
+                if (half && bb >= minor)
+                    dst->DrawRect(hx, oy + ph, 1, static_cast<uint32_t>(minor), r, g, b, a);
+                if (glyphs && x > 0 && bt >= band)
+                    glyphs->RasterizeText(dst_rid, std::to_string(x).c_str(), 0, label_px,
+                                          cx + 3, oy - band + 2, r, g, b, a);
             }
-            if (glyphs && y > 0)
-                glyphs->RasterizeText(m_target, std::to_string(y).c_str(), 0, 8,
-                                      major + 2, py + 3, r, g, b, a);
+            else
+            {
+                dst->DrawRect(cx, oy, 1, static_cast<uint32_t>(tt), r, g, b, a);
+                dst->DrawRect(cx, oy + ph - tb, 1, static_cast<uint32_t>(tb), r, g, b, a);
+                if (half)
+                {
+                    dst->DrawRect(hx, oy, 1, static_cast<uint32_t>(minor), r, g, b, a);
+                    dst->DrawRect(hx, oy + ph - minor, 1, static_cast<uint32_t>(minor), r, g, b, a);
+                }
+                if (glyphs && x > 0)
+                    glyphs->RasterizeText(dst_rid, std::to_string(x).c_str(), 0, label_px,
+                                          cx + 3, oy + major + 2, r, g, b, a);
+            }
+        }
+
+        for (int32_t y = 0; y <= ph; y += step)
+        {
+            const int32_t cy = oy + ((y >= ph) ? ph - 1 : y);
+            const int32_t hy = oy + y + step / 2;
+            const bool    half = (y + step / 2 < ph);
+            if (outside)
+            {
+                if (tl > 0) dst->DrawRect(ox - tl, cy, static_cast<uint32_t>(tl), 1, r, g, b, a);
+                if (tr > 0) dst->DrawRect(ox + pw, cy, static_cast<uint32_t>(tr), 1, r, g, b, a);
+                if (half && bl >= minor)
+                    dst->DrawRect(ox - minor, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
+                if (half && br >= minor)
+                    dst->DrawRect(ox + pw, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
+                if (glyphs && y > 0 && bl >= band)
+                    glyphs->RasterizeText(dst_rid, std::to_string(y).c_str(), 0, label_px,
+                                          ox - band + 2, cy + 3, r, g, b, a);
+            }
+            else
+            {
+                dst->DrawRect(ox, cy, static_cast<uint32_t>(tl), 1, r, g, b, a);
+                dst->DrawRect(ox + pw - tr, cy, static_cast<uint32_t>(tr), 1, r, g, b, a);
+                if (half)
+                {
+                    dst->DrawRect(ox, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
+                    dst->DrawRect(ox + pw - minor, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
+                }
+                if (glyphs && y > 0)
+                    glyphs->RasterizeText(dst_rid, std::to_string(y).c_str(), 0, label_px,
+                                          ox + major + 2, cy + 3, r, g, b, a);
+            }
         }
 
         // The extent itself, where the two labelled axes meet -- the one number
-        // somebody reading the edge actually wanted.
+        // somebody reading the edge actually wanted. In the corner of the margin
+        // when there is one, so it is outside the picture like the rest.
         if (glyphs)
-            glyphs->RasterizeText(m_target,
-                                  (std::to_string(w) + "x" + std::to_string(h)).c_str(),
-                                  0, 8, major + 2, major + 2, r, g, b, a);
+        {
+            const std::string ext = std::to_string(pw) + "x" + std::to_string(ph);
+            if (outside && bt >= band && bl > 0)
+                glyphs->RasterizeText(dst_rid, ext.c_str(), 0, label_px,
+                                      ox - bl + 2, oy - band + 2, r, g, b, a);
+            else if (!outside)
+                glyphs->RasterizeText(dst_rid, ext.c_str(), 0, label_px,
+                                      ox + major + 2, oy + major + 2, r, g, b, a);
+        }
     }
 
 public:
@@ -1900,6 +2067,8 @@ private:
     // state this was added to fix. See draw_edge_ruler.
     bool      m_edge_ruler = true;
     ETCS::RID m_glyphs     = 0;
+    // The surface the ruler marks, when the pane is inset in a larger one.
+    ETCS::RID m_ruler_frame = 0;
 };
 
 /*
@@ -5037,11 +5206,19 @@ DEFINE_WORK_FUNC_TYPED(PaintSurface, BindGlyphs, (ETCS::RID, glyphs))
     self.BindGlyphs(glyphs);
 }
 
-// ShowEdgeRuler <0|1> -- the marks every 100 px around the view's own edge.
+// ShowEdgeRuler <0|1> -- the marks every 100 px around the drawable pane's edge.
 DEFINE_WORK_FUNC_TYPED(PaintSurface, ShowEdgeRuler, (int32_t, on))
 {
     (void)ctx;
     self.ShowEdgeRuler(on != 0);
+}
+
+// BindRulerFrame <rid> -- the surface the pane is inset in, which is where the
+// ruler goes so that it is outside anywhere you can draw.
+DEFINE_WORK_FUNC_TYPED(PaintSurface, BindRulerFrame, (ETCS::RID, frame))
+{
+    (void)ctx;
+    self.BindRulerFrame(frame);
 }
 
 DEFINE_WORK_FUNC(PaintSurface, BindZoomLabel)
