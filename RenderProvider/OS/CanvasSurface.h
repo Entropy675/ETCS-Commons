@@ -336,7 +336,6 @@ public:
 
         PollResize();
 
-        std::vector<uint8_t> snap;
         uint32_t w = 0, h = 0;
         std::string target;
         {
@@ -345,15 +344,27 @@ public:
             w = PixelWidth();
             h = PixelHeight();
             if (!data || w == 0 || h == 0) return;
-            const size_t n = static_cast<size_t>(w) * h * 4;
-            m_front.resize(n);
-            std::memcpy(m_front.data(), data, n);
+            /*
+             * ONE COPY, INTO THE FRONT BUFFER, and it is the front buffer that
+             * ships. There were three before: back -> m_front, m_front -> a
+             * local snapshot, and the local -> the page. At 1024x768 that is
+             * 3 MB copied twice more than the boundary requires, every frame,
+             * on a worker -- and nothing ever read m_front, so the middle
+             * buffer the comment above describes was not a front buffer at all,
+             * only a write nobody consumed.
+             *
+             * m_front is still the thing handed over, which is what makes the
+             * remaining copy load-bearing rather than incidental: the lock is
+             * released before the proxy call, so the page must be reading
+             * something the drawers cannot move under it.
+             */
+            m_front.resize(static_cast<size_t>(w) * h * 4);
+            std::memcpy(m_front.data(), data, m_front.size());
             m_front_w = w;
             m_front_h = h;
-            snap = m_front;
             target = m_target;
         }
-        if (snap.empty()) return;
+        if (m_front.empty()) return;
 
 #if defined(__EMSCRIPTEN__)
         /*
@@ -384,7 +395,7 @@ public:
             var img = ctx.createImageData(w, h);
             img.data.set(HEAPU8.subarray($0, $0 + w * h * 4));
             ctx.putImageData(img, 0, 0);
-        }, snap.data(), w, h, target.c_str());
+        }, m_front.data(), w, h, target.c_str());
 #endif
         notePresent();
     }

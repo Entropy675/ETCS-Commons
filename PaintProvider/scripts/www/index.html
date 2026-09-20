@@ -110,16 +110,15 @@
       box-shadow: -1px -1px 5px rgba(100, 0, 228, 0.7), 1px 1px 5px rgba(0, 0, 255, 0.7);
     }
 
-    /* THE PALETTE STRIP -- narrow, rectangular, above the terminal.
-       Its framebuffer is 640x64 (boot_paint_panels.etcs); these rules only decide
-       how big it is drawn. width:100% with height:auto keeps the aspect ratio, so
-       a click maps to a bar-space point by one scale factor in each axis -- which
-       is exactly what the pointer handler below computes, and why nothing here
-       distorts it. */
-    #barwrap {
-      grid-area: bar; min-width: 0;
-      display: flex; align-items: center; justify-content: center;
-    }
+    /* THE STRIP'S WRAPPER IS GONE, and so is the rule that placed it.
+       The toolbar stopped being a second canvas -- it is a CompositeDrawable2D
+       inside the sheet now (boot_paint_panels.etcs) -- but `#barwrap` kept
+       `grid-area: bar` after `bar` was removed from both grid-template-areas.
+       A named area that does not resolve is not ignored: the item is
+       auto-placed instead, which ADDS implicit tracks. Measured, the grid
+       reported five rows where three are declared
+       (31.5px 0px 805.5px 0px 0px), so an empty div was costing two extra
+       `gap`s of vertical space in a container that is height:100%. */
 
     /* SIDE BY SIDE ONCE THERE IS ROOM. Two columns, one row: the canvas takes
        the space the terminal does not need, and both are full height. Below this
@@ -167,8 +166,6 @@
          the same replay buffer every other line uses -- an ETCS session has one
          log, and splitting the first six lines of it into a second box above the
          terminal meant reading two places to follow one sequence. -->
-    <div id="barwrap">
-</div>
     <iframe id="shell" src="shell" title="ETCS shell"></iframe>
   </div>
   <script>

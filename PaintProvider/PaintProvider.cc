@@ -13,6 +13,7 @@ ETCS_MODULE_EXPORT_MAIN(PaintProvider,
 // than which nib is loaded. See PaintToolKind.
 ETCS_TAG_BLOCK_BASIC(PaintTool,
     SetRadius, SetColor, SetKind, SetText, SetTextSize, SetTolerance,
+    SetMotionCoalesceMs,
     BeginStroke, MoveStroke, EndStroke, CancelStroke, Delete)
 
 // SetOrder is the layer's whole contribution to stacking -- the order is a
@@ -42,8 +43,17 @@ ETCS_TAG_BLOCK_HYBRID(PaintInput,
 
 // A mapping from picked node to tool setting, and nothing else -- it owns no
 // pixels, because the 2D tree it points into already does. See PaintPalette.
+// EVERY Add*/Set* DEFINED ABOVE IS LISTED HERE, and the list is the whole
+// contract: a DEFINE_WORK_FUNC that the block does not name still compiles, is
+// still linked into the module, and is simply not reachable -- the executor
+// answers "does not provide requested action" and carries on. A script calling
+// it therefore FAILS SILENTLY, which is how AddRadiusDelta / AddCoalesceDelta /
+// SetRadiusReadout / SetCoalesceReadout shipped: paint_toolbar.etcs drew the
+// +/- nibs and the numbers beside them, ten calls were refused at boot, and the
+// controls were dead while every other control on the same bar worked.
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
+    AddRadiusDelta, AddCoalesceDelta, SetRadiusReadout, SetCoalesceReadout,
     SetColorOf, Report, Delete)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
