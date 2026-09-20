@@ -245,6 +245,24 @@ static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
 // GLFW's numbering, which is what arrives on the pointer ring (pushButton takes
 // the platform's index unchanged). Named here so the input edge does not test a
 // bare 1 and leave the reader to guess which button that is.
+/*
+ * A KEY CODE AS A CHARACTER, or 0 for "nothing typeable".
+ *
+ * GLFW's printable codes ARE the ASCII of the unshifted key, which is the whole
+ * of this table: letters come in as 'A'..'Z' and are lowered, and everything else
+ * printable passes through. The font covers 32..126 (RenderProvider::TextLabel),
+ * so what this admits and what can be drawn are the same set.
+ *
+ * Shift is absent because the event does not carry modifiers yet -- see
+ * PaintInput::KeyDown.
+ */
+static inline char paint_key_to_char(uint16_t key)
+{
+    if (key >= 'A' && key <= 'Z') return static_cast<char>(key - 'A' + 'a');
+    if (key >= 32 && key <= 126)  return static_cast<char>(key);
+    return 0;
+}
+
 static constexpr uint16_t PAINT_BUTTON_LEFT   = 0;
 static constexpr uint16_t PAINT_BUTTON_RIGHT  = 1;  // GLFW right
 static constexpr uint16_t PAINT_BUTTON_MIDDLE = 2;  // GLFW middle -- pan, like right
@@ -1059,6 +1077,41 @@ private:
 };
 
 
+/*
+ * ── A TEXT BOX ───────────────────────────────────────────────────────────────
+ *
+ * TEXT THAT IS STILL TEXT. The glyph tool used to prompt for a string, rasterise
+ * it into the active layer and forget it -- after which the words were pixels,
+ * as editable as a brush stroke and no more. Correcting a typo meant undoing and
+ * retyping the lot.
+ *
+ * So a box keeps its string, in DOCUMENT coordinates, and is drawn on every
+ * render from what it holds. It is content rather than decoration: it pans and
+ * zooms with the picture, it survives switching tools and layers, and it can be
+ * picked up again later and changed.
+ *
+ * NOT A LAYER, and not a node in the sheet's 2D tree either. A layer is a raster
+ * and this is not; a sheet node would float above the picture and never pan with
+ * it. What it is, is a second kind of thing the document contains, which is why
+ * the document holds them.
+ *
+ * ONE STRING, NO WRAPPING. The run is scaled to the largest size that fits the
+ * box (see fit_text_px), so the box is the type size control -- drag a tall box
+ * for big text. Wrapping would need a line breaker and a notion of leading, and
+ * neither exists here yet; a second line today is a second box.
+ */
+struct PaintTextBox
+{
+    int32_t     x = 0, y = 0;       // document space, top-left
+    int32_t     w = 1, h = 1;
+    std::string text;
+    uint32_t    id = 0;             // stable across edits, unlike an index
+    // The colour it was placed with. On the box rather than read from the tool at
+    // draw time, because the tool's colour moves on and this text should not: two
+    // captions placed with different colours stay different.
+    float       rgba[4] = { 0.08f, 0.08f, 0.10f, 1.0f };
+};
+
 class PaintDocument : public DeletableBase<PaintDocument>
 {
 public:
@@ -1217,6 +1270,15 @@ public:
                      << " dim=" << l->dim()
                      << " inked=" << l->InkedPixels()
                      << (l == m_active_layer ? "  <- active" : ""));
+        // The text boxes are content too, and the only way to read one back --
+        // they are the one thing here whose state is a string rather than pixels.
+        if (!m_text.empty())
+            ETCS_LOG("PaintDocument", "  " << m_text.size() << " text box(es)"
+                     << (m_text_show ? ", outlines shown" : "")
+                     << (m_text_sel ? ", editing " + std::to_string(m_text_sel) : ""));
+        for (const PaintTextBox& b : m_text)
+            ETCS_LOG("PaintDocument", "  text " << b.id << " at " << b.x << "," << b.y
+                     << " " << b.w << "x" << b.h << " = \"" << b.text << "\"");
     }
 
     void SetActiveLayer(ETCS::RID layer_rid)
@@ -1234,6 +1296,85 @@ public:
         if (layer) layer->Clear(r, g, b, a);
     }
 
+    /*
+ * ── the text boxes this document contains ────────────────────────────────
+ *
+ * Kept in creation order, which is also their draw order and their pick order
+ * reversed: the last one placed is drawn on top, so it is the one a click
+ * inside two overlapping boxes means.
+ *
+ * Addressed by an id rather than an index, because removing one would silently
+ * renumber the others and a selection is held across edits.
+ */
+    uint32_t AddTextBox(int32_t x, int32_t y, int32_t w, int32_t h)
+    {
+        return AddTextBoxColoured(x, y, w, h, 0.08f, 0.08f, 0.10f, 1.0f);
+    }
+
+    uint32_t AddTextBoxColoured(int32_t x, int32_t y, int32_t w, int32_t h,
+                                float r, float g, float bl, float a)
+    {
+        PaintTextBox b;
+        b.rgba[0] = r; b.rgba[1] = g; b.rgba[2] = bl; b.rgba[3] = a;
+        b.x = x; b.y = y;
+        b.w = (w < 1) ? 1 : w;
+        b.h = (h < 1) ? 1 : h;
+        b.id = ++m_text_seq;
+        m_text.push_back(b);
+        ETCS_LOG("PaintDocument", "text box " << b.id << " at " << b.x << "," << b.y
+                 << " " << b.w << "x" << b.h);
+        return b.id;
+    }
+
+    PaintTextBox* FindTextBox(uint32_t id)
+    {
+        for (auto& b : m_text) if (b.id == id) return &b;
+        return nullptr;
+    }
+
+    bool SetTextBoxText(uint32_t id, const std::string& text)
+    {
+        PaintTextBox* b = FindTextBox(id);
+        if (!b) return false;
+        b->text = text;
+        return true;
+    }
+
+    bool RemoveTextBox(uint32_t id)
+    {
+        for (auto it = m_text.begin(); it != m_text.end(); ++it)
+            if (it->id == id) { m_text.erase(it); return true; }
+        return false;
+    }
+
+    // Topmost box containing a document-space point, or 0. Reverse order, so the
+    // answer matches what is drawn on top.
+    uint32_t TextBoxAt(int32_t dx, int32_t dy) const
+    {
+        for (auto it = m_text.rbegin(); it != m_text.rend(); ++it)
+            if (dx >= it->x && dy >= it->y
+             && dx < it->x + it->w && dy < it->y + it->h)
+                return it->id;
+        return 0;
+    }
+
+    size_t textBoxCount() const { return m_text.size(); }
+
+    // Whatever leaf claiming Glyphs draws them -- the document needs its own,
+    // because it is what renders them, and it may be rendered with no input
+    // machine attached at all.
+    void BindGlyphs(ETCS::RID glyphs) { m_glyphs = glyphs; }
+
+    /*
+ * EDITING AFFORDANCES ARE A VIEW STATE, so they are set from outside rather than
+ * inferred here: the document has no opinion about which tool is in hand. The
+ * input machine turns this on while the text tool is held (PaintInput), which is
+ * what makes every existing box visible and therefore selectable.
+ */
+    void ShowTextBoxes(bool on)   { m_text_show = on; }
+    void SelectTextBox(uint32_t id) { m_text_sel = id; }
+    uint32_t selectedTextBox() const { return m_text_sel; }
+
     void RenderToSurface(ETCS::RID target, int32_t x, int32_t y, float zoom = 1.0f)
     {
         Surface_* surface = ETCS::resolve_in_family<Surface_>("Surface", target);
@@ -1246,6 +1387,103 @@ public:
             if (!layer->visible()) continue;
             layer->BlitTo(target, x, y, 0, 0, layer->opacity(), zoom);
         }
+
+        // Over the layers, because a text box is not in any of them -- it is
+        // still text and is drawn from its string every frame. See PaintTextBox.
+        draw_text_boxes(target, x, y, zoom);
+    }
+
+
+    /*
+ * ── drawing the text boxes ───────────────────────────────────────────────
+ *
+ * PROJECTED LIKE THE PIXELS ARE, which is the whole reason this happens here
+ * rather than as a node over the view: a box is at a place in the DOCUMENT, so
+ * panning and zooming have to move and scale it exactly as they move the paper
+ * under it. The projection is the same one the layers get -- multiply by the
+ * zoom, offset by the pan -- applied to the box rather than to a raster.
+ *
+ * The outline is drawn only while the text tool is held (ShowTextBoxes), because
+ * the rest of the time these are words in a picture and a rectangle round them
+ * would be a lie about what will print.
+ */
+    void draw_text_boxes(ETCS::RID target, int32_t ox, int32_t oy, float zoom)
+    {
+        if (m_text.empty()) return;
+        Surface_* surface = ETCS::resolve_in_family<Surface_>("Surface", target);
+        if (!surface) return;
+
+        ETCS::Held<Glyphs_> g;
+        if (m_glyphs != 0) g = ETCS::resolve_held<Glyphs_>("Glyphs", m_glyphs);
+        if (!g && m_text_warned == false)
+        {
+            m_text_warned = true;
+            ETCS_LOG("PaintDocument", "there are text boxes but no glyph provider "
+                     "bound -- BindGlyphs first, or they cannot be drawn.");
+        }
+
+        const float z = (zoom <= 0.0f) ? 1.0f : zoom;
+        for (const PaintTextBox& b : m_text)
+        {
+            const int32_t vx = ox + static_cast<int32_t>(b.x * z);
+            const int32_t vy = oy + static_cast<int32_t>(b.y * z);
+            const int32_t vw = std::max(1, static_cast<int32_t>(b.w * z));
+            const int32_t vh = std::max(1, static_cast<int32_t>(b.h * z));
+
+            if (m_text_show)
+            {
+                /*
+             * A one-pixel frame, as four thin rects -- that is what a surface can
+             * draw. Coloured rather than pale: the first version was near-white
+             * with low alpha, which is invisible on the paper it is drawn on, and
+             * an affordance you cannot see is not one. Blue reads against both
+             * white paper and dark ink; the one being typed into is stronger and
+             * fully opaque, the rest are dimmer, so "which box has the keyboard"
+             * is answerable at a glance.
+             */
+                const bool sel = (b.id == m_text_sel);
+                const float r0 = sel ? 0.15f : 0.35f;
+                const float g0 = sel ? 0.50f : 0.45f;
+                const float b0 = sel ? 0.95f : 0.60f;
+                const float a  = sel ? 1.00f : 0.55f;
+                surface->DrawRect(vx, vy, static_cast<uint32_t>(vw), 1u, r0, g0, b0, a);
+                surface->DrawRect(vx, vy + vh - 1, static_cast<uint32_t>(vw), 1u, r0, g0, b0, a);
+                surface->DrawRect(vx, vy, 1u, static_cast<uint32_t>(vh), r0, g0, b0, a);
+                surface->DrawRect(vx + vw - 1, vy, 1u, static_cast<uint32_t>(vh), r0, g0, b0, a);
+            }
+
+            if (!g || b.text.empty()) continue;
+
+            TextExtent e{ 0, 0, 0 };
+            const uint32_t px = fit_text_px(g.get(), b.text, vw, vh, e);
+            const int32_t tx = vx + (vw - static_cast<int32_t>(e.width))  / 2;
+            const int32_t ty = vy + (vh - static_cast<int32_t>(e.height)) / 2;
+            g->RasterizeText(target, b.text.c_str(), 0, px, tx, ty,
+                             b.rgba[0], b.rgba[1], b.rgba[2], b.rgba[3]);
+        }
+    }
+
+    /*
+ * The largest size whose run fits the box, which is what "the glyph that fits
+ * inside of it" means. The font is cell-based, so the sizes are discrete and a
+ * linear walk up finds the boundary in a few steps; once a size does not fit,
+ * no larger one will.
+ */
+    static uint32_t fit_text_px(Glyphs_* g, const std::string& text,
+                                int32_t box_w, int32_t box_h, TextExtent& out)
+    {
+        uint32_t best = 1;
+        out = g->MeasureText(text.c_str(), 0, 1);
+        const uint32_t max_px = static_cast<uint32_t>(std::max(1, box_h));
+        for (uint32_t px = 1; px <= max_px; ++px)
+        {
+            const TextExtent e = g->MeasureText(text.c_str(), 0, px);
+            if (static_cast<int32_t>(e.width) <= box_w
+             && static_cast<int32_t>(e.height) <= box_h)
+            { best = px; out = e; }
+            else if (px > 1) break;
+        }
+        return best;
     }
 
     // Apply one brush sample to the active layer (document-side commit).
@@ -1273,6 +1511,14 @@ private:
     uint32_t m_height = 0;
     std::string m_name = "Untitled";
     PaintLayer* m_active_layer = nullptr;
+    // The text boxes, their id counter, and the two view states the input machine
+    // sets while the text tool is held. See PaintTextBox.
+    std::vector<PaintTextBox> m_text;
+    uint32_t  m_text_seq  = 0;
+    uint32_t  m_text_sel  = 0;
+    bool      m_text_show = false;
+    bool      m_text_warned = false;
+    ETCS::RID m_glyphs = 0;
 };
 
 
@@ -2544,6 +2790,11 @@ public:
         if (m_open || m_router == 0 || m_root == 0) return;
         if (ETCS::Entity* raw = paint_resolve_tag("PaintRouter", m_router))
             route_add(raw);
+        // Open is ONE fact: in the routing set and drawn. It used to be only the
+        // first, because this pane was never drawn at all -- reparented so it is,
+        // a popup that did not hide itself would sit over the middle of the
+        // picture permanently. See ontology/DrawableBase.h.
+        set_pane_hidden(false);
         m_open = true;
         ETCS_LOG("PaintColorWheel", "opened over the canvas.");
     }
@@ -2591,6 +2842,7 @@ public:
         if (ETCS::Entity* raw = paint_resolve_tag("PaintRouter", m_router))
             route_remove(raw);
         m_open = false;
+        set_pane_hidden(true);
         // See BindSurface: closing a popup over a retained sheet does not by
         // itself put back what it was covering.
         if (m_surface) m_surface->Render();
@@ -2681,6 +2933,16 @@ private:
         ETCS::Buffer arg;  arg.write((std::to_string(m_root) + " "
                                     + std::to_string(m_input)).c_str());
         try { router->call(act, arg); } catch (...) {}
+    }
+
+    void set_pane_hidden(bool hidden)
+    {
+        ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_root);
+        if (!h) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(h.get());
+        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetHidden").c_str());
+        ETCS::Buffer arg; arg.write(hidden ? "1" : "0");
+        try { e->call(act, arg); } catch (...) {}
     }
 
     // The pane is somebody else's drawable, so it moves by verb name like
@@ -3120,6 +3382,12 @@ public:
             return;
         }
 
+        // The document draws box outlines only while the text tool is held, and
+        // nothing tells it when the tool changes -- the palette sets the kind
+        // straight on the tool. So it is reconciled here, where every event
+        // passes, rather than by a notification that does not exist.
+        sync_text_affordance();
+
         if (ev.action == INPUT_MOTION)
         {
             // Position is still taken from the event (not integrated). Only the
@@ -3156,6 +3424,28 @@ public:
                 m_cursor_y = to_doc_y(ev.y);
                 m_cursor_seen = true;
             }
+            /*
+         * A PRESS INSIDE AN EXISTING TEXT BOX SELECTS IT, and starts no gesture.
+         *
+         * Without this the only thing the text tool could do is make new boxes,
+         * and every box already placed would be permanently out of reach -- which
+         * is what "previously made text boxes should be selectable" rules out.
+         * Checked before BeginStroke because a selection is not a stroke and must
+         * not leave the tool holding an anchor it will later commit.
+         */
+            if (m_tool && m_cursor_seen && m_document
+             && m_tool->kind() == PaintToolKind::Glyph)
+            {
+                const uint32_t hit_box = m_document->TextBoxAt(m_cursor_x, m_cursor_y);
+                if (hit_box != 0)
+                {
+                    m_document->SelectTextBox(hit_box);
+                    ETCS_LOG("PaintInput", "text box " << hit_box << " selected for typing");
+                    repaint_view();
+                    return;
+                }
+            }
+
             if (m_tool && m_cursor_seen)
             {
                 m_tool->BeginStroke(m_cursor_x, m_cursor_y);
@@ -3266,6 +3556,62 @@ public:
         ev.x = static_cast<int16_t>(RoutedCursorX());
         ev.y = static_cast<int16_t>(RoutedCursorY());
         RouteEvent(ev);
+    }
+
+    /*
+ * A KEY, WHILE A BOX HOLDS THE FOCUS.
+ *
+ * Returns whether it was consumed, and that answer is the "steals all keyboard
+ * input" part: a selected box swallows the keystroke, so nothing downstream sees
+ * it, and with nothing selected every key falls through untouched.
+ *
+ * NO MODIFIERS YET, because the event does not carry any -- InputEvent reserves a
+ * byte for them and the window layer does not fill it (ontology/InputSource.h).
+ * So letters arrive unshifted and are taken as lowercase, which is the common
+ * case for typing; capitals need that byte carried through first, and inventing a
+ * shift state here from key-down/key-up pairs would be a second source of truth
+ * for something the event should simply say.
+ */
+    bool KeyDown(uint16_t key)
+    {
+        if (!m_document) return false;
+        const uint32_t sel = m_document->selectedTextBox();
+        if (sel == 0) return false;
+        PaintTextBox* b = m_document->FindTextBox(sel);
+        if (!b) { m_document->SelectTextBox(0); return false; }
+
+        // GLFW's codes. Named rather than compared as bare numbers, because a
+        // bare 259 in a paint program is unreadable.
+        constexpr uint16_t KEY_ESCAPE = 256, KEY_ENTER = 257, KEY_BACKSPACE = 259;
+        constexpr uint16_t KEY_DELETE = 261;
+
+        if (key == KEY_ESCAPE || key == KEY_ENTER)
+        {
+            m_document->SelectTextBox(0);
+            ETCS_LOG("PaintInput", "text box " << sel << " done: \"" << b->text << "\"");
+            repaint_view();
+            return true;
+        }
+        if (key == KEY_BACKSPACE)
+        {
+            if (!b->text.empty()) b->text.pop_back();
+            repaint_view();
+            return true;
+        }
+        if (key == KEY_DELETE)
+        {
+            // The box itself, since there is no caret to delete forward from.
+            m_document->RemoveTextBox(sel);
+            m_document->SelectTextBox(0);
+            repaint_view();
+            return true;
+        }
+
+        const char ch = paint_key_to_char(key);
+        if (ch == 0) return true;          // consumed: a modifier or a function key
+        b->text.push_back(ch);
+        repaint_view();
+        return true;
     }
 
     bool StrokeActive() const { return m_tool && m_tool->active(); }
@@ -3450,7 +3796,9 @@ private:
         case PaintToolKind::Line:    layer->StrokeLine(ax, ay, bx, by, brush); break;
         case PaintToolKind::Rect:    layer->DrawRectOutline(ax, ay, bx, by, brush); break;
         case PaintToolKind::Ellipse: layer->DrawEllipseOutline(ax, ay, bx, by, brush); break;
-        case PaintToolKind::Glyph:   place_glyphs_in_box(layer, ax, ay, bx, by); break;
+        // A glyph commit places a BOX, not pixels, and a box is the document's
+        // rather than the layer's -- see PaintTextBox and place_text_box.
+        case PaintToolKind::Glyph:   place_text_box(ax, ay, bx, by); break;
         default: break;
         }
     }
@@ -3475,98 +3823,72 @@ private:
     }
 
     /*
- * TEXT GOES INTO THE LAYER'S PIXELS, not beside it as another node.
+ * ── PLACING AND EDITING A TEXT BOX ───────────────────────────────────────
  *
- * Glyphs_::RasterizeText writes into whatever owns pixels, named by RID -- which
- * a PaintLayer now is (it claims Pixels_), so a placed glyph run becomes part of
- * the picture and is erased, filled, smudged and undone like anything else in
- * it. A TextLabel node would have been easier and would have produced text that
- * floats above the painting forever.
+ * The glyph tool used to prompt on the terminal for a string and rasterise it
+ * into the active layer. Two things were wrong with that, and they were the same
+ * thing twice: the text stopped being text the instant it landed, and the typing
+ * happened somewhere other than where the text was going.
  *
- * The provider is whatever the script bound -- any leaf claiming Glyphs, which
- * today means RenderProvider's TextLabel. Measured first so the run can be
- * CENTRED on the click: placing text by its top-left corner means aiming at a
- * spot and watching the text appear somewhere below and to the right of it.
+ * Now a drag places a BOX (PaintTextBox, held by the document) and the box takes
+ * the keyboard. A press inside an existing box selects it instead of starting a
+ * new one, so every box ever placed stays reachable as long as the tool is held.
+ *
+ * A TINY DRAG IS A CLICK, and a click on nothing is a deselect. Without that
+ * there is no way to stop typing into a box except by choosing another tool.
  */
-    bool prompt_glyph_text(std::string& out)
+    /*
+ * Outlines on while the text tool is held, off otherwise -- and a box stops being
+ * selected when the tool is put down, because a selection that survives the tool
+ * would swallow keystrokes with nothing on screen to explain why.
+ */
+    void sync_text_affordance()
     {
-        const char* prompt = "glyph text> ";
-#if defined(__EMSCRIPTEN__)
-        etcs_web_shell_write(prompt);
-        ::std::cout << prompt << ::std::flush;
-        char buf[4096];
-        for (;;)
-        {
-            if (etcs_web_shell_try_pop_line(buf, (int)sizeof(buf)))
-            {
-                out.assign(buf);
-                while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
-                    out.pop_back();
-                return true;
-            }
-            ::std::this_thread::sleep_for(::std::chrono::milliseconds(50));
-        }
-#else
-        ::std::cout << prompt << ::std::flush;
-        if (!::std::getline(::std::cin, out)) return false;
-        return true;
-#endif
+        if (!m_document) return;
+        const bool want = (m_tool && m_tool->kind() == PaintToolKind::Glyph);
+        if (want == m_text_affordance) return;
+        m_text_affordance = want;
+        m_document->ShowTextBoxes(want);
+        if (!want) m_document->SelectTextBox(0);
+        repaint_view();
     }
 
-    void place_glyphs_in_box(PaintLayer* layer, int32_t ax, int32_t ay,
-                             int32_t bx, int32_t by)
+    void place_text_box(int32_t ax, int32_t ay, int32_t bx, int32_t by)
     {
-        if (m_glyphs == 0) { ETCS_LOG("PaintInput", "glyph tool with no glyph "
-                                      "provider bound -- BindGlyphs first."); return; }
-        ETCS::Held<Glyphs_> g = ETCS::resolve_held<Glyphs_>("Glyphs", m_glyphs);
-        if (!g) { ETCS_LOG("PaintInput", "glyph provider RID:" << m_glyphs
-                           << " is gone."); return; }
+        if (!m_document) return;
+        const int32_t x0 = std::min(ax, bx), y0 = std::min(ay, by);
+        const int32_t w  = std::abs(bx - ax), h = std::abs(by - ay);
 
-        std::string text;
-        if (!prompt_glyph_text(text))
+        if (w < 6 || h < 6)
         {
-            ETCS_LOG("PaintInput", "glyph prompt cancelled or shell closed.");
+            // Too small to be a box: treat it as a click, which selects whatever
+            // is under it and otherwise clears the selection.
+            const uint32_t hit = m_document->TextBoxAt(ax, ay);
+            m_document->SelectTextBox(hit);
+            if (hit) ETCS_LOG("PaintInput", "text box " << hit << " selected for typing");
+            else     ETCS_LOG("PaintInput", "text selection cleared");
+            repaint_view();
             return;
         }
-        if (text.empty())
-            text = m_tool->text();
-        if (text.empty())
-        {
-            ETCS_LOG("PaintInput", "glyph: empty string -- nothing to place.");
-            return;
-        }
-        m_tool->SetText(text);
 
-        int32_t x0 = std::min(ax, bx), y0 = std::min(ay, by);
-        int32_t x1 = std::max(ax, bx), y1 = std::max(ay, by);
-        const int32_t box_w = std::max(1, x1 - x0);
-        const int32_t box_h = std::max(1, y1 - y0);
-
-        uint32_t best_px = 1;
-        TextExtent best_e = g->MeasureText(text.c_str(), 0, 1);
-        const uint32_t max_px = static_cast<uint32_t>(std::max(1, box_h));
-        for (uint32_t px = 1; px <= max_px; ++px)
-        {
-            const TextExtent e = g->MeasureText(text.c_str(), 0, px);
-            if (static_cast<int32_t>(e.width)  <= box_w
-             && static_cast<int32_t>(e.height) <= box_h)
-            {
-                best_px = px;
-                best_e  = e;
-            }
-            else if (px > 1)
-                break;
-        }
-
-        const int32_t tx = x0 + (box_w - static_cast<int32_t>(best_e.width))  / 2;
-        const int32_t ty = y0 + (box_h - static_cast<int32_t>(best_e.height)) / 2;
-        const PaintColor& c = m_tool->brush().color;
-        g->RasterizeText(layer->getRID(), text.c_str(), 0, best_px,
-                         tx, ty, c.r, c.g, c.b, c.a);
-        etcs_mark_observed(layer);
-        ETCS_LOG("PaintInput", "glyph \"" << text << "\" size " << best_px
-                 << " in " << box_w << "x" << box_h);
+        /*
+     * EMPTY, AND IN THE TOOL'S COLOUR.
+     *
+     * Empty because the next thing that happens is typing: a box that arrives
+     * holding the tool's default string means the first keystroke appends to
+     * "Text" instead of starting the caption, and the user has to clear it before
+     * saying anything. PaintTool::SetText is still how a script can put a string
+     * in one (doc.SetTextBoxText), which is where a default belongs -- with the
+     * caller that wants it, not with every box.
+     */
+        const PaintColor c = m_tool ? m_tool->brush().color
+                                    : PaintColor{ 0.08f, 0.08f, 0.10f, 1.0f };
+        const uint32_t id = m_document->AddTextBoxColoured(x0, y0, w, h,
+                                                           c.r, c.g, c.b, c.a);
+        m_document->SelectTextBox(id);
+        repaint_view();
     }
+
 
     // Smudge carries pixels, so it needs both ends of the step rather than one
     // point -- see PaintLayer::SmudgeDab. Strength is fixed rather than exposed
@@ -3697,6 +4019,9 @@ private:
     // before the first motion event would begin a stroke at the origin.
     bool    m_cursor_seen = false;
     PaintLayerPanel* m_panel = nullptr;
+    // Whether the document is currently showing its text-box outlines, so the
+    // reconcile above is a comparison rather than a call per event.
+    bool m_text_affordance = false;
     // Whatever leaf claiming Glyphs the script bound -- RenderProvider's
     // TextLabel today. By RID and resolved per use, since it is another
     // module's entity (see place_glyphs).
@@ -3932,6 +4257,47 @@ public:
         Route(ev);
     }
 
+    /*
+ * ── A KEY IS NOT A CLICK ─────────────────────────────────────────────────
+ *
+ * This router used to turn every key event into ScriptPress/ScriptRelease, so
+ * any keystroke drew a dab at wherever the pointer happened to be -- exactly the
+ * mistake ontology/InputSource.h warns about in the comment that introduced
+ * separate button events ("a paint program ended up drawing on any keystroke
+ * instead of on a click"). The key ring was wired to the pointer's meaning.
+ *
+ * OFFERED TO EVERY PANE, AND THE ONE WITH THE FOCUS TAKES IT. A key carries no
+ * position, so containment cannot choose a pane the way it does for a pointer,
+ * and the thing that should receive it is whatever is being typed into. Rather
+ * than keep a focus pointer here -- a second place for it to be wrong -- the
+ * question is asked of each pane in the same top-first order, and the first that
+ * says it consumed the key ends the walk. A pane with nothing selected consumes
+ * nothing, so with no text box open every key still reaches nobody, which is the
+ * behaviour anything not-yet-written depends on.
+ */
+    void RouteKey(uint16_t key, bool down)
+    {
+        if (!down) return;          // nothing here acts on release yet
+        std::vector<std::pair<int32_t, size_t>> ranked;
+        ranked.reserve(m_panes.size());
+        for (size_t i = 0; i < m_panes.size(); ++i)
+        {
+            ETCS::Held<Drawable_> root = ETCS::resolve_held<Drawable_>("Drawable", m_panes[i].root);
+            ranked.emplace_back(root ? root->Order() : 0, i);
+        }
+        std::stable_sort(ranked.begin(), ranked.end(),
+                         [](const std::pair<int32_t, size_t>& a,
+                            const std::pair<int32_t, size_t>& b) { return a.first > b.first; });
+
+        for (const auto& r : ranked)
+        {
+            ETCS::Entity* raw = paint_resolve_tag("PaintInput", m_panes[r.second].input);
+            if (!raw) continue;
+            auto* in = static_cast<PaintInput*>(raw->getTrueType());
+            if (in && in->KeyDown(key)) return;
+        }
+    }
+
     void ScriptReleaseButton(uint16_t button)
     {
         InputEvent ev{};
@@ -4156,6 +4522,52 @@ DEFINE_WORK_FUNC_TYPED(PaintDocument, ClearLayer,
 {
     (void)ctx;
     self.ClearLayer(layer, r, g, b, a);
+}
+
+// The glyph provider the text boxes are drawn with -- any leaf claiming Glyphs.
+DEFINE_WORK_FUNC_TYPED(PaintDocument, BindGlyphs, (ETCS::RID, glyphs))
+{
+    (void)ctx;
+    self.BindGlyphs(glyphs);
+}
+
+// AddTextBox <x> <y> <w> <h>, in document coordinates.
+DEFINE_WORK_FUNC_TYPED(PaintDocument, AddTextBox,
+                       (int32_t, x), (int32_t, y), (int32_t, w), (int32_t, h))
+{
+    (void)ctx;
+    self.AddTextBox(x, y, w, h);
+}
+
+// SetTextBoxText <id> <the rest of the line>. The text is taken raw rather than
+// parsed as a field, because a caption contains spaces and commas.
+DEFINE_WORK_FUNC(PaintDocument, SetTextBoxText)
+{
+    (void)ctx;
+    uint32_t id = 0;
+    data >> id;
+    ETCS::Buffer rest;
+    data >> rest;
+    if (!self.SetTextBoxText(id, rest.toString()))
+        ETCS_LOG("PaintDocument", "no text box " << id << " to set text on.");
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintDocument, RemoveTextBox, (uint32_t, id))
+{
+    (void)ctx;
+    self.RemoveTextBox(id);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintDocument, ShowTextBoxes, (int32_t, on))
+{
+    (void)ctx;
+    self.ShowTextBoxes(on != 0);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintDocument, SelectTextBox, (uint32_t, id))
+{
+    (void)ctx;
+    self.SelectTextBox(id);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintDocument, RenderToSurface,
@@ -4775,6 +5187,14 @@ DEFINE_WORK_FUNC_TYPED(PaintRouter, SetPassBudget, (uint32_t, passes))
     self.SetPassBudget(passes);
 }
 
+// Key <glfw keycode> -- the same edge the key ring drives, reachable from a
+// script. Down only: nothing acts on release (PaintRouter::RouteKey).
+DEFINE_WORK_FUNC_TYPED(PaintRouter, Key, (int32_t, key))
+{
+    (void)ctx;
+    self.RouteKey(static_cast<uint16_t>(key), true);
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintRouter, Pointer, (int32_t, x), (int32_t, y))
 {
     (void)ctx;
@@ -4873,8 +5293,9 @@ DEFINE_STREAM_FUNC_CONSUME(PaintRouter, ConsumeInput)
 
         InputEvent ev{};
         slot.readRaw(&ev, sizeof(InputEvent));
-        if (ev.action == INPUT_DOWN)      self.ScriptPress();
-        else if (ev.action == INPUT_UP)   self.ScriptRelease();
+        // Keys as keys -- see PaintRouter::RouteKey for what this used to do.
+        if (ev.action == INPUT_DOWN)      self.RouteKey(ev.key, true);
+        else if (ev.action == INPUT_UP)   self.RouteKey(ev.key, false);
     }
 
     ETCS_LOG("PaintRouter::ConsumeInput", "routed key edge closed.");
@@ -5086,8 +5507,23 @@ DEFINE_WORK_FUNC(PaintInput, Release)
 DEFINE_WORK_FUNC(PaintInput, Report)
 {
     (void)data; (void)ctx;
+    /*
+     * THE TOOL'S STATE, not just the cursor's. This reported two numbers and a
+     * flag, which answers almost nothing you would ask it: the questions that
+     * actually come up are what is loaded and how it will mark -- which kind,
+     * what size, what colour, at what opacity.
+     */
     ETCS_LOG("PaintInput::Report", "cursor (" << self.cursorX() << ", " << self.cursorY()
              << ")  stroke " << (self.StrokeActive() ? "ACTIVE" : "idle"));
+    if (PaintTool* t = self.tool())
+    {
+        const PaintBrushState& br = t->brush();
+        ETCS_LOG("PaintInput::Report", "  tool " << paint_tool_kind_name(t->kind())
+                 << " radius " << br.radius_px
+                 << " colour " << br.color.r << ", " << br.color.g << ", " << br.color.b
+                 << " alpha " << t->alphaPercent() << "% (" << br.color.a << ")");
+    }
+    else ETCS_LOG("PaintInput::Report", "  no tool bound.");
 }
 
 DEFINE_WORK_FUNC(PaintInput, Delete)

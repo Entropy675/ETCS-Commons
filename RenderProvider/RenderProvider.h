@@ -594,6 +594,19 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, Create, (uint32_t, w), (uint32_t, h)
 // Where this buffer sits in its parent's space. Its CONTENTS do not move with
 // it -- children are stated in this node's own space, so moving the compositor
 // moves the whole merged result and nothing inside it is recomputed.
+/*
+ * SetHidden <0|1> -- present in the tree, not drawn. The family's own flag
+ * (ontology/DrawableBase.h says why it lives there and what it does not mean);
+ * this is only the script's way to reach it, and a popup is the caller that needs
+ * it: a panel with no way to be hidden is either always on screen or has to be
+ * unparented, and both make "is it showing" a second fact.
+ */
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetHidden, (int32_t, hidden))
+{
+    (void)ctx;
+    self.SetHidden(hidden != 0);
+}
+
 DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPosition, (int32_t, x), (int32_t, y))
 {
     (void)ctx;

@@ -39,6 +39,13 @@ ink.SetOrder(1)
 
 doc.SetActiveLayer(@ink)
 
+# The document draws its own text boxes, so it needs a glyph provider of its own
+# -- see PaintTextBox. A label spawned for nothing but its Glyphs half: it is
+# never positioned or drawn, it is asked to rasterise into somebody else's pixels.
+spawn RenderProvider::TextLabel glyph_src
+glyph_src.Create()
+doc.BindGlyphs(@glyph_src)
+
 spawn PaintProvider::PaintTool brush
 brush.SetRadius(6.0)
 brush.SetColor(0.10, 0.10, 0.12, 1.0)
@@ -172,6 +179,10 @@ sheet_root.spawn(RenderProvider::CompositeDrawable2D wheel_pane)
 wheel_pane.Create(220, 220)
 wheel_pane.SetPosition(340, 260)
 wheel_pane.SetOrder(30)
+# Hidden until opened. It is a child of the sheet now, so without this it would
+# be drawn over the picture from boot -- see PaintColorWheel::Open, which treats
+# open as one fact covering both routing and appearance.
+wheel_pane.SetHidden(1)
 
 wheel_pane.spawn(RenderProvider::PolygonDrawable2D wheel_back)
 wheel_back.Create()

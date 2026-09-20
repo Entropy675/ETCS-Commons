@@ -25,6 +25,8 @@ ETCS_TAG_BLOCK_BASIC(PaintLayer,
 ETCS_TAG_BLOCK_BASIC(PaintDocument,
     Create, SetActiveLayer, ClearLayer, RenderToSurface,
     MoveLayerTo, RenameLayer, RemoveLayer, IsolateLayer, ClearIsolate,
+    BindGlyphs, AddTextBox, SetTextBoxText, RemoveTextBox,
+    ShowTextBoxes, SelectTextBox,
     Report, Delete)
 
 // The projection verbs sit beside Render because every one of them ends in a
@@ -74,5 +76,5 @@ ETCS_TAG_BLOCK_BASIC(PaintColorWheel,
 // control-thread ends of the window's producers, not one-shot calls.
 ETCS_TAG_BLOCK_HYBRID(PaintRouter,
     (Create, AddPane, RemovePane, SetPassBudget,
-     Pointer, Press, Release, PressButton, ReleaseButton, Report, Delete),
+     Pointer, Press, Release, PressButton, ReleaseButton, Key, Report, Delete),
     (ConsumePointer, ConsumeInput))
