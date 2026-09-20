@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "THE INCLUDE LIST for the 3D page, and the source of truth for what it",
+    "loads. The page fetches exactly this -- no candidate list, no directory",
+    "scan -- so adding a provider to the browser runtime is an edit here and",
+    "nothing else. Load order is the order these appear in.",
+    "WindowProvider first because a Surface takes its handle from a live window;",
+    "RenderProvider is the one this page exists for; ShellProvider last so the",
+    "navigator comes up in the embedded terminal.",
+    "PAINTPROVIDER IS ABSENT, and that is the point of having this page at all:",
+    "the 3D path should stand up with nothing from the 2D editor loaded, and a",
+    "page that quietly depended on it would not show that."
+  ],
+  "modules": [
+    "WindowProvider.wasm",
+    "RenderProvider.wasm",
+    "ShellProvider.wasm"
+  ],
+  "_scripts": [
+    "Staged into the browser's filesystem by the page, under these names, before",
+    "main() runs -- so each one must also answer over HTTP (../serve_scene3d.etcs",
+    "mounts them). A NAME MAY BE A PATH: the page creates the directories first",
+    "(FS.mkdirTree), which is what lets a script be staged at the same relative",
+    "path the OS side reads it from, so scene3d.etcs's `detach` and `run` lines",
+    "are spelled once for both substrates rather than twice.",
+    "RenderProvider/scripts/scene3d.etcs is the GEOMETRY -- the reusable scene",
+    "this page's boot script runs against its own anchor. Two files named",
+    "scene3d.etcs, at two paths, because they are two jobs: one builds structure,",
+    "the other stands up a session around it."
+  ],
+  "scripts": [
+    "scene3d.etcs",
+    "scene3d_look.etcs",
+    "RenderProvider/scripts/scene3d.etcs",
+    "RenderProvider/scripts/render_frames.etcs"
+  ],
+  "boot": "scene3d.etcs",
+  "_glue": [
+    "The emscripten loader output. STAGED AS .js: served extensionless it arrives",
+    "as application/octet-stream, which the browser warns is not a valid",
+    "JavaScript MIME type, and it would land on the same name as the NATIVE etcs",
+    "binary in bin/. Naming it here rather than probing also removes a guaranteed",
+    "failed fetch on every load."
+  ],
+  "glue": "etcs.js"
+}

@@ -1,0 +1,205 @@
+#!/usr/bin/env etcs
+
+# THE 3D SCENE, IN A BROWSER -- the same four things the OS-side script stands
+# up, reached through the same verbs.
+#
+#     cd modules/RenderProvider/scripts && etcs serve_scene3d.etcs
+#     then open https://localhost:8443/
+#
+# and with the pointer over the canvas: move it to look around. From the
+# terminal beside it, while it is running:
+#
+#     Root> RenderProvider                              # read the RIDs back
+#     Root> eye.LookAt(0.0, 12.0, -6.0, 0.0, 0.0, 6.0)  # move the eye
+#     Root> tower_far.SetColor(1.0, 0.2, 0.2, 1.0)      # repaint one box
+#     Root> block.SetVisible(0)                         # hide the occluder
+#     Root> world.DepthAt(@eye, 512, 384)               # how far is the centre
+#     Root> world.Order()                               # energy, heat, ticks
+#
+# WHY THIS PAGE EXISTS. Everything the browser runtime had been shown to do was
+# flat: a paint document, a toolbar, a colour wheel. All of that reaches the
+# screen through Surface_ and Pixels_, so it exercises exactly the half of
+# RenderProvider that a 2D page needs. The projection, the depth buffer, the
+# camera-as-a-2D-node arrangement and the scene's own motion integration had
+# never been run here at all -- so whether they worked was an assumption.
+#
+# THE DIFFERENCES FROM scripts/scene3d.etcs. Three are about the SUBSTRATE:
+#
+#   no main.Run()          the browser's event loop is the page's; the last
+#                          stream edge blocks this worker instead
+#   no CaptureMouse        pointer lock needs a user gesture in a browser, and
+#                          an absolute look has nothing to confine anyway -- the
+#                          pointer's position over the frame IS the angle
+#   no profile script      that one exists to tear the window down on exit, and
+#                          a tab closing is not an exit this runtime sees
+#
+# THE FOURTH IS AN OPEN BUG, AND IT IS WHY THE EDGES ARE ARRANGED AS THEY ARE
+# BELOW -- not a browser limitation and not a preference. A projection running
+# on a DETACHED thread corrupts the heap here: the next free faults, wherever it
+# happens to be. Bisected, in this page, with everything else held constant:
+#
+#   2D tree, frame edge detached ........... stable (this is the paint page)
+#   camera + scene, frame edge on THIS thread .... stable, and it renders
+#   camera + scene, frame edge DETACHED .......... faults in free(), inside
+#                                                 Scene3D::ProjectConcrete or
+#                                                 CompositeDrawable2D::recompose
+#   ... plus a key edge (ProduceEvents -> ConsumeInput)
+#       detached ................................. faults in the loader, through
+#                                                 checkMailbox -- a proxied call
+#
+# The projection code itself is fine: the same scene, the same camera and the
+# same geometry draw correctly when the frame edge is stated on this thread, and
+# the pixels were checked (sky, ground slab and three tower shades all distinct).
+# So what is broken is a 3D projection's interaction with a detached thread, and
+# until that is fixed this page states the frame edge HERE and detaches only the
+# pointer -- which is measurably stable and leaves the look control working.
+#
+# WHAT THAT COSTS: W/A/S/D. The key edge is also the window's event pump, so it
+# wants this thread too, and only one edge can have it. The line is left below,
+# commented, with this note rather than quietly omitted.
+#
+# THE STRUCTURE, four things, each doing one job:
+#
+#   world  a Scene3D  -- geometry, and the thing W/A/S/D translates
+#   eye    a Camera3D -- the image plane; a Drawable2D that a scene fills
+#   stage  a compositor -- where the 3D view and any 2D UI merge
+#   view   a Surface  -- what the page's canvas presents
+#
+# and the seam between them is one call each way: the camera names the scene by
+# RID, the compositor holds the camera as an ordinary 2D child, and the surface
+# is handed the compositor as the root to walk. Nothing anywhere says "this one
+# is the 3D one".
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+# Created before any edge is stated: the Surface takes its handle and extent
+# from a live window.
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS 3D scene)
+
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+
+# ── the 2D side: a compositor, so UI and the 3D view merge in one buffer ─────
+spawn RenderProvider::CompositeDrawable2D stage
+stage.Create(1024, 768)
+stage.SetPosition(0, 0)
+stage.SetBackground(0.04, 0.05, 0.08, 1.0)
+
+# ── the camera: a Drawable2D that a scene fills ──────────────────────────────
+#
+# Nested in the stage like any other 2D node, positioned in the stage's space
+# like any other 2D node, ordered against its siblings like any other 2D node.
+# It is a camera only in what fills it -- which is why the compositor, the
+# published-frame path and the present edge need no case for it.
+stage.spawn(RenderProvider::Camera3D eye)
+eye.Create(1024, 768)
+eye.SetPosition(0, 0)
+eye.SetOrder(1)
+eye.SetBackground(0.07, 0.09, 0.15, 1.0)
+eye.LookAt(0.0, 3.0, -14.0, 0.0, 0.5, 2.0)
+eye.SetLens(60.0, 0.1, 400.0)
+
+# ── the scene: an invisible root, and the geometry under it ──────────────────
+#
+# The root is a container rather than a box you can see: it is the coordinate
+# origin the scene is stated against and the single thing W/A/S/D translates.
+spawn RenderProvider::Scene3D world
+world.Create(1.0, 1.0, 1.0)
+world.SetVisible(0)
+world.SetPosition(0.0, 0.0, 0.0)
+
+# Terminal speed and drag, per second -- held keys are an acceleration, not a
+# displacement, so these two are the whole feel.
+world.SetSpeed(7.0)
+world.SetDamping(6.0)
+
+# The yaw span: 2.0 makes the canvas's width two full turns, so a half turn
+# lands a quarter of the way out from centre and the pointer stays near the
+# middle of the frame. Pitch always maps top edge to bottom edge once. Nothing
+# accumulates -- put the pointer back and the view is back.
+world.SetSensitivity(2.0)
+
+# The rate at which the scene's accumulated drag heat stops being the scene's
+# problem; read the ledger back with world.Order().
+world.SetEmissivity(0.5)
+
+# The geometry itself, from the module's own reusable scene -- a ground slab,
+# three towers receding, and a near block that occludes one of them without
+# being related to it in the tree. Everything in it is stated in the anchor's
+# space, so moving `world` moves the lot.
+run RenderProvider/scripts/scene3d.etcs anchor=world
+
+# One call, and the direction of causality: the camera names the scene.
+eye.SetScene(@world)
+
+# ── 2D UI, drawn ON the camera's frame ───────────────────────────────────────
+#
+# A child of the camera, in the camera's own space, drawn after the projection
+# and clipped to the frame. This is the composition the Camera family exists
+# for, and it is also the cheapest check that the two halves compose: if the
+# caption is legible over the towers, a 2D node drew onto a 3D image.
+#
+# STATIC TEXT, DELIBERATELY. The OS-side script binds this label to the
+# surface's frame rate with BindFps, which is worth having and is not free: a
+# label whose text changes every frame answers yes to Animating(), which keeps
+# every compositor above it recomposing forever. That is the one thing a page
+# meant to demonstrate a settled frame feed should not do by default. Add
+#
+#     hud.BindFps(@view)
+#
+# and put "%f fps" in the text when you want the number.
+eye.spawn(RenderProvider::TextLabel hud)
+hud.Create(24)
+# Says what this page can actually do, not what the control scheme is meant to
+# be: the key edge is not attached here (see the pumps, below), so promising
+# W/A/S/D on screen would be the caption lying about the build.
+hud.SetText(pointer looks -- keys pending, see scene3d.etcs)
+hud.SetPosition(16, 16)
+hud.SetColor(0.6, 1.0, 0.7, 1.0)
+hud.SetBackground(0.0, 0.0, 0.0, 0.45)
+hud.SetPadding(6)
+hud.SetOrder(11)
+
+eye.spawn(RenderProvider::PolygonDrawable2D reticle)
+reticle.Create()
+reticle.AddPoint(506, 378)
+reticle.AddPoint(518, 378)
+reticle.AddPoint(518, 390)
+reticle.AddPoint(506, 390)
+reticle.SetFill(1.0, 1.0, 1.0, 0.55)
+reticle.SetOrder(10)
+
+# ── the frame edge ───────────────────────────────────────────────────────────
+#
+# Compose, not Draw. Draw would issue one composition now and the surface would
+# replay it forever -- right for a still picture, and exactly wrong for a tree
+# that moves, since replaying past calls never asks the camera to make a new
+# image.
+view.Clear(0.02, 0.02, 0.03, 1.0)
+view.Compose(@stage)
+
+# ── the pumps ────────────────────────────────────────────────────────────────
+#
+# A stream edge blocks the thread that states it, so everything but the last is
+# detached -- and WHICH one is last is what the note at the top of this file is
+# about. The FRAME edge is last, on this thread, because a projection on a
+# detached thread corrupts the heap here; the POINTER edge is the one detached,
+# because it demonstrably survives being.
+#
+# So this is not the arrangement scripts/scene3d.etcs uses, and the difference is
+# a bug rather than a substrate. Once it is fixed, the frame edge goes back to
+#
+#     detach RenderProvider/scripts/render_frames.etcs view=view
+#
+# and the key half becomes the last edge, which is where W/A/S/D comes from:
+#
+#     main.ProduceEvents() -> world.ConsumeInput()
+#
+# Both lines are left here rather than quietly omitted, because a page that
+# silently lacks half its controls is the kind of thing that gets rediscovered
+# as a mystery.
+detach scene3d_look.etcs window=main scene=world
+
+view.ProduceFrames() -> view.ConsumeFrames()
