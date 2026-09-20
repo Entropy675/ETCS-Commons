@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -371,8 +372,27 @@ public:
      */
     void MarkObserved(uint64_t origin_rid) override
     {
+        // The edge statement itself is the family's, unchanged -- including the
+        // coalescing a batch applies to it (ObservableBase::BeginBatch). All this
+        // override adds is the one piece of work THIS class derives from a mark.
         ObservableBase<CompositeDrawable2D>::MarkObserved(origin_rid);
-        if (origin_rid == getRID() && !m_composing.load(std::memory_order_acquire))
+
+        /*
+         * SNAPSHOT WHEN THE SEQUENCE IS OVER, which is what a batch says and a
+         * mark does not. Pixels_ marks on every raster op (ontology/Pixels.h), so
+         * a writer that clears a view and blits two layers into it marks three
+         * times for one picture: copying on each is two copies of a half-built
+         * frame, and copying on only the FIRST -- which a naive "once per frame"
+         * gate does -- publishes the CLEARED view and loses the picture entirely.
+         * That failure is not subtle; it blanked the document.
+         *
+         * Inside a batch, nothing is published: the sequence is not a picture yet.
+         * EndBatch then makes one mark with origin = the batched entity, which
+         * arrives here with the raster whole, and that is the copy. A writer that
+         * does not batch still gets a copy per mark -- correct, just as costly as
+         * it was.
+         */
+        if (origin_rid == getRID() && !InBatch())
             publish();
     }
 
@@ -486,22 +506,61 @@ private:
         }
     }
 
+    /*
+     * ── THE RECOMPOSE LOG, RATE-LIMITED ──────────────────────────────────
+     *
+     * This line is the observable form of this class's only claim, so it has to
+     * keep saying the thing it was written to say: a settled scene logs one per
+     * compositor and goes quiet, and one that recomposes every frame is one
+     * where something is marking dirty that should not be. That is a bug worth
+     * seeing rather than paying for silently.
+     *
+     * A LINE PER RECOMPOSE DESTROYED IT ANYWAY. Two compositors at frame rate
+     * buried every other message in the log, so the one thing the line was for
+     * -- noticing that it is happening too often -- became the thing it hid.
+     *
+     * So the number of recompositions in the window is the message: one line per
+     * compositor per second, carrying the count. "recompose x47 in 1.0s" reads as
+     * wrong at a glance where 47 consecutive lines read as scrolling, and a
+     * settled scene still logs its single one, because a window with one
+     * recomposition in it prints the same thing it always did.
+     */
+    void logRecompose()
+    {
+        const uint64_t now = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        if (m_log_window_ms == 0) { m_log_window_ms = now; m_log_window_n = 0; }
+        ++m_log_window_n;
+
+        // Held until the window closes, so a burst is counted rather than
+        // printed. A single recomposition waits out the second and then prints
+        // alone, which is what a settling scene should look like.
+        if (now - m_log_window_ms < 1000) return;
+
+        const uint64_t first = m_recompositions - m_log_window_n + 1;
+        if (m_log_window_n == 1)
+            ETCS_LOG("CompositeDrawable2D", "recompose #" << m_recompositions
+                     << " RID:" << getRID() << " (" << m_w << "x" << m_h << ")");
+        else
+            ETCS_LOG("CompositeDrawable2D", "recompose x" << m_log_window_n
+                     << " (#" << first << "-#" << m_recompositions << ") in "
+                     << (now - m_log_window_ms) << "ms RID:" << getRID()
+                     << " (" << m_w << "x" << m_h << ")");
+        m_log_window_ms = now;
+        m_log_window_n  = 0;
+    }
+
     void recompose()
     {
-        // Every child's draw below writes these pixels through Pixels_, and each
-        // of those writes marks with origin=this -- which is the publish trigger
-        // (MarkObserved). Held off for the duration and paid once at the end, or
-        // a destination would be handed the tree half-drawn, repeatedly.
-        m_composing.store(true, std::memory_order_release);
+        // ONE CHANGE, NOT ONE PER CHILD. Every child's draw below writes these
+        // pixels through Pixels_ and each of those marks; batched, the walk to the
+        // parent and the snapshot both happen once, when the tree is whole.
+        // See ObservableBase::BeginBatch.
+        etcs_observed_batch batch(this);
         applyPendingGeometry();
         ++m_recompositions;
-        // Logged because it is the observable form of this class's only
-        // claim. A scene that settles logs one of these per compositor and
-        // then goes quiet; one that logs every frame is one where something
-        // is marking dirty that should not be, and that is a bug you want to
-        // see rather than pay for silently.
-        ETCS_LOG("CompositeDrawable2D", "recompose #" << m_recompositions
-                 << " RID:" << getRID() << " (" << m_w << "x" << m_h << ")");
+        logRecompose();
         // See SetRetain: a canvas's buffer is the picture, not a derived image.
         if (!m_retain) ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
 
@@ -513,8 +572,8 @@ private:
 
         PopClip();
 
-        m_composing.store(false, std::memory_order_release);
-        publish();          // one frame for the whole tree, on this thread
+        // `batch` closes here: one mark upward for the whole recompose, and the
+        // publish that mark triggers, both on this thread.
     }
 
     /*
@@ -571,19 +630,19 @@ private:
      * a lesser frame -- it is a wrong one. Assembling takes many writes and the
      * reader is another thread; nothing made those two agree about when a frame
      * was whole. Measured on a smear, sampling one pixel inside an inked band
-     * once per displayed frame, 15 frames in 494 showed bare paper: the reader
-     * caught the raster after the paper layer had landed and before the ink did.
-     * Publishing on the writer's own mark (MarkObserved) took that to 3 in 1535.
+     * once per displayed frame: 15 frames in 494 showed bare paper, the reader
+     * having caught the raster after the paper layer landed and before the ink
+     * did. Snapshotting on the writer's own mark instead of on a reader's poll
+     * took that to 3 in 1535; snapshotting at the end of the writer's BATCH,
+     * which is the first form that knows where a sequence ends, took it to 0 in
+     * 1223 -- and the sampled value stopped moving at all, 25..25 where it had
+     * swung 25..255.
      *
-     * WHAT THE REMAINING 3 ARE, stated because it is not this mechanism: TWO
-     * THREADS WRITE THIS RASTER AND NOTHING SERIALISES THEM. recompose runs on
-     * the frame edge, a projected document arrives on the pointer thread, and
-     * under retain neither clears first, so a recompose can land in the middle of
-     * the other's sequence and publish what it finds. Closing it means one writer
-     * -- either the projection moves onto the frame edge as a drawable child, or
-     * a writer gets a way to hold this raster for the length of a sequence, which
-     * is a hold this class does not offer today. A per-call lock would not do it;
-     * the sequence, not the call, is the unit that has to be whole.
+     * A writer that does not batch is still copied per mark, which is correct and
+     * no cheaper than it was; what it loses is the guarantee, because nothing
+     * else can tell its intermediate states from its finished ones. Two threads
+     * assembling one raster also still have to agree between themselves -- a
+     * batch coalesces statements, it does not exclude a writer.
      *
      * A COPY, NOT A POINTER FLIP, and retain is what forces that. A retained
      * compositor's buffer IS the picture (SetRetain), so flipping would hand the
@@ -617,9 +676,7 @@ private:
     uint32_t              m_front_w = 0;
     uint32_t              m_front_h = 0;
     std::mutex            m_front_mtx;
-    // Set for the length of a recompose, read by MarkObserved on whatever thread
-    // marks -- see recompose.
-    std::atomic<bool>     m_composing{false};
+
 
     // Geometry the layout has asked for, not yet applied. Guarded because
     // the writer is the event pump and the reader is the frame edge; the
@@ -630,6 +687,10 @@ private:
     uint32_t   m_pending_w = 0, m_pending_h = 0;
     float    m_bg[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     uint64_t m_recompositions = 0;
+    // The log's window, not the counter's -- see logRecompose. Touched only from
+    // recompose, which is single-threaded by construction.
+    uint64_t m_log_window_ms = 0;
+    uint64_t m_log_window_n  = 0;
 };
 
 #endif

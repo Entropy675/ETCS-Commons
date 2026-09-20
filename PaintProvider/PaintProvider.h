@@ -116,16 +116,45 @@ static inline void paint_mark_pixel_path(ETCS::RID target)
     etcs_mark_observed(static_cast<ETCS::Entity*>(held.get()));
 }
 
+/*
+ * The live dab, and IT HAS TO BE THE SHAPE THE MARK WILL BE.
+ *
+ * This was one DrawRect of 2r x 2r -- a SQUARE nib in the view, while the thing
+ * it previews (PaintLayer::DrawBrush) keeps every pixel inside dx^2+dy^2 <= r^2
+ * and is a disc. So the nib under the pointer was square, and the stroke turned
+ * round the moment anything re-rendered the document through it. A preview that
+ * does not agree with its commit is not a fast path, it is a lie about what the
+ * tool does.
+ *
+ * ONE RASTER OP where the destination has host bytes -- Pixels_::FillDisc, which
+ * uses the same dx^2+dy^2 <= r^2 test DrawBrush does, so the preview and the mark
+ * it becomes are the same discrete circle. A device-backed view has no address to
+ * write, so it gets the disc as a stack of spans through the family verb: exactly
+ * round, at 2r+1 dispatched calls, which is what that backend costs.
+ */
 static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
                                        const PaintBrushState& brush)
 {
+    const int r = std::max(1, static_cast<int>(brush.radius_px));
+
+    if (Pixels_* px = ETCS::resolve_in_family<Pixels_>("Pixels", target))
+    {
+        px->FillDisc(x, y, static_cast<uint32_t>(r),
+                     brush.color.r, brush.color.g, brush.color.b, brush.color.a);
+        paint_mark_pixel_path(target);
+        return;
+    }
+
     Surface_* surface = ETCS::resolve_in_family<Surface_>("Surface", target);
     if (!surface) return;
-    const int r = std::max(1, static_cast<int>(brush.radius_px));
-    surface->DrawRect(x - r, y - r,
-                      static_cast<uint32_t>(r * 2),
-                      static_cast<uint32_t>(r * 2),
-                      brush.color.r, brush.color.g, brush.color.b, brush.color.a);
+    const int r2 = r * r;
+    for (int dy = -r; dy <= r; ++dy)
+    {
+        const int k = static_cast<int>(std::sqrt(static_cast<float>(r2 - dy * dy)));
+        surface->DrawRect(x - k, y + dy,
+                          static_cast<uint32_t>(k * 2 + 1), 1u,
+                          brush.color.r, brush.color.g, brush.color.b, brush.color.a);
+    }
     paint_mark_pixel_path(target);
 }
 
@@ -1298,20 +1327,31 @@ public:
     {
         if (!m_document || m_target == 0) return;
         Surface_* view = ETCS::resolve_in_family<Surface_>("Surface", m_target);
+
+        /*
+         * ONE CHANGE, AND IT IS THE FINISHED PICTURE.
+         *
+         * The clear below and every layer after it are writes toward one frame,
+         * and the view is somebody else's raster -- a compositor, which copies a
+         * frame out whenever it is told the raster changed. Told three times, it
+         * copied three times, and one of those copies was the cleared view with no
+         * document in it, which is the bare-paper flash on a smear.
+         *
+         * Batched, the statement is made once, here, when the picture is whole.
+         * See ObservableBase::BeginBatch. It is not a lock: it does not stop the
+         * frame edge from compositing while this runs.
+         */
+        etcs_observed_batch frame(view ? static_cast<ETCS::Entity*>(view) : nullptr);
         // CLEARED FIRST, which a full-view document never needed. A projection
         // does not cover the surface, so without this the area outside the
         // document keeps whatever the last frame left there and panning smears.
         if (view) view->Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
-        // ONE mark for the finished picture, AND THE CLEAR PLUS EVERY LAYER MUST
-        // BE SILENT FOR IT TO MEAN THAT. A mark is what a compositor reads as
-        // "there is a whole frame here to copy" (CompositeDrawable2D's published
-        // frame), so any mark between the clear above and the last layer below
-        // publishes a picture that is missing layers -- measurably, as bare paper
-        // through the ink on a smear. CanvasSurface draws do not mark and neither
-        // does a composite's Clear/Blit; PaintLayer::BlitTo says why it does not
-        // either. Present snapshots the back buffer when this edge wakes
-        // ConsumeFrames. Same module -- Surface_ only, no concrete backend type.
+        // Redundant while `frame` is held -- the batch closing below makes this
+        // exact statement -- and kept for the case where it is not held: a view
+        // that never claimed Observable is not batched (etcs_observed_batch), and
+        // then this is the only mark the picture gets. Marking twice costs one
+        // extra edge update; marking zero times loses the frame.
         paint_mark_pixel_path(m_target);
     }
 
