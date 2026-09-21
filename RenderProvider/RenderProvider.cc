@@ -6,7 +6,7 @@
 // on why the clock and the Vulkan work sit on the sides they do).
 // Instance and ImageSurface stay BASIC -- neither has anything continuous
 // to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel Throbber")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
@@ -85,3 +85,15 @@ ETCS_TAG_BLOCK_BASIC(Camera3D,
 ETCS_TAG_BLOCK_BASIC(TextLabel,
     Create, SetText, SetSize, SetPosition, SetOrder, SetColor, SetBackground,
     SetPadding, SetHidden, BindFps, Measure, Rasterize, Draw, Delete)
+
+// "ETCS" over a ring of cycling dots -- the wait indicator, as one entity at any
+// size. A Drawable2D that owns pixels and claims Animated, so it rides the frame
+// edge that is already running and SetHidden is both the switch and the whole of
+// its state (Throbber.h on why there is no Start/Stop beside it).
+//
+// EVERY VERB HERE IS NAMED, which is not a formality: a DEFINE_WORK_FUNC missing
+// from its tag block compiles, links, and fails silently at call time -- ten
+// PaintProvider controls shipped dead exactly that way (PaintProvider.cc).
+ETCS_TAG_BLOCK_BASIC(Throbber,
+    Create, SetSize, SetStep, SetDots, SetColors, SetTextColor, SetText,
+    SetPosition, SetOrder, SetHidden, Delete)

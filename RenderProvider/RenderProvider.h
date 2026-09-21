@@ -1227,4 +1227,111 @@ DEFINE_WORK_FUNC(TextLabel, Delete)
     self.DeleteConcrete();
 }
 
+/*
+ * ── Throbber ───────────────────────────────────────────────────────────────
+ *
+ * Two lines gets you one: spawn it into a pane and Create it at a size. The
+ * rest are for a caller who wants a different rate, a different accent, or a
+ * different word -- each of them a value the type already holds, so none of
+ * them is a second fact that can disagree with the first.
+ *
+ * NO Start/Stop. SetHidden is the switch, for the reason the type's own header
+ * gives: a drawable already has exactly one answer to "is it showing", and a
+ * running flag beside it would be a second one to keep in step. A throbber
+ * hidden is a throbber not advancing, in one verb, and the scripts that hide a
+ * pane already spell it this way (boot_paint_panels.etcs).
+ */
+DEFINE_WORK_FUNC_TYPED(Throbber, Create, (uint32_t, size_px))
+{
+    (void)ctx;
+    self.Create(size_px);
+    ETCS_LOG("Throbber::Create", "ring " << self.RingPx() << "px, " << self.Dots()
+             << " dots, " << self.Step() << " deg/frame on RID:" << self.getRID());
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetSize, (uint32_t, size_px))
+{
+    (void)ctx;
+    self.SetSize(size_px);
+}
+
+/*
+ * SetStep <degrees per FRAME>, not per second, and the unit is the feature.
+ *
+ * The throbber advances once per frame and ignores the measured interval
+ * (Throbber::AdvanceConcrete), so its speed is the frame edge's speed: raise
+ * RunFrames and the spinner picks up with everything else, and a session whose
+ * edge is struggling shows it on the one widget that is definitely on screen
+ * while you wait. A caller wanting revolutions a second multiplies by the
+ * interval they chose and accepts that the answer stops being true exactly when
+ * it would have been misleading.
+ *
+ * Clamped by the setter; the log reports what it settled on rather than what was
+ * asked for, because a clamped value that echoes the request is a value you
+ * cannot debug.
+ */
+DEFINE_WORK_FUNC_TYPED(Throbber, SetStep, (float, degrees_per_frame))
+{
+    (void)ctx;
+    self.SetStep(degrees_per_frame);
+    ETCS_LOG("Throbber::SetStep", self.Step() << " deg/frame on RID:" << self.getRID());
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetDots, (uint32_t, count))
+{
+    (void)ctx;
+    self.SetDots(count);
+    ETCS_LOG("Throbber::SetDots", self.Dots() << " on RID:" << self.getRID());
+}
+
+// SetColors <head r g b> <tail r g b> -- the two shades the sweep lerps
+// between. Six floats and not two named colours, because a colour is not an
+// entity here and inventing one for this would be the only place it existed.
+DEFINE_WORK_FUNC_TYPED(Throbber, SetColors,
+                       (float, ar), (float, ag), (float, ab),
+                       (float, br), (float, bg), (float, bb))
+{
+    (void)ctx;
+    self.SetColors(ar, ag, ab, br, bg, bb);
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetTextColor,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetTextColor(r, g, b, a);
+}
+
+// SetText <rest of line> -- "ETCS" by default, and an empty argument puts it
+// back rather than leaving a throbber with no caption at all.
+DEFINE_WORK_FUNC(Throbber, SetText)
+{
+    (void)ctx;
+    self.SetText(data.restAsString());
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetPosition, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.SetPosition(x, y);
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetOrder, (int32_t, z))
+{
+    (void)ctx;
+    self.SetOrder(z);
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetHidden, (int32_t, hidden))
+{
+    (void)ctx;
+    self.SetHidden(hidden != 0);
+}
+
+DEFINE_WORK_FUNC(Throbber, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}
+
 #endif

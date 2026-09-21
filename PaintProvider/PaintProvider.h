@@ -6551,6 +6551,34 @@ public:
     ETCS::RID rowLayer(size_t i) const { return i < m_rows.size() ? m_rows[i].layer : 0; }
     int32_t scroll() const { return m_scroll; }
 
+    /*
+ * IS THIS NODE ONE OF MINE -- asked by the router, answered from the index the
+ * press path already builds (m_regions, plus the pane the title bar moves).
+ *
+ * Exists so somebody else can decide what a press ELSEWHERE means without
+ * having to know what this panel is made of. The alternative was exporting the
+ * row layout, or re-running the pick; this is the one bit either of those would
+ * have been used to compute.
+ */
+    bool owns(ETCS::RID node) const
+    {
+        if (node == 0) return false;
+        if (node == m_window) return true;
+        return m_regions.find(node) != m_regions.end();
+    }
+
+    /*
+ * CLOSE THE NAME FIELD FROM OUTSIDE, keeping what was typed.
+ *
+ * KEEPING, not dropping, because that is what a press somewhere else means
+ * everywhere else: the text is the user's work and leaving is not a cancel.
+ * Escape is still the cancel and is still the only one (KeyIn).
+ *
+ * Idempotent -- end_edit returns immediately when nothing is open -- so the
+ * router may call it on every press without first asking whether it needs to.
+ */
+    void CloseEdit() { end_edit(true); }
+
 private:
     struct Row { ETCS::RID bg, eye, thumb, label, del; ETCS::RID layer; };
     struct Hit { size_t row; Region region; };
@@ -7942,6 +7970,35 @@ public:
      */
         const bool is_press   = (ev.action == INPUT_DOWN || ev.action == INPUT_BUTTON_DOWN);
         const bool is_release  = (ev.action == INPUT_UP   || ev.action == INPUT_BUTTON_UP);
+
+        /*
+     * A BUTTON ANYWHERE BUT THE PANEL CLOSES THE NAME FIELD.
+     *
+     * While the field is open it takes EVERY key ahead of the chords and the
+     * text boxes both (KeyDown, below) -- which is the point, but it meant the
+     * only ways out were Enter and Escape. Press the canvas, the toolbar, the
+     * wheel, another window: the field stayed open and invisible from there,
+     * and ctrl+z was a z. The panel's own press path already ends it for a
+     * row body, an eye and a delete; everywhere else had nobody to ask.
+     *
+     * HERE, because this is the only place that knows both that a button was
+     * pressed and what it landed on -- the same reason the palette's
+     * not-a-stroke rule is stated here rather than in the palette.
+     *
+     * AHEAD OF the palette and the wheel, which return early: a press they
+     * consume is still a press somewhere that is not the field.
+     *
+     * NOT ON MOTION, and that is the one liberty taken with "any mouse event":
+     * a pointer that drifts one pixel while somebody types is not a gesture,
+     * and closing on it would make the field unusable rather than unsticky.
+     *
+     * m_on_panel is what keeps the release of an in-panel press from counting:
+     * press the label, let go having drifted off the row, and the field opened
+     * and shut in one gesture without it.
+     */
+        if ((is_press || is_release) && m_panel && !m_on_panel
+            && m_panel->editing() && !m_panel->owns(hit_rid))
+            m_panel->CloseEdit();
 
         if (m_palette && ev.action == INPUT_MOTION)
             m_palette->Hover(hit_rid);

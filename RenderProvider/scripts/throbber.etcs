@@ -1,0 +1,91 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ETCS OVER A RING OF CYCLING DOTS -- the wait indicator.
+#
+#     run RenderProvider/scripts/throbber.etcs target=<some Drawable2D>
+#
+# and something to drive it, which is the frame edge that is almost certainly
+# already running in any session that has a window:
+#
+#     detach RenderProvider/scripts/render_frames.etcs view=view
+#
+# The throbber claims Animated, so that one loop advances it along with every
+# other animated leaf -- there is nothing per-throbber to start.
+#
+# AND ITS SPEED IS THAT LOOP'S SPEED. Advance() is per-visit for every animated
+# leaf; this one simply does not spend the measured interval it is handed
+# (RenderProvider/Throbber.h::AdvanceConcrete). RunFrames(16) is the default
+# pace; RunFrames(4) spins it four times as fast along with everything else, and
+# an edge that is struggling shows up as a spinner visibly slowing down. A
+# throbber has no correct duration to keep, so there is nothing to be wrong --
+# and "the session is labouring" is worth seeing on the one widget that is
+# certainly on screen while you wait.
+#
+# ── what this script is for, and what it is not ──────────────────────────────
+#
+# ONE ENTITY DOES THE WHOLE JOB. spawn it, Create it at a size, and the label,
+# the ring, the sweep and the colours are all inside (RenderProvider/Throbber.h
+# on why the label is not a sibling this script places). So this file is a
+# DEFAULT, not a construction: the two lines below are the whole of it, and a
+# caller who wants a different size or rate is better off writing those two
+# lines than passing this one a parameter.
+#
+# WHICH IT COULD NOT DO ANYWAY, and that is worth saying once here rather than
+# being discovered: a run/detach binding is name=name only (core/Command.h
+# parse_bindings), so there is no way to hand a script a NUMBER. Every widget
+# script in this tree has literal numbers in it for that reason. The size here
+# is 96 because that is the type's own default and the smallest size at which
+# undithered discs still read as round.
+#
+# COORDINATES ARE THE TARGET'S, like every widget script here: SetPosition is in
+# the pane's frame, so the subtree is relocatable because it was never absolute.
+# Left at 0,0 -- a caller who wants it centred sizes a pane around it and puts
+# the throbber in that, which is one number in one place instead of two that
+# have to agree.
+
+requires target [Drawable2D]
+
+target.spawn(RenderProvider::Throbber throb)
+throb.Create(96)
+
+# Drawn over whatever the pane already holds. High rather than low: a wait
+# indicator that something else covers is a wait indicator that is not there.
+throb.SetOrder(90)
+
+# Degrees of sweep per FRAME. 5.4 is the type's default and comes to 0.9
+# revolutions a second at the frame edge's own default 16ms -- said here as the
+# one line that shows the unit, since "per frame" is the whole of the timing
+# choice above.
+throb.SetStep(5.4)
+
+# ── showing and hiding ──────────────────────────────────────────────────────
+#
+# SetHidden is the switch and there is no second one. Hidden, the throbber
+# advances nothing (Throbber::AnimatingConcrete reads Hidden), so "not showing"
+# and "not running" cannot disagree:
+#
+#     throb.SetHidden(1)      # gone, and costs one virtual call per frame
+#     throb.SetHidden(0)      # back, sweeping from where it left off
+#
+# ── reaching a throbber somebody else already made ──────────────────────────
+#
+# A session that shows one at boot keeps it (PaintProvider's
+# scripts/www/boot_paint_panels.etcs calls its `main_throbber`), and a subscript
+# that wants a throbber should reach THAT one rather than adding a second to the
+# tree. The verb for it is `ensure`, not `spawn`:
+#
+#     ensure RenderProvider::Throbber main_throbber
+#     main_throbber.SetHidden(0)
+#
+# `spawn` always makes a new one and REFUSES a name that already resolves, so a
+# subscript spelling it that way fails in exactly the session where the throbber
+# was already there; `attach` takes the existing one but fails when there is
+# none; `ensure` does the right thing either way (core/CommandExecutor.h,
+# CmdAcquire). Which is why THIS script spawns -- it is the one that makes it --
+# and a consumer ensures.
+#
+# Visible from here, because a throbber spawned hidden is the harder thing to
+# debug: nothing appears and there is no way to tell whether the spawn failed or
+# the hide worked. A caller that wants it hidden until something happens says so
+# on the next line.

@@ -44,6 +44,13 @@
 // here rather than reachable by family name.
 #include "RenderProvider/TextLabel.h"
 
+// AFTER TextLabel, and that is a hard order rather than a tidy one: the
+// throbber owns a TextLabel child and calls its Glyphs verbs directly, so the
+// type has to be complete here. Not by family name, because the font belongs to
+// that one type and reaching it generically would mean a caller could hand the
+// throbber a Glyphs leaf that is not a drawable child it can own.
+#include "RenderProvider/Throbber.h"
+
 // auto generated hashes of headers:
 #include "../../ETCS.h"
 #include "module_hashes.h"
