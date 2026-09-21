@@ -142,6 +142,61 @@ page with no margin can have. The band sizes itself per side from the room the p
 left (the toolbar takes the bottom strip, so there is no bottom band) and measures
 its own labels, so the numbers are not clipped by a provider with a wider advance.
 
+## Selecting, and moving what is selected
+
+The `select` slice sits between `brush` and `line` in the bar, which is now
+seventeen 60px slices (1020x64, 2px in from either edge of the 1024 sheet). One
+tool, four ways of drawing the boundary — the word under `select` says which,
+and the arrow at the top of the slice steps through them:
+
+    rect     the two corners of the drag, as the rect tool reads them
+    oval     inscribed in the same drag, as the ellipse tool is
+    wand     the run of colour under the press, bounded like a fill and by the
+             fill's own tolerance (PaintTool.SetTolerance)
+    lasso    the path the pointer took, closed back to its start
+
+The arrow is the swatch arrow's pattern — a control that names its slice at
+layout time (`palette.AddModeArrow(@arrow, @tool_select)`) — doing the one thing
+a four-way choice needs. A colour is continuous, so a swatch's arrow has to open
+a picker; a mode is four words, and a popup for four words would be a wheel for
+a switch. So it steps, and the readout (`palette.SetModeReadout`) says where it
+stepped to. Pressing it also takes the select tool up, for the reason a wheel
+pick leaves the picked colour in hand: stepping the mode of a tool you are not
+holding is a control that visibly does nothing.
+
+Whatever drew it, a selection is a MASK on the document (`PaintSelection`), so
+inside/outside, the outline and the move are written once. The outline is
+two-tone dashes drawn from the mask on every render — a preview, never a mark on
+a layer — which is why it survives a pan, a zoom, and the wheel closing over it,
+and why it is drawn in the render path rather than by the input machine, which
+is not the only thing that re-renders. While you drag, what you see IS the
+selection re-stated from the anchor and the tip each flush; nothing stands in
+for it, so nothing can disagree with it.
+
+Defining a region commits nothing. The commit is the CARRY: press inside the
+region and drag. The selected pixels leave the active layer at the press
+(`PaintDocument::LiftSelection` — the hole appears at once, not at the release),
+follow the pointer from the selection's own buffer, and land where the button
+comes up, blended source-over so the transparent part of a lifted region lands
+as nothing. The outline goes with them, so the same region can be carried again.
+It is the text box's press-inside-to-carry, for a region, and it is coalesced
+where the text box's is not, because every sample re-composites the document and
+resamples the lift over it.
+
+A click with the select tool — a drag that went nowhere — clears the selection,
+as it does for the text tool; so does Escape when no text box has the keyboard.
+Either lands a lift still in the air rather than losing it.
+
+All of it is reachable without a pointer, in document coordinates:
+
+    doc.SelectRect(40, 40, 200, 120)        doc.SelectEllipse(40, 40, 200, 120)
+    doc.SelectColor(50, 50, 24)              doc.SelectPath(10, 10, 90, 20, 60, 80)
+    doc.MoveSelection(30, 0)                 doc.ClearSelection()
+    brush.SetMode(lasso)                     doc.Report()   # extent and pixel count
+
+`MoveSelection` is the carry in one call, for a script that knows the offset;
+two `Report`s either side of it are the assertion that the ink moved.
+
 ## Deploying
 
 `ace make loader etcs` and `ace make loaders` both now produce the INTERACTIVE

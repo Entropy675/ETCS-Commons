@@ -12,7 +12,7 @@ ETCS_MODULE_EXPORT_MAIN(PaintProvider,
 // independently of it, and the kind is the shape of the whole gesture rather
 // than which nib is loaded. See PaintToolKind.
 ETCS_TAG_BLOCK_BASIC(PaintTool,
-    SetRadius, SetColor, SetKind, SetText, SetTextSize, SetTolerance,
+    SetRadius, SetColor, SetKind, SetMode, SetText, SetTextSize, SetTolerance,
     SetMotionCoalesceMs, SetAlphaPercent,
     BeginStroke, MoveStroke, EndStroke, CancelStroke, Delete)
 
@@ -22,11 +22,15 @@ ETCS_TAG_BLOCK_BASIC(PaintLayer,
     Create, Clear, DrawPixel, DrawLine,
     SetOrder, SetName, SetVisible, ToggleVisible, SetOpacity, Report, Delete)
 
+// The selection verbs are the document's because the selection is: one per
+// document, shown by every surface onto it (PaintDocument's selection note).
 ETCS_TAG_BLOCK_BASIC(PaintDocument,
     Create, SetActiveLayer, ClearLayer, RenderToSurface,
     MoveLayerTo, RenameLayer, RemoveLayer, IsolateLayer, ClearIsolate,
     BindGlyphs, AddTextBox, SetTextBoxText, RemoveTextBox,
     ShowTextBoxes, SelectTextBox,
+    SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
+    CopySelection, CutSelection, PasteSelection, Undo, Redo,
     Report, Delete)
 
 // The projection verbs sit beside Render because every one of them ends in a
@@ -38,7 +42,7 @@ ETCS_TAG_BLOCK_BASIC(PaintSurface,
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
-     BindRoot, BindCanvas, BindPalette, BindPanel, BindGlyphs,
+     BindRoot, BindCanvas, BindPalette, BindPanel, BindGlyphs, SetHoldCapacity,
      BindWheel, SetWheelPane,
      Pointer, Press, Release, Report, Delete),
     (ConsumeInput, ConsumePointer, ConsumeRouted, ConsumeRoutedPointer))
@@ -56,7 +60,8 @@ ETCS_TAG_BLOCK_HYBRID(PaintInput,
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
-    BindWheel, AddWheelArrow, SetColorOf, Report, Delete)
+    BindWheel, AddWheelArrow, AddModeArrow, SetModeReadout,
+    SetColorOf, Report, Delete)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.

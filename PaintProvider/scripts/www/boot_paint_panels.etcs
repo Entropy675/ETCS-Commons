@@ -145,9 +145,13 @@ bar_bg.AddPoint(0, 768)
 bar_bg.SetFill(0.16, 0.16, 0.19, 1.0)
 bar_bg.SetOrder(19)
 
+# Seventeen 60px slices: six colours, nine tools, radius and alpha
+# (paint_toolbar.etcs). The slices keep their width and the bar grows, because
+# a slice narrower than its word is a control you cannot read; 2px either side
+# is what a 1024 window has left over.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D bar)
-bar.Create(960, 64)
-bar.SetPosition(32, 704)
+bar.Create(1020, 64)
+bar.SetPosition(2, 704)
 bar.SetOrder(20)
 
 spawn PaintProvider::PaintPalette palette
