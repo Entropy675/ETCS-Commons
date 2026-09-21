@@ -147,6 +147,25 @@ shrank with it left the previous width's pixels standing -- the stray "1" in fro
 of the extent at some zooms was the corner label drawn twice, five pixels apart. A
 tick label that would start under the extent's tail is skipped for the same reason.
 
+## The brush's size is the width of the mark
+
+`brush.SetRadius(n)` -- and the `size` stepper on the bar, which is the same
+setting -- states how many document pixels wide the mark is. Size 1 draws one
+pixel, size 6 draws six, and a rectangle stroked at size 1 lands exactly on the
+box that was dragged.
+
+It used to be a RADIUS, and the verb is still spelled that way because scripts
+and the toolbar already say it; only the arithmetic changed. As a radius, size 1
+put down every pixel inside `dx^2 + dy^2 <= 1` -- three across -- so the thinnest
+available line was three pixels and every stroked outline stood a pixel outside
+its own box on all four sides, while the preview drew `size` view-pixels wide and
+so disagreed with what it was previewing. One footprint (`paint_stamp_of`, a
+`PaintStamp`) now answers for the committed mark, the live dab on the view and
+the smudge window, so the three cannot drift again. Even widths sit between
+pixels so that a 2px mark is two pixels rather than three; stroking a path with a
+wide brush still spills half the width either side of it, which is what stroking
+means.
+
 ## Selecting, and moving what is selected
 
 The `select` slice sits between `brush` and `line` in the bar, which is now

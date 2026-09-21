@@ -100,7 +100,13 @@ struct PaintStrokePoint
 
 struct PaintBrushState
 {
-    float radius_px = 8.0f;
+    // HOW WIDE THE MARK IS, in document pixels -- not a radius, whatever the
+    // verb that sets it is called. The wire name stays PaintTool.SetRadius
+    // because scripts and the toolbar already say it (paint_toolbar.etcs);
+    // what changed is the arithmetic under it, and the field is named for what
+    // it holds so the next reader does not have to rediscover which
+    // (paint_stamp_of).
+    float size_px = 8.0f;
     float hardness = 0.75f;
     PaintColor color{1.0f, 0.0f, 0.0f, 1.0f};
     PaintBlendMode blend = PaintBlendMode::Normal;
@@ -206,44 +212,100 @@ static inline void paint_mark_pixel_path(ETCS::RID target)
 }
 
 /*
- * The live dab, and IT HAS TO BE THE SHAPE THE MARK WILL BE.
+ * ── the nib, once, for everything that lays one down ─────────────────────
  *
- * This was one DrawRect of 2r x 2r -- a SQUARE nib in the view, while the thing
- * it previews (PaintLayer::DrawBrush) keeps every pixel inside dx^2+dy^2 <= r^2
- * and is a disc. So the nib under the pointer was square, and the stroke turned
- * round the moment anything re-rendered the document through it. A preview that
- * does not agree with its commit is not a fast path, it is a lie about what the
- * tool does.
+ * THE SIZE IS THE WIDTH OF THE MARK. It was the RADIUS, and every symptom of
+ * that came back to the same arithmetic: size 1 put down a disc of
+ * dx^2 + dy^2 <= 1 -- three pixels across -- so the thinnest line the tool
+ * could draw was three pixels wide, and a rectangle stroked with it stood a
+ * pixel outside the box that was dragged on all four sides. The preview did
+ * not: it drew a square of `size` view pixels (preview_line), so the shape
+ * grew the moment the button came up. One of the two had to be wrong about
+ * what the number meant, and the honest reading is the one every other paint
+ * program uses and the toolbar already prints: `size` is how wide the mark is.
  *
- * ONE RASTER OP where the destination has host bytes -- Pixels_::FillDisc, which
- * uses the same dx^2+dy^2 <= r^2 test DrawBrush does, so the preview and the mark
- * it becomes are the same discrete circle. A device-backed view has no address to
- * write, so it gets the disc as a stack of spans through the family verb: exactly
- * round, at 2r+1 dispatched calls, which is what that backend costs.
+ * SO THE FOOTPRINT IS COMPUTED IN ONE PLACE and every nib -- the committed
+ * mark (PaintLayer::DrawBrush), the live dab on the view (paint_stamp_surface)
+ * and the smudge window -- asks the same object what it covers. A preview that
+ * does not agree with its commit is not a fast path, it is a lie about what
+ * the tool does, and three separate `r = (int)radius_px` lines is how they
+ * disagree.
+ *
+ * EVEN WIDTHS SIT BETWEEN PIXELS, which is what makes a 2px mark two pixels
+ * and not three: the disc's centre goes on the boundary (c = -0.5) and the
+ * covered offsets run -w/2 .. w/2-1. Odd widths centre on the pixel. Either
+ * way the extent is exactly `w` pixels across, which is the whole point.
+ */
+struct PaintStamp
+{
+    int   lo = 0, hi = 0;      // offsets covered on each axis, inclusive
+    float c  = 0.0f;           // where the centre sits relative to offset 0
+    float r2 = 0.25f;
+
+    bool has(int dx, int dy) const
+    {
+        const float fx = static_cast<float>(dx) - c, fy = static_cast<float>(dy) - c;
+        return fx * fx + fy * fy <= r2;
+    }
+
+    // The inclusive x-span of row dy, false when the row is empty. Walked
+    // rather than solved so there is one predicate (has) and not two that can
+    // round apart -- the stamp is small, and the callers that want spans want
+    // them once per row.
+    bool row(int dy, int& x0, int& x1) const
+    {
+        x0 = hi + 1; x1 = lo - 1;
+        for (int dx = lo; dx <= hi; ++dx)
+            if (has(dx, dy)) { if (dx < x0) x0 = dx; x1 = dx; }
+        return x0 <= x1;
+    }
+};
+
+static inline PaintStamp paint_stamp_of(float size_px)
+{
+    const int w = std::max(1, static_cast<int>(std::lround(size_px)));
+    PaintStamp s;
+    if (w % 2) { s.lo = -(w - 1) / 2; s.hi = (w - 1) / 2; s.c = 0.0f; }
+    else       { s.lo = -w / 2;       s.hi = w / 2 - 1;   s.c = -0.5f; }
+    const float rad = static_cast<float>(w) * 0.5f;
+    s.r2 = rad * rad;
+    return s;
+}
+
+/*
+ * The live dab, and IT HAS TO BE THE SHAPE THE MARK WILL BE -- the same
+ * PaintStamp PaintLayer::DrawBrush lays down, so the nib under the pointer and
+ * the stroke it becomes are the same discrete shape. This was one DrawRect of
+ * 2r x 2r once, a SQUARE nib previewing a round mark, which is the same class
+ * of bug the size-is-a-width change above fixes one level down.
+ *
+ * ROW SPANS EITHER WAY. Where the destination has host bytes that is one
+ * FillRect per row rather than a call per pixel; a device-backed view has no
+ * address to write and gets the same spans through the family verb, which is
+ * what that backend costs.
  */
 static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
                                        const PaintBrushState& brush)
 {
-    const int r = std::max(1, static_cast<int>(brush.radius_px));
+    const PaintStamp st = paint_stamp_of(brush.size_px);
+    int x0 = 0, x1 = 0;
 
     if (Pixels_* px = ETCS::resolve_in_family<Pixels_>("Pixels", target))
     {
-        px->FillDisc(x, y, static_cast<uint32_t>(r),
-                     brush.color.r, brush.color.g, brush.color.b, brush.color.a);
+        for (int dy = st.lo; dy <= st.hi; ++dy)
+            if (st.row(dy, x0, x1))
+                px->FillRect(x + x0, y + dy, static_cast<uint32_t>(x1 - x0 + 1), 1u,
+                             brush.color.r, brush.color.g, brush.color.b, brush.color.a);
         paint_mark_pixel_path(target);
         return;
     }
 
     Surface_* surface = ETCS::resolve_in_family<Surface_>("Surface", target);
     if (!surface) return;
-    const int r2 = r * r;
-    for (int dy = -r; dy <= r; ++dy)
-    {
-        const int k = static_cast<int>(std::sqrt(static_cast<float>(r2 - dy * dy)));
-        surface->DrawRect(x - k, y + dy,
-                          static_cast<uint32_t>(k * 2 + 1), 1u,
-                          brush.color.r, brush.color.g, brush.color.b, brush.color.a);
-    }
+    for (int dy = st.lo; dy <= st.hi; ++dy)
+        if (st.row(dy, x0, x1))
+            surface->DrawRect(x + x0, y + dy, static_cast<uint32_t>(x1 - x0 + 1), 1u,
+                              brush.color.r, brush.color.g, brush.color.b, brush.color.a);
     paint_mark_pixel_path(target);
 }
 
@@ -810,7 +872,7 @@ public:
 
     void SetRadius(float radius)
     {
-        m_brush.radius_px = std::max(1.0f, radius);
+        m_brush.size_px = std::max(1.0f, radius);
     }
 
     /*
@@ -1210,19 +1272,17 @@ public:
         px[i + 3] = paint_to_byte(a);
     }
 
+    // The mark, exactly as wide as the brush says (PaintStamp).
     void DrawBrush(int32_t cx, int32_t cy, const PaintBrushState& brush)
     {
-        const int r = std::max(1, static_cast<int>(brush.radius_px));
-        const int r2 = r * r;
-        for (int dy = -r; dy <= r; ++dy)
-        {
-            for (int dx = -r; dx <= r; ++dx)
+        const PaintStamp st = paint_stamp_of(brush.size_px);
+        for (int dy = st.lo; dy <= st.hi; ++dy)
+            for (int dx = st.lo; dx <= st.hi; ++dx)
             {
-                if (dx * dx + dy * dy > r2) continue;
+                if (!st.has(dx, dy)) continue;
                 DrawPixel(cx + dx, cy + dy,
                           brush.color.r, brush.color.g, brush.color.b, brush.color.a);
             }
-        }
     }
 
     void DrawLine(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
@@ -1250,7 +1310,10 @@ public:
  *
  * OUTLINES ARE STROKED WITH THE BRUSH, not plotted a pixel wide. A shape tool
  * is still holding whatever nib is selected, and a rectangle drawn with a
- * 30px brush should look like it -- so every outline reduces to DrawBrush along
+ * 30px brush should look like it -- at size 1 that is a one-pixel outline on
+ * the dragged box exactly (PaintStamp), and at 30 it is 30 wide and spills 15
+ * either side of it, which is what stroking a path means. So every outline
+ * reduces to DrawBrush along
  * a path, which is also why they all come out with the same ends and joins the
  * freehand stroke has. One mark-making primitive, several ways of deciding
  * where it goes.
@@ -1433,29 +1496,30 @@ public:
         if (!px) return;
         const int32_t w = static_cast<int32_t>(this->PixelWidth());
         const int32_t h = static_cast<int32_t>(this->PixelHeight());
-        const int r  = std::max(1, static_cast<int>(brush.radius_px));
-        const int r2 = r * r;
+        // The same nib every other mark uses, so a smudge covers exactly what a
+        // stroke of the same size would have (PaintStamp).
+        const PaintStamp st = paint_stamp_of(brush.size_px);
         const float k = std::clamp(strength, 0.0f, 1.0f);
         if (k <= 0.0f) return;
 
-        const int side = r * 2 + 1;
+        const int side = st.hi - st.lo + 1;
         std::vector<uint8_t> src(static_cast<size_t>(side) * side * 4, 0);
-        for (int dy = -r; dy <= r; ++dy)
-            for (int dx = -r; dx <= r; ++dx)
+        for (int dy = st.lo; dy <= st.hi; ++dy)
+            for (int dx = st.lo; dx <= st.hi; ++dx)
             {
                 const int sxp = fx + dx, syp = fy + dy;
                 if (sxp < 0 || syp < 0 || sxp >= w || syp >= h) continue;
-                ::std::memcpy(&src[((static_cast<size_t>(dy + r) * side) + (dx + r)) * 4],
+                ::std::memcpy(&src[((static_cast<size_t>(dy - st.lo) * side) + (dx - st.lo)) * 4],
                               px + (static_cast<size_t>(syp) * w + sxp) * 4, 4);
             }
 
-        for (int dy = -r; dy <= r; ++dy)
-            for (int dx = -r; dx <= r; ++dx)
+        for (int dy = st.lo; dy <= st.hi; ++dy)
+            for (int dx = st.lo; dx <= st.hi; ++dx)
             {
-                if (dx * dx + dy * dy > r2) continue;
+                if (!st.has(dx, dy)) continue;
                 const int dxp = tx + dx, dyp = ty + dy;
                 if (dxp < 0 || dyp < 0 || dxp >= w || dyp >= h) continue;
-                const uint8_t* sp = &src[((static_cast<size_t>(dy + r) * side) + (dx + r)) * 4];
+                const uint8_t* sp = &src[((static_cast<size_t>(dy - st.lo) * side) + (dx - st.lo)) * 4];
                 uint8_t* dp = px + (static_cast<size_t>(dyp) * w + dxp) * 4;
                 for (int c2 = 0; c2 < 4; ++c2)
                     dp[c2] = static_cast<uint8_t>(dp[c2] + (sp[c2] - dp[c2]) * k);
@@ -3806,7 +3870,7 @@ public:
     {
         if (m_target == 0) return;
         PaintBrushState scaled = brush;
-        scaled.radius_px = std::max(1.0f, brush.radius_px * m_zoom);
+        scaled.size_px = std::max(1.0f, brush.size_px * m_zoom);
         paint_stamp_surface(m_target, DocToViewX(x), DocToViewY(y), scaled);
     }
 
@@ -4262,6 +4326,18 @@ public:
     bool DeleteConcrete() override { return true; }
 
     /*
+ * TWO DELETES, AND THE ONE WITH AN ARGUMENT IS THIS TYPE'S OWN: Delete(id)
+ * removes a PAGE from the store, while the family's Delete() removes this
+ * entity (DeletableBase). Declaring the first hides the second, which the
+ * compiler reports on every build as an overloaded virtual going quiet -- so
+ * the base's name is pulled back in and the two live as an overload set.
+ * Nothing resolves differently: the page verb passes an id, the entity verb
+ * passes nothing, and the tag block names them Delete and Destroy so a script
+ * never has to know there were ever two.
+ */
+    using DeletableBase<PaintPages>::Delete;
+
+    /*
      * Bind the document and the database, and make sure the tables exist.
      * The schema is created here rather than by the script because the
      * script cannot know the columns this type reads -- a script that spells
@@ -4698,7 +4774,8 @@ public:
     void AddColor(ETCS::RID node, float r, float g, float b, float a)
     {
         if (node == 0) return;
-        Entry e{ Kind::Color, { r, g, b, a }, 0.0f, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::Color);
+        e.rgba[0] = r; e.rgba[1] = g; e.rgba[2] = b; e.rgba[3] = a;
         e.idle[0] = r; e.idle[1] = g; e.idle[2] = b; e.idle[3] = a;
         m_entries[node] = e;
     }
@@ -4706,7 +4783,7 @@ public:
     void AddSize(ETCS::RID node, float radius)
     {
         if (node == 0 || radius <= 0.0f) return;
-        Entry e{ Kind::Size, {}, radius, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::Size, radius);
         e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
         m_entries[node] = e;
     }
@@ -4714,7 +4791,7 @@ public:
     void AddRadiusDelta(ETCS::RID node, float delta)
     {
         if (node == 0 || delta == 0.0f) return;
-        Entry e{ Kind::RadiusDelta, {}, delta, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::RadiusDelta, delta);
         e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
         m_entries[node] = e;
     }
@@ -4730,7 +4807,7 @@ public:
     void AddAlphaDelta(ETCS::RID node, float delta_pct)
     {
         if (node == 0) return;
-        Entry e{ Kind::AlphaDelta, {}, delta_pct, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::AlphaDelta, delta_pct);
         m_entries[node] = e;
     }
 
@@ -4754,7 +4831,7 @@ public:
     void AddWheelArrow(ETCS::RID node, ETCS::RID slot)
     {
         if (node == 0) return;
-        Entry e{ Kind::WheelArrow, {}, 0.0f, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::WheelArrow);
         e.slot = slot;
         m_entries[node] = e;
     }
@@ -4778,7 +4855,7 @@ public:
     void AddModeArrow(ETCS::RID node, ETCS::RID slot)
     {
         if (node == 0) return;
-        Entry e{ Kind::ModeArrow, {}, 0.0f, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::ModeArrow);
         e.slot = slot;
         m_entries[node] = e;
     }
@@ -4789,7 +4866,8 @@ public:
     void AddTool(ETCS::RID node, const std::string& kind)
     {
         if (node == 0) return;
-        Entry e{ Kind::Tool, {}, 0.0f, paint_tool_kind_from(kind) };
+        Entry e = entry_of(Kind::Tool);
+        e.tool = paint_tool_kind_from(kind);
         e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
         m_entries[node] = e;
     }
@@ -4811,7 +4889,7 @@ public:
     void AddZoom(ETCS::RID node, float factor)
     {
         if (node == 0 || factor <= 0.0f) return;
-        Entry e{ Kind::Zoom, {}, factor, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::Zoom, factor);
         m_entries[node] = e;
     }
 
@@ -4845,7 +4923,7 @@ public:
                      "'Tag.Action' -- got '" << action << "'.");
             return;
         }
-        Entry e{ Kind::Call, {}, 0.0f, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::Call);
         e.target = target;
         e.action = action;
         e.args   = args;
@@ -4867,7 +4945,7 @@ public:
     void AddPopup(ETCS::RID node, ETCS::RID pane, ETCS::RID input)
     {
         if (node == 0 || pane == 0 || input == 0) return;
-        Entry e{ Kind::Popup, {}, 0.0f, PaintToolKind::Brush };
+        Entry e = entry_of(Kind::Popup);
         e.slot   = pane;
         e.target = input;
         m_entries[node] = e;
@@ -4997,7 +5075,7 @@ public:
         }
         else if (e.kind == Kind::RadiusDelta)
         {
-            const float next = std::max(1.0f, m_tool->brush().radius_px + e.radius);
+            const float next = std::max(1.0f, m_tool->brush().size_px + e.radius);
             m_tool->SetRadius(next);
             set_node_text(m_radius_readout, std::to_string(static_cast<int>(next + 0.5f)));
             ETCS_LOG("PaintPalette", "radius delta " << e.radius << " -> " << next);
@@ -5294,11 +5372,20 @@ void Report() const
 private:
     enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, AlphaDelta, WheelArrow, ModeArrow,
                                 Call, Popup };
+    /*
+ * EVERY MEMBER CARRIES ITS OWN DEFAULT, and the makers below set only what
+ * their kind is about. The first four used to be positional -- Entry e{ kind,
+ * rgba, radius, tool } -- which named four of nine members and left clang
+ * reporting the other five as missing initializers at every one of the ten
+ * call sites, on every build. They were never missing; they had defaults.
+ * Saying so here is what makes that true by construction instead of by
+ * convention.
+ */
     struct Entry {
-        Kind kind;
-        float rgba[4];
-        float radius;
-        PaintToolKind tool;
+        Kind kind = Kind::Color;
+        float rgba[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        float radius = 0.0f;
+        PaintToolKind tool = PaintToolKind::Brush;
         float idle[4] = { 0.16f, 0.16f, 0.20f, 1.0f };
         // The arrows only: the entry this arrow is a control FOR -- a colour
         // for a wheel arrow, a tool for a mode arrow. An arrow belongs to a
@@ -5309,6 +5396,11 @@ private:
         std::string action;
         std::string args;
     };
+
+    // The two makers every call site goes through, so that adding a member to
+    // Entry is one edit here rather than ten at the sites.
+    static Entry entry_of(Kind k) { Entry e; e.kind = k; return e; }
+    static Entry entry_of(Kind k, float radius) { Entry e; e.kind = k; e.radius = radius; return e; }
 
     // Whether Hover may restyle this entry -- see the note in Hover.
     static bool owns_look(const Entry& e) { return e.kind != Kind::Call && e.kind != Kind::Popup; }
@@ -5776,6 +5868,12 @@ public:
             m_document->RemoveLayer(row.layer);
             if (m_renaming == row.layer) m_renaming = 0;
             if (m_dragging == row.layer) m_dragging = 0;
+            break;
+
+        case Region::Title:
+            // Answered above, before the row lookup -- a title press is the
+            // window's, not a row's. Named here so the switch stays total and
+            // a new region cannot be added without deciding what it means.
             break;
         }
         Refresh();
@@ -7952,7 +8050,7 @@ private:
     void apply_segment(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
     {
         if (!m_tool) return;
-        const float step = std::max(1.0f, m_tool->brush().radius_px * 0.5f);
+        const float step = std::max(1.0f, m_tool->brush().size_px * 0.5f);
         const float dx = static_cast<float>(x1 - x0);
         const float dy = static_cast<float>(y1 - y0);
         const int   n  = static_cast<int>(std::sqrt(dx * dx + dy * dy) / step);
@@ -7996,7 +8094,7 @@ private:
         const int32_t vax = m_surface->DocToViewX(ax), vay = m_surface->DocToViewY(ay);
         const int32_t vbx = m_surface->DocToViewX(bx), vby = m_surface->DocToViewY(by);
         const PaintColor& c = m_tool->brush().color;
-        const int w = std::max(1, static_cast<int>(m_tool->brush().radius_px * z));
+        const int w = std::max(1, static_cast<int>(m_tool->brush().size_px * z));
         switch (kind)
         {
         case PaintToolKind::Line:
@@ -10522,7 +10620,7 @@ DEFINE_WORK_FUNC(PaintInput, Report)
         ETCS_LOG("PaintInput::Report", "  tool " << paint_tool_kind_name(t->kind())
                  << (t->kind() == PaintToolKind::Select
                      ? std::string(" (") + paint_select_mode_name(t->mode()) + ")" : std::string())
-                 << " radius " << br.radius_px
+                 << " size " << br.size_px
                  << " colour " << br.color.r << ", " << br.color.g << ", " << br.color.b
                  << " alpha " << t->alphaPercent() << "% (" << br.color.a << ")");
     }

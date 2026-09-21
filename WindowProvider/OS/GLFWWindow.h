@@ -311,7 +311,7 @@ public:
      * with a gap both callers fit into: two glfwCreateWindow calls, one of the
      * two windows immediately unreachable.
      */
-    void CreateWindowConcrete(const char* title = "invalid window", uint32_t width = 100, uint32_t height = 100)
+    void CreateWindowConcrete(const char* title = "invalid window", uint32_t width = 100, uint32_t height = 100) override
     {
         /*
          * TWO FLAGS BECAUSE THERE ARE TWO QUESTIONS, and `opening` alone

@@ -83,7 +83,7 @@ public:
 
     // ── Thread_ dispatch ──────────────────────────────────────────────────
 
-    ETCS::Buffer ScriptConcrete() { return m_script; }
+    ETCS::Buffer ScriptConcrete() override { return m_script; }
 
     /*
      * A detached script is a child SHELL, because a detached script is a

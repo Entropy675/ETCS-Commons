@@ -42,7 +42,7 @@ public:
     // calls. See the class comment on why identity is a sufficient answer.
     const void* GetDevice() const { return m_active ? static_cast<const void*>(this) : nullptr; }
 
-    bool DeleteConcrete()
+    bool DeleteConcrete() override
     {
         m_active = false;
         std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();

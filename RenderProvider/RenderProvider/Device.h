@@ -80,7 +80,7 @@ public:
     // interpreted, only compared: a Renderable on the same device answers the
     // same key, and that equality is the whole of what a key is for
     // (ontology/Renderable.h).
-    uint64_t DeviceKeyConcrete() const
+    uint64_t DeviceKeyConcrete() const override
     {
         Instance* vi = resolve();
         return vi ? reinterpret_cast<uint64_t>(vi->GetDevice()) : 0;
@@ -89,10 +89,10 @@ public:
     // Declared and usable are different answers: an Instance that exists but has
     // not been Created yet has no device, and a camera must not switch to one
     // that cannot draw.
-    bool DeviceReadyConcrete() const { return DeviceKeyConcrete() != 0; }
+    bool DeviceReadyConcrete() const override { return DeviceKeyConcrete() != 0; }
 
     // ── Deletable_ ────────────────────────────────────────────────────────
-    bool DeleteConcrete() { return true; }
+    bool DeleteConcrete() override { return true; }
 
 private:
     /*
