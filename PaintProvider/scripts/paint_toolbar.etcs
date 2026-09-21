@@ -425,12 +425,12 @@ palette.SetAlphaReadout(@label_alpha_num)
 palette.AddAlphaDelta(@label_alpha_top, 5.0)
 palette.AddAlphaDelta(@label_alpha_bot, -5.0)
 
-# ── the frame, lent to the palette as a clock ────────────────────────────────
+# ── nothing here, and that is the change ─────────────────────────────────────
 #
 # Click-and-hold on any +/- keeps stepping, and nothing in this page ticks while
-# a button is held still except the frame. This node is how the palette gets
-# told about frames: it draws nothing and answers Animating() while a stepper is
-# held, so the bar composes every frame and each composition is a Tick(). With
-# nothing held it costs nothing. See PaintRepeat.
-bar.spawn(PaintProvider::PaintRepeat pump)
-pump.BindPalette(@palette)
+# a button is held still. This used to need a node -- a drawable that drew
+# nothing, spawned into the bar so the compose walk would visit it and it could
+# tick the palette from inside its own DrawInto. The palette now claims Animated
+# (ontology/Animated.h) and is stepped by whatever drives that family, so the
+# relation is stated on the palette instead of smuggled through a child of the
+# thing it steps. A script that wants the repeat spawns nothing.

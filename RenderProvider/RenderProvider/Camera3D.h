@@ -352,7 +352,7 @@ public:
         // walk that draws it, so the mark it leaves is consumed by this
         // frame's own upload and there is nothing left to schedule the next
         // frame with. Asking is what closes that loop, and it costs a load.
-        if (TakeObserved(getRID()) || sceneInMotion() || anyChildAnimating())
+        if (TakeObserved(getRID()) || sceneInMotion() || anyChildNeedsFrame())
         {
             // No self-clear: Render's writes mark with origin=this, so my own
             // edge is skipped at the source rather than cleared afterwards.
@@ -401,15 +401,16 @@ public:
  *
  * The dirty bit already covers a child changing DISCRETELY: TextLabel::SetText
  * marks its own path and that bubbles onto this camera's Observable, so
- * TakeObserved above fires. Animating is for the other kind of child, the one
+ * TakeObserved above fires. NeedsFrame is for the other kind of child, the one
  * with no discrete change to mark because what it displays changes on its own.
- * TextLabel::BindFps makes exactly that: Animating() true forever, because a
- * live readout is never "already up to date".
+ * TextLabel::BindFps makes exactly that: a live readout is never "already up to
+ * date", so the label claims Animated and NeedsFrame answers yes off that claim
+ * for as long as the counter is bound (ontology/Drawable.h).
  *
  * Nothing asked. CompositeDrawable2D asks its children, so a label under a
  * compositor works; a label under a CAMERA answered a question no one put to
  * it, and the hud in scene3d.etcs sat frozen with the pipeline settled around
- * it. The walk itself is Drawable_::anyChildAnimating now, beside the child
+ * it. The walk itself is Drawable_::anyChildNeedsFrame now, beside the child
  * list it reads -- one copy for every node that composites.
  *
  * THE COST IS REAL AND IT IS THE POINT. An animating overlay child now keeps
@@ -419,7 +420,7 @@ public:
  * live per-frame readout over a 3D view costs. A scene with no animating child
  * still settles exactly as before.
  */
-    bool Animating() override { return sceneInMotion() || anyChildAnimating(); }
+    bool NeedsFrame() override { return sceneInMotion() || anyChildNeedsFrame(); }
 
     // ── Resizable_ / Deletable_ ──────────────────────────────────────────
 

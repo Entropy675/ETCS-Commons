@@ -290,7 +290,7 @@ public:
         // ontology/Drawable.h). Asking costs one virtual call per child on a
         // settled tree and is what lets a moving one schedule its own next
         // frame.
-        if (TakeObserved(getRID()) || anyChildAnimating())
+        if (TakeObserved(getRID()) || anyChildNeedsFrame())
         {
             // No self-clear afterwards: recompose's own writes mark with
             // origin=this, so my own edge is skipped at the source. A child that
@@ -416,7 +416,7 @@ public:
     // A compositor animates when anything under it does -- so an outer
     // compositor asking this one gets the whole subtree's answer, and the
     // recursion terminates at leaves that inherit the family's default of no.
-    bool Animating() override { return anyChildAnimating(); }
+    bool NeedsFrame() override { return anyChildNeedsFrame(); }
 
 private:
     /*

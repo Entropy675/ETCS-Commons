@@ -38,6 +38,7 @@
 // ---------------------------------------------------------------------------
 class TextLabel : public Drawable2DBase<TextLabel>,
                   public GlyphsBase<TextLabel>,
+                  public AnimatedBase<TextLabel>,
                   public DeletableBase<TextLabel>
 {
 public:
@@ -252,12 +253,36 @@ public:
         return ETCS::DestroyEvent{conjugate_key.c_str(), this}();
     }
 
-    // A label bound to a frame rate is never settled -- the number it shows
-    // changes without anyone marking it. That is exactly the question the
-    // family added for self-animating nodes (ontology/Drawable.h), and
-    // answering it is what keeps the compositors above this label recomposing
-    // while the counter is live.
-    bool Animating() override { return m_fps_src != 0; }
+    // ── Animated_ ────────────────────────────────────────────────────────
+    //
+    // A label bound to a frame rate is never settled: the number it shows
+    // changes without anyone marking it, which is the relation Animated names
+    // (ontology/Animated.h). It was answered through Drawable_::Animating
+    // before, i.e. by being in a tree somebody walks -- true of this label and
+    // not of the relation, and the reason a label under a camera once stayed
+    // frozen while the same label under a compositor did not.
+    bool AnimatingConcrete() override { return m_fps_src != 0; }
+
+    /*
+ * ONE STEP IS ONE RE-READ, AND IT MARKS ONLY IF THE TEXT MOVED.
+ *
+ * The interval is unused on purpose -- this does not integrate anything, it
+ * SAMPLES, and the sample is whatever the surface's rate is at the moment the
+ * driver comes by. What the step is for is the mark: the old arrangement
+ * answered "still animating" forever and made every compositor above this
+ * label recompose sixty times a second whether or not the displayed number had
+ * changed, because a standing yes is the only thing a tree walk can carry. One
+ * decimal place of a frame rate changes a few times a second at most, so
+ * comparing the rendered string and marking only on a difference settles the
+ * whole path above a live counter between changes.
+ */
+    void AdvanceConcrete(double) override
+    {
+        std::string now = liveText();
+        if (now == m_shown) return;
+        m_shown.swap(now);
+        etcs_mark_observed(this);
+    }
 
 private:
     /*
@@ -529,6 +554,9 @@ private:
     float       m_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float       m_bg[4]    = {0.0f, 0.0f, 0.0f, 0.0f};
     ETCS::RID   m_fps_src  = 0;
+    // What the last step rendered, kept only so the next one can tell whether
+    // the number actually moved. See AdvanceConcrete.
+    std::string m_shown;
 };
 
 #endif

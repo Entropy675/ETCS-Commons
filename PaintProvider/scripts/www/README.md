@@ -375,11 +375,14 @@ thing being hidden. The eye is the control that is ABOUT visibility, so hovering
 it is the one moment where "show me only this layer" is what the hand is already
 asking.
 
-It FADES rather than snaps, over about nine frames each way. A hover has a
+It FADES rather than snaps, over about 150ms each way. A hover has a
 duration -- the pointer rests on the eye for as long as the question is being
 asked -- and that is exactly what a snap throws away. The step rides the same
-per-frame edge the toolbar's click-and-hold repeat does (`PaintRepeat`), and
-stops asking for frames the moment the dim arrives. The title
+clock the toolbar's click-and-hold repeat does: both types claim `Animated`
+(`ontology/Animated.h`) and are advanced by whatever drives that family, and
+both stop being advanced the moment they answer that they have nowhere left to
+go. Stated in milliseconds rather than in frames, so the fade reads the same on
+a 30Hz display and a 144Hz one. The title
 bar is the handle -- press it and the window follows the pointer -- and there
 is no close button, on purpose: the window is the only thing that says which
 layer is active, and a window that can be dismissed will be.

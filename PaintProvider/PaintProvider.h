@@ -4939,7 +4939,8 @@ private:
  * m_tool->brush() every sample, so a selection takes effect on the next
  * stroke with nothing to propagate.
  */
-class PaintPalette : public DeletableBase<PaintPalette>
+class PaintPalette : public DeletableBase<PaintPalette>,
+                     public AnimatedBase<PaintPalette>
 {
 public:
     WIRE_TYPE_IDENTITY(PaintPalette);
@@ -5320,22 +5321,35 @@ public:
  * ── click and hold ───────────────────────────────────────────────────────
  *
  * A stepper pressed and held steps again, and again, and there is no clock to
- * step it on: while the button is held still no input arrives. The tick that
- * does exist is the FRAME -- a node that answers Animating() is visited every
- * composition (Drawable_::Animating, and TextLabel::BindFps is the precedent
- * for a node doing work in that visit). PaintRepeat is that node; it asks this
- * palette to Tick() once per frame while something is held.
+ * step it on: while the button is held still no input arrives. So the palette
+ * claims Animated (ontology/Animated.h) and says "I am not finished, come
+ * back"; whatever drives that family steps it, and in this session that is the
+ * frame edge (Surface::ConsumeFrames).
  *
- * COUNTED IN FRAMES, NOT MILLISECONDS, for the same reason HeldCharge counts
- * accesses: the frame is the only clock, and a rate stated in its own units
- * cannot drift from it. The hold itself is a HeldCharge with a LARGE capacity,
- * spent one per frame: a real release ends it, a stated release (the mask)
- * ends it, and a pointer that left the page and never came back ends it after
- * the capacity -- which is the "much higher threshold" a mode wants, against
- * the four a stroke gets.
+ * STATED IN MILLISECONDS, which is a correction. This used to be counted in
+ * FRAMES -- 22 before the first repeat, then one every 3 -- on the reasoning
+ * that the frame was the only clock and a rate in its own units could not drift
+ * from it. That is true of the clock and false of the HAND: a stepper the user
+ * holds should step twenty times a second on a 30Hz display and on a 144Hz one,
+ * and in frames it steps at a third the speed on one and at twice on the other.
+ * AnimatedBase hands over a measured interval for exactly this, so the rate is
+ * written the way it is meant.
+ *
+ * THE HOLD ITSELF is a HeldCharge with a large capacity, and it is spent on the
+ * same clock rather than per visit. The charge is a count of ACCESSES, so
+ * spending one per visit made "how long an unconfirmed press survives" depend
+ * on the display's rate and, with two surfaces driving, on how many windows
+ * happened to be open. One access per nominal frame's worth of elapsed time
+ * keeps the capacity meaning what its callers set it for: a real release ends
+ * the hold, a stated release (the mask) ends it, and a pointer that left the
+ * page and never came back ends it after the capacity -- the "much higher
+ * threshold" a mode wants, against the four a stroke gets.
  */
-    static constexpr uint32_t REPEAT_DELAY_FRAMES = 22;   // ~360ms before the first repeat
-    static constexpr uint32_t REPEAT_EVERY_FRAMES = 3;    // then ~20 a second
+    static constexpr double REPEAT_DELAY_MS = 360.0;  // before the first repeat
+    static constexpr double REPEAT_EVERY_MS = 50.0;   // then twenty a second
+    // One HeldCharge access per nominal frame, so a capacity set in "frames"
+    // still means the span of time its callers meant. See SetHoldCapacity.
+    static constexpr double HOLD_ACCESS_MS  = 16.0;
 
     // Called after Apply() accepted a press: a delta entry becomes the held one.
     void Hold(ETCS::RID node)
@@ -5345,23 +5359,54 @@ public:
         const Kind k = it->second.kind;
         if (k != Kind::RadiusDelta && k != Kind::AlphaDelta && k != Kind::Zoom) return;
         m_held = it->first;
-        m_held_frames = 0;
+        m_held_ms   = 0.0;
+        m_repeat_ms = 0.0;
+        m_access_ms = 0.0;
         m_hold.Press();
     }
     void Release() { m_held = 0; m_hold.Release(); }
     bool holding() const { return m_held != 0; }
 
-    // One frame of holding. The ACCESS that spends the charge -- see HeldCharge.
-    void Tick()
+    // Nothing held is the settled state, and it is what this costs then: one
+    // call. See ontology/Animated.h on why the question is asked every visit.
+    bool AnimatingConcrete() override { return m_held != 0; }
+
+    /*
+ * ONE INTERVAL OF HOLDING.
+ *
+ * The delay and the repeat are two accumulators rather than one elapsed total
+ * compared against a formula, because the second one has to survive a step: a
+ * single `m_held_ms` tested modulo the period fires twice on a long frame and
+ * skips one on a short one, which is the frame-counted bug in a new spelling.
+ *
+ * AT MOST ONE STEP PER VISIT, deliberately. A stall the cap did not absorb
+ * could otherwise owe several repeats at once and deliver them as a jump; a
+ * stepper is a HAND-driven control, and the honest answer to "the page was
+ * away for a moment" is that the hand got fewer steps, not that it gets them
+ * all back in one frame.
+ */
+    void AdvanceConcrete(double dt_ms) override
     {
-        if (m_held == 0) return;
-        if (!m_hold.Held()) { ETCS_LOG("PaintPalette", "hold lapsed -- released."); Release(); return; }
-        ++m_held_frames;
-        if (m_held_frames < REPEAT_DELAY_FRAMES) return;
-        if ((m_held_frames - REPEAT_DELAY_FRAMES) % REPEAT_EVERY_FRAMES == 0) Apply(m_held);
+        m_access_ms += dt_ms;
+        while (m_access_ms >= HOLD_ACCESS_MS)
+        {
+            m_access_ms -= HOLD_ACCESS_MS;
+            if (m_hold.Held()) continue;
+            ETCS_LOG("PaintPalette", "hold lapsed -- released.");
+            Release();
+            return;
+        }
+
+        m_held_ms += dt_ms;
+        if (m_held_ms < REPEAT_DELAY_MS) return;
+        m_repeat_ms += dt_ms;
+        if (m_repeat_ms < REPEAT_EVERY_MS) return;
+        m_repeat_ms = 0.0;
+        Apply(m_held);
     }
 
-    // Frames of unconfirmed holding a stepper survives. See HeldCharge.
+    // How long an unconfirmed hold survives, in nominal frames. See HeldCharge
+    // and HOLD_ACCESS_MS -- the unit is the caller's, the clock is not.
     void SetHoldCapacity(uint16_t n) { m_hold.SetCapacity(n); }
 
     /*
@@ -5771,10 +5816,13 @@ private:
     std::unordered_map<ETCS::RID, Entry> m_entries;
     std::unordered_map<ETCS::RID, ETCS::RID> m_hover_labels;   // entry -> caption
     ETCS::RID m_hover_label_shown = 0;
-    // The held stepper, if any -- see Hold/Tick. 600 frames is ten seconds at
-    // sixty: a hold whose release was lost to the page ends on its own then.
+    // The held stepper, if any -- see Hold/AdvanceConcrete. 600 accesses at one
+    // per nominal frame is ten seconds: a hold whose release was lost to the
+    // page ends on its own then, whatever the display is actually doing.
     ETCS::RID  m_held = 0;
-    uint32_t   m_held_frames = 0;
+    double     m_held_ms   = 0.0;   // since the press -- gates the first repeat
+    double     m_repeat_ms = 0.0;   // since the last repeat -- gates the rest
+    double     m_access_ms = 0.0;   // remainder owed to the hold charge
     HeldCharge m_hold{ 600 };
     PaintTool* m_tool = nullptr;
     PaintSurface* m_surface = nullptr;
@@ -5826,7 +5874,8 @@ private:
  * of the four may be 0 in a script that does not want that affordance, and the
  * row still works for the ones it declared.
  */
-class PaintLayerPanel : public DeletableBase<PaintLayerPanel>
+class PaintLayerPanel : public DeletableBase<PaintLayerPanel>,
+                        public AnimatedBase<PaintLayerPanel>
 {
 public:
     WIRE_TYPE_IDENTITY(PaintLayerPanel);
@@ -6293,10 +6342,10 @@ public:
     /*
  * ── the fade, one frame at a time ────────────────────────────────────────
  *
- * Called by the frame edge that already lends the palette its clock
- * (PaintRepeat), and only while there is somewhere left to go: Fading is what
- * keeps that edge from re-compositing the document sixty times a second for a
- * dim that has arrived.
+ * The panel claims Animated (ontology/Animated.h) and is stepped by whatever
+ * drives that family, and only while there is somewhere left to go: Animating
+ * is what keeps the driver from re-compositing the document sixty times a
+ * second for a dim that has arrived.
  *
  * THE SUBJECT SURVIVES THE FADE OUT. On the way in it is the layer whose eye is
  * under the pointer; on the way out there is no layer under the pointer at all,
@@ -6307,15 +6356,23 @@ public:
  */
     bool Fading() const { return m_dim_now != m_dim_target; }
 
-    void Tick()
+    bool AnimatingConcrete() override { return m_document && Fading(); }
+
+    /*
+ * A DURATION, NOT A PER-VISIT STEP. This used to move 0.085 per frame, which
+ * read as a fade only because the display happened to be running at sixty --
+ * on a 144Hz panel the same code is a flicker and on a 30Hz one it is a slide.
+ * The whole swing takes FADE_FULL_MS whatever the rate; the isolation depth is
+ * a fraction of that swing, so the actual fade is proportionally shorter and
+ * the two ends stay in step with each other, which is what makes leaving an eye
+ * feel like the reverse of arriving at one.
+ */
+    void AdvanceConcrete(double dt_ms) override
     {
-        if (!m_document || !Fading()) return;
-        // Per FRAME rather than per millisecond: this rides the compositor's
-        // own edge, so a frame is the unit that exists here. About nine of them
-        // from full to dim, which reads as a fade rather than as a jump.
-        constexpr float STEP = 0.085f;
-        if (m_dim_now < m_dim_target) m_dim_now = std::min(m_dim_target, m_dim_now + STEP);
-        else                          m_dim_now = std::max(m_dim_target, m_dim_now - STEP);
+        constexpr float FADE_FULL_MS = 150.0f;
+        const float step = static_cast<float>(dt_ms) / FADE_FULL_MS;
+        if (m_dim_now < m_dim_target) m_dim_now = std::min(m_dim_target, m_dim_now + step);
+        else                          m_dim_now = std::max(m_dim_target, m_dim_now - step);
         m_document->IsolateLayer(m_subject, m_dim_now);
         if (m_dim_now >= 1.0f) m_subject = 0;
         repaint();
@@ -9300,80 +9357,6 @@ private:
  */
 
 
-/*
- * ── PaintRepeat ──────────────────────────────────────────────────────────
- *
- * THE FRAME, LENT TO THE PALETTE AS A CLOCK. It draws nothing and has no extent;
- * it exists to be VISITED. While the palette has a stepper held it answers yes
- * to Animating(), which keeps the compositor above it composing every frame,
- * and each of those compositions calls DrawInto -- which is where it asks the
- * palette to Tick(). With nothing held it answers no and costs nothing, and the
- * bar settles like any other still picture.
- *
- * A child of the bar, spawned by the toolbar script beside the buttons it
- * serves. Not a thread, not a timer: there is no clock in this page but the
- * frame, and this is the one way in the tree to be told when it happens.
- */
-class PaintRepeat : public Drawable2DBase<PaintRepeat>,
-                    public DeletableBase<PaintRepeat>
-{
-public:
-    WIRE_TYPE_IDENTITY(PaintRepeat);
-
-    int32_t m_order = 0;
-    bool operator<(const PaintRepeat& o) const { return m_order < o.m_order; }
-    int32_t Order() override { return m_order; }
-    bool DeleteConcrete() override { return true; }
-
-    void BindPalette(ETCS::RID palette) { m_palette = palette; }
-
-    /*
- * AND THE LAYER WINDOW'S FADE, for the same reason the palette's repeat is
- * here: it is a thing that has to advance on a clock, and the frame edge is the
- * only clock in this module. Two callers rather than one type per caller --
- * what this draws is still nothing.
- */
-    void BindPanel(ETCS::RID panel) { m_panel = panel; }
-
-    bool Animating() override
-    {
-        PaintPalette* p = palette();
-        if (p && p->holding()) return true;
-        PaintLayerPanel* l = panel();
-        return l && l->Fading();
-    }
-
-    Rect2D BoundsConcrete() override { return Rect2D{ 0, 0, 0, 0 }; }
-    bool ContainsLocalConcrete(int32_t, int32_t) override { return false; }
-    WindowSize GetSizeConcrete() override { return WindowSize{ 0, 0 }; }
-    // A Drawable2D is a Surface; this one has no pixels and takes no drawing.
-    void ClearConcrete(float, float, float, float) override {}
-    void DrawRectConcrete(int32_t, int32_t, uint32_t, uint32_t,
-                          float, float, float, float) override {}
-    void BlitConcrete(Surface_*, int32_t, int32_t, uint32_t, uint32_t, float) override {}
-    void DrawIntoConcrete(Surface_*) override
-    {
-        if (PaintPalette* p = palette()) p->Tick();
-        if (PaintLayerPanel* l = panel()) l->Tick();
-    }
-
-private:
-    PaintPalette* palette()
-    {
-        if (m_palette == 0) return nullptr;
-        ETCS::Entity* raw = paint_resolve_tag("PaintPalette", m_palette);
-        return raw ? static_cast<PaintPalette*>(raw->getTrueType()) : nullptr;
-    }
-    PaintLayerPanel* panel()
-    {
-        if (m_panel == 0) return nullptr;
-        ETCS::Entity* raw = paint_resolve_tag("PaintLayerPanel", m_panel);
-        return raw ? static_cast<PaintLayerPanel*>(raw->getTrueType()) : nullptr;
-    }
-    ETCS::RID m_palette = 0;
-    ETCS::RID m_panel   = 0;
-};
-
 class PaintRouter : public DeletableBase<PaintRouter>
 {
 public:
@@ -10360,26 +10343,11 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddSize, (ETCS::RID, node), (float, radius)
 }
 
 // SetHoldCapacity <frames> -- how long a held stepper keeps stepping with no
-// release in sight. 600 by default; see PaintPalette::Tick.
+// release in sight. 600 by default; see PaintPalette::AdvanceConcrete.
 DEFINE_WORK_FUNC_TYPED(PaintPalette, SetHoldCapacity, (int32_t, n))
 {
     (void)ctx;
     self.SetHoldCapacity(static_cast<uint16_t>(n < 1 ? 1 : n));
-}
-
-// PaintRepeat: BindPalette <rid> -- whose steppers this frame-visit serves.
-// BindPanel <panel> -- the layer window's fade, advanced on the same frame
-// edge as the palette's repeat (PaintRepeat::BindPanel).
-DEFINE_WORK_FUNC_TYPED(PaintRepeat, BindPanel, (ETCS::RID, panel))
-{
-    (void)ctx;
-    self.BindPanel(panel);
-}
-
-DEFINE_WORK_FUNC_TYPED(PaintRepeat, BindPalette, (ETCS::RID, palette))
-{
-    (void)ctx;
-    self.BindPalette(palette);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -10606,12 +10574,6 @@ DEFINE_WORK_FUNC(PaintPalette, Report)
 {
     (void)ctx; (void)data;
     self.Report();
-}
-
-DEFINE_WORK_FUNC(PaintRepeat, Delete)
-{
-    (void)ctx; (void)data;
-    self.DeleteConcrete();
 }
 
 DEFINE_WORK_FUNC(PaintPalette, Delete)

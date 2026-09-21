@@ -369,6 +369,9 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
     // frame time, and folding it in would drag the rate down by however
     // long the script took to get here.
     std::chrono::steady_clock::time_point first{};
+    // Hoisted out of the loop, not rebuilt per frame: the walk below refills it
+    // every tick, and this is a frame-rate path.
+    std::vector<Animated_*> animated;
 
     while (stream.isOpen())
     {
@@ -395,6 +398,39 @@ DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
                      "through a torn-down graph.");
             break;
         }
+
+        /*
+         * THE CAUSAL EDGE, AND IT RUNS BEFORE THE DRAWING ONE.
+         *
+         * Everything that claims Animated is stepped here, by family and not by
+         * name: this loop has no list of animated things and must not acquire
+         * one, because claiming the family is already the registration and a
+         * second list would be a copy of it kept current by remembering to.
+         *
+         * BEFORE RecomposeBound, and that ordering is the point of the family
+         * existing. A stepper that lives inside the compose walk changes DURING
+         * the walk that draws it, so the dirty mark it leaves is consumed by
+         * that same frame and there is nothing left to schedule the next one --
+         * which is why such a node previously had to answer a standing "I am
+         * still moving" and keep the whole path above it composing forever.
+         * Stepped first, the mark lands before anything looks, and the ordinary
+         * dirty gate carries it.
+         *
+         * UNCONDITIONAL, because Animating() is the cheap half of the family's
+         * two questions (ontology/Animated.h) and a settled entity costs one
+         * virtual call. The alternative -- keeping a live set of who is
+         * currently moving -- is state that has to be corrected every time an
+         * animation starts or ends, to save a call that is already nothing.
+         *
+         * TWO SURFACES BOTH DO THIS and that is safe rather than merely
+         * tolerated: the interval is measured, so the second visit of a pair
+         * measures almost no time and advances almost nothing
+         * (ontology/AnimatedBase.h). Nothing here designates a driver.
+         */
+        animated.clear();
+        ETCS::collect_family<Animated_>("Animated", animated);
+        for (Animated_* a : animated)
+            if (a) a->Advance();
 
         // Everything Vulkan happens here, on this one thread. Present pulls
         // the current composition itself -- retained, so a script that drew

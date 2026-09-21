@@ -222,13 +222,11 @@ run PaintProvider/scripts/paint_layers.etcs panel=layers_pane doc=doc list=layer
 layers.BindSurface(@canvas)
 layers.Refresh()
 
-# THE CLOCK THE FADE RIDES. PaintRepeat draws nothing; it exists because the
-# compose walk is the only per-frame edge in this module, and a thing that has
-# to advance on one has to be IN the tree to be reached. The toolbar spawns its
-# own for the palette's click-and-hold repeat; this one advances the layer
-# window's isolation fade (PaintLayerPanel::Tick).
-sheet_root.spawn(PaintProvider::PaintRepeat layers_pump)
-layers_pump.BindPanel(@layers)
+# THE CLOCK THE FADE RIDES IS NOT SPAWNED HERE ANY MORE. The isolation fade used
+# to need a node in the tree -- a drawable that drew nothing, present only so the
+# compose walk would reach it -- because the walk was the only per-frame edge in
+# this module. The panel claims Animated now (ontology/Animated.h), so it is
+# stepped by whatever drives that family and the window needs nothing beside it.
 
 # ── the colour wheel's pane ──────────────────────────────────────────────────
 #

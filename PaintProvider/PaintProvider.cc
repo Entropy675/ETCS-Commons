@@ -12,7 +12,7 @@
 // thread / OS event pump affinity).
 ETCS_MODULE_EXPORT_MAIN(PaintProvider,
     "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette "
-    "PaintRouter PaintLayerPanel PaintColorWheel PaintRepeat PaintCanvasMenu PaintPages")
+    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages")
 
 // SetKind is what makes one tool eight: radius/colour/hardness vary
 // independently of it, and the kind is the shape of the whole gesture rather
@@ -79,10 +79,6 @@ ETCS_TAG_BLOCK_BASIC(PaintPalette,
 // The pages of this session, kept in a database -- see PaintPages.
 ETCS_TAG_BLOCK_BASIC(PaintPages,
     Create, BindSurface, Save, Load, New, Next, Prev, List, Delete, Destroy)
-
-// The frame, lent to the palette as a clock -- see PaintRepeat.
-ETCS_TAG_BLOCK_BASIC(PaintRepeat,
-    BindPalette, BindPanel, Delete)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
