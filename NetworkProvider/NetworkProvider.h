@@ -454,10 +454,17 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             // oversized response had do_send reading PAST the buffer.
             // Everything below is clamped to what SendBuffer holds.
             //
-            // SendBuffer() is fixed (ETCS_NETWORK_MAX_HEADER_SIZE * 4):
-            // THAT macro is the knob for large assets, not NBuffer. The
-            // real fix for unbounded assets is a chunked send loop feeding
-            // several IOSubmission::Send calls, not yet wired here.
+            // SendBuffer() is fixed at ETCS_NETWORK_MAX_ASSET_SIZE (8 MiB):
+            // THAT macro is the knob for large assets, not NBuffer and not
+            // ETCS_NETWORK_MAX_HEADER_SIZE, which this comment used to name
+            // from before the two were split apart. Worth being exact about,
+            // because the two differ by 32x and believing the old number is
+            // believing this server cannot serve a 2 MiB wasm -- it can, and
+            // the split was made so it could. The real fix for UNBOUNDED
+            // assets is still a chunked send loop feeding several
+            // IOSubmission::Send calls, not yet wired here; until then the
+            // macro is a preallocation as well as a ceiling, which is the
+            // whole reason it is not simply enormous.
             const size_t cap = c->SendBuffer().size();
             const int hdr_fmt = snprintf(c->SendBuffer().data(), cap,
                 "HTTP/1.1 200 OK\r\n"
@@ -1220,6 +1227,22 @@ DEFINE_WORK_FUNC(FileHtmlPage, MountFile)
     // No log here: MountFile logs the mount it made, or the exact reason it made
     // none. A second line saying it was asked for would only ever agree.
     self.MountFile(url_path, disk_path);
+}
+
+// Reports the count because 0 is the one answer a script can act on, and it is
+// the same reason LoadFromDisk's own work function reports one: an unreadable
+// path loads nothing and then 404s every request under the prefix, with the
+// tree still insisting it mounted.
+DEFINE_WORK_FUNC(FileHtmlPage, MountTree)
+{
+    (void)ctx;
+    std::string url_segment;
+    std::string disk_path;
+    data >> url_segment;
+    data >> disk_path;
+    const size_t taken = self.MountTree(url_segment, disk_path);
+    data.reset();
+    data << taken;
 }
 
 DEFINE_WORK_FUNC(FileHtmlPage, EnsureFallback)

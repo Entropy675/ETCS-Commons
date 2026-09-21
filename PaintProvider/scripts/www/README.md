@@ -3,6 +3,19 @@
     cd modules/PaintProvider/scripts && etcs serve_paint.etcs
     then open https://localhost:8443/
 
+Or as part of the whole site, at `/paint/` rather than at the root:
+
+    etcs scripts/run_website.etcs          # http://localhost:8080/paint/
+    etcs scripts/run_tls_website.etcs      # https://localhost:8443/paint/
+
+Those two mount this directory with `FileHtmlPage::MountTree`, which gives it a
+url prefix of its own — necessary because this page brings its own `index.html`
+and the site already has one. Everything the page fetches is relative, so it
+does not learn it was mounted; its one absolute link (`href="/"`) leads back to
+the site's landing page, which is where it reads like it leads. The two
+isolation headers are the same pair `serve_paint.etcs` sets, hoisted to the
+server because there is one server.
+
 The page holds the runtime, two canvases and the terminal:
 
     #canvas    1024x768   the sheet -- strokes land here

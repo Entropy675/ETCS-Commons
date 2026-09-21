@@ -16,8 +16,14 @@
   ],
   "_scripts": [
     "Staged into the browser's filesystem by the page, under these names, before",
-    "main() runs -- so each one must also answer over HTTP (../serve_paint.etcs",
-    "mounts them). A NAME MAY BE A PATH: the page creates the directories first",
+    "main() runs -- so each one must also answer over HTTP. THREE scripts mount",
+    "them and this list is the source of truth for all three: ../serve_paint.etcs",
+    "at the root of its own server, and ETCS's scripts/run_website.etcs and",
+    "run_tls_website.etcs under /paint/ on the whole site. Adding a script here",
+    "means adding one mount line to each -- a name the page asks for and a server",
+    "does not mount is a 404, and render_frames.etcs is the frame pump, so losing",
+    "it leaves a black canvas on a runtime that is otherwise working perfectly.",
+    "A NAME MAY BE A PATH: the page creates the directories first",
     "(FS.mkdirTree), which is what lets a script be staged at the same relative",
     "path the OS side reads it from, so boot_paint_panels.etcs's `detach` and",
     "`run` lines are spelled once for both substrates rather than twice."

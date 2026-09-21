@@ -298,6 +298,59 @@ public:
         return true;
     }
 
+    // --- Serve a whole DIRECTORY at one url prefix ---
+    //
+    // LoadFromDisk takes the names it finds and answers them at THIS node's own
+    // level. There was no way to say "that directory, but under /paint", which
+    // is the shape a second SELF-CONTAINED site needs: one that brings its own
+    // index.html. Loaded flat beside the first, the two index.html files land on
+    // the same name and which one wins is attach order -- the same fragility
+    // run_website.etcs's header already has to explain about "/".
+    //
+    // So: one named child, LoadFromDisk'd into. Resolution needs nothing new --
+    // a Directory child already answers its own index.html for a bare path
+    // (see ResolveConcrete's Directory branch), so /paint and /paint/ both
+    // work, and every relative url inside that page resolves under the prefix
+    // without the page knowing it was mounted.
+    //
+    // WHY NOT MountFile PER ASSET. The paint page is ~9 MB across ~20 files in
+    // four directories, and its own modules.json is the source of truth for
+    // which ones -- a hand-written mount list here would be a second copy of
+    // that list, silently stale the first time a provider is added to the page.
+    //
+    // Returns the entry count LoadFromDisk took, so the caller can compare it
+    // against what it expected; 0 means the directory was unreadable or empty
+    // and every path under the prefix will 404, which LoadFromDisk itself logs.
+    size_t MountTree(const std::string& url_segment, const std::string& disk_path)
+    {
+        if (url_segment.empty() || url_segment.find('/') != std::string::npos)
+        {
+            ETCS_LOG("FileHtmlPage", "MountTree: '" << url_segment << "' is not a single "
+                     "path segment -- a prefix is one name, and nesting it here would "
+                     "duplicate MountFile's segment walk. Nothing mounted.");
+            return 0;
+        }
+
+        kind_ = Kind::Directory;
+
+        // Replace rather than shadow: two children under one name would leave
+        // the loser resident for the process's life, holding its whole tree of
+        // file contents, reachable from nothing.
+        auto existing = children_by_name_.find(url_segment);
+        if (existing != children_by_name_.end())
+            ETCS_LOG("FileHtmlPage", "MountTree: '/" << url_segment
+                     << "' replaces an entry already at that path.");
+
+        FileHtmlPage* child = addTag<FileHtmlPage>();
+        child->segment_name_ = url_segment;
+        const size_t taken = child->LoadFromDisk(disk_path);
+        children_by_name_[url_segment] = child;
+
+        ETCS_LOG("FileHtmlPage", "MountTree: '" << disk_path << "' -> '/" << url_segment
+                 << "/' (" << taken << " entries) under RID:" << getRID());
+        return taken;
+    }
+
     /*
  * A PATH THAT STILL SAYS ACE_ROOT IS A VERSION SKEW, NOT A MISSING FILE.
  *
