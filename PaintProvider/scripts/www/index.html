@@ -69,7 +69,10 @@
        node inside it, so a DOM control anywhere else would sit on something
        that is drawn. Styled as the terminal's chrome, not as the toolbar's
        slices -- they are the page's, and the page is monospace on --panel. */
-    header .files { display: flex; align-items: center; gap: 8px; }
+    /* Beside the brand, not in the middle: the header is space-between with
+       the status on the right, and margin-right:auto is what keeps the controls
+       on the left instead of splitting the difference. */
+    header .files { display: flex; align-items: center; gap: 8px; margin-right: auto; }
     header .files input[type=file] { display: none; }
     header .btn {
       color: var(--fg); background: transparent; border: 1px solid var(--line);
@@ -166,14 +169,15 @@
   <div id="layout">
     <header>
       <a class="brand" href="/" target="_top">ETCS Paint</a>
-      <!-- Raw images in and out: a PAM/PPM file becomes a layer, and the
-           composite comes back as a PAM. The page only moves bytes between the
-           browser and the runtime's filesystem; the verbs do the work (see the
-           script below, and README.md). -->
+      <!-- Images in and out: a PNG/JPEG/BMP/GIF/TGA/PAM file becomes a layer
+           or a new canvas (the canvas asks which), and the composite comes back
+           as a PNG. The page only moves bytes between the browser and the
+           runtime's filesystem; the verbs do the work (see the script below,
+           and README.md). -->
       <span class="files">
-        <label class="btn" for="upload" title="PAM (RGB_ALPHA or RGB) or PPM, 8-bit -- becomes a new layer">upload</label>
-        <input id="upload" type="file" accept=".pam,.ppm,image/x-portable-arbitrarymap,image/x-portable-pixmap"/>
-        <button id="download" class="btn" type="button" title="the visible layers, composited, as PAM">download</button>
+        <label class="btn" for="upload" title="PNG, JPEG, BMP, GIF, TGA, PAM or PPM -- a new layer or a new canvas">upload</label>
+        <input id="upload" type="file" accept=".png,.jpg,.jpeg,.bmp,.gif,.tga,.pam,.ppm,image/png,image/jpeg"/>
+        <button id="download" class="btn" type="button" title="the visible layers, composited, as PNG">download</button>
       </span>
       <span id="status">loading…</span>
     </header>
@@ -372,10 +376,11 @@
       const path = '/uploads/' + file.name.replace(/[\/\\]/g, '_');
       try { fs.mkdirTree('/uploads'); } catch (e) {}
       fs.writeFile(path, bytes);
-      callVerb('doc', 'ImportImage', path);
-      // The document changed; the surface shows it when asked, as after every
-      // scripted change (canvas.Render() in boot_paint_panels.etcs).
-      callVerb('canvas', 'Render', '');
+      // Offered, not imported: the canvas asks whether the picture is a new
+      // layer or a new canvas (PaintCanvasMenu::OfferImport opens the prompt
+      // from paint_import.etcs), and acts on the answer -- the render and the
+      // layer window's refresh follow from that press, not from here.
+      callVerb('menu', 'OfferImport', path);
     } catch (e) {
       log('[etcs] upload failed: ' + e + '\n', 'err');
     }
@@ -387,14 +392,14 @@
     if (!runtimeUp()) { log('[etcs] download: runtime is not up yet\n', 'err'); return; }
     try {
       const fs = etcsFS();
-      const path = '/exports/paint.pam';
+      const path = '/exports/paint.png';
       try { fs.mkdirTree('/exports'); } catch (e) {}
       try { fs.unlink(path); } catch (e) {}     // a stale file must not pass for this export
       callVerb('doc', 'ExportImage', path);     // says in the terminal if it refused
       const bytes = fs.readFile(path);
-      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/x-portable-arbitrarymap' }));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
       const a = document.createElement('a');
-      a.href = url; a.download = 'paint.pam';
+      a.href = url; a.download = 'paint.png';
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
     } catch (e) {

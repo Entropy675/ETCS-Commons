@@ -141,13 +141,22 @@ with nothing bound the ruler falls back to the inside of the pane, which is all 
 page with no margin can have. The band sizes itself per side from the room the page
 left (the toolbar takes the bottom strip, so there is no bottom band) and measures
 its own labels, so the numbers are not clipped by a provider with a wider advance.
+The margin is CLEARED to a fixed width (64px) each frame even though the band
+follows the labels: the band is 36px at 100% and 31px at 125%, and a clear that
+shrank with it left the previous width's pixels standing -- the stray "1" in front
+of the extent at some zooms was the corner label drawn twice, five pixels apart. A
+tick label that would start under the extent's tail is skipped for the same reason.
 
 ## Selecting, and moving what is selected
 
 The `select` slice sits between `brush` and `line` in the bar, which is now
-sixteen 60px slices (960x64, 32px in from either edge of the 1024 sheet; rect and oval share one `shape` slice whose arrow steps rect, oval, triangle, diamond, star). One
-tool, four ways of drawing the boundary — the word under `select` says which,
-and the arrow at the top of the slice steps through them:
+sixteen 60px slices (960x64, 32px in from either edge of the 1024 sheet; rect and
+oval share one `shape` slice whose arrow steps rect, oval, triangle, diamond, star,
+with the current outline's name under the word in gold, as `select`'s mode is
+under its word; the two steppers at the end carry `size` and `opacity` captions
+the same way, always shown). One tool, four ways of drawing the boundary — the
+word under `select` says which, and the arrow at the top of the slice steps
+through them:
 
     rect     the two corners of the drag, as the rect tool reads them
     oval     inscribed in the same drag, as the ellipse tool is
@@ -197,13 +206,14 @@ All of it is reachable without a pointer, in document coordinates:
 `MoveSelection` is the carry in one call, for a script that knows the offset;
 two `Report`s either side of it are the assertion that the ink moved.
 
-## Raw images in and out
+## Images in and out
 
-Three verbs on the document, each taking a path:
+Four verbs on the document, each taking a path:
 
-    doc.ImportImage(/path/to/photo.pam)    # a new layer, sized to the image, on top, active
-    doc.ExportImage(/path/to/out.pam)      # the visible layers composited, alpha included
-    doc.ExportLayer(/path/to/layer.pam)    # the active layer alone, with its alpha
+    doc.ImportImage(/path/to/photo.png)    # a new layer, sized to the image, on top, active
+    doc.ImportCanvas(/path/to/photo.png)   # a new page the image's size, with the image as a layer
+    doc.ExportImage(/path/to/out.png)      # the visible layers composited, alpha included
+    doc.ExportLayer(/path/to/layer.png)    # the active layer alone, with its alpha
     canvas.Render()                        # then show it, as after any scripted change
 
 They work from the terminal on both substrates with no change of spelling. That is
@@ -211,29 +221,36 @@ the design: the browser hands the page a `File` and the desktop hands the shell 
 path, and those are two ways of arriving at bytes at a name the process can open.
 The page already stages every script it boots into the emscripten filesystem
 (`preRun`: `FS.mkdirTree`, `FS.writeFile`), so an upload is one more file written
-the same way and a download is one file read back. One import and one export, no
-`#ifdef` in either, and the page holds no image code — it is a file proxy
-(`PaintDocument::ImportImage`, and the PAM note above `PaintImage`).
+the same way and a download is one file read back. The page holds no image code —
+it is a file proxy (`PaintDocument::ImportImage`, and the format note above
+`PaintImage`).
 
-The header has the two controls: **upload** writes the chosen file to
-`/uploads/<name>` and calls `doc.ImportImage` then `canvas.Render`; **download**
-calls `doc.ExportImage(/exports/paint.pam)`, reads the file back and hands it to
-the browser as `paint.pam`. Every verb says in the terminal what it did — path,
+**In**: PNG, JPEG, BMP, GIF (first frame), TGA — read by `stb_image`, vendored
+into the module by its manifest (`manifests/PaintProvider.json`, fetched by `ace`
+to `modules/PaintProvider/stb/`) — and PAM (`P7`, `RGB_ALPHA` or `RGB`) or PPM
+(`P6`), read by the module's own parser. Everything lands as 8-bit RGBA
+(`stbi_load_from_memory(..., 4)`), the `Pixels_` format. **Out**: PNG when the
+path ends in `.png`, PAM otherwise. PAM stays because it is the page store's
+blob format (the pages table keeps each layer as its raw bytes behind a text
+header, no decode on load); PNG is for files a person opens elsewhere. Anything
+else — 16-bit, a format stb does not know, a side over 16384 — is refused with a
+line saying what was found and what is accepted, and so is a picture that would
+not fit the browser's fixed heap (see the note under the gear).
+
+The header's two controls sit beside the brand. **upload** writes the chosen file
+to `/uploads/<name>` and calls `menu.OfferImport(<path>)`, which opens a prompt
+over the paper asking what the picture is for: **new layer** (`ImportImage`),
+**new canvas** (`ImportCanvas` — the page takes the image's size, every layer is
+cleared, and the image goes on as a layer above the paper so its transparency is
+kept and undoing it is still the row's delete), or **cancel**. The prompt is
+`PaintProvider/scripts/paint_import.etcs`, a popup like the gear's menu: its
+buttons are `palette.AddCall(@node, @menu, PaintCanvasMenu.ImportAsLayer)` and
+so on, it is opened by `PaintPalette::OpenPopup` rather than by a press, and a
+press anywhere else puts it away. With no prompt bound (a native session driven
+from the terminal) `OfferImport` imports as a layer at once. **download** calls
+`doc.ExportImage(/exports/paint.png)`, reads the file back and hands it to the
+browser as `paint.png`. Every verb says in the terminal what it did — path,
 size, layer — or why it did not.
-
-The format is PAM (`P7`, `TUPLTYPE RGB_ALPHA`, `MAXVAL 255`) out, and PAM
-(`RGB_ALPHA` or `RGB`) or PPM (`P6`) in, 8 bits per channel. That is the pixel
-buffer with a text header — literally the raw pixels `Pixels_` stores — and GIMP,
-ImageMagick and netpbm open and write it:
-
-    convert photo.png -depth 8 photo.pam     # -depth 8: ImageMagick writes 16-bit PAM otherwise
-    convert paint.pam paint.png
-
-There is no image codec in `libs/`, and vendoring one is a decision about the tree
-rather than about this feature. PNG is one header (stb_image / lodepng) away and
-drops in at `paint_pam_read`: a second reader filling the same `PaintImage` is all a
-second format costs. Anything else — 16-bit, grayscale, a PNG handed to the upload
-button — is refused with a line saying what was found and what is accepted.
 
 An import is a layer spawned the way the boot script spawns one (`addTag<PaintLayer>`
 is what `doc.spawn(PaintProvider::PaintLayer)` reduces to), so it is the document's
@@ -244,6 +261,30 @@ layers at their opacity, a lift in flight at its depth, onto a transparent page 
 the hover dim, not the selection outline, and not the text boxes, which are strings
 drawn through a `Glyphs` target by RID; the export log counts those so a file that
 lost its captions says so.
+
+## The layer window
+
+Top-right of the paper: a title bar and seven rows of eye / name / delete, built by
+`PaintProvider/scripts/paint_layers.etcs` on the toolbar's bargain (`PaintLayerPanel`
+maps nodes to layer actions and owns none of the drawing). The highlighted row is
+the layer the brush is on; a press on another row makes that the drawing layer, the
+eye toggles visibility, the red box removes the layer, and dragging a row onto
+another restacks. Hovering a row isolates its layer (everything else dims to 0.25)
+so a layer can be found by looking.
+
+The title bar is the handle: press it and the window follows the pointer until the
+release (`PaintLayerPanel::BindTitle` / `BindWindow`). There is no close button, on
+purpose — the window is the only thing that says which layer is active, and a window
+that can be dismissed will be. The bottom row has no delete either: the base layer
+is the page's ground and `PaintDocument::RemoveLayer` refuses it (`ClearLayer`
+empties it), so the panel hides a button that would only ever say no.
+
+The window follows the document rather than being told: an import, a page switch
+or a resize changes the stack with no press on a row, and the next input event
+re-reads it (`PaintInput` compares `PaintDocument::revision`). By verb:
+
+    layers.SelectRow(1)   layers.ToggleRow(0)   layers.RemoveRow(0)   layers.MoveRow(0, 1)
+    layers.Report()
 
 ## The gear: a new canvas, a resize, save and load
 
@@ -280,13 +321,22 @@ away never leaves a dab.
 `save` and `load` cannot finish in the runtime -- a path becomes a file the user
 can see only through the page -- so the verbs raise a DOM event (`etcs-menu`)
 and `index.html` answers with the same download and upload the header buttons
-run. `load` clicks the file input from a call proxied off the router's Worker;
-a file dialog needs transient user activation, and whether the canvas press
-that opened the menu still counts by then is the browser's decision and is
-untested from this path. The header's `upload` is the fallback that always
-works. On the desktop the two buttons log the verb to type instead
-(`doc.ExportImage(<path>)` / `doc.ImportImage(<path>)`), since no file dialog
-exists there yet.
+run (so `load` ends in the same layer-or-canvas prompt). `load` clicks the file
+input from a call proxied off the router's Worker; a file dialog needs transient
+user activation, and whether the canvas press that opened the menu still counts
+by then is the browser's decision and is untested from this path. The header's
+`upload` is the fallback that always works. On the desktop the two buttons log
+the verb to type instead (`doc.ExportImage(<path>)` / `doc.ImportImage(<path>)`),
+since no file dialog exists there yet.
+
+**Memory.** The wasm heap is fixed at the size the loader was built with
+(`-sINITIAL_MEMORY`, 512 MB by ACE's default; growth is off for the reason
+`loaders/Makefile` gives) and the runtime's own arenas take ~240 MB of it after
+boot, so a page is a budget. `resize`, `new` and every import ask first
+(`paint_heap_can_take`: every layer at the new size, the mask, and the one old
+layer `Rebase` holds while it copies) and refuse with the numbers -- `needs 832
+MB and the page has 264 MB to spare` -- rather than letting `malloc` abort the
+tab, which is what `unreachable executed` on a two-axis resize was.
 
 ## Deploying
 

@@ -150,8 +150,9 @@ palette.AddTool(@label_line, line)
 # ONE SHAPE SLICE where rect and oval were two. They are one gesture -- two
 # corners -- and which outline goes between them is a MODE, stepped by the arrow
 # at the top exactly as the select slice's is (PaintShapeMode). The name of the
-# current outline is a caption that shows only while the slice is hovered
-# (AddHoverLabel), so the bar stays a row of words at a glance.
+# current outline is a caption under the word, always shown, as the select
+# slice's mode is: in the page's gold rather than the readout white, so it reads
+# as "what the arrow chose" and not as a second tool name.
 bar.spawn(RenderProvider::PolygonDrawable2D tool_shape)
 tool_shape.Create()
 tool_shape.AddPoint(540, 0)
@@ -178,7 +179,6 @@ label_shape_mode.SetText(rect)
 label_shape_mode.SetOrder(2)
 palette.AddTool(@label_shape_mode, shape)
 palette.SetShapeReadout(@label_shape_mode)
-palette.AddHoverLabel(@tool_shape, @label_shape_mode)
 bar.spawn(RenderProvider::PolygonDrawable2D mode_arrow_shape)
 mode_arrow_shape.Create()
 mode_arrow_shape.AddPoint(570, 3)
@@ -359,8 +359,8 @@ label_radius_bot.SetSize(1)
 label_radius_bot.SetColor(0.90, 0.90, 0.88, 1.0)
 label_radius_bot.SetText(-)
 label_radius_bot.SetOrder(2)
-# WHAT THE NUMBER IS, under it, while the stepper is hovered (AddHoverLabel):
-# two bare numbers at the end of the bar were a guess as to which was which.
+# WHAT THE NUMBER IS, under it: two bare numbers at the end of the bar were a
+# guess as to which was which.
 bar.spawn(RenderProvider::TextLabel label_radius_what)
 label_radius_what.Create()
 label_radius_what.SetPosition(858, 34)
@@ -368,9 +368,9 @@ label_radius_what.SetSize(1)
 label_radius_what.SetColor(0.79, 0.71, 0.35, 1.0)
 label_radius_what.SetText(size)
 label_radius_what.SetOrder(2)
-# Shown only while the stepper is hovered, in the page's gold (--sel) so it is
-# a different colour from the white number above it rather than a dimmer one.
-palette.AddHoverLabel(@radius_plus, @label_radius_what)
+# In the page's gold (--sel) so it is a different colour from the white number
+# above it rather than a dimmer one. Always shown: the caption sits between the
+# number and the minus, a space nothing else uses.
 palette.SetRadiusReadout(@label_radius_num)
 palette.AddRadiusDelta(@label_radius_top, 3.0)
 palette.AddRadiusDelta(@label_radius_bot, -3.0)
@@ -421,7 +421,6 @@ label_alpha_what.SetSize(1)
 label_alpha_what.SetColor(0.79, 0.71, 0.35, 1.0)
 label_alpha_what.SetText(opacity)
 label_alpha_what.SetOrder(2)
-palette.AddHoverLabel(@alpha_plus, @label_alpha_what)
 palette.SetAlphaReadout(@label_alpha_num)
 palette.AddAlphaDelta(@label_alpha_top, 5.0)
 palette.AddAlphaDelta(@label_alpha_bot, -5.0)

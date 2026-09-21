@@ -28,6 +28,8 @@
     "PaintProvider/scripts/paint_toolbar.etcs",
     "PaintProvider/scripts/paint_wheel.etcs",
     "PaintProvider/scripts/paint_menu.etcs",
+    "PaintProvider/scripts/paint_layers.etcs",
+    "PaintProvider/scripts/paint_import.etcs",
     "RenderProvider/scripts/render_frames.etcs"
   ],
   "boot": "boot_paint_panels.etcs",

@@ -200,6 +200,25 @@ zoom_label.SetOrder(21)
 
 canvas.BindZoomLabel(@zoom_label)
 
+# ── the layer window, top-right of the paper ─────────────────────────────────
+#
+# A pane on the sheet like the toolbar, five rows of eye / name / delete built
+# by paint_layers.etcs (the same bargain: PaintProvider maps nodes to layer
+# actions and owns none of the drawing). Over the paper's corner rather than in
+# the margin, because the margin is the ruler's and 36px is not a list. Picked
+# through the sheet's own input: a press on a row reaches the panel before the
+# canvas check (PaintInput::RouteEvent), so nothing is routed separately and no
+# stroke starts under it. The active layer's row is the highlighted one, and a
+# press on another row makes THAT the drawing layer.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D layers_pane)
+layers_pane.Create(240, 224)
+layers_pane.SetPosition(740, 44)
+layers_pane.SetOrder(25)
+
+spawn PaintProvider::PaintLayerPanel layers
+run PaintProvider/scripts/paint_layers.etcs panel=layers_pane doc=doc list=layers
+layers.Refresh()
+
 # ── the colour wheel's pane ──────────────────────────────────────────────────
 #
 # Order 30, above everything, because a popup that is not on top is not a popup.
@@ -254,6 +273,7 @@ input.BindRoot(@sheet_root)
 # sheet so the toolbar and the zoom steps are still reachable by the same pick.
 input.BindCanvas(@paper_pane)
 input.BindPalette(@palette)
+input.BindPanel(@layers)
 input.BindWheel(@wheel)
 input.SetWheelPane(0)
 
@@ -353,6 +373,27 @@ run PaintProvider/scripts/paint_menu.etcs pane=menu_pane palette=palette menu=me
 
 palette.BindRouter(@router)
 palette.AddPopup(@gear, @menu_pane, @menu_input)
+
+# ── the import prompt ────────────────────────────────────────────────────────
+#
+# A popup with no node to press for it: the page's upload hands the file's
+# path to menu.OfferImport, which opens this pane and asks whether the picture
+# is another layer or a new canvas (paint_import.etcs). Over the middle of the
+# paper, order 29 like the menu, its own input for the reason menu_input is.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D import_pane)
+import_pane.Create(300, 90)
+import_pane.SetPosition(398, 300)
+import_pane.SetOrder(29)
+import_pane.SetBackground(0.10, 0.10, 0.13, 0.96)
+import_pane.SetHidden(1)
+
+spawn PaintProvider::PaintInput import_input
+import_input.Create(@doc, @brush, @canvas)
+import_input.BindRoot(@import_pane)
+import_input.BindPalette(@palette)
+
+run PaintProvider/scripts/paint_import.etcs pane=import_pane palette=palette menu=menu
+menu.BindImportPrompt(@palette, @import_pane, @import_input, @import_name)
 
 # `view` presents whatever sheet_root composed -- the document plus the readout
 # over it. Retained, so a zoom or a stroke shows up without anything having to

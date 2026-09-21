@@ -166,7 +166,12 @@ THE WORKERS AND THE MEMORY FLAG. `growMemViews` is emitted only for
 The loader therefore links with a FIXED `-sINITIAL_MEMORY` by default: with growth
 off the function is never generated and the line cannot throw. Both knobs are
 Makefile variables, so comparing the two is one command and no regeneration --
-`ETCS_WEB_MEMORY` and `ETCS_WEB_POOL`; the ACE patch spells out the trade.
+`ETCS_WEB_MEMORY` and `ETCS_WEB_POOL`; the ACE patch spells out the trade. Fixed
+means the heap is a budget: the default is 512 MB (it was 256, of which the
+runtime's arenas took ~240 after a paint page booted, so a 1216x960 two-layer
+canvas was the allocation that hit `Aborted(OOM)`), and anything that allocates by
+the picture asks first rather than letting `malloc` abort the tab
+(`paint_heap_can_take` in PaintProvider).
 
 A PREWARMED POOL IS WORSE, which is why `ETCS_WEB_POOL` defaults to 0.
 `-sPTHREAD_POOL_SIZE=4` creates its workers before the first side module opens, so

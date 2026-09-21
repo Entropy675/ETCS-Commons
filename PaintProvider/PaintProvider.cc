@@ -1,3 +1,9 @@
+// The image codecs' one compiled copy -- see the include note in the header.
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_NO_HDR
+#define STBI_NO_PIC
+#define STBI_NO_PNM
 #include "PaintProvider.h"
 
 // Thin ontology layer on the existing Surface family. BASIC tags own no
@@ -27,7 +33,8 @@ ETCS_TAG_BLOCK_BASIC(PaintLayer,
 // So are the file verbs: an import is a new layer of THIS stack and an export
 // is its composite, and both take a path (PaintDocument::ImportImage). And the
 // extent verbs: Resize re-states the page around every layer at once, and New
-// is that plus a clear (PaintDocument::Resize).
+// is that plus a clear (PaintDocument::Resize). ImportCanvas is New sized to a
+// file plus ImportImage (PaintDocument::ImportCanvas).
 ETCS_TAG_BLOCK_BASIC(PaintDocument,
     Create, SetActiveLayer, ClearLayer, RenderToSurface,
     MoveLayerTo, RenameLayer, RemoveLayer, IsolateLayer, ClearIsolate,
@@ -35,7 +42,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
     ShowTextBoxes, SelectTextBox,
     SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
     CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo,
-    ImportImage, ExportImage, ExportLayer, Resize, New,
+    ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
     Report, Delete)
 
 // The projection verbs sit beside Render because every one of them ends in a
@@ -66,7 +73,7 @@ ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
     BindWheel, AddWheelArrow, AddModeArrow, SetModeReadout, SetShapeReadout, SetHoldCapacity, AddHoverLabel,
-    AddCall, AddPopup, BindRouter,
+    AddCall, AddPopup, OpenPopup, ClosePopup, BindRouter,
     SetColorOf, Report, Delete)
 
 // The pages of this session, kept in a database -- see PaintPages.
@@ -80,7 +87,7 @@ ETCS_TAG_BLOCK_BASIC(PaintRepeat,
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
 ETCS_TAG_BLOCK_BASIC(PaintLayerPanel,
-    Create, BindDocument, AddRow, SetHoverDim, SetEyeColors, SetRowColors,
+    Create, BindDocument, AddRow, BindTitle, BindWindow, SetHoverDim, SetEyeColors, SetRowColors,
     Scroll, Refresh, CommitRename,
     SelectRow, ToggleRow, RemoveRow, MoveRow, ArmRename, HoverRow,
     Report, Delete)
@@ -92,13 +99,15 @@ ETCS_TAG_BLOCK_BASIC(PaintColorWheel,
     Open, OpenAt, SetTargetSlot, Close, Pick, Report, Delete)
 
 // The settings menu's PENDING extent and anchor, and the two verbs that hand
-// them to the document. Its controls are script nodes bound through
-// PaintPalette::AddCall, which is why nothing here is a pick. See
-// PaintCanvasMenu.
+// them to the document; and the import prompt, which is the same shape -- a
+// pending path and the verbs that answer for it. Its controls are script
+// nodes bound through PaintPalette::AddCall, which is why nothing here is a
+// pick. See PaintCanvasMenu.
 ETCS_TAG_BLOCK_BASIC(PaintCanvasMenu,
     Create, BindSurface, StepWidth, StepHeight, SetAnchor,
     BindWidthReadout, BindHeightReadout, BindAnchorCell,
-    ApplyResize, ApplyNew, Save, Load, Report, Delete)
+    ApplyResize, ApplyNew, Save, Load,
+    BindImportPrompt, OfferImport, ImportAsLayer, ImportAsCanvas, ImportCancel, Report, Delete)
 
 // HYBRID for the same reason PaintInput is: its consume edges are the standing
 // control-thread ends of the window's producers, not one-shot calls.
