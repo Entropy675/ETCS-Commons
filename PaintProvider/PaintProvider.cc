@@ -82,7 +82,7 @@ ETCS_TAG_BLOCK_BASIC(PaintPages,
 
 // The frame, lent to the palette as a clock -- see PaintRepeat.
 ETCS_TAG_BLOCK_BASIC(PaintRepeat,
-    BindPalette, Delete)
+    BindPalette, BindPanel, Delete)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.

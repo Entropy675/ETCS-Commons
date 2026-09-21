@@ -197,8 +197,12 @@
    * and one reflow per tick instead of one of each per line. setInterval and
    * not requestAnimationFrame, because a hidden tab stops painting but does not
    * stop logging -- throttled is right, stopped is not.
+   *
+   * A quarter second rather than a frame: the tick costs the same whether it
+   * carries one line or three hundred, so a longer window is less work for the
+   * same text. The runtime pushes on its own if nothing drains for 750ms.
    */
-  const SHELL_DRAIN_MS = 60;
+  const SHELL_DRAIN_MS = 250;
   let shellDrainTimer = 0;
   function drainShellOutput() {
     const mod = window.Module;

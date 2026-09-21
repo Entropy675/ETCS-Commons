@@ -28,11 +28,14 @@ showing the boot, it was pacing it.
 So the loader redirects `std::cout` into a mutex-guarded buffer
 (`ShellOutBuf`, loaders/etcs.cc) and the page drains it on its own clock:
 
-    setInterval(() => Module.ccall('etcs_web_shell_drain', 'string', [], []), 60)
+    setInterval(() => Module.ccall('etcs_web_shell_drain', 'string', [], []), 250)
 
 A write costs a string append -- no FS, no proxy, no DOM -- and a tick hands the
 terminal everything at once, which becomes one `postMessage`, one
-`DocumentFragment` and one reflow however many lines arrived. Same boot: **60s
+`DocumentFragment` and one reflow however many lines arrived. A quarter second
+rather than a frame: the tick costs the same whether it carries one line or
+three hundred, so a longer window is strictly less work for the same text, and
+nobody is timing a log line to the frame. Same boot: **60s
 to 12.7s**. What is logged does not change, and the per-line flush stays exactly
 as atomic as it was.
 

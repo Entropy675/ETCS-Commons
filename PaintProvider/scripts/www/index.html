@@ -278,8 +278,17 @@
    * but the runtime keeps logging, and rAF would leave the buffer to grow until
    * the tab came back. The interval is throttled when hidden, which is the
    * right behaviour -- slower, not stopped.
+   *
+   * A QUARTER SECOND, not a frame. The tick's cost is per CALL and not per
+   * line -- one ccall, one postMessage, one fragment, one reflow -- so a longer
+   * window is strictly less work for the same text, and at 60ms a busy boot was
+   * still paying that sixteen times a second. 250ms reads as live for a
+   * transcript (nobody is timing a log line to the frame) and quarters the
+   * number of times the terminal is touched. The runtime's own fallback fires
+   * if nothing drains for 750ms, which leaves room for this to be throttled by
+   * a background tab without tripping it.
    */
-  const SHELL_DRAIN_MS = 60;
+  const SHELL_DRAIN_MS = 250;
   let shellDrainTimer = 0;
   function drainShellOutput() {
     const mod = window.Module;

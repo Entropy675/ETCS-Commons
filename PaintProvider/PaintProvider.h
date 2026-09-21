@@ -802,9 +802,26 @@ inline bool paint_kind_commits(PaintToolKind k)
  * can actually keep, measured by dragging them. A preview is feedback, not the
  * picture -- ten of them a second is enough to aim with, and the committed shape
  * is exact regardless, because release flushes (flush_coalesced_motion).
+ *
+ * AND THE RULER AND THE SHAPE GET FOUR TIMES THAT, because their previews are
+ * the two whose cost grows with the DRAG. The full-view rebuild underneath is
+ * the same for every anchored kind, but what is drawn over it is not: a line is
+ * a line however long it is, while the ruler lays ticks and numbers along its
+ * whole extent and a shape walks every edge of a star or a diamond, stamping a
+ * nib-sized rect per step of each. Drag either of them far, or with a wide
+ * brush, and the per-sample cost climbs until 100ms stops being an interval the
+ * rebuild can keep and starts being a queue. 400ms holds at any extent, and
+ * two-and-a-half previews a second is still enough to aim a shape whose corners
+ * you can already see.
+ *
+ * THIS IS A CPU-RASTER NUMBER. The preview is composited and stamped on this
+ * thread; once a device backend is drawing it, the rebuild stops scaling with
+ * the object and this ladder should come back down to one interval for every
+ * anchored kind.
  */
 inline double paint_tool_default_coalesce_ms(PaintToolKind k)
 {
+    if (k == PaintToolKind::Ruler || k == PaintToolKind::Shape) return 400.0;
     return paint_kind_is_anchored(k) ? 100.0 : PAINT_MOTION_COALESCE_DEFAULT_MS;
 }
 
@@ -5936,9 +5953,13 @@ public:
         const int32_t most  = (total > rows) ? (total - rows) : 0;
         m_scroll = std::clamp(m_scroll + delta, 0, most);
         // The rows now mean different layers, so whatever was being isolated is
-        // not what is under the pointer any more.
+        // not what is under the pointer any more. Straight to full rather than
+        // faded: the reason for the dim is gone, not going.
         m_hovering = 0;
-        m_document->IsolateLayer(0, m_hover_dim);
+        m_subject  = 0;
+        m_dim_target = 1.0f;
+        m_dim_now    = 1.0f;
+        m_document->IsolateLayer(0, 1.0f);
         Refresh();
     }
 
@@ -5978,7 +5999,10 @@ public:
             if (!still_here)
             {
                 m_hovering = 0;
-                m_document->IsolateLayer(0, m_hover_dim);
+                m_subject  = 0;
+                m_dim_target = 1.0f;
+                m_dim_now    = 1.0f;
+                m_document->IsolateLayer(0, 1.0f);
             }
         }
 
@@ -6228,23 +6252,73 @@ public:
     }
 
     /*
- * HOVER: the layer under the pointer at full strength, every other one dimmed.
+ * HOVER: the layer whose EYE is under the pointer at full strength, every other
+ * one dimmed.
+ *
+ * THE EYE AND NOT THE ROW, which is the whole of the gesture. Isolating on the
+ * row meant the picture faded whenever the pointer crossed the window on its
+ * way to anything -- choosing a layer, renaming one, reaching the +, or just
+ * passing over -- so the answer to "which layer is this" arrived constantly and
+ * uninvited, and the thing being looked at was the thing being hidden. The eye
+ * is the control that is ABOUT visibility, so hovering it is the one moment
+ * where "show me only this layer" is what the hand is already asking; a press
+ * there commits the same thing permanently.
  *
  * Stated to the document as one call over the whole stack (PaintDocument::
- * IsolateLayer) rather than as a dim per row, so leaving a row is the same call
- * with a different subject and there is no per-row bookkeeping to get wrong when
- * the pointer skips one. A node that is not ours clears the isolation, which is
- * what "the pointer left the panel" means without needing an exit event.
+ * IsolateLayer) rather than as a dim per row, so leaving an eye is the same
+ * call with a different subject and there is no per-row bookkeeping to get
+ * wrong when the pointer skips one. Any other node -- another part of the row,
+ * the title bar, the picture -- clears the isolation, which is what "the
+ * pointer is not on an eye" means without needing an exit event.
  */
     void Hover(ETCS::RID node)
     {
         if (!m_document) return;
         auto it = m_regions.find(node);
-        const ETCS::RID subject = (it == m_regions.end() || it->second.row >= m_rows.size())
-                                ? 0 : m_rows[it->second.row].layer;
+        const bool on_eye = (it != m_regions.end() && it->second.region == Region::Eye
+                             && it->second.row < m_rows.size());
+        const ETCS::RID subject = on_eye ? m_rows[it->second.row].layer : 0;
         if (subject == m_hovering) return;          // nothing changed; do not re-walk the stack
         m_hovering = subject;
-        m_document->IsolateLayer(subject, m_hover_dim);
+        /*
+     * THE TARGET, NOT THE VALUE. A hover has a DURATION -- the pointer rests on
+     * the eye for as long as the question is being asked -- and a snap to the
+     * dim is the one thing that throws that away. Set where the isolation is
+     * going; Tick walks it there a frame at a time.
+     */
+        if (subject != 0) m_subject = subject;
+        m_dim_target = (subject != 0) ? m_hover_dim : 1.0f;
+    }
+
+    /*
+ * ── the fade, one frame at a time ────────────────────────────────────────
+ *
+ * Called by the frame edge that already lends the palette its clock
+ * (PaintRepeat), and only while there is somewhere left to go: Fading is what
+ * keeps that edge from re-compositing the document sixty times a second for a
+ * dim that has arrived.
+ *
+ * THE SUBJECT SURVIVES THE FADE OUT. On the way in it is the layer whose eye is
+ * under the pointer; on the way out there is no layer under the pointer at all,
+ * and naming nobody would dim the one that was being shown before bringing it
+ * back -- a flash of exactly the wrong thing. So the last subject is held until
+ * the dim reaches 1.0 and everything is at full strength again, at which point
+ * it means nothing and is dropped.
+ */
+    bool Fading() const { return m_dim_now != m_dim_target; }
+
+    void Tick()
+    {
+        if (!m_document || !Fading()) return;
+        // Per FRAME rather than per millisecond: this rides the compositor's
+        // own edge, so a frame is the unit that exists here. About nine of them
+        // from full to dim, which reads as a fade rather than as a jump.
+        constexpr float STEP = 0.085f;
+        if (m_dim_now < m_dim_target) m_dim_now = std::min(m_dim_target, m_dim_now + STEP);
+        else                          m_dim_now = std::max(m_dim_target, m_dim_now - STEP);
+        m_document->IsolateLayer(m_subject, m_dim_now);
+        if (m_dim_now >= 1.0f) m_subject = 0;
+        repaint();
     }
 
     // The rename by verb: a caller that already has the whole name -- a script,
@@ -6381,7 +6455,9 @@ public:
     }
 
     // Hover by row, and -1 -- any out-of-range index -- for "the pointer is
-    // nowhere near this window", which is the call a pane-leave makes.
+    // nowhere near this window", which is the call a pane-leave makes. By ROW
+    // rather than by node, so a caller that is not a pointer can ask for the
+    // same isolation the eye's hover gives (see Hover).
     void HoverRow(int32_t row)
     {
         if (!m_document) return;
@@ -6390,7 +6466,8 @@ public:
                 ? m_rows[static_cast<size_t>(row)].layer : 0;
         if (subject == m_hovering) return;
         m_hovering = subject;
-        m_document->IsolateLayer(subject, m_hover_dim);
+        if (subject != 0) m_subject = subject;
+        m_dim_target = (subject != 0) ? m_hover_dim : 1.0f;
     }
 
     /*
@@ -6631,6 +6708,11 @@ private:
     // The name being typed, and whether anything is being typed at all --
     // m_renaming alone said "armed", which is not the same as "has the
     // keyboard" (KeyIn).
+    // The fade: what is shown at full strength, where the dim on everything
+    // else is going, and where it has got to (Tick).
+    ETCS::RID   m_subject    = 0;
+    float       m_dim_target = 1.0f;
+    float       m_dim_now    = 1.0f;
     bool        m_editing = false;
     std::string m_edit;
     bool      m_moving = false;
@@ -9245,10 +9327,20 @@ public:
 
     void BindPalette(ETCS::RID palette) { m_palette = palette; }
 
+    /*
+ * AND THE LAYER WINDOW'S FADE, for the same reason the palette's repeat is
+ * here: it is a thing that has to advance on a clock, and the frame edge is the
+ * only clock in this module. Two callers rather than one type per caller --
+ * what this draws is still nothing.
+ */
+    void BindPanel(ETCS::RID panel) { m_panel = panel; }
+
     bool Animating() override
     {
         PaintPalette* p = palette();
-        return p && p->holding();
+        if (p && p->holding()) return true;
+        PaintLayerPanel* l = panel();
+        return l && l->Fading();
     }
 
     Rect2D BoundsConcrete() override { return Rect2D{ 0, 0, 0, 0 }; }
@@ -9262,6 +9354,7 @@ public:
     void DrawIntoConcrete(Surface_*) override
     {
         if (PaintPalette* p = palette()) p->Tick();
+        if (PaintLayerPanel* l = panel()) l->Tick();
     }
 
 private:
@@ -9271,7 +9364,14 @@ private:
         ETCS::Entity* raw = paint_resolve_tag("PaintPalette", m_palette);
         return raw ? static_cast<PaintPalette*>(raw->getTrueType()) : nullptr;
     }
+    PaintLayerPanel* panel()
+    {
+        if (m_panel == 0) return nullptr;
+        ETCS::Entity* raw = paint_resolve_tag("PaintLayerPanel", m_panel);
+        return raw ? static_cast<PaintLayerPanel*>(raw->getTrueType()) : nullptr;
+    }
     ETCS::RID m_palette = 0;
+    ETCS::RID m_panel   = 0;
 };
 
 class PaintRouter : public DeletableBase<PaintRouter>
@@ -10268,6 +10368,14 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, SetHoldCapacity, (int32_t, n))
 }
 
 // PaintRepeat: BindPalette <rid> -- whose steppers this frame-visit serves.
+// BindPanel <panel> -- the layer window's fade, advanced on the same frame
+// edge as the palette's repeat (PaintRepeat::BindPanel).
+DEFINE_WORK_FUNC_TYPED(PaintRepeat, BindPanel, (ETCS::RID, panel))
+{
+    (void)ctx;
+    self.BindPanel(panel);
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintRepeat, BindPalette, (ETCS::RID, palette))
 {
     (void)ctx;

@@ -147,6 +147,29 @@ shrank with it left the previous width's pixels standing -- the stray "1" in fro
 of the extent at some zooms was the corner label drawn twice, five pixels apart. A
 tick label that would start under the extent's tail is skipped for the same reason.
 
+## What an anchored preview costs, and what it is allowed to cost
+
+A continuous tool (brush, smudge) stamps one dab per sample: every sample is
+worth having, and dropping one loses the middle of a fast stroke and nothing
+else. An anchored tool (line, rect, ellipse, ruler, glyph, select, shape) throws
+the whole preview away and rebuilds it -- the view is re-composited from the
+document, then the outline is drawn over it -- so samples are coalesced to
+100ms, which is the interval that rebuild can actually keep.
+
+**The ruler and the shape get 400ms**, because their previews are the two whose
+cost grows with the drag. The rebuild underneath is the same for every anchored
+kind; what is drawn over it is not. A line is a line however long it is, while
+the ruler lays ticks and numbers along its whole extent and a shape walks every
+edge of a star or a diamond stamping a nib-sized rect per step. Drag either far,
+or with a wide brush, and the per-sample cost climbs until 100ms stops being an
+interval the rebuild can keep and becomes a queue. Two and a half previews a
+second is still enough to aim a shape whose corners you can already see, and the
+committed shape is exact regardless, because the release flushes.
+
+This is a CPU-raster number. Once a device backend draws the preview the rebuild
+stops scaling with the object, and this ladder should come back down to one
+interval for every anchored kind.
+
 ## The brush's size is the width of the mark
 
 `brush.SetRadius(n)` -- and the `size` stepper on the bar, which is the same
@@ -343,8 +366,20 @@ before any tool runs, so nothing else was asking the surface to draw, and the
 rows updated while the canvas kept showing the arrangement from before the
 press.
 
-Dragging a row onto another restacks; hovering one isolates its layer
-(everything else dims to 0.25) so a layer can be found by looking. The title
+Dragging a row onto another restacks. **Hovering an EYE** isolates that layer --
+everything else fades to 0.25 -- so a layer can be found by looking. The eye and
+not the row: isolating on the row meant the picture faded whenever the pointer
+crossed the window on its way to anything, so the answer to "which layer is
+this" arrived constantly and uninvited, and the thing being looked at was the
+thing being hidden. The eye is the control that is ABOUT visibility, so hovering
+it is the one moment where "show me only this layer" is what the hand is already
+asking.
+
+It FADES rather than snaps, over about nine frames each way. A hover has a
+duration -- the pointer rests on the eye for as long as the question is being
+asked -- and that is exactly what a snap throws away. The step rides the same
+per-frame edge the toolbar's click-and-hold repeat does (`PaintRepeat`), and
+stops asking for frames the moment the dim arrives. The title
 bar is the handle -- press it and the window follows the pointer -- and there
 is no close button, on purpose: the window is the only thing that says which
 layer is active, and a window that can be dismissed will be.
