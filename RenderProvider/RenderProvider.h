@@ -33,8 +33,9 @@
 //   - validation layers (VulkanInstance::Create's own comment)
 //   - a script-driven frame loop: .etcs has no loop construct today, so
 //     Surface.RunDemo drives frames internally the way Window.Run already
-//     does. The real fix is a ProduceFrames/ConsumeFrames stream pair, at
-//     which point this tag becomes HYBRID -- see RenderProvider.cc.
+//     does. The real fix was a frame edge, and it is Surface.RunFrames now --
+//     see the frame-edge note below, and RenderProvider.cc on why this tag
+//     went back to BASIC when the stream pair retired.
 //   - resampling on blit (Pixels_::Composite's own comment)
 
 // Source resolution for Blit: a RID in, a Surface_* out, through the
@@ -221,51 +222,70 @@ DEFINE_WORK_FUNC(Surface, Delete)
 
 // ── Surface frame edge ───────────────────────────────────────────────────
 //
-// The frame pump, as a produce/consume pair -- the same shape
-// Window.ProduceEvents/ConsumeEvents already uses for input, applied to
-// output. This is what lets a renderer run somewhere other than the thread
-// that owns the window's poll loop (scripts/render_frames.etcs).
+// ONE TICK, NOT A PAIR, and the history is the argument for it.
 //
-// THE SPLIT, and why it is this way round: ProduceFrames is a CLOCK and
-// nothing else, ConsumeFrames does every Vulkan call.
+// It was a produce/consume pair -- the same shape Window.ProduceEvents uses for
+// input, applied to output -- and the split was defensible on its own terms:
+// ProduceFrames was a CLOCK and nothing else, ConsumeFrames did every Vulkan
+// call, which kept one surface single-threaded from Vulkan's point of view
+// while getting frames off the poll thread. The tempting split the other way --
+// acquire on one side, submit on the other -- puts two threads on one VkQueue
+// and one VkSwapchainKHR, both of which the application must externally
+// synchronise, and buys nothing.
 //
-// The tempting split -- acquire on the produce side, record/submit/present
-// on the consume side -- puts two threads on the same VkQueue and
-// VkSwapchainKHR, both of which Vulkan requires the application to
-// externally synchronise. That buys nothing: the goal is only to get frames
-// OFF the poll thread, not to parallelise a single surface's submission. So
-// every queue-touching call stays on the consume thread, which makes this
-// surface single-threaded from Vulkan's point of view, and the edge carries
-// a tick rather than a half-built frame.
+// WHAT THE PAIR COST is the part that was not written down: the produce half was
+// a standing loop on a ThreadPool worker, held for the surface's lifetime. A
+// stream body is enqueued (ETCS_MODULE_EXPORT_STREAM), so a standing one never
+// gives the worker back -- which is how the pool acquired a minimum size, and
+// how an image with two standing producers and one worker deadlocks. The ring
+// existed only to cross the boundary between the clock and the recording.
 //
-// Where the thread ledger lands (see render_script_streamed.etcs):
-//   produce -> a ThreadPool worker, held for the surface's lifetime
-//   consume -> the detached script thread, blocked on the stream
+// So the clock became a NUMBER on the Presentable family and the recording
+// became a STEP on it (ontology/PresentableBase.h), the boundary disappeared,
+// and the ring with it. Every queue-touching call still happens on one thread,
+// which was the real invariant; it is now whichever thread drives the family.
 //
 // Draws still arrive from whatever thread calls Clear/DrawRect/Blit -- the
 // script's -- so the surface's own state is mutex-guarded and Present works
 // off a snapshot. See VulkanSurface::PresentConcrete.
-struct RenderFrameTick { uint64_t index; };
-
 // Default pacing, in milliseconds, when the stream config says nothing.
 // ~60Hz, a placeholder for asking the swapchain about its present mode,
 // which is where real pacing belongs.
 static constexpr uint32_t RENDER_FRAME_INTERVAL_MS = 16;
 
-// ProduceFrames [<interval_ms>] -- the stream's config buffer carries the
-// pacing, and ZERO means unpaced: emit as fast as the edge accepts, and let
-// the consumer's back-pressure set the rate.
-//
-// That mode is the honest way to ask "how fast can this pipeline actually
-// go", because the answer is then measured BY the pipeline rather than by a
-// clock on one of its calls -- writeRaw blocks exactly when the consumer is
-// behind, so ticks completed over an interval IS throughput, with acquire,
-// submit and present all inside it. A fixed sleep here would silently cap
-// any such measurement at its own frequency, which is what 16ms did.
-//
-// Paced stays the default because a normal frame loop should not spin a
-// pool worker at 100% to draw a canvas nobody is editing.
-DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
+/*
+ * RunFrames [<interval_ms>] -- THE SESSION'S TICK, and the only standing loop
+ * left on this path.
+ *
+ * This replaces a producer/consumer PAIR. One body paced and wrote a frame
+ * token, the other read it and did the walk; both were loops that never
+ * returned, so each held a thread for the whole session -- and the producer's
+ * came out of the ThreadPool, because ETCS_MODULE_EXPORT_STREAM enqueues a
+ * stream body there. That is how the pool acquired a MINIMUM size: an image with
+ * two standing producers and one worker deadlocks, the second body queued behind
+ * one that never finishes. A floor derived from whatever a script opens is not a
+ * tuning parameter.
+ *
+ * THE RING WENT WITH THEM. It existed to cross a thread boundary between the
+ * pacing and the recording, and ConsumeFrames' own comment already said the walk
+ * belongs on the presenting thread -- so with both halves on one thread there
+ * was nothing left for it to cross. Presenting is a step on the Presentable
+ * family now (ontology/PresentableBase.h); the pacing is a number there too.
+ *
+ * WHAT THIS LOOP STILL IS, and why it is not nothing: somebody has to call the
+ * family's driver, and a session needs exactly one caller. This is it -- a
+ * detached script thread, which the script asked for explicitly, rather than a
+ * pool worker taken silently. It advances EVERY Animated leaf, not just this
+ * surface: the palette's click-and-hold and the layer window's fade ride the
+ * same tick, and a session with no surface at all can drive the family from its
+ * own loop instead (ontology/Animated.h).
+ *
+ * ENDS ON THE SURFACE'S OWN ANSWER, the same rule the old consumer used: a
+ * surface goes retired for reasons this loop knows nothing about, and in the
+ * moments between that and the closure ending this is the thing still walking a
+ * tree being torn down.
+ */
+DEFINE_WORK_FUNC(Surface, RunFrames)
 {
     uint32_t interval_ms = RENDER_FRAME_INTERVAL_MS;
     {
@@ -275,193 +295,51 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
             try { interval_ms = static_cast<uint32_t>(std::stoul(cfg)); }
             catch (const std::exception&)
             {
-                ETCS_LOG("Surface::ProduceFrames", "unreadable interval '" << cfg
+                ETCS_LOG("Surface::RunFrames", "unreadable interval '" << cfg
                          << "' -- using the " << RENDER_FRAME_INTERVAL_MS << "ms default.");
             }
         }
     }
-    ETCS_LOG("Surface::ProduceFrames", "clock started at "
-             << (interval_ms == 0 ? std::string("max speed (back-pressure paced)")
-                                   : std::to_string(interval_ms) + "ms"));
-
-    // Same wait ProduceEvents does: the surface is spawned and Create()d by
-    // the script, and detaching the pump before that has finished would
-    // start ticking at a swapchain that does not exist yet.
-    while (!self.IsActive())
-    {
-        if (ctx.isInterrupted() || ctx.isTerminated()) return;
-        // Retired BEFORE active is a real order: a script that deletes the
-        // surface while this edge is still waiting for it to come up would
-        // otherwise spin here forever on an object being reclaimed.
-        if (self.Retired()) return;
-        // Cooperative, not a yield: IsActive() flips from somewhere this thread
-        // does not control, and on the browser's main thread a yield loop never
-        // returns to the event loop that would deliver the change. A refusal
-        // there means the frame edge was not detached, which is the real mistake.
-        if (!etcs_cooperative_pause_ms(1))
-        {
-            ETCS_LOG("Surface::ProduceFrames", "on the browser's main thread -- detach "
-                     "the frame edge so the wait happens off the event loop. Not "
-                     "producing frames.");
-            return;
-        }
-    }
-
-    uint64_t index = 0;
-    bool stream_alive = true;
+    self.SetFrameInterval(static_cast<double>(interval_ms));
+    ETCS_LOG("Surface::RunFrames", "tick started at "
+             << (interval_ms == 0 ? std::string("max speed (unpaced)")
+                                  : std::to_string(interval_ms) + "ms")
+             << " -- one driver for the whole Animated family.");
 
     /*
- * RETIRED IS THE FIRST QUESTION, ahead of IsActive.
- *
- * VulkanSurface publishes Retired() for this edge specifically -- its own
- * comment says it is "the question the frame edge asks BEFORE the walk" --
- * and this loop was not asking it. Release sets it while the surface is
- * still whole, so a clock that checks it stops one tick after the release
- * rather than on the tick that faults.
- *
- * AND Retired() NOW INCLUDES Halted(), which is what makes this loop
- * stoppable rather than merely well-informed. VulkanSurface claims Threaded,
- * so etcs_retire_entity asks the bodies to stop BEFORE it releases anything
- * -- the flag is set while everything this loop is about to touch is still
- * valid, instead of after.
- *
- * STILL COOPERATIVE, so the honest limit stands: this stops at the next
- * iteration, not instantly, and a tick already inside the body runs to its
- * end. What changed is that the window is now bounded by one iteration
- * rather than by whenever the object happens to be reclaimed.
+ * THE WAIT IS GONE, and that is a consequence rather than an omission. Both old
+ * bodies opened with a cooperative-pause loop spinning until IsActive(), which
+ * could never terminate on the browser's main thread and needed a log line
+ * saying so. A step answers "not ready" in one virtual call and costs nothing,
+ * so the readiness question is asked by the family every visit instead of being
+ * waited out once by a parked thread.
  */
-    while (!self.Retired() && self.IsActive() && stream_alive)
+    uint64_t ticks = 0;
+    while (!ctx.isInterrupted() && !ctx.isTerminated())
     {
-        if (ctx.isInterrupted() || ctx.isTerminated()) break;
-
-        RenderFrameTick tick{ index++ };
-        ETCS::Buffer slot;
-        slot.writeRaw(&tick, sizeof(tick));
-
-        if (!stream.writeRaw(slot))
-        {
-            ETCS_LOG("Surface::ProduceFrames", "writeRaw failed -- stream closed at frame " << tick.index);
-            stream_alive = false;
-            break;
-        }
-        if (interval_ms != 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
-    }
-
-    if (stream.isOpen())
-        stream.closeWrite();
-
-    // THIS BODY HAS LEFT, and says so rather than leaving the entity reading
-    // as mid-wind-down forever (ontology/Threaded.h). The first of the two
-    // frame-edge bodies to get here makes the transition; the other's call is
-    // the no-op the exchange is there to make it.
-    self.Stop();
-    ETCS_LOG("Surface::ProduceFrames", "clock stopped after " << index << " ticks.");
-}
-
-DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
-{
-    (void)data;
-
-    uint64_t presented = 0;
-    // Timed from the FIRST tick, not from entry: the producer waits for the
-    // surface to go active, so entry-to-first-tick is setup latency, not
-    // frame time, and folding it in would drag the rate down by however
-    // long the script took to get here.
-    std::chrono::steady_clock::time_point first{};
-    // Hoisted out of the loop, not rebuilt per frame: the walk below refills it
-    // every tick, and this is a frame-rate path.
-    std::vector<Animated_*> animated;
-
-    while (stream.isOpen())
-    {
-        if (ctx.isInterrupted() || ctx.isTerminated()) break;
-
-        ETCS::Buffer slot;
-        if (!stream.readRaw(slot)) break;
-
-        RenderFrameTick tick{};
-        slot.readRaw(&tick, sizeof(tick));
-        if (presented == 0) first = std::chrono::steady_clock::now();
-
-        // THE EDGE ENDS WHEN THE SURFACE DOES, and it has to be asked here
-        // rather than left to the stream closing. A surface goes retired for
-        // reasons the stream knows nothing about -- its window's connection
-        // dropped, or the arena released it -- and in the moments between that
-        // and the closure ending, this loop is the thing still walking a tree
-        // that is being torn down. Ending on the surface's own answer makes
-        // the frame edge outlive nothing it draws through.
         if (self.Retired())
         {
-            ETCS_LOG("Surface::ConsumeFrames", "surface retired after " << presented
-                     << " frames -- ending the frame edge rather than drawing "
-                     "through a torn-down graph.");
+            ETCS_LOG("Surface::RunFrames", "surface retired after " << ticks
+                     << " ticks -- ending the tick rather than driving a "
+                     "torn-down graph.");
             break;
         }
-
-        /*
-         * THE CAUSAL EDGE, AND IT RUNS BEFORE THE DRAWING ONE.
-         *
-         * Everything that claims Animated is stepped here, by family and not by
-         * name: this loop has no list of animated things and must not acquire
-         * one, because claiming the family is already the registration and a
-         * second list would be a copy of it kept current by remembering to.
-         *
-         * BEFORE RecomposeBound, and that ordering is the point of the family
-         * existing. A stepper that lives inside the compose walk changes DURING
-         * the walk that draws it, so the dirty mark it leaves is consumed by
-         * that same frame and there is nothing left to schedule the next one --
-         * which is why such a node previously had to answer a standing "I am
-         * still moving" and keep the whole path above it composing forever.
-         * Stepped first, the mark lands before anything looks, and the ordinary
-         * dirty gate carries it.
-         *
-         * UNCONDITIONAL, because Animating() is the cheap half of the family's
-         * two questions (ontology/Animated.h) and a settled entity costs one
-         * virtual call. The alternative -- keeping a live set of who is
-         * currently moving -- is state that has to be corrected every time an
-         * animation starts or ends, to save a call that is already nothing.
-         *
-         * TWO SURFACES BOTH DO THIS and that is safe rather than merely
-         * tolerated: the interval is measured, so the second visit of a pair
-         * measures almost no time and advances almost nothing
-         * (ontology/AnimatedBase.h). Nothing here designates a driver.
-         */
-        animated.clear();
-        ETCS::collect_family<Animated_>("Animated", animated);
-        for (Animated_* a : animated)
-            if (a) a->Advance();
-
-        // Everything Vulkan happens here, on this one thread. Present pulls
-        // the current composition itself -- retained, so a script that drew
-        // once keeps being shown rather than blinking out on frame two.
-        //
-        // Unless a root is bound (Surface.Compose), in which case the tree is
-        // re-walked first and the retained list is what that walk produces.
-        // The walk is on THIS thread rather than the producer's for the same
-        // reason every other Vulkan call is: Blit uploads into mapped staging
-        // memory, and that is frame state.
-        self.RecomposeBound();
-        self.Present();
-        ++presented;
+        etcs_advance_animated();
+        ++ticks;
+        // A floor, not the pacing: the frame interval lives on the family now
+        // (PresentableBase). This only stops an unpaced surface from turning the
+        // driver into a spin -- and at zero it deliberately does not, which is
+        // what "unpaced" has always meant here.
+        if (interval_ms != 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+        else
+            std::this_thread::yield();
     }
 
-    // The throughput number, reported by the side that actually knows it.
-    // With an unpaced producer this IS the pipeline's rate and needs no
-    // external clock on any single call: writeRaw blocks exactly when this
-    // loop falls behind, so frames completed over the interval is what the
-    // whole edge -- acquire, record, submit, present -- sustained. Under a
-    // paced producer it just reports the pacing back, which is the correct
-    // answer to a different question.
-    const double secs = (presented > 1)
-        ? std::chrono::duration<double>(std::chrono::steady_clock::now() - first).count()
-        : 0.0;
-    self.Stop();   // this body has left -- see ProduceFrames above
-    ETCS_LOG("Surface::ConsumeFrames", "stream closed after presenting " << presented
-             << " frames" << (secs > 0.0
-                 ? " in " + std::to_string(secs) + "s = "
-                   + std::to_string(static_cast<double>(presented) / secs) + " fps"
-                 : "") << ".");
+    // This body has left -- see Threaded. The old pair said this twice, once per
+    // half; there is one half now.
+    self.Stop();
+    ETCS_LOG("Surface::RunFrames", "tick stopped after " << ticks << " ticks.");
 }
 
 // Manual-verification convenience -- see this file's own header comment.

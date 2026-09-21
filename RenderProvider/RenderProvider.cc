@@ -23,11 +23,17 @@ ETCS_TAG_BLOCK_BASIC(Device,
 // The window-bound presentable surface: spawn it as a Window's child.
 // Clear/DrawRect/Blit accumulate in call order and are RETAINED until
 // something composes a new frame; Present is the only call that touches the
-// GPU queue, and ProduceFrames/ConsumeFrames is that same Present driven by
-// a clock on another thread.
-ETCS_TAG_BLOCK_HYBRID(Surface,
-    (Create, SetTarget, ResizeTo, Clear, DrawRect, Blit, Compose, Present, Delete, RunDemo),
-    (ProduceFrames, ConsumeFrames))
+// GPU queue, and RunFrames is that same Present driven by a clock.
+//
+// BASIC, NOT HYBRID ANY MORE, and that is the visible half of the change: this
+// tag carried a stream pair whose produce half stood on a ThreadPool worker for
+// the surface's lifetime. Presenting is a step on the Presentable family now
+// (ontology/PresentableBase.h) and RunFrames is an ordinary work function that
+// a script detaches, so there is no stream, no ring and no pool occupant --
+// see RenderProvider.h's frame-edge note for why the pair existed at all.
+ETCS_TAG_BLOCK_BASIC(Surface,
+    Create, SetTarget, ResizeTo, Clear, DrawRect, Blit, Compose, Present,
+    Delete, RunDemo, RunFrames)
 
 // An offscreen CPU-backed surface -- a layer. Same drawing verbs, no
 // Present (it has nowhere to present to, see ontology/Presentable.h), and

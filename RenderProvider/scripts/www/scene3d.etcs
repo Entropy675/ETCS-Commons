@@ -202,4 +202,6 @@ view.Compose(@stage)
 # as a mystery.
 detach scene3d_look.etcs window=main scene=world
 
-view.ProduceFrames() -> view.ConsumeFrames()
+# One tick, not a pair -- presenting is a step on the Presentable family now and
+# the producer no longer stands on a pool worker. See render_frames.etcs.
+view.RunFrames(16)

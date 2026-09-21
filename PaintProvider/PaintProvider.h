@@ -5324,7 +5324,7 @@ public:
  * step it on: while the button is held still no input arrives. So the palette
  * claims Animated (ontology/Animated.h) and says "I am not finished, come
  * back"; whatever drives that family steps it, and in this session that is the
- * frame edge (Surface::ConsumeFrames).
+ * frame edge (Surface::RunFrames).
  *
  * STATED IN MILLISECONDS, which is a correction. This used to be counted in
  * FRAMES -- 22 before the first repeat, then one every 3 -- on the reasoning

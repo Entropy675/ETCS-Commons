@@ -203,7 +203,7 @@ public:
     //
     // CLEAR IS THE COMPOSITION BOUNDARY, same rule as VulkanSurface. Draws write
     // the back buffer only and do not mark observed -- Present is what publishes
-    // a finished picture. A mark from every FillRect would wake ConsumeFrames
+    // a finished picture. A mark from every FillRect would wake the frame edge
     // mid-batch and putImageData a cleared or half-composited raster (the drag
     // flicker). Foreign code (PaintProvider) still marks once a logical frame is
     // done; that mark is the only edge that should reach Present.
@@ -476,6 +476,16 @@ public:
     // Stop() is ThreadedBase's and is final there -- the frame edge is stopped by
     // the family, not by this backend.
     bool IsActive() const { return !Retired() && PixelWidth() != 0; }
+
+    /*
+     * Presentable_'s readiness question -- see PresentableBase::CanPresentConcrete.
+     * BOTH halves, in this order: Retired is the authoritative "do not touch
+     * this", and IsActive alone answers true on a retired Vulkan surface, whose
+     * "active" tag is only dropped in teardown. Asking both is what makes the
+     * two backends agree on one word.
+     */
+    bool CanPresentConcrete() override { return !Retired() && IsActive(); }
+
 
     // ── Deletable_ ───────────────────────────────────────────────────────────
 

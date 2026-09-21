@@ -47,7 +47,7 @@ class VulkanSurface : public SurfaceBase<VulkanSurface>,
                        public PresentableBase<VulkanSurface>,
                        public DeletableBase<VulkanSurface>,
                        public LifecycleBase<VulkanSurface>,
-                       // Owns a held body: Surface::ProduceFrames loops for the
+                       // Owns a held body: Surface::RunFrames loops for the
                        // window's lifetime. Claiming Threaded is what lets the
                        // arena ASK that loop to stop rather than only setting
                        // flags it has to dereference this object to read.
@@ -157,10 +157,20 @@ public:
 
     // Mirrors GLFWWindow::IsActive and VulkanInstance::IsActive -- the
     // "active" tag is added at the end of Create and removed in teardown,
-    // so this is the one predicate the frame clock (ProduceFrames,
+    // so this is the one predicate the frame clock (RunFrames,
     // RenderProvider.h) can wait on before ticking at a swapchain that may
     // not exist yet, and stop on when the surface goes away.
     bool IsActive() const { return this->hasTag("active"); }
+
+    /*
+     * Presentable_'s readiness question -- see PresentableBase::CanPresentConcrete.
+     * BOTH halves, in this order: Retired is the authoritative "do not touch
+     * this", and IsActive alone answers true on a retired Vulkan surface, whose
+     * "active" tag is only dropped in teardown. Asking both is what makes the
+     * two backends agree on one word.
+     */
+    bool CanPresentConcrete() override { return !Retired() && IsActive(); }
+
 
     // Every Surface_ entry point goes through this before touching a Vulkan
     // handle. Create() can fail HALFWAY -- it assigns m_instance early, then
@@ -244,7 +254,7 @@ public:
  * of past calls will ask it to.
  *
  * So a surface may instead be handed the RID of a Drawable root, and the
- * frame edge re-walks it per frame (ConsumeFrames, RenderProvider.h). That is
+ * frame edge re-walks it per frame (RunFrames, RenderProvider.h). That is
  * not the expensive option it sounds like: the walk is exactly where every
  * dirty flag in this system finally pays off. A settled tree costs one
  * DrawInto per node, no recomposition, no projection, and BlitConcrete's own
@@ -418,7 +428,7 @@ public:
         if (!source) { ETCS_LOG("VulkanSurface", "Blit called with no source."); return; }
         // Whole body under the lock, not just the push_back: this mutates
         // m_textures and writes into mapped staging memory, both of which
-        // the frame consumer reads (ConsumeFrames, RenderProvider.h).
+        // the frame edge reads (RunFrames, RenderProvider.h).
         std::lock_guard<std::mutex> lock(m_stateMutex);
         m_composed = false;          // appends only -- see ClearConcrete
 
@@ -512,7 +522,7 @@ public:
     // --- Presentable_ dispatch (PresentableBase.h) ---
 
     // Present is the ONLY call here that touches the queue, and with the
-    // frame edge (RenderProvider.h's ProduceFrames/ConsumeFrames) it runs
+    // frame edge (RenderProvider.h's RunFrames) it runs
     // on a different thread from the Clear/DrawRect/Blit calls feeding it.
     // So it takes a SNAPSHOT of everything it needs under the state lock and
     // then does all the Vulkan work without holding it -- vkQueuePresentKHR
@@ -1063,7 +1073,7 @@ private:
     // present is what starts that new one.
     //
     // This is the rule the frame edge needs to exist at all: with
-    // ProduceFrames/ConsumeFrames the surface presents on its own clock,
+    // RunFrames the surface presents on its own clock,
     // and .etcs has no loop construct, so a script issues its draws ONCE and
     // then blocks in Window.Run. Under immediate-mode semantics every frame
     // after the first would present an empty screen. It is also just what a

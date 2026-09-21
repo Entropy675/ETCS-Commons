@@ -1,27 +1,40 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# The frame pump, as a stream edge -- the exact shape window_events.etcs
-# already uses for input, applied to output.
+# THE SESSION'S TICK. Detach this and the page has a frame edge.
 #
-# REQUIRES a module change that is not on main yet: Surface must become
-# ETCS_TAG_BLOCK_HYBRID with a ProduceFrames/ConsumeFrames pair. Until then
-# use render_script.etcs, which drives frames from Surface.RunDemo on the
-# script's own thread instead.
+#     detach RenderProvider/scripts/render_frames.etcs view=<Surface>
 #
-# The split is the same one the input edge makes, read in the other
-# direction. ProduceFrames owns TIMING and acquisition: it acquires the next
-# swapchain image and emits one frame token per acquire, non-blocking, on a
-# pool worker. ConsumeFrames owns RECORDING: it takes each token, records
-# clear + pending draws into that frame's command buffer, submits, presents,
-# and blocks holding the edge open for as long as the surface lives.
+# It was a stream edge -- `view.ProduceFrames() -> view.ConsumeFrames()` -- and
+# the split was real: one half owned TIMING, the other owned RECORDING, which
+# kept every queue-touching call on one thread while getting frames off the
+# poll thread.
 #
-# Neither side touches PollEvents -- that stays with whoever created the
-# window (render_script_streamed.etcs's own thread). This is the whole point
-# of moving the frame loop here: Vulkan is happy to submit and present from
-# a thread that did not create the window, GLFW is not happy to be polled
-# from one that did not.
+# WHAT IT COST was a thread each, and the producer's came out of the ThreadPool:
+# a stream body is enqueued there, and a standing one never gives the worker
+# back. That is how a pool acquires a MINIMUM size, and how an image with two
+# standing producers and one worker deadlocks -- the second body queued behind
+# one that never returns. A floor set by whatever a script opens is not a
+# tuning parameter, it is a trap.
+#
+# So the clock became a number on the Presentable family and the recording
+# became a step on it (ontology/PresentableBase.h). There is no boundary left
+# between them, so there is no ring, no producer and no pool occupant -- one
+# loop, on the thread this `detach` asked for.
+#
+# IT DRIVES MORE THAN THIS SURFACE. RunFrames advances every entity that claims
+# Animated (ontology/Animated.h), so the toolbar's click-and-hold repeat and the
+# layer window's isolation fade ride this same tick. A session needs exactly one
+# caller of it; a session with no surface at all can drive the family from its
+# own loop instead.
+#
+# The argument in the other direction still holds: Vulkan is happy to submit and
+# present from a thread that did not create the window, GLFW is not happy to be
+# polled from one that did not. Nothing here touches PollEvents.
 
-requires view [Surface]
+requires view [Surface, Presentable]
 
-view.ProduceFrames() -> view.ConsumeFrames()
+# The argument is the pacing in ms. Zero means unpaced -- present on every visit
+# and let this loop's rate set the frame rate, which is the honest way to ask how
+# fast the pipeline can actually go.
+view.RunFrames(16)

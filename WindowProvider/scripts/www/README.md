@@ -393,7 +393,7 @@ is not having two writers on a single-producer ring.
 
 Verified in headless Chromium against a real build: cross-origin isolated, canvas
 1024x768, all three edges open (`key edge open`, `pointer edge open`,
-`Surface::ProduceFrames clock started at 16ms`), the paper layer composited to
+`Surface::RunFrames tick started at 16ms`), the paper layer composited to
 white, and a scripted press-drag-release leaving 12000 pixels of brush colour
 (`26,26,31` = the 0.10/0.10/0.12 the script asks for) in the same place on five
 consecutive runs, with zero page errors.

@@ -42,8 +42,16 @@
 #
 #   1. this script's thread   main.ProduceEvents -> input.ConsumeInput
 #   2. detached thread        main.ProducePointer -> input.ConsumePointer
-#   3. pool worker            Surface.ProduceFrames   frame clock
-#   4. detached thread        Surface.ConsumeFrames   present
+#   3. detached thread        Surface.RunFrames       the session's tick:
+#                                                     paces, presents, and
+#                                                     advances every Animated
+#                                                     entity. There is no pool
+#                                                     worker on this path any
+#                                                     more -- the frame clock
+#                                                     used to be a standing
+#                                                     stream producer, which is
+#                                                     what gave the pool a
+#                                                     minimum size.
 
 spawn RenderProvider::Instance gpu
 gpu.Create()
