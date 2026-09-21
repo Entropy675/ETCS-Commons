@@ -456,6 +456,34 @@ public:
             // than asking GLFW, and the first reader runs before any resize
             // callback has had a reason to fire.
             m_size = { width, height };
+            /*
+             * THE BUTTON MASK, FROM THE DOCUMENT AND NOT THE CANVAS.
+             *
+             * emscripten's GLFW listens on the canvas, so a release that lands
+             * anywhere else on the page -- which is where every dragged-off
+             * release lands -- reaches neither its own mask nor our button
+             * callback (see noteCursor). The DOM knows: it puts `buttons` on
+             * every mouse event, and a listener on the DOCUMENT sees the events
+             * the canvas does not. So the truth is read from there and noted as
+             * the mask; the presses themselves still come from GLFW.
+             *
+             * CAPTURE PHASE, so this runs BEFORE GLFW's canvas listener for the
+             * same event: the position that listener flushes then carries the
+             * mask as of that event rather than the one before. MAIN RUNTIME
+             * THREAD, because that is where GLFW's listeners run and therefore
+             * the one thread allowed to write the ring's state (noteCursor).
+             * EM_FALSE from the handler, so nothing is consumed and GLFW still
+             * sees every event it saw before.
+             */
+            emscripten_set_mousemove_callback_on_thread(
+                EMSCRIPTEN_EVENT_TARGET_DOCUMENT, this, EM_TRUE, dom_button_mask,
+                EM_CALLBACK_THREAD_CONTEXT_MAIN_RUNTIME_THREAD);
+            emscripten_set_mousedown_callback_on_thread(
+                EMSCRIPTEN_EVENT_TARGET_DOCUMENT, this, EM_TRUE, dom_button_mask,
+                EM_CALLBACK_THREAD_CONTEXT_MAIN_RUNTIME_THREAD);
+            emscripten_set_mouseup_callback_on_thread(
+                EMSCRIPTEN_EVENT_TARGET_DOCUMENT, this, EM_TRUE, dom_button_mask,
+                EM_CALLBACK_THREAD_CONTEXT_MAIN_RUNTIME_THREAD);
 #endif
             populateNativeSurfaceHandle();
             // Enrolled before `active` goes on, so the first pump pass that
@@ -604,6 +632,15 @@ public:
         // The browser flushes at the callback instead, because that is where its
         // producer thread is -- see noteCursor. Doing it here as well would put a
         // second writer on a single-producer ring.
+        //
+        // The mask is refreshed one statement before the flush, on this same
+        // thread, so the position going out carries what is held AT that position
+        // -- and it is queried rather than accumulated, so it inherits whatever
+        // the backend's own grab and focus handling did to the record (X11's
+        // implicit grab through a drag, Win32's SetCapture, the releases GLFW
+        // synthesises for every held button when a window loses focus) instead of
+        // being a tally of the button callbacks that happened to reach us.
+        noteButtonMask(platformButtonMask(*w));
         flushPointerPosition();
 #endif
         // The resize countdown, for the same reason and in the same place as
@@ -995,6 +1032,47 @@ public:
         m_pointer_inside.store(inside, ::std::memory_order_release);
     }
 
+    /*
+ * WHAT THE PLATFORM SAYS IS HELD, ASKED RATHER THAN ADDED UP.
+ *
+ * This is what lets a motion event claim to be a DRAG -- see
+ * InputEvent::buttons, and note that a tally of the presses we happened to see
+ * is the thing that goes wrong there.
+ *
+ * Buttons 0..2 only: left/right/middle is the whole vocabulary of
+ * paint_is_pan_button and the paint tools, and the field has eight bits, so
+ * widening this is a loop bound and nothing else.
+ *
+ * Not wrapped in ETCS_GLFW_MAIN, because the only caller is the pump inside a
+ * poll pass, which is already where GLFW is touched from on the desktop -- and
+ * the browser does not call this at all, for the reason in noteCursor.
+ *
+ * NOTHING MAY ENABLE GLFW_STICKY_MOUSE_BUTTONS while this exists: a sticky read
+ * CONSUMES the pending press (glfw/src/input.c), so polling here every pass
+ * would eat the click a consumer was waiting to be handed.
+ */
+#if defined(__EMSCRIPTEN__)
+    // The DOM's `buttons` uses the same bits GLFW's button numbers map to
+    // (1 left, 2 right, 4 middle), so it is the mask already. Registered in
+    // OpenWindowConcrete; the reasoning is there.
+    static EM_BOOL dom_button_mask(int, const EmscriptenMouseEvent* e, void* user)
+    {
+        auto* w = static_cast<GLFWWindow*>(user);
+        if (w && e) w->noteButtonMask(static_cast<uint8_t>(e->buttons & INPUT_BUTTONS_MASK));
+        return EM_FALSE;
+    }
+#endif
+
+    static uint8_t platformButtonMask(GLFWwindow* handle)
+    {
+        uint8_t mask = 0;
+        for (int b = GLFW_MOUSE_BUTTON_1; b <= GLFW_MOUSE_BUTTON_3; ++b)
+            if (glfwGetMouseButton(handle, b) == GLFW_PRESS)
+                mask = static_cast<uint8_t>(
+                    mask | input_button_bit(static_cast<uint16_t>(b)));
+        return mask;
+    }
+
     void noteCursor(double x, double y)
     {
         notePointerAt(static_cast<int>(x), static_cast<int>(y));
@@ -1015,6 +1093,17 @@ public:
          * one per pass. That is the cheap half to give up -- a position
          * supersedes the one before it and the ring laps rather than blocks, so
          * a consumer reading at frame rate sees the same position either way.
+         */
+
+        /*
+         * THE MASK IS NOT READ FROM GLFW HERE, and that is a decision. It does
+         * answer under emscripten, from a mask the glue keeps as `win.buttons` --
+         * but that mask is fed by the same canvas-only listeners that deliver our
+         * button callback, so the release that lands outside the canvas is missed
+         * by it exactly as it is missed by us. Reading it would dress our belief
+         * up as an observation. The mask comes from dom_button_mask instead, on
+         * this same thread and, being capture-phase, before this call: the flush
+         * below stamps the mask as of the event that caused it.
          */
         flushPointerPosition();
 #endif
