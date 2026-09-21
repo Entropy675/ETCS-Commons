@@ -526,6 +526,8 @@
     const glue = (j && j.glue) ? String(j.glue).trim().replace(/^\.\//, '') : '';
     log('[etcs] modules.json -> ' + wasm.join(', ') + '\n');
     if (scripts.length) log('[etcs] scripts -> ' + scripts.join(', ') + '\n');
+    // Kept for explainWorkerDeath: the per-Worker cost is proportional to it.
+    man_module_count = wasm.length;
     return { wasm: wasm, scripts: scripts, boot: boot, glue: glue };
   }
 
@@ -572,6 +574,45 @@
         + 'check FileHtmlPage::ListPaths in the server log for what is actually '
         + 'mounted there, and check www/ for a stale copy shadowing the mount.');
   }
+
+  /*
+   * WHAT `worker sent an error!` MEANS, said once, where it can be said at all.
+   *
+   * A Worker that dies cannot be reached from C++: emscripten re-instantiates
+   * every open dynamic library inside each new Worker, and when that fails the
+   * Worker is gone before any ETCS frame runs in it. The runtime's own guards
+   * (ThreadPool::start_workers, the detach in CommandExecutor.h) only catch the
+   * SYNCHRONOUS refusal -- pthread_create saying no. This one surfaces as three
+   * lines of emscripten internals and nothing else, so the page is the only
+   * controlled point left, and this is it.
+   *
+   * THE THREE LINES ARE ONE EVENT, in this order, and reading them as three
+   * problems is the trap: the Worker reports out-of-memory, `_dlopen_js failed`
+   * names the library it could not bring up, and then something proceeds on the
+   * failure and faults -- `ASM_CONSTS is undefined` is an EM_ASM block running
+   * in a Worker whose glue never finished, and `index out of bounds` is the
+   * result. Only the FIRST is a cause.
+   *
+   * ONCE PER PAGE. There are dozens of Workers and they fail together; the
+   * explanation does not get truer for being printed forty times, and the
+   * repetition is what buries the first line that mattered.
+   */
+  let workerDeathExplained = false;
+  function explainWorkerDeath(t) {
+    if (workerDeathExplained) return;
+    if (!/worker sent an error|could not load dynamic lib|ASM_CONSTS is undefined/.test(t)) return;
+    workerDeathExplained = true;
+    log('[etcs] A Worker died. This is browser memory, NOT the wasm heap -- '
+      + 'raising INITIAL_MEMORY will not change it.\n'
+      + '[etcs]   Each Worker re-instantiates every open module for itself, so the '
+      + 'cost is workers x modules. This page loads ' + (man_module_count || '?')
+      + ' side modules and the runtime creates one thread pool PER IMAGE '
+      + '(DEFAULT_THREAD_POOL_THREADS, core/ETCS_API.h).\n'
+      + '[etcs]   Lower that, or load fewer providers, or give the machine more RAM. '
+      + 'Any "index out of bounds" or "ASM_CONSTS is undefined" after this line is '
+      + 'the consequence, not a second fault.\n', 'err');
+  }
+  let man_module_count = 0;
 
   async function fetchAll(names, kind) {
     const out = {};
@@ -626,6 +667,7 @@
         // log() writes to the terminal itself now, so this is ONE write, not
         // two -- it also lifts the first line into the status.
         log(t + (String(t).endsWith('\n') ? '' : '\n'), 'err');
+        explainWorkerDeath(String(t));
       },
       dynamicLibraries: [],
       locateFile: function (path) { return path; },
