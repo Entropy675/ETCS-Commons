@@ -1799,6 +1799,14 @@ public:
     // Unbound, the marks fall back inside the pane; see draw_edge_ruler.
     void BindRulerFrame(ETCS::RID frame) { m_ruler_frame = frame; }
 
+    // The band's own two colours. Separate from SetBackground because they were
+    // the same colour and that was the bug: with the band and the area beyond the
+    // page in one shade there was nothing to say where the drawable region ended.
+    void SetRulerBackground(float r, float g, float b, float a)
+    { m_ruler_bg[0] = r; m_ruler_bg[1] = g; m_ruler_bg[2] = b; m_ruler_bg[3] = a; }
+    void SetRulerInk(float r, float g, float b, float a)
+    { m_ruler_ink[0] = r; m_ruler_ink[1] = g; m_ruler_ink[2] = b; m_ruler_ink[3] = a; }
+
     void StampBrush(int32_t x, int32_t y, const PaintBrushState& brush)
     {
         if (m_target == 0) return;
@@ -1833,18 +1841,63 @@ private:
  * no margin can have; it is not the intended arrangement and the fallback is
  * here so that such a page still gets a scale rather than nothing.
  *
- * IN PANE PIXELS, NOT DOCUMENT PIXELS, and that is the choice worth stating. The
- * ticks describe the DRAWING AREA: at 100% zoom with no pan the two spaces
- * coincide, and when they do not, these still answer "how big is the area I am
- * drawing in" rather than drifting off with the page. The ruler tool measures the
- * document, so under zoom the two disagree on purpose -- one is the paper, the
- * other is the frame around it.
+ * IN DOCUMENT PIXELS, WHICH IS THE CORRECTION THAT MATTERS MOST HERE. These used
+ * to count the pane, on the reasoning that the ruler describes the drawing AREA --
+ * which is a coherent thing to measure and is not what anyone reads a ruler for.
+ * At any zoom but 1 it meant the mark labelled 100 was not 100 of anything you
+ * could draw, so every number on the edge was wrong. A ruler measures the thing
+ * being measured: the marks now sit at round DOCUMENT coordinates projected
+ * through the same pan and zoom the picture goes through, so a mark labelled 400
+ * is against document x=400 at every zoom, and the scale slides with the paper
+ * when you pan. The ruler TOOL and this edge now agree, which they never did.
  *
- * DRAWN, NOT SPAWNED. A script could place these as nodes, and the first resize
- * would leave them wrong: the tick spacing and the band's width are functions of
- * the pane's current extent, which only the thing being drawn into knows. Four
- * edges, so a mark near a corner is reachable from either side of it.
+ * THE SPACING IS CHOSEN, NOT FIXED. Marks every 100 document pixels are 10 px
+ * apart at 10% zoom (illegible) and 400 apart at 400% (useless). ruler_step walks
+ * a 1-2-5 ladder until one interval is at least RULER_MIN_TICK_PX on screen, which
+ * is what keeps the labels readable and the density roughly constant across the
+ * whole zoom range.
+ *
+ * DRAWN, NOT SPAWNED. A script could place these as nodes, and the first resize,
+ * pan or zoom would leave them wrong: the spacing, the values and the band's width
+ * are all functions of state only the thing being drawn into holds. Four edges, so
+ * a mark near a corner is reachable from either side of it.
  */
+    // Marks closer together than this are a smear rather than a scale, and their
+    // labels overlap. It is what picks the step out of the ladder below.
+    static constexpr float RULER_MIN_TICK_PX = 72.0f;
+
+    /*
+ * A 1-2-5 LADDER, walked until one interval is far enough apart on screen.
+ *
+ * Fixed spacing cannot work once the marks are document coordinates: 100 doc px
+ * is 10 screen px at 10% zoom and 400 at 400%. Stepping 1, 2, 5, 10, 20, 50, ...
+ * keeps every label a round number a person can do arithmetic with -- which
+ * stepping by, say, screen-pixels-divided-by-zoom would not.
+ */
+    static int32_t ruler_step(float zoom)
+    {
+        const float z = (zoom <= 0.0f) ? 1.0f : zoom;
+        int32_t decade = 1;
+        for (int guard = 0; guard < 12; ++guard)
+        {
+            for (int32_t m : { 1, 2, 5 })
+                if (m * decade * z >= RULER_MIN_TICK_PX) return m * decade;
+            decade *= 10;
+        }
+        return decade;
+    }
+
+    // The first multiple of `s` at or below `v`. Written out because integer
+    // division truncates toward zero, so the obvious (v / s) * s steps the wrong
+    // way once the pan puts document coordinates negative -- which it does the
+    // moment you scroll off the top-left of the page.
+    static int32_t floor_multiple(int32_t v, int32_t s)
+    {
+        if (s <= 0) return v;
+        const int32_t q = (v >= 0) ? (v / s) : -(((-v) + s - 1) / s);
+        return q * s;
+    }
+
     void draw_edge_ruler(Surface_* pane_view)
     {
         if (!m_edge_ruler) return;
@@ -1887,14 +1940,25 @@ private:
         }
         if (!dst) return;
 
-        const int32_t step  = 100;
         const int32_t major = 10;    // tick length at a labelled mark
         const int32_t minor = 5;     // and at the halfway one
         const uint32_t label_px = 8;
 
-        // Light, and alpha'd: it has to read on the margin and on white paper
-        // (the fallback draws over the page) without competing with either.
-        const float r = 0.35f, g = 0.55f, b = 0.95f, a = 0.85f;
+        // The span of DOCUMENT the pane currently shows, on each axis. These are
+        // what the marks are placed against, and they move with pan and zoom.
+        const int32_t step = ruler_step(m_zoom);
+        const int32_t dx0 = ViewToDocX(0),  dx1 = ViewToDocX(pw);
+        const int32_t dy0 = ViewToDocY(0),  dy1 = ViewToDocY(ph);
+
+        // ON THE BAND the marks are ink on wood, so they are the ink colour. In
+        // the no-frame fallback they are drawn over the PICTURE instead -- white
+        // paper in the middle, the surface's own dark layer around it -- and cream
+        // would vanish on the paper, so that path keeps a mid blue that reads on
+        // both. Two colours because there are two things to be legible against.
+        const float r = outside ? m_ruler_ink[0] : 0.35f;
+        const float g = outside ? m_ruler_ink[1] : 0.55f;
+        const float b = outside ? m_ruler_ink[2] : 0.95f;
+        const float a = outside ? m_ruler_ink[3] : 0.85f;
 
         ETCS::Held<Glyphs_> glyphs;
         if (m_glyphs != 0) glyphs = ETCS::resolve_held<Glyphs_>("Glyphs", m_glyphs);
@@ -1902,16 +1966,26 @@ private:
         // How wide the band must be to hold a tick and the widest number beside
         // it. MEASURED, not computed from the size: the advance width is the
         // provider's, and a band sized by arithmetic here clips the labels on any
-        // provider that disagrees.
+        // provider that disagrees. The widest number is now a document coordinate,
+        // so panning far out makes it wider and the band follows.
         int32_t label_w = 0;
         if (glyphs)
         {
-            const int32_t biggest = (std::max(pw, ph) / step) * step;
-            const TextExtent e = glyphs->MeasureText(std::to_string(biggest).c_str(),
-                                                     0, label_px);
+            const int32_t biggest = std::max(std::max(std::abs(dx0), std::abs(dx1)),
+                                             std::max(std::abs(dy0), std::abs(dy1)));
+            const TextExtent e = glyphs->MeasureText(
+                std::to_string(((biggest / step) + 1) * step).c_str(), 0, label_px);
             label_w = static_cast<int32_t>(e.width);
         }
-        const int32_t band = major + 4 + std::max(label_w, 12);
+        // TWO WIDTHS, because the two axes need different things of the margin.
+        // A label along the top or bottom edge is laid beside its tick and needs
+        // only its HEIGHT of room; one along the left or right needs its WIDTH,
+        // and a four-digit document coordinate is wider than it is tall. Sizing
+        // both sides from the wider one gated the top labels out of a margin
+        // that had ample room for them.
+        const int32_t band_h = major + 4 + static_cast<int32_t>(label_px);
+        const int32_t band_v = major + 4 + std::max(label_w, 12);
+        const int32_t band   = std::max(band_h, band_v);   // what gets cleared
 
         // Per side, because a page is free to leave a margin on some edges and
         // not others -- the toolbar takes the bottom of this one's frame. Capped
@@ -1927,17 +2001,22 @@ private:
         // marks sitting beside the new ones.
         if (outside)
         {
+            // ITS OWN COLOUR, not the surface's background. Those were the same
+            // shade, so the band and the empty area beyond the page ran together
+            // and there was no telling where the drawable region stopped. Wood,
+            // because that is what a ruler is, and because a warm brown is far
+            // enough from both the dark layer outside the page and the white of
+            // the page itself to be a boundary at a glance.
+            const float* w = m_ruler_bg;
             const uint32_t span = static_cast<uint32_t>(bl + pw + br);
             if (bt > 0) dst->DrawRect(ox - bl, oy - bt, span, static_cast<uint32_t>(bt),
-                                      m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+                                      w[0], w[1], w[2], w[3]);
             if (bb > 0) dst->DrawRect(ox - bl, oy + ph, span, static_cast<uint32_t>(bb),
-                                      m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+                                      w[0], w[1], w[2], w[3]);
             if (bl > 0) dst->DrawRect(ox - bl, oy, static_cast<uint32_t>(bl),
-                                      static_cast<uint32_t>(ph),
-                                      m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+                                      static_cast<uint32_t>(ph), w[0], w[1], w[2], w[3]);
             if (br > 0) dst->DrawRect(ox + pw, oy, static_cast<uint32_t>(br),
-                                      static_cast<uint32_t>(ph),
-                                      m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+                                      static_cast<uint32_t>(ph), w[0], w[1], w[2], w[3]);
         }
 
         // One tick length per side, so a side with a narrow margin gets a short
@@ -1947,11 +2026,19 @@ private:
         const int32_t tr = outside ? std::min(major, br) : major;
         const int32_t tb = outside ? std::min(major, bb) : major;
 
-        for (int32_t x = 0; x <= pw; x += step)
+        // ── the horizontal axis, walked in DOCUMENT coordinates ──────────────
+        //
+        // The loop variable is the number on the label; where it lands is derived
+        // from it through the same projection the picture uses, so the mark and
+        // the pixel it names cannot drift apart.
+        for (int32_t d = floor_multiple(dx0, step); d <= dx1; d += step)
         {
-            const int32_t cx = ox + ((x >= pw) ? pw - 1 : x);
-            const int32_t hx = ox + x + step / 2;
-            const bool    half = (x + step / 2 < pw);
+            const int32_t vx = DocToViewX(d);
+            if (vx < 0 || vx >= pw) continue;
+            const int32_t cx = ox + vx;
+            const int32_t hvx = DocToViewX(d + step / 2);
+            const bool    half = (step >= 2 && hvx >= 0 && hvx < pw);
+            const int32_t hx = ox + hvx;
             if (outside)
             {
                 if (tt > 0) dst->DrawRect(cx, oy - tt, 1, static_cast<uint32_t>(tt), r, g, b, a);
@@ -1960,9 +2047,11 @@ private:
                     dst->DrawRect(hx, oy - minor, 1, static_cast<uint32_t>(minor), r, g, b, a);
                 if (half && bb >= minor)
                     dst->DrawRect(hx, oy + ph, 1, static_cast<uint32_t>(minor), r, g, b, a);
-                if (glyphs && x > 0 && bt >= band)
-                    glyphs->RasterizeText(dst_rid, std::to_string(x).c_str(), 0, label_px,
-                                          cx + 3, oy - band + 2, r, g, b, a);
+                // No label at the origin: the corner carries the extent, and a
+                // "0" under it is two numbers fighting for twelve pixels.
+                if (glyphs && d != 0 && bt >= band_h)
+                    glyphs->RasterizeText(dst_rid, std::to_string(d).c_str(), 0, label_px,
+                                          cx + 3, oy - band_h + 2, r, g, b, a);
             }
             else
             {
@@ -1973,17 +2062,21 @@ private:
                     dst->DrawRect(hx, oy, 1, static_cast<uint32_t>(minor), r, g, b, a);
                     dst->DrawRect(hx, oy + ph - minor, 1, static_cast<uint32_t>(minor), r, g, b, a);
                 }
-                if (glyphs && x > 0)
-                    glyphs->RasterizeText(dst_rid, std::to_string(x).c_str(), 0, label_px,
+                if (glyphs)
+                    glyphs->RasterizeText(dst_rid, std::to_string(d).c_str(), 0, label_px,
                                           cx + 3, oy + major + 2, r, g, b, a);
             }
         }
 
-        for (int32_t y = 0; y <= ph; y += step)
+        // ── the vertical axis, the same walk on the other coordinate ─────────
+        for (int32_t d = floor_multiple(dy0, step); d <= dy1; d += step)
         {
-            const int32_t cy = oy + ((y >= ph) ? ph - 1 : y);
-            const int32_t hy = oy + y + step / 2;
-            const bool    half = (y + step / 2 < ph);
+            const int32_t vy = DocToViewY(d);
+            if (vy < 0 || vy >= ph) continue;
+            const int32_t cy = oy + vy;
+            const int32_t hvy = DocToViewY(d + step / 2);
+            const bool    half = (step >= 2 && hvy >= 0 && hvy < ph);
+            const int32_t hy = oy + hvy;
             if (outside)
             {
                 if (tl > 0) dst->DrawRect(ox - tl, cy, static_cast<uint32_t>(tl), 1, r, g, b, a);
@@ -1992,9 +2085,9 @@ private:
                     dst->DrawRect(ox - minor, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
                 if (half && br >= minor)
                     dst->DrawRect(ox + pw, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
-                if (glyphs && y > 0 && bl >= band)
-                    glyphs->RasterizeText(dst_rid, std::to_string(y).c_str(), 0, label_px,
-                                          ox - band + 2, cy + 3, r, g, b, a);
+                if (glyphs && d != 0 && bl >= band_v)
+                    glyphs->RasterizeText(dst_rid, std::to_string(d).c_str(), 0, label_px,
+                                          ox - band_v + 2, cy + 3, r, g, b, a);
             }
             else
             {
@@ -2005,8 +2098,8 @@ private:
                     dst->DrawRect(ox, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
                     dst->DrawRect(ox + pw - minor, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
                 }
-                if (glyphs && y > 0)
-                    glyphs->RasterizeText(dst_rid, std::to_string(y).c_str(), 0, label_px,
+                if (glyphs)
+                    glyphs->RasterizeText(dst_rid, std::to_string(d).c_str(), 0, label_px,
                                           ox + major + 2, cy + 3, r, g, b, a);
             }
         }
@@ -2016,10 +2109,15 @@ private:
         // when there is one, so it is outside the picture like the rest.
         if (glyphs)
         {
-            const std::string ext = std::to_string(pw) + "x" + std::to_string(ph);
-            if (outside && bt >= band && bl > 0)
+            // THE DOCUMENT'S extent, not the pane's, because that is the unit the
+            // two axes are now counting. The pane's size is a fact about the
+            // window and is not what anybody reading a scale wants.
+            const std::string ext = m_document
+                ? std::to_string(m_document->width()) + "x" + std::to_string(m_document->height())
+                : std::to_string(pw) + "x" + std::to_string(ph);
+            if (outside && bt >= band_h && bl > 0)
                 glyphs->RasterizeText(dst_rid, ext.c_str(), 0, label_px,
-                                      ox - bl + 2, oy - band + 2, r, g, b, a);
+                                      ox - bl + 2, oy - band_h + 2, r, g, b, a);
             else if (!outside)
                 glyphs->RasterizeText(dst_rid, ext.c_str(), 0, label_px,
                                       ox + major + 2, oy + major + 2, r, g, b, a);
@@ -2069,6 +2167,11 @@ private:
     ETCS::RID m_glyphs     = 0;
     // The surface the ruler marks, when the pane is inset in a larger one.
     ETCS::RID m_ruler_frame = 0;
+    // Walnut, and a warm off-white to mark it with. Dark enough that the cream
+    // reads cleanly on it, and far enough from both the neutral dark outside the
+    // page and the page's white that the boundary is obvious without a line.
+    float m_ruler_bg[4]  = { 0.30f, 0.20f, 0.12f, 1.0f };
+    float m_ruler_ink[4] = { 0.94f, 0.89f, 0.78f, 0.92f };
 };
 
 /*
