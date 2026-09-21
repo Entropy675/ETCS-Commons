@@ -132,7 +132,7 @@ static inline uint8_t paint_to_byte(float v)
  * Accumulates each ancestor's own offset all the way up, THROUGH compositors
  * rather than stopping at one. That is deliberately not the rule a drawable uses
  * to paint itself (a compositor is a coordinate origin, so a child painting into
- * it stops there -- PolygonDrawable2D::parentAbsoluteOrigin). Here the question
+ * it stops there -- Drawable2DBase::parentAbsoluteOrigin). Here the question
  * is different: a popup is a sibling of the toolbar's compositor, not a child of
  * it, so it needs the toolbar's offset included to be placed against something
  * inside it.

@@ -405,7 +405,6 @@ public:
             ctx.putImageData(img, 0, 0);
         }, m_front.data(), w, h, target.c_str());
 #endif
-        notePresent();
     }
 
     // ── Resizable_ dispatch ──────────────────────────────────────────────────
@@ -454,11 +453,6 @@ public:
         root->DrawInto(this);
         return true;
     }
-
-    // The rate this surface is sustaining, sampled at Present because that is
-    // the instant a frame reached the screen. Exponential rather than a window:
-    // the only consumer is a human reading a number (TextLabel::BindFps).
-    float Fps() const { return m_fps; }
 
     // ── Lifecycle_ ───────────────────────────────────────────────────────────
     //
@@ -547,23 +541,6 @@ private:
 #endif
     }
 
-    void notePresent()
-    {
-        using clock = ::std::chrono::steady_clock;
-        const double now = ::std::chrono::duration<double>(
-            clock::now().time_since_epoch()).count();
-        if (m_lastPresent > 0.0)
-        {
-            const double dt = now - m_lastPresent;
-            if (dt > 0.0)
-            {
-                const float inst = static_cast<float>(1.0 / dt);
-                m_fps = (m_fps <= 0.0f) ? inst : (m_fps * 0.9f + inst * 0.1f);
-            }
-        }
-        m_lastPresent = now;
-    }
-
     CanvasInstance* m_instance        = nullptr;
     Resizable_*     m_parentResizable = nullptr;
     /*
@@ -590,8 +567,6 @@ private:
     uint32_t              m_front_h = 0;
 
     bool   m_dead        = false;
-    float  m_fps         = 0.0f;
-    double m_lastPresent = 0.0;
 };
 
 #endif // RENDERPROVIDER_CANVASSURFACE_H__

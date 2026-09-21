@@ -291,10 +291,15 @@ private:
  *
  * The marker rather than replacing the whole string, so a caption keeps its
  * label -- "FPS %f" reads as "FPS 53.0" and the script still owns the wording.
- * Resolved by TAG, not by casting a family pointer: Fps is a property of this
- * module's own surface and not of the Surface family, and reading another
- * module's fields off a family pointer is the mistake the interface-pointer
- * discipline exists to prevent.
+ *
+ * RESOLVED AS Presentable_, WHICH IS NOW A REAL FAMILY ROUTE. This used to
+ * resolve the Surface family, compare the source tag against the string
+ * "Surface" and cast to this module's concrete platform type, because the rate
+ * lived on the backend rather than on a family -- three couplings (to one
+ * module, to one tag name, and to this header being included after the
+ * backends) standing in for one method. Presentable_::Fps is that method, so a
+ * caption can now show the rate of ANY module's presenting surface and this
+ * file names no backend at all.
  */
     std::string liveText() const
     {
@@ -303,10 +308,10 @@ private:
         const size_t at = m_text.find(marker);
         if (at == std::string::npos) return m_text;
 
-        Surface_* s = ETCS::resolve_in_family<Surface_>("Surface", m_fps_src);
-        if (!s || s->getSourceTag() != ETCS::Buffer("Surface")) return m_text;
+        Presentable_* s = ETCS::resolve_in_family<Presentable_>("Presentable", m_fps_src);
+        if (!s) return m_text;
 
-        const float fps = static_cast<Surface*>(s->getTrueType())->Fps();
+        const float fps = s->Fps();
         // One decimal, formatted by hand: this runs every frame and a
         // stringstream here would allocate three times per draw for a number
         // with four significant figures in it.
@@ -402,25 +407,6 @@ private:
                 }
             }
         }
-    }
-
-    // Where this node's PARENT sits, stopping at the first ancestor that is a
-    // raster. Identical to PolygonDrawable2D's and Camera3D's -- the four
-    // 2D leaves are interchangeable as children, so they must agree on what a
-    // position means.
-    Point2D parentAbsoluteOrigin()
-    {
-        Point2D acc{0, 0};
-        for (ETCS::Entity* node = getParent(); node; node = node->getParent())
-        {
-            void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
-            if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
-            const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
-            acc.x += pb.x;
-            acc.y += pb.y;
-        }
-        return acc;
     }
 
     // Changing a label changes the image, so every pixel owner above it holds

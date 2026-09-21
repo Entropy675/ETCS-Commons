@@ -234,9 +234,7 @@ public:
     void DrawRectConcrete(int32_t x, int32_t y, uint32_t w, uint32_t h,
                           float r, float g, float b, float a) override
     {
-        int32_t cx, cy; uint32_t cw, ch;
-        CurrentClip(cx, cy, cw, ch);
-        clipToRegion(x, y, w, h, cx, cy, cw, ch);
+        clipToCurrent(x, y, w, h);
         if (w == 0 || h == 0) return;
         FillRect(x, y, w, h, r, g, b, a);
     }
@@ -263,9 +261,10 @@ public:
 
     // ── Clippable_ dispatch ──────────────────────────────────────────────
     //
-    // Nothing device-side to set: this rasteriser reads CurrentClip at draw
-    // time instead. The family's arithmetic is what matters here, and it is
-    // inherited -- this is only the acknowledgement that a region was set.
+    // Nothing device-side to set: this rasteriser narrows each rectangle
+    // against the region at draw time instead (clipToCurrent, in DrawRect).
+    // The family's arithmetic is what matters here, and it is inherited --
+    // this is only the acknowledgement that a region was set.
     void SetScissorConcrete(int32_t, int32_t, uint32_t, uint32_t) override {}
 
     // ── Drawable_ dispatch: the merge ────────────────────────────────────
@@ -425,7 +424,7 @@ private:
  *
  * Children receive `this` as their destination, so their DrawRect and Blit
  * land in this buffer, and their coordinate walk stops here (see
- * PolygonDrawable2D::parentAbsoluteOrigin) because a node that owns pixels
+ * Drawable2DBase::parentAbsoluteOrigin) because a node that owns pixels
  * is a coordinate origin. Nothing in the child knows it is being composited
  * rather than drawn to a window, which is what makes a subtree relocatable
  * between the two.
@@ -574,46 +573,6 @@ private:
 
         // `batch` closes here: one mark upward for the whole recompose, and the
         // publish that mark triggers, both on this thread.
-    }
-
-    /*
- * Where this node's PARENT sits, stopping at the first ancestor that owns
- * pixels -- because that ancestor is a coordinate origin, and this node's
- * position is already stated in its space.
- *
- * Identical rule to PolygonDrawable2D's, and it has to be: the two leaves
- * are interchangeable as children, so they must agree on what their
- * coordinates mean.
- */
-    Point2D parentAbsoluteOrigin()
-    {
-        Point2D acc{0, 0};
-        for (ETCS::Entity* node = getParent(); node; node = node->getParent())
-        {
-            void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
-            if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
-            const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
-            acc.x += pb.x;
-            acc.y += pb.y;
-        }
-        return acc;
-    }
-
-    static void clipToRegion(int32_t& x, int32_t& y, uint32_t& w, uint32_t& h,
-                             int32_t cx, int32_t cy, uint32_t cw, uint32_t ch)
-    {
-        const int64_t x0 = std::max<int64_t>(x, cx);
-        const int64_t y0 = std::max<int64_t>(y, cy);
-        const int64_t x1 = std::min<int64_t>(static_cast<int64_t>(x) + w,
-                                             static_cast<int64_t>(cx) + cw);
-        const int64_t y1 = std::min<int64_t>(static_cast<int64_t>(y) + h,
-                                             static_cast<int64_t>(cy) + ch);
-        if (x1 <= x0 || y1 <= y0) { w = 0; h = 0; return; }
-        x = static_cast<int32_t>(x0);
-        y = static_cast<int32_t>(y0);
-        w = static_cast<uint32_t>(x1 - x0);
-        h = static_cast<uint32_t>(y1 - y0);
     }
 
     int32_t  m_x = 0;
