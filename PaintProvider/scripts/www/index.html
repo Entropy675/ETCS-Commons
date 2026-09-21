@@ -529,6 +529,50 @@
     return { wasm: wasm, scripts: scripts, boot: boot, glue: glue };
   }
 
+  /*
+   * WHAT ARRIVED HAS TO BE WHAT WAS ASKED FOR, and a 200 does not say that.
+   *
+   * Only boot_paint_panels.etcs is actually a file under www/; every other
+   * script here exists on the served surface because serve_paint.etcs MOUNTS
+   * it, from a RELATIVE path that resolves against the server's working
+   * directory. Get that wrong, or leave a stale copy in www/ for LoadFromDisk
+   * to find first, and the fetch still succeeds -- with an error page, a
+   * directory listing, or last week's file.
+   *
+   * WHICH IS SILENT UNTIL IT IS BAFFLING. A staged non-script is written into
+   * the filesystem, `detach` launches it, and the script thread dies on the
+   * first line. The one that matters is render_frames.etcs: nothing else in
+   * this page calls Present, so its thread dying leaves a BLACK CANVAS and a
+   * runtime that is otherwise working perfectly. That failure has nothing in
+   * it pointing back here, which is the whole reason for the two checks below.
+   *
+   * CHEAP AND STRUCTURAL, not a parse. A module must open with the WebAssembly
+   * magic; a script must not open with '<', because no .etcs line does and
+   * every wrong answer a web server gives is markup. Neither check can reject
+   * a file that is genuinely what it claims to be, which is the only property
+   * worth having here -- a stricter test would start failing on valid input
+   * the first time the language grows.
+   */
+  const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
+
+  function checkStaged(name, kind, buf) {
+    if (kind === 'module') {
+      const ok = buf.byteLength >= 4 && WASM_MAGIC.every((b, i) => buf[i] === b);
+      if (!ok) throw new Error(name + ' is not a WebAssembly module -- it starts '
+        + '0x' + Array.from(buf.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join('')
+        + '. The server answered 200 with something else; check what it is serving '
+        + 'at that path.');
+      return;
+    }
+    let i = 0;
+    while (i < buf.byteLength && (buf[i] === 32 || buf[i] === 9 || buf[i] === 10 || buf[i] === 13)) i++;
+    if (i < buf.byteLength && buf[i] === 0x3c /* '<' */)
+      throw new Error(name + ' is markup, not an .etcs script. It is mounted by '
+        + 'serve_paint.etcs from a path relative to the server\'s working directory; '
+        + 'check FileHtmlPage::ListPaths in the server log for what is actually '
+        + 'mounted there, and check www/ for a stale copy shadowing the mount.');
+  }
+
   async function fetchAll(names, kind) {
     const out = {};
     for (const name of names) {
@@ -537,10 +581,10 @@
       if (!r.ok) throw new Error('fetch ' + name + ' failed HTTP ' + r.status);
       const buf = new Uint8Array(await r.arrayBuffer());
       if (!buf.byteLength) throw new Error(name + ' is empty');
+      checkStaged(name, kind, buf);
       out[name] = buf;
       log('[etcs] staged ' + name + ' (' + buf.byteLength + ' bytes)\n', 'ok');
     }
-    void kind;
     return out;
   }
 

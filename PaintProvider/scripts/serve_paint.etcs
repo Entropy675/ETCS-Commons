@@ -3,15 +3,24 @@
 
 # SERVE THE PAINT PAGE -- two canvases and a terminal -- over TLS.
 #
-#     cd modules/PaintProvider/scripts && etcs serve_paint.etcs
+#     etcs modules/PaintProvider/scripts/serve_paint.etcs
 #     then open https://localhost:8443/
 #
-# RUN IT FROM THIS DIRECTORY. Every path below is relative to it. Same shape as
-# WindowProvider's serve_web.etcs, and for the same reasons: one FileHtmlPage
-# child (two StaticHtmlPage siblings under one server is a coin flip the hash
-# re-tosses -- see that script), the two isolation headers without which a
-# -pthread build's Workers die on `wasmMemory is undefined`, and every script
-# MOUNTED at the path it is fetched from rather than copied into www/.
+# FROM ANY DIRECTORY, and that is a fix rather than a convenience. Every path
+# below used to be relative to the process's working directory -- which is not
+# a property of this script and not something it can check. Run it from
+# anywhere else and each MountFile refused, the page still answered 200 from
+# whatever else sat at that URL, and the first thing to notice was a script
+# thread dying with nothing pointing back here. The one that matters is
+# render_frames.etcs: it is the frame pump, so losing it leaves a black canvas
+# and a runtime that is otherwise working perfectly. ACE_ROOT resolves the same
+# way it does in the #IMPORT above (core/CommandExecutor.h).
+#
+# Same shape as WindowProvider's serve_web.etcs, and for the same reasons: one
+# FileHtmlPage child (two StaticHtmlPage siblings under one server is a coin
+# flip the hash re-tosses -- see that script), the two isolation headers without
+# which a -pthread build's Workers die on `wasmMemory is undefined`, and every
+# script MOUNTED at the path it is fetched from rather than copied into www/.
 #
 # ONE SERVER AT A TIME on 8443. This page and the window page are two views of
 # the same runtime, not two services.
@@ -27,7 +36,7 @@ web.AddHeader(Cross-Origin-Opener-Policy same-origin)
 web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
 
 web.spawn(NetworkProvider::FileHtmlPage tree)
-tree.LoadFromDisk(./www)
+tree.LoadFromDisk(ACE_ROOT/modules/PaintProvider/scripts/www)
 tree.SetDefaultExtension(.html)
 
 # ── the mounts ───────────────────────────────────────────────────────────────
@@ -35,21 +44,23 @@ tree.SetDefaultExtension(.html)
 # Each at the path the page stages it under (www/modules.json), which is the path
 # the OS side reads it from -- so boot_paint_panels.etcs's `detach` and `run`
 # lines are spelled once for both substrates instead of twice.
-tree.MountFile(paint_routed_pointer.etcs ./paint_routed_pointer.etcs)
-tree.MountFile(PaintProvider/scripts/paint_toolbar.etcs ./paint_toolbar.etcs)
-tree.MountFile(PaintProvider/scripts/paint_wheel.etcs ./paint_wheel.etcs)
-tree.MountFile(PaintProvider/scripts/paint_menu.etcs ./paint_menu.etcs)
-tree.MountFile(PaintProvider/scripts/paint_layers.etcs ./paint_layers.etcs)
-tree.MountFile(PaintProvider/scripts/paint_import.etcs ./paint_import.etcs)
-tree.MountFile(RenderProvider/scripts/render_frames.etcs ../../RenderProvider/scripts/render_frames.etcs)
+tree.MountFile(paint_routed_pointer.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_routed_pointer.etcs)
+tree.MountFile(PaintProvider/scripts/paint_toolbar.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_toolbar.etcs)
+tree.MountFile(PaintProvider/scripts/paint_wheel.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_wheel.etcs)
+tree.MountFile(PaintProvider/scripts/paint_menu.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_menu.etcs)
+tree.MountFile(PaintProvider/scripts/paint_layers.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_layers.etcs)
+tree.MountFile(PaintProvider/scripts/paint_import.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_import.etcs)
+tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
 
 # The terminal view, from ShellProvider's own page rather than a copy of it.
 # Mounted at "shell", which is what index.html's iframe points at; the MIME comes
 # from the disk name.
-tree.MountFile(shell ../../ShellProvider/scripts/www/index.html)
+tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)
 
 # The whole served surface, which is the fastest way to catch a staging mistake:
 # a name the page asks for and this does not list is a 404 waiting to happen.
+# Worth reading every time the page misbehaves: a mount that failed says so here
+# by being absent, and MountFile logged the path it could not open.
 tree.ListPaths()
 
 web.Start()
