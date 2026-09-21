@@ -2981,8 +2981,28 @@ private:
                      << m_name << "'.");
             return false;
         }
-        layer->Create(img.w, img.h);
-        layer->RestoreBytes(img.rgba);
+        /*
+     * PAGE-SIZED, WITH THE IMAGE DROPPED INTO IT -- not a raster the size of
+     * the file.
+     *
+     * A layer used to be created at the image's extent, on the reasoning that
+     * a layer's raster is its own and resampling on the way in would throw
+     * pixels away. What that actually bought was a layer whose pixels were
+     * second class: every selection operation works in DOCUMENT coordinates
+     * and lands through the layer's own raster, so lifting the image and
+     * moving it wrote the pixels back outside the raster's bounds, where
+     * DropPixels clips -- and the picture vanished. Fill, smudge and paste had
+     * the same edge.
+     *
+     * Nothing is thrown away that was ever going to be shown: the composite
+     * clips to the page (CompositeVisible), so anything outside it was already
+     * invisible. The path for "keep all of it" is the other answer to the
+     * import prompt -- ImportCanvas makes the PAGE the image's size first, and
+     * then page-sized is exactly the image.
+     */
+        layer->Create(m_width, m_height);
+        layer->Clear(0.0f, 0.0f, 0.0f, 0.0f);
+        layer->DropPixels(img.rgba.data(), img.w, img.h, 0, 0);
         layer->SetName(paint_path_stem(path));
 
         // One past the highest key, which is the top: MoveLayerTo keeps the
@@ -3001,7 +3021,10 @@ private:
 
         ETCS_LOG("PaintDocument", "imported " << path << " " << img.w << "x" << img.h
                  << " -> layer '" << layer->name() << "' RID:" << layer->getRID()
-                 << " order=" << top << ", active");
+                 << " order=" << top << ", active, on a " << m_width << "x" << m_height
+                 << " raster"
+                 << ((img.w > m_width || img.h > m_height)
+                     ? " (clipped to the page -- 'new canvas' keeps all of it)" : ""));
         return true;
     }
 public:
@@ -5862,6 +5885,25 @@ public:
     }
     void BindWindow(ETCS::RID pane) { m_window = pane; }
 
+    /*
+ * THE VIEW TO PUT BACK, because half of what this window does changes the
+ * PICTURE and not just the list. Restacking a layer, hiding one, deleting one
+ * or adding one all re-order or re-veil what the composite draws -- and a
+ * press on a row returns from the input edge before any tool runs, so nothing
+ * else was asking the surface to render. The rows updated and the canvas kept
+ * showing the arrangement from before the press until something unrelated
+ * happened to repaint it.
+ *
+ * Bound rather than reached for, the same way the palette and the wheel bind
+ * one: a panel does not know what is showing the document, and there may be
+ * more than one thing.
+ */
+    void BindSurface(ETCS::RID surface)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintSurface", surface);
+        if (raw) m_surface = static_cast<PaintSurface*>(raw->getTrueType());
+    }
+
     void SetHoverDim(float dim) { m_hover_dim = std::clamp(dim, 0.0f, 1.0f); }
 
     // Eye fills for the two states, and the row tint for selected / not. Given
@@ -6033,6 +6075,7 @@ public:
             end_edit(false);
             m_document->NewLayer();
             Refresh();
+            repaint();                 // a carry may have landed on the way in
             return true;
         }
         Row& row = m_rows[hit.row];
@@ -6063,12 +6106,14 @@ public:
             // is what ends it. Held as a RID so a restack between the two
             // cannot leave this pointing at a row that now means another layer.
             m_dragging = row.layer;
+            repaint();                 // SetActiveLayer lands a carry in flight
             break;
 
         case Region::Eye:
             if (ETCS::Entity* raw = paint_resolve_tag("PaintLayer", row.layer))
                 static_cast<PaintLayer*>(raw->getTrueType())->ToggleVisible();
             end_edit(false);
+            repaint();                 // the composite has one layer more or less in it
             break;
 
         /*
@@ -6092,6 +6137,7 @@ public:
             if (m_renaming == row.layer) end_edit(false);
             m_document->RemoveLayer(row.layer);
             if (m_dragging == row.layer) m_dragging = 0;
+            repaint();
             break;
 
         case Region::Title:
@@ -6143,6 +6189,7 @@ public:
         }
         m_dragging = 0;
         Refresh();
+        repaint();                     // a different stack composites differently
         return true;
     }
 
@@ -6289,6 +6336,7 @@ public:
         if (!raw) return false;
         static_cast<PaintLayer*>(raw->getTrueType())->ToggleVisible();
         Refresh();
+        repaint();
         return true;
     }
 
@@ -6300,6 +6348,7 @@ public:
         if (m_renaming == layer) m_renaming = 0;
         if (m_dragging == layer) m_dragging = 0;
         Refresh();
+        repaint();
         return true;
     }
 
@@ -6318,6 +6367,7 @@ public:
         m_document->MoveLayerTo(m_rows[from].layer,
                                 static_cast<int32_t>(total - 1 - to_from_top));
         Refresh();
+        repaint();
         return true;
     }
 
@@ -6537,6 +6587,10 @@ private:
         etcs_mark_observed(dst);
     }
 
+    // What the window changed, shown. Silent with nothing bound: a panel driven
+    // from a test or a script has no view to put back.
+    void repaint() { if (m_surface) m_surface->Render(); }
+
     static void SetText(ETCS::RID node, const char* text)
     {
         if (node == 0) return;
@@ -6569,6 +6623,7 @@ private:
     }
 
     PaintDocument* m_document = nullptr;
+    PaintSurface*  m_surface  = nullptr;
     // The pane the title bar moves, and the move in flight: where the window
     // and the pointer were at the press, so each motion is a fresh offset from
     // there rather than a sum of deltas that drifts.
@@ -7144,6 +7199,20 @@ public:
     {
         ETCS::Entity* raw = paint_resolve_tag("PaintSurface", surface);
         if (raw) m_surface = static_cast<PaintSurface*>(raw->getTrueType());
+    }
+
+    /*
+ * BOTH NUMBERS AT ONCE, which the steppers cannot express. They move in 64s,
+ * and 1080 is not a multiple of 64 -- so the one extent most people actually
+ * want, 1920x1080, was not reachable from this menu at all however long you
+ * held the +. The presets in the script call this; the steppers still do the
+ * fine work from wherever it lands.
+ */
+    void SetExtent(int32_t w, int32_t h)
+    {
+        m_width  = clamp_px(w);
+        m_height = clamp_px(h);
+        push_readouts();
     }
 
     void StepWidth(int32_t delta)  { m_width  = clamp_px(m_width  + delta); push_readouts(); }
@@ -10473,6 +10542,14 @@ DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, AddRow,
 
 // BindAdd <node> -- pressing it adds a layer above the active one
 // (PaintDocument::NewLayer).
+// BindSurface <surface> -- what to re-render when the window changes the
+// picture: a restack, an eye, a delete (PaintLayerPanel::BindSurface).
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindSurface, (ETCS::RID, surface))
+{
+    (void)ctx;
+    self.BindSurface(surface);
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindAdd, (ETCS::RID, node))
 {
     (void)ctx;
@@ -10794,6 +10871,14 @@ DEFINE_WORK_FUNC(PaintCanvasMenu, Load)
 // See PaintCanvasMenu's pages note.
 // BindAnchorArrow <index> <label> -- the arrow drawn on that cell, pointing
 // away from whichever cell is chosen (PaintCanvasMenu::BindAnchorArrow).
+// SetExtent <w> <h> -- both numbers at once, for the presets
+// (PaintCanvasMenu::SetExtent).
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, SetExtent, (int32_t, w), (int32_t, h))
+{
+    (void)ctx;
+    self.SetExtent(w, h);
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindAnchorArrow,
     (int32_t, index), (ETCS::RID, label))
 {

@@ -267,6 +267,17 @@ else — 16-bit, a format stb does not know, a side over 16384 — is refused wi
 line saying what was found and what is accepted, and so is a picture that would
 not fit the browser's fixed heap (see the note under the gear).
 
+An imported layer is PAGE-SIZED, with the image dropped into it at the origin.
+It used to be created at the image's own extent, on the reasoning that a layer's
+raster is its own and resampling on the way in would throw pixels away. What
+that actually bought was a layer whose pixels were second class: every selection
+operation works in document coordinates and lands through the layer's own
+raster, so lifting the image and moving it wrote the pixels back outside those
+bounds, where `DropPixels` clips -- and the picture vanished. Nothing is lost
+that was ever going to be shown, since the composite clips to the page anyway,
+and the path for "keep all of it" is the other answer to the prompt: **new
+canvas** makes the page the image's size first.
+
 An import arrives SELECTED, with the select tool already holding it. What
 anyone does first with a picture they have just brought in is put it where they
 want it, and that was three steps nobody was told about -- pick select, draw a
@@ -325,6 +336,13 @@ row is `[eye][thumb][name .......][x]`, five nodes for five questions.
                page's ground and PaintDocument::RemoveLayer refuses it
                (ClearLayer empties it instead)
 
+The window re-renders the canvas itself whenever it changes the PICTURE rather
+than the list -- a restack, an eye, a delete, a press that lands a carry
+(`PaintLayerPanel::BindSurface`). A press on a row returns from the input edge
+before any tool runs, so nothing else was asking the surface to draw, and the
+rows updated while the canvas kept showing the arrangement from before the
+press.
+
 Dragging a row onto another restacks; hovering one isolates its layer
 (everything else dims to 0.25) so a layer can be found by looking. The title
 bar is the handle -- press it and the window follows the pointer -- and there
@@ -364,6 +382,21 @@ a two-layer 1024x768 page), so a page comes back as the picture it was rather
 than as its dimensions. Verified end to end in the browser: a mark on page 1,
 `new`, a different mark on page 2, then the page-1 row -- and the first mark is
 back and the second is gone.
+
+## Sizes, and 1920x1080
+
+The two steppers move in 64s, and 1080 is not a multiple of 64 -- so the extent
+most people actually want could not be reached from this menu however long you
+held the +. There is a row of presets now (`1920x1080`, `1280x720`,
+`1024x768`), each one press, each setting both numbers at once
+(`PaintCanvasMenu::SetExtent`); the steppers still do the fine work from
+wherever a preset lands.
+
+1920x1080 is 8.3 MB of raster per layer, and the guard that refuses a page too
+big for the heap (`paint_heap_can_take`) passes it comfortably: the web loader
+links with a 1 GB heap and the runtime's own arenas hold about 240 MB of it
+after boot. Worth knowing at that size: a page saved to the store is its layers'
+raw bytes, so a two-layer 1920x1080 page is about 16 MB per save.
 
 ## The gear: a new canvas, a resize, save and load
 

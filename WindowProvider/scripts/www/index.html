@@ -189,6 +189,30 @@
     toShell({ etcs: 'out', text: text });
   }
 
+
+  /*
+   * PULLING THE TERMINAL'S OUTPUT, on this page's clock rather than the
+   * runtime's. The C++ side accumulates what it writes and hands over the lot
+   * when asked (etcs_web_shell_drain, loaders/etcs.cc): one call, one append
+   * and one reflow per tick instead of one of each per line. setInterval and
+   * not requestAnimationFrame, because a hidden tab stops painting but does not
+   * stop logging -- throttled is right, stopped is not.
+   */
+  const SHELL_DRAIN_MS = 60;
+  let shellDrainTimer = 0;
+  function drainShellOutput() {
+    const mod = window.Module;
+    if (!mod || !mod.ccall) return;
+    let text = '';
+    try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
+    catch (e) { return; }
+    if (text) termWrite(text);
+  }
+  function startShellDrain() {
+    if (shellDrainTimer) return;
+    shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
+  }
+
   window.etcsTermWrite = function (t) {
     if (t == null) return;
     termWrite(String(t));
@@ -344,6 +368,7 @@
       }],
       onRuntimeInitialized: function () {
         setStatus('runtime ready', 'ok');
+        startShellDrain();
         log('[etcs] runtime initialized; boot script: '
             + (man.boot || '(none)') + '\n', 'ok');
         if (shellReady) toShell({ etcs: 'enable', enabled: true });

@@ -262,6 +262,38 @@
     termWrite(String(t));
   };
 
+
+  /*
+   * PULLING THE TERMINAL'S OUTPUT, on this page's clock rather than the
+   * runtime's.
+   *
+   * The C++ side accumulates what it writes and hands over whatever has piled
+   * up when asked (etcs_web_shell_drain in loaders/etcs.cc). Every line used to
+   * cost a cross-thread proxy from whichever thread logged it, a postMessage,
+   * and a forced layout in the terminal frame -- several thousand times over a
+   * boot. Draining on an interval turns all of that into one call, one message
+   * and one reflow per tick.
+   *
+   * setInterval, not requestAnimationFrame: a hidden tab stops painting frames
+   * but the runtime keeps logging, and rAF would leave the buffer to grow until
+   * the tab came back. The interval is throttled when hidden, which is the
+   * right behaviour -- slower, not stopped.
+   */
+  const SHELL_DRAIN_MS = 60;
+  let shellDrainTimer = 0;
+  function drainShellOutput() {
+    const mod = window.Module;
+    if (!mod || !mod.ccall) return;
+    let text = '';
+    try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
+    catch (e) { return; }                 // runtime gone or not exporting it
+    if (text) termWrite(text);
+  }
+  function startShellDrain() {
+    if (shellDrainTimer) return;
+    shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
+  }
+
   function pushLine(line) {
     const mod = window.Module;
     if (!mod) { log('[etcs] line dropped, runtime not up: ' + line + '\n', 'err'); return; }
@@ -594,6 +626,7 @@
       onRuntimeInitialized: function () {
         setStatus('runtime ready', 'ok');
         runtimeIsUp = true;
+        startShellDrain();
         log('[etcs] runtime initialized; boot script: '
             + (man.boot || '(none)') + '\n', 'ok');
         if (shellReady) toShell({ etcs: 'enable', enabled: true });

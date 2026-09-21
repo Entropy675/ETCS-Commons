@@ -172,6 +172,33 @@
     return span;
   }
 
+  /*
+   * ONE FRAGMENT AND ONE SCROLL PER CALL, however much text the call carries.
+   *
+   * The runtime now hands over everything it has written since the last drain
+   * rather than one line at a time (etcs_web_shell_drain), so a call is a
+   * hundred lines as often as it is one. Appending each span to the LIVE
+   * document and then reading scrollHeight is a forced synchronous layout, and
+   * doing that per span is what made a busy boot crawl. The spans go into a
+   * fragment first, the document is touched once, and the tail is followed
+   * once.
+   */
+  const SCROLLBACK_MAX  = 12000;   // spans kept before the oldest are dropped
+  const SCROLLBACK_KEEP = 8000;    // how many survive a trim
+
+  function trimScrollback() {
+    // A transcript nobody will scroll back to is still laid out on every
+    // reflow. Trimming in one batch rather than one node per append keeps the
+    // cost off the hot path.
+    let extra = term.childNodes.length - SCROLLBACK_MAX;
+    if (extra <= 0) return;
+    extra = term.childNodes.length - SCROLLBACK_KEEP;
+    const range = document.createRange();
+    range.setStart(term, 0);
+    range.setEnd(term, extra);
+    range.deleteContents();
+  }
+
   function append(text, cls) {
     // The page's own lines (sys/err/ok) keep their class and are never scanned:
     // they are written here, contain no escapes, and a class is a stronger
@@ -181,19 +208,47 @@
       span.className = cls;
       span.textContent = text;
       term.appendChild(span);
+      trimScrollback();
       term.scrollTop = term.scrollHeight;
       return;
     }
+    const frag = document.createDocumentFragment();
     ANSI_RE.lastIndex = 0;
     let last = 0, m;
     while ((m = ANSI_RE.exec(text)) !== null) {
-      if (m.index > last) term.appendChild(sgrSpan(text.slice(last, m.index)));
+      if (m.index > last) frag.appendChild(sgrSpan(text.slice(last, m.index)));
       if (m[2] === 'm') sgrApply(m[1]);
       last = ANSI_RE.lastIndex;
     }
-    if (last < text.length) term.appendChild(sgrSpan(text.slice(last)));
+    if (last < text.length) frag.appendChild(sgrSpan(text.slice(last)));
+    term.appendChild(frag);
+    trimScrollback();
     term.scrollTop = term.scrollHeight;
   }
+
+  /*
+   * PULLING THE TERMINAL'S OUTPUT, on this page's clock rather than the
+   * runtime's. The C++ side accumulates what it writes and hands over the lot
+   * when asked (etcs_web_shell_drain, loaders/etcs.cc): one call, one append
+   * and one reflow per tick instead of one of each per line. setInterval and
+   * not requestAnimationFrame, because a hidden tab stops painting but does not
+   * stop logging -- throttled is right, stopped is not.
+   */
+  const SHELL_DRAIN_MS = 60;
+  let shellDrainTimer = 0;
+  function drainShellOutput() {
+    const mod = window.Module;
+    if (!mod || !mod.ccall) return;
+    let text = '';
+    try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
+    catch (e) { return; }
+    if (text) window.etcsTermWrite(text);
+  }
+  function startShellDrain() {
+    if (shellDrainTimer) return;
+    shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
+  }
+
   window.etcsTermWrite = function (t) {
     if (t == null) return;
     append(String(t), null);
@@ -409,6 +464,7 @@
       }],
       onRuntimeInitialized: function () {
         setStatus('runtime ready');
+        startShellDrain();
         cmdline.disabled = false;
         cmdline.placeholder = 'type an ETCS line, Enter to send';
         cmdline.focus();
