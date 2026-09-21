@@ -1139,9 +1139,10 @@ public:
     {
         m_order = order;
         this->Reorder();
+        touch_document();
     }
 
-    void SetName(const std::string& name) { m_name = name; }
+    void SetName(const std::string& name) { m_name = name; touch_document(); }
     const std::string& name() const { return m_name; }
     int32_t order() const { return m_order; }
 
@@ -1193,12 +1194,30 @@ public:
         return true;
     }
 
-    void SetVisible(bool visible) { m_visible = visible; }
-    void ToggleVisible()           { m_visible = !m_visible; }
+    /*
+ * A LAYER'S OWN PROPERTIES ARE A CHANGE TO ITS DOCUMENT, and until now none of
+ * them said so. The layer window re-reads the stack when the document's
+ * revision moves (PaintInput's panel hook), so an eye toggled by a script, a
+ * rename, a restack or an opacity change from anywhere but the panel's own
+ * press left the window showing the old answer -- the rows and the picture
+ * disagreeing, which is the one thing a layer window exists to prevent. A
+ * comment here used to promise a `touch_document` that was never written.
+ *
+ * THROUGH THE PARENT, because that is what membership IS here: a layer is its
+ * document's typed child (PaintDocument::ImportImage's note), so the document
+ * is getParent() and nothing has to be kept in step. Silent when there is no
+ * parent -- a layer under test, or one being torn down -- since there is then
+ * nothing that could be showing it.
+ */
+    void touch_document();
+
+    void SetVisible(bool visible) { m_visible = visible; touch_document(); }
+    void ToggleVisible()           { m_visible = !m_visible; touch_document(); }
 
     void SetOpacity(float opacity)
     {
         m_opacity = std::clamp(opacity, 0.0f, 1.0f);
+        touch_document();
     }
 
     /*
@@ -2428,11 +2447,30 @@ public:
                                           + "," + std::to_string(m_sel.dy) : std::string()));
     }
 
+    /*
+ * THE CARRY LANDS BEFORE THE GROUND MOVES. A lift is cut from the active layer
+ * and dropped onto the active layer (LiftSelection / DropSelection), and the
+ * whole of that contract is that the two are the same layer. Nothing enforced
+ * it: pressing a row in the layer window is a different pane's input, so the
+ * canvas's drag state is untouched, and a selection lifted from Ink and then
+ * dropped after clicking Paper wrote Ink's pixels into Paper. That is the
+ * "select bleeds across layers" case, and it is a property of this verb rather
+ * than of the panel -- every caller that can change the active layer has it,
+ * including the exported verb and a page load.
+ *
+ * Dropping rather than refusing: the pixels are somewhere the user put them,
+ * so they land where they are, on the layer they came from. Touch() because
+ * which row is highlighted is part of what the window shows.
+ */
     void SetActiveLayer(ETCS::RID layer_rid)
     {
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
-        m_active_layer = static_cast<PaintLayer*>(raw->getTrueType());
+        PaintLayer* next = static_cast<PaintLayer*>(raw->getTrueType());
+        if (next == m_active_layer) return;
+        if (m_sel.lifted()) DropSelection();
+        m_active_layer = next;
+        Touch();
     }
 
     void ClearLayer(ETCS::RID layer_rid, float r, float g, float b, float a)
@@ -2854,7 +2892,12 @@ public:
         for (auto* layer : stack)
         {
             if (!layer->visible()) continue;
-            layer->BlitTo(target, x, y, 0, 0, layer->opacity(), zoom);
+            // 1.0, NOT layer->opacity(): BlitTo multiplies by m_opacity itself
+            // (see its alpha), so passing it here drew every layer at opacity
+            // SQUARED -- a layer set to 50% showed at 25% on screen while the
+            // export, which composites once (CompositeVisible), showed it at
+            // 50%. The picture and the file disagreed about the same number.
+            layer->BlitTo(target, x, y, 0, 0, 1.0f, zoom);
             // The lifted pixels are the active layer's, so they are drawn at
             // its depth -- over it, under whatever is stacked above it -- which
             // is where they will be once dropped.
@@ -3256,6 +3299,58 @@ public:
     // sized to its bytes, with its own name, key, visibility and opacity, made
     // ACTIVE if asked. The caller keys it -- a stored page brings its own
     // dense order, so nothing is renumbered here.
+    /*
+ * A NEW, EMPTY LAYER ABOVE THE ACTIVE ONE, which is what the window's + does.
+ *
+ * ABOVE THE ACTIVE ONE rather than on top of everything, because "add a layer"
+ * while working on layer 2 of 5 means "one to draw on next to this", and a
+ * layer that always lands on top is one the user then has to drag back down.
+ * Page-sized and transparent: a layer is a sheet over the picture, and its own
+ * raster is only ever its own size when a file arrived at that size
+ * (ImportImage).
+ *
+ * The name is the first "layer N" nobody is using, counting from the stack's
+ * size, so adding and removing does not produce two layers with one name.
+ */
+    ETCS::RID NewLayer()
+    {
+        PaintLayer* layer = this->addTag<PaintLayer>();
+        if (!layer)
+        {
+            ETCS_LOG("PaintDocument", "could not spawn a layer under '" << m_name << "'.");
+            return 0;
+        }
+        layer->Create(m_width, m_height);
+        layer->Clear(0.0f, 0.0f, 0.0f, 0.0f);
+
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        std::string name;
+        for (size_t n = stack.size(); ; ++n)
+        {
+            name = "layer " + std::to_string(n);
+            bool taken = false;
+            for (auto* l : stack) if (l != layer && l->name() == name) { taken = true; break; }
+            if (!taken) break;
+        }
+        layer->SetName(name);
+
+        // Straight above the active layer, counting depth from the bottom as
+        // MoveLayerTo does; on top when nothing is active.
+        int32_t depth = static_cast<int32_t>(stack.size()) - 1;
+        for (size_t i = 0; i < stack.size(); ++i)
+            if (stack[i] == m_active_layer) depth = static_cast<int32_t>(i) + 1;
+        layer->SetOrder(static_cast<int32_t>(stack.size()));
+        MoveLayerTo(layer->getRID(), depth);
+
+        if (m_sel.lifted()) DropSelection();
+        m_active_layer = layer;
+        Touch();
+        ETCS_LOG("PaintDocument", "layer '" << name << "' RID:" << layer->getRID()
+                 << " added at depth " << depth << ", active");
+        return layer->getRID();
+    }
+
     PaintLayer* SpawnLayer(const PaintImage& img, const std::string& name, int32_t order,
                            bool visible, float opacity, bool active)
     {
@@ -3608,6 +3703,17 @@ private:
     }
 };
 
+// Out of line because a layer's parent is a PaintDocument, which is declared
+// after PaintLayer -- see the note on the declaration.
+inline void PaintLayer::touch_document()
+{
+    ETCS::Entity* parent = this->getParent();
+    // By TAG, not by dynamic_cast: getTrueType() hands back void* (the leaf is
+    // reached through the wire, not through C++ inheritance), and a layer may
+    // sit under something that is not a document in a test.
+    if (!parent || !parent->hasTag(ETCS::Buffer("PaintDocument"))) return;
+    static_cast<PaintDocument*>(parent->getTrueType())->Touch();
+}
 
 
 class PaintSurface : public DeletableBase<PaintSurface>
@@ -4554,12 +4660,49 @@ public:
      * with nothing to paint on is not a page anyone can use. Saved at once,
      * so it has an id and Next/Prev can find it.
      */
-    bool New()
+    // What the store holds, for anything that wants to SHOW the pages rather
+    // than step through them -- the gear menu's list (PaintCanvasMenu).
+    struct PageInfo { int64_t id = 0; std::string name; int64_t w = 0, h = 0, layers = 0; };
+
+    bool Pages(std::vector<PageInfo>& out)
+    {
+        out.clear();
+        ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+        if (!db) return false;
+        Stmt st(*db, "SELECT p.id, p.name, p.width, p.height,"
+                     " (SELECT COUNT(*) FROM page_layers l WHERE l.page_id = p.id)"
+                     " FROM pages p ORDER BY p.id");
+        if (!st) return false;
+        for (int rc = st.step(); rc == 1; rc = st.step())
+        {
+            PageInfo info;
+            info.id     = st.col(0).i;
+            info.name   = str(st.col(1));
+            info.w      = st.col(2).i;
+            info.h      = st.col(3).i;
+            info.layers = st.col(4).i;
+            out.push_back(std::move(info));
+        }
+        return true;
+    }
+
+    bool New() { return NewAt(m_document ? m_document->width() : 0,
+                              m_document ? m_document->height() : 0); }
+
+    /*
+ * A NEW PAGE AT A STATED SIZE. New() keeps whatever the present page is,
+ * which is right for ctrl+PageDown off the end of the strip and wrong for the
+ * gear menu, where the whole point of the two steppers is to say how big the
+ * next canvas should be. Same page otherwise: the present is flushed to its
+ * slot first, so "new" adds to the history rather than replacing what was
+ * there -- which is what makes more than one page exist to switch between.
+ */
+    bool NewAt(uint32_t want_w, uint32_t want_h)
     {
         if (!m_document) return false;
         flush();
-        const uint32_t w = m_document->width() ? m_document->width() : 1024;
-        const uint32_t h = m_document->height() ? m_document->height() : 768;
+        const uint32_t w = want_w ? want_w : (m_document->width() ? m_document->width() : 1024);
+        const uint32_t h = want_h ? want_h : (m_document->height() ? m_document->height() : 768);
         m_document->DestroyLayers();
         m_document->Create(w, h, "");           // named after its row by Save
 
@@ -5651,7 +5794,7 @@ public:
     PaintLayerPanel() = default;
     bool DeleteConcrete() override { return true; }
 
-    enum class Region : uint8_t { Body, Eye, Label, Delete, Title };
+    enum class Region : uint8_t { Body, Eye, Label, Delete, Title, Add };
 
     bool Create()
     {
@@ -5675,14 +5818,30 @@ public:
  * this way round means the script lists rows in the order it lays them out,
  * which is the order somebody reading the script sees them on screen.
  */
-    void AddRow(ETCS::RID bg, ETCS::RID eye, ETCS::RID label, ETCS::RID del)
+    /*
+ * FIVE NODES NOW, because a row answers five questions. The thumbnail is the
+ * new one and it is not a control: it is a picture of the layer, painted into
+ * whatever raster the script put there (see paint_thumb), so a row can be told
+ * apart by what is ON it rather than by a name somebody has to have chosen
+ * well. Picking it means the same as picking the row body -- it is the layer,
+ * so it selects the layer.
+ */
+    void AddRow(ETCS::RID bg, ETCS::RID eye, ETCS::RID thumb, ETCS::RID label, ETCS::RID del)
     {
         const size_t idx = m_rows.size();
-        m_rows.push_back(Row{ bg, eye, label, del, 0 });
+        m_rows.push_back(Row{ bg, eye, thumb, label, del, 0 });
         if (bg)    m_regions[bg]    = Hit{ idx, Region::Body };
         if (eye)   m_regions[eye]   = Hit{ idx, Region::Eye };
+        if (thumb) m_regions[thumb] = Hit{ idx, Region::Body };
         if (label) m_regions[label] = Hit{ idx, Region::Label };
         if (del)   m_regions[del]   = Hit{ idx, Region::Delete };
+    }
+
+    // The + on the title bar. A control of the WINDOW rather than of a row, so
+    // it is bound like the title handle is and carries no row index.
+    void BindAdd(ETCS::RID node)
+    {
+        if (node) m_regions[node] = Hit{ SIZE_MAX, Region::Add };
     }
 
     /*
@@ -5734,6 +5893,10 @@ public:
         const int32_t total = static_cast<int32_t>(stack.size());
         const int32_t most  = (total > rows) ? (total - rows) : 0;
         m_scroll = std::clamp(m_scroll + delta, 0, most);
+        // The rows now mean different layers, so whatever was being isolated is
+        // not what is under the pointer any more.
+        m_hovering = 0;
+        m_document->IsolateLayer(0, m_hover_dim);
         Refresh();
     }
 
@@ -5757,6 +5920,26 @@ public:
         std::vector<PaintLayer*> stack;
         m_document->OrderedLayers(stack);
 
+        /*
+     * THE HOVER DIM CANNOT OUTLIVE THE ROW IT CAME FROM. Hovering a row dims
+     * every other layer (IsolateLayer) and only another hover undoes it -- so
+     * a row deleted under the pointer, or a scroll that re-binds the rows, or
+     * a page switch, left the picture faded with the eye column still saying
+     * every layer was visible. Re-asserted here, where the rows are being
+     * re-bound anyway: if the layer being isolated is no longer one of them,
+     * nobody is, and IsolateLayer(0) is how that is said.
+     */
+        if (m_hovering != 0)
+        {
+            bool still_here = false;
+            for (auto* l : stack) if (l->getRID() == m_hovering) { still_here = true; break; }
+            if (!still_here)
+            {
+                m_hovering = 0;
+                m_document->IsolateLayer(0, m_hover_dim);
+            }
+        }
+
         const size_t total = stack.size();
         for (size_t i = 0; i < m_rows.size(); ++i)
         {
@@ -5772,6 +5955,9 @@ public:
                 // window is a fixed frame and a gap in it is honest.
                 SetFill(row.bg,    m_row_idle[0], m_row_idle[1], m_row_idle[2], 0.0f);
                 SetFill(row.eye,   0.0f, 0.0f, 0.0f, 0.0f);
+                SetHidden(row.eye, true);
+                SetHidden(row.thumb, true);
+                SetHidden(row.del, true);
                 SetFill(row.del,   0.0f, 0.0f, 0.0f, 0.0f);
                 SetText(row.label, "");
                 continue;
@@ -5782,17 +5968,29 @@ public:
                     selected ? m_row_sel[0] : m_row_idle[0],
                     selected ? m_row_sel[1] : m_row_idle[1],
                     selected ? m_row_sel[2] : m_row_idle[2], 1.0f);
+            // EVERY layer has an eye, including the base one: hiding the paper
+            // to see what is under it is exactly what the control is for, and
+            // it is the delete that the base refuses, not the eye.
+            SetHidden(row.eye, false);
             SetFill(row.eye,
                     layer->visible() ? m_eye_shown[0] : m_eye_hidden[0],
                     layer->visible() ? m_eye_shown[1] : m_eye_hidden[1],
                     layer->visible() ? m_eye_shown[2] : m_eye_hidden[2], 1.0f);
+            SetHidden(row.thumb, false);
+            paint_thumb(row.thumb, layer);
             // The base layer has no delete: it is the page's ground and the
             // document refuses to remove it (PaintDocument::RemoveLayer), so a
             // button that would only ever be refused is not drawn or picked.
             const bool base = (from_top == total - 1);
             SetHidden(row.del, base);
             SetFill(row.del, 0.75f, 0.28f, 0.30f, base ? 0.0f : 1.0f);
-            SetText(row.label, layer->name().c_str());
+            // The row being typed into shows the BUFFER and a caret, not the
+            // name it still has -- otherwise the keys go somewhere invisible
+            // and the rename reads as the window ignoring you.
+            if (m_editing && m_renaming == row.layer)
+                SetText(row.label, (m_edit + "_").c_str());
+            else
+                SetText(row.label, layer->name().c_str());
         }
     }
 
@@ -5830,14 +6028,37 @@ public:
             return true;
         }
         if (!m_document) return true;
+        if (hit.region == Region::Add)
+        {
+            end_edit(false);
+            m_document->NewLayer();
+            Refresh();
+            return true;
+        }
         Row& row = m_rows[hit.row];
         if (row.layer == 0) return true;           // an empty slot is still ours
 
         switch (hit.region)
         {
+        /*
+     * PRESS TO CHOOSE, PRESS AGAIN TO RENAME. The label itself opens the field
+     * on its own press, but a TextLabel is only as wide as the word in it -- a
+     * layer called "Ink" is a twenty-pixel target in a two-hundred-pixel row,
+     * and everywhere else along the name is the body. So the body answers the
+     * same gesture: a press on the row that is ALREADY the active one is the
+     * second half of a double click, and opens the name. Choosing a different
+     * row still just chooses it.
+     */
         case Region::Body:
+            if (!m_editing && m_document->activeLayer()
+                && m_document->activeLayer()->getRID() == row.layer)
+            {
+                begin_edit(row.layer);
+                m_dragging = 0;
+                break;
+            }
+            end_edit(false);
             m_document->SetActiveLayer(row.layer);
-            m_renaming = 0;
             // A press on a row body is also where a drag begins -- Drop below
             // is what ends it. Held as a RID so a restack between the two
             // cannot leave this pointing at a row that now means another layer.
@@ -5847,33 +6068,38 @@ public:
         case Region::Eye:
             if (ETCS::Entity* raw = paint_resolve_tag("PaintLayer", row.layer))
                 static_cast<PaintLayer*>(raw->getTrueType())->ToggleVisible();
-            m_renaming = 0;
+            end_edit(false);
             break;
 
+        /*
+     * SECOND PRESS ON THE SAME LABEL OPENS THE NAME FOR TYPING, which is what
+     * a double click is once the panel is the only thing that knows a label
+     * was just pressed. No timer: the rule is "pressed twice with nothing else
+     * in between", which is stricter than a clock and needs no clock.
+     *
+     * The field is this panel's, not a text box in the picture: the keys are
+     * offered here first while it is open (PaintInput::KeyDown -> KeyIn) and
+     * the row draws the buffer with a caret, so what is being typed is on the
+     * row it will name.
+     */
         case Region::Label:
-            if (m_renaming == row.layer)
-            {
-                ETCS_LOG("PaintLayerPanel", "rename armed on RID:" << row.layer
-                         << " -- CommitRename <text> to set it.");
-            }
-            else
-            {
-                m_document->SetActiveLayer(row.layer);
-                m_renaming = row.layer;
-                m_dragging = row.layer;
-            }
+            if (m_renaming == row.layer) break;    // already open, keep typing
+            begin_edit(row.layer);
+            m_dragging = 0;                        // typing is not a drag
             break;
 
         case Region::Delete:
+            if (m_renaming == row.layer) end_edit(false);
             m_document->RemoveLayer(row.layer);
-            if (m_renaming == row.layer) m_renaming = 0;
             if (m_dragging == row.layer) m_dragging = 0;
             break;
 
         case Region::Title:
-            // Answered above, before the row lookup -- a title press is the
-            // window's, not a row's. Named here so the switch stays total and
-            // a new region cannot be added without deciding what it means.
+        case Region::Add:
+            // Both answered above, before the row lookup -- they are the
+            // window's controls, not a row's. Named here so the switch stays
+            // total and a new region cannot be added without deciding what it
+            // means.
             break;
         }
         Refresh();
@@ -5974,17 +6200,51 @@ public:
         m_document->IsolateLayer(subject, m_hover_dim);
     }
 
-    // The rename the label press armed. Separate from Apply because the text
-    // does not come from the pointer -- it arrives from a key channel or from
-    // the page, and the panel only has to know which layer it belongs to.
+    // The rename by verb: a caller that already has the whole name -- a script,
+    // the page, a test -- does not have to type it a key at a time.
     bool CommitRename(const std::string& name)
     {
         if (m_renaming == 0 || !m_document) return false;
         m_document->RenameLayer(m_renaming, name);
+        m_editing = false;
+        m_edit.clear();
         m_renaming = 0;
         Refresh();
         return true;
     }
+
+    /*
+ * A KEY WHILE A NAME IS OPEN, and nothing otherwise.
+ *
+ * Returns true when it was consumed, which is the whole of what the input edge
+ * needs: while this is open the panel is where typing goes, and every key it
+ * takes is one the canvas does not act on. Enter keeps the name, Escape drops
+ * it, Backspace edits; anything the key map has no character for is swallowed
+ * rather than ignored, so a function key pressed mid-rename does not fall
+ * through to a tool.
+ *
+ * GLFW's codes, named for the same reason PaintInput names them.
+ */
+    bool KeyIn(uint16_t key)
+    {
+        if (!m_editing) return false;
+        constexpr uint16_t KEY_ESCAPE = 256, KEY_ENTER = 257, KEY_BACKSPACE = 259;
+        if (key == KEY_ENTER)     { end_edit(true);  return true; }
+        if (key == KEY_ESCAPE)    { end_edit(false); return true; }
+        if (key == KEY_BACKSPACE)
+        {
+            if (!m_edit.empty()) m_edit.pop_back();
+            Refresh();
+            return true;
+        }
+        const char ch = paint_key_to_char(key);
+        if (ch == 0) return true;
+        if (m_edit.size() < 48) m_edit.push_back(ch);
+        Refresh();
+        return true;
+    }
+
+    bool editing() const { return m_editing; }
 
     void Report() const
     {
@@ -6108,7 +6368,7 @@ public:
     int32_t scroll() const { return m_scroll; }
 
 private:
-    struct Row { ETCS::RID bg, eye, label, del; ETCS::RID layer; };
+    struct Row { ETCS::RID bg, eye, thumb, label, del; ETCS::RID layer; };
     struct Hit { size_t row; Region region; };
 
     /*
@@ -6141,6 +6401,140 @@ private:
         payload.write((std::to_string(r) + " " + std::to_string(g) + " "
                      + std::to_string(b) + " " + std::to_string(a)).c_str());
         try { e->call(action, payload); } catch (...) {}
+    }
+
+    /*
+ * Closing the field, keeping the name or not. Rename goes through the document
+ * (RenameLayer) rather than the layer, because a rename is a change to the
+ * page -- it is what Touch and therefore the window's own refresh hang off.
+ * An empty name is a cancel: a layer with no name is a row you cannot read.
+ */
+    void begin_edit(ETCS::RID layer)
+    {
+        if (m_editing) end_edit(false);
+        if (!m_document) return;
+        m_document->SetActiveLayer(layer);
+        m_renaming = layer;
+        m_editing  = true;
+        m_edit.clear();
+        if (ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer))
+            m_edit = static_cast<PaintLayer*>(raw->getTrueType())->name();
+        ETCS_LOG("PaintLayerPanel", "renaming RID:" << layer
+                 << " -- type, Enter to keep, Esc to drop it.");
+        Refresh();
+    }
+
+    void end_edit(bool keep)
+    {
+        if (!m_editing) { m_renaming = 0; return; }
+        const ETCS::RID subject = m_renaming;
+        const std::string text = m_edit;
+        m_editing = false;
+        m_edit.clear();
+        m_renaming = 0;
+        if (keep && m_document && subject != 0 && !text.empty())
+        {
+            m_document->RenameLayer(subject, text);
+            ETCS_LOG("PaintLayerPanel", "RID:" << subject << " renamed \"" << text << "\"");
+        }
+        Refresh();
+    }
+
+    /*
+ * ── the row's picture of its layer ───────────────────────────────────────
+ *
+ * WHAT IS ON THE LAYER, drawn into whatever raster the script put in the row.
+ * A name tells you which layer you MEANT; a thumbnail tells you which one you
+ * are looking at, and with two imported images and a paper layer the names are
+ * all anybody has to go on otherwise.
+ *
+ * BY RID, INTO SOMEBODY ELSE'S PIXELS, which is the same seam draw_lift uses:
+ * the node is a compositor from another module, reached as Pixels_ and written
+ * directly (CompositeDrawable2D's own note says it is reached as Pixels_ and
+ * never as a concrete type). It has to be RETAINED in the script, or its next
+ * recompose clears what was just written.
+ *
+ * AVERAGED, NOT SAMPLED, and that is the difference between a thumbnail and a
+ * blank square. A page is 1024 wide and a thumb is 24, so one nearest-neighbour
+ * sample per destination pixel reads one source pixel in 1800 and a six-pixel
+ * stroke across the picture survives in none of them -- measured: a drawn
+ * layer's thumbnail came back as bare checker. Each destination pixel now
+ * averages its whole source cell, at up to 8x8 evenly spaced taps, so a thin
+ * mark arrives faint rather than absent and the cost stays fixed however big
+ * the page is.
+ *
+ * FITTED: the thumb is square and a page is not, so the picture is scaled by
+ * the larger axis and centred, which is what makes two layers of one document
+ * produce thumbnails that line up. Over a checker,
+ * because the common case is a layer that is mostly transparent and a
+ * transparent thumbnail drawn on a dark row is indistinguishable from an empty
+ * one.
+ */
+    static void paint_thumb(ETCS::RID node, PaintLayer* layer)
+    {
+        if (node == 0) return;
+        Pixels_* dst = ETCS::resolve_in_family<Pixels_>("Pixels", node);
+        if (!dst) return;
+        uint8_t* out = dst->PixelData();
+        if (!out) return;
+        const int32_t tw = static_cast<int32_t>(dst->PixelWidth());
+        const int32_t th = static_cast<int32_t>(dst->PixelHeight());
+        if (tw <= 0 || th <= 0) return;
+
+        const int32_t lw = layer ? static_cast<int32_t>(layer->width())  : 0;
+        const int32_t lh = layer ? static_cast<int32_t>(layer->height()) : 0;
+        const uint8_t* src = layer ? layer->PixelData() : nullptr;
+        const float scale = (lw > 0 && lh > 0)
+            ? std::max(static_cast<float>(lw) / tw, static_cast<float>(lh) / th) : 0.0f;
+        const int32_t ox = (lw > 0 && scale > 0.0f)
+            ? (tw - static_cast<int32_t>(lw / scale)) / 2 : 0;
+        const int32_t oy = (lh > 0 && scale > 0.0f)
+            ? (th - static_cast<int32_t>(lh / scale)) / 2 : 0;
+
+        for (int32_t y = 0; y < th; ++y)
+            for (int32_t x = 0; x < tw; ++x)
+            {
+                // The checker under everything, 4px squares.
+                const bool light = (((x >> 2) + (y >> 2)) & 1) != 0;
+                float r = light ? 0.44f : 0.34f, g = r, b = r;
+
+                if (src && scale > 0.0f)
+                {
+                    const int32_t sx0 = static_cast<int32_t>((x - ox) * scale);
+                    const int32_t sy0 = static_cast<int32_t>((y - oy) * scale);
+                    const int32_t sx1 = std::min(static_cast<int32_t>((x - ox + 1) * scale), lw);
+                    const int32_t sy1 = std::min(static_cast<int32_t>((y - oy + 1) * scale), lh);
+                    if (sx0 >= 0 && sy0 >= 0 && sx0 < lw && sy0 < lh && sx1 > sx0 && sy1 > sy0)
+                    {
+                        const int32_t stepx = std::max(1, (sx1 - sx0) / 8);
+                        const int32_t stepy = std::max(1, (sy1 - sy0) / 8);
+                        float ar = 0, ag = 0, ab = 0, aa = 0; int taps = 0;
+                        for (int32_t sy = sy0; sy < sy1; sy += stepy)
+                            for (int32_t sx = sx0; sx < sx1; sx += stepx)
+                            {
+                                const uint8_t* sp = src + (static_cast<size_t>(sy) * lw + sx) * 4;
+                                const float a = sp[3] / 255.0f;
+                                ar += (sp[0] / 255.0f) * a; ag += (sp[1] / 255.0f) * a;
+                                ab += (sp[2] / 255.0f) * a; aa += a;
+                                ++taps;
+                            }
+                        if (taps > 0 && aa > 0.0f)
+                        {
+                            // Premultiplied while summing, so a cell that is
+                            // mostly transparent keeps the colour of the part
+                            // that is not, at that part's weight.
+                            const float cover = aa / taps;
+                            r = r * (1.0f - cover) + (ar / aa) * cover;
+                            g = g * (1.0f - cover) + (ag / aa) * cover;
+                            b = b * (1.0f - cover) + (ab / aa) * cover;
+                        }
+                    }
+                }
+                uint8_t* dp = out + (static_cast<size_t>(y) * tw + x) * 4;
+                dp[0] = paint_to_byte(r); dp[1] = paint_to_byte(g);
+                dp[2] = paint_to_byte(b); dp[3] = 255;
+            }
+        etcs_mark_observed(dst);
     }
 
     static void SetText(ETCS::RID node, const char* text)
@@ -6179,6 +6573,11 @@ private:
     // and the pointer were at the press, so each motion is a fresh offset from
     // there rather than a sum of deltas that drifts.
     ETCS::RID m_window = 0;
+    // The name being typed, and whether anything is being typed at all --
+    // m_renaming alone said "armed", which is not the same as "has the
+    // keyboard" (KeyIn).
+    bool        m_editing = false;
+    std::string m_edit;
     bool      m_moving = false;
     Point2D   m_grab{ 0, 0 };
     Point2D   m_origin{ 0, 0 };
@@ -6717,6 +7116,10 @@ public:
     PaintCanvasMenu() = default;
     bool DeleteConcrete() override { return true; }
 
+    // How many stored pages the menu shows at once. The store keeps every
+    // page; this is the resident set, the same bargain the layer window makes.
+    static constexpr int32_t PAGE_ROWS = 5;
+
     static constexpr int32_t STEP_PX = 64;
     static constexpr int32_t MIN_PX  = 64;
     static constexpr int32_t MAX_PX  = 8192;
@@ -6764,6 +7167,27 @@ public:
         show_anchor();
     }
 
+    /*
+ * WHICH WAY THE PICTURE GOES, drawn on the cells it is not anchored to.
+ *
+ * A bright cell says which part of the page stays put, and that is one fact
+ * short of the question anyone actually has: where does everything else move?
+ * Every other cell now carries an arrow pointing away from the chosen one,
+ * which is the direction the new room appears in -- so the grid reads as a
+ * diagram of the resize rather than as nine buttons.
+ *
+ * ASCII, because the glyph table is ASCII (RenderProvider's TextLabel font is
+ * 0x20..0x7E). The two diagonals share a stroke each: "\\" is up-left and
+ * down-right, "/" is up-right and down-left, which is what those characters
+ * already look like.
+ */
+    void BindAnchorArrow(int32_t index, ETCS::RID label)
+    {
+        if (index < 0 || index > 8 || label == 0) return;
+        m_arrows[index] = label;
+        show_anchor();
+    }
+
     void ApplyResize()
     {
         if (!m_document) { ETCS_LOG("PaintCanvasMenu", "resize: no document -- Create first."); return; }
@@ -6772,11 +7196,28 @@ public:
             m_surface->Render();
     }
 
+    /*
+ * NEW IS A NEW PAGE, not a wiped one. It used to call PaintDocument::New,
+ * which clears the layers where they stand -- so the picture that was there
+ * was gone, the history gained nothing, and the page list stayed empty however
+ * many times it was pressed. Through the store instead: the present is saved
+ * to its slot first and a fresh page opens at the size the two steppers show,
+ * which is what makes a second page exist to switch back to.
+ *
+ * Without a store bound -- a native session with no database -- it falls back
+ * to the document's own New, which is the same picture minus the history.
+ */
     void ApplyNew()
     {
         if (!m_document) { ETCS_LOG("PaintCanvasMenu", "new: no document -- Create first."); return; }
-        if (m_document->New(static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height)) && m_surface)
-            m_surface->Render();
+        bool ok = false;
+        if (m_pages)
+            ok = m_pages->NewAt(static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height));
+        else
+            ok = m_document->New(static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height));
+        if (!ok) return;
+        RefreshPages();
+        if (m_surface) m_surface->Render();
     }
 
     /*
@@ -6805,6 +7246,99 @@ public:
  * With no prompt bound (a native session driven from the terminal) the file
  * goes in as a layer at once: an unanswerable question is not a wait.
  */
+    /*
+ * ── the pages, shown rather than stepped ─────────────────────────────────
+ *
+ * The store already kept every page and ctrl+PageUp/PageDown already walked
+ * them (PaintPages), but a history nobody can SEE is one nobody uses: there
+ * was no way to find out how many pages there were, what was on them, or to
+ * go to one directly. The menu lists them, newest last, and a press on a row
+ * loads that page.
+ *
+ * ROWS ARE THE SCRIPT'S, as everything else here is: it declares the
+ * rectangles and the labels and binds them by index, and this fills them in.
+ * The ids are held per row rather than baked into the call, because which page
+ * is in which row changes every time one is added.
+ */
+    void BindPages(ETCS::RID pages)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintPages", pages);
+        if (raw) m_pages = static_cast<PaintPages*>(raw->getTrueType());
+        RefreshPages();
+    }
+
+    void BindPageRow(int32_t index, ETCS::RID node, ETCS::RID label)
+    {
+        if (index < 0 || index >= PAGE_ROWS) return;
+        m_page_row[index]   = node;
+        m_page_label[index] = label;
+        RefreshPages();
+    }
+
+    /*
+ * The last PAGE_ROWS pages, newest first, so a long history shows what was
+ * most recently worked on rather than what was made first. The current page
+ * is marked; an empty row says nothing at all rather than "-", because a row
+ * that reads as a page you could press is worse than a gap.
+ */
+    void RefreshPages()
+    {
+        std::vector<PaintPages::PageInfo> pages;
+        if (m_pages) m_pages->Pages(pages);
+        const int64_t here = m_pages ? m_pages->current() : 0;
+
+        for (int32_t i = 0; i < PAGE_ROWS; ++i)
+        {
+            const size_t from_end = static_cast<size_t>(i) + 1;
+            const bool has = pages.size() >= from_end;
+            const PaintPages::PageInfo* info = has ? &pages[pages.size() - from_end] : nullptr;
+            m_page_id[i] = info ? info->id : 0;
+            if (!info)
+            {
+                PaintPalette::set_node_text(m_page_label[i], "");
+                PaintPalette::set_node_fill(m_page_row[i], 0.13f, 0.13f, 0.16f, 1.0f);
+                continue;
+            }
+            const std::string name = info->name.empty()
+                ? ("page " + std::to_string(info->id)) : info->name;
+            PaintPalette::set_node_text(m_page_label[i],
+                name + "  " + std::to_string(info->w) + "x" + std::to_string(info->h));
+            const bool current = (info->id == here && here != 0);
+            if (current) PaintPalette::set_node_fill(m_page_row[i], 0.28f, 0.30f, 0.38f, 1.0f);
+            else         PaintPalette::set_node_fill(m_page_row[i], 0.16f, 0.16f, 0.20f, 1.0f);
+        }
+    }
+
+    // A press on a listed page. By ROW, because that is what the script bound;
+    // the id it means is whatever RefreshPages last put there.
+    void LoadPage(int32_t index)
+    {
+        if (index < 0 || index >= PAGE_ROWS || !m_pages) return;
+        const int64_t id = m_page_id[index];
+        if (id == 0) return;
+        if (m_pages->Load(id))
+        {
+            if (m_document)
+            {
+                m_width  = std::clamp(static_cast<int32_t>(m_document->width()),  MIN_PX, MAX_PX);
+                m_height = std::clamp(static_cast<int32_t>(m_document->height()), MIN_PX, MAX_PX);
+                push_readouts();
+            }
+            RefreshPages();
+        }
+    }
+
+    /*
+ * The tool an import leaves selected. Bound here rather than reached through
+ * the palette because what happens after a file arrives is this type's
+ * business (answer_import), and the palette's tool pointer is its own.
+ */
+    void BindTool(ETCS::RID tool)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintTool", tool);
+        if (raw) m_tool = static_cast<PaintTool*>(raw->getTrueType());
+    }
+
     void BindImportPrompt(ETCS::RID palette, ETCS::RID pane, ETCS::RID input, ETCS::RID caption)
     {
         m_prompt_palette = palette;
@@ -6875,6 +7409,26 @@ private:
             m_height = std::clamp(static_cast<int32_t>(m_document->height()), MIN_PX, MAX_PX);
             push_readouts();
         }
+        /*
+     * THE PICTURE ARRIVES SELECTED, WITH THE TOOL THAT MOVES IT. What anyone
+     * does first with an imported image is put it where they want it, and that
+     * took three steps nobody was told about: pick select, draw a region around
+     * the image, then drag. The import already knows the extent -- the new
+     * layer's own raster is the image -- so it states it as the selection and
+     * leaves the select tool holding it: press inside and drag, and the first
+     * press lifts it (PaintInput's carry).
+     *
+     * On the layer it just made, which is the active one, so the lift cuts from
+     * the image and not from whatever was underneath (SetActiveLayer's note).
+     */
+        if (ok)
+        {
+            if (PaintLayer* at = m_document->activeLayer())
+                m_document->SelectRect(0, 0,
+                    static_cast<int32_t>(at->width()) - 1,
+                    static_cast<int32_t>(at->height()) - 1);
+            if (m_tool) m_tool->SetKind("select");
+        }
         if (ok && m_surface) m_surface->Render();
     }
 
@@ -6905,9 +7459,23 @@ private:
     {
         for (int32_t i = 0; i < 9; ++i)
         {
-            if (m_cells[i] == 0) continue;
-            if (i == m_anchor) PaintPalette::set_node_fill(m_cells[i], 0.79f, 0.71f, 0.35f, 1.0f);
-            else               PaintPalette::set_node_fill(m_cells[i], 0.22f, 0.22f, 0.27f, 1.0f);
+            if (m_cells[i] != 0)
+            {
+                if (i == m_anchor) PaintPalette::set_node_fill(m_cells[i], 0.79f, 0.71f, 0.35f, 1.0f);
+                else               PaintPalette::set_node_fill(m_cells[i], 0.22f, 0.22f, 0.27f, 1.0f);
+            }
+            if (m_arrows[i] == 0) continue;
+            // Away from the anchor, by the sign of the difference in grid
+            // coordinates -- so a cell two columns over reads the same as one,
+            // which is right: it is a direction, not a distance.
+            const int dx = (i % 3) - (m_anchor % 3);
+            const int dy = (i / 3) - (m_anchor / 3);
+            const char* mark = "";
+            if      (dx == 0 && dy == 0) mark = "";
+            else if (dx == 0)            mark = (dy < 0) ? "^" : "v";
+            else if (dy == 0)            mark = (dx < 0) ? "<" : ">";
+            else                         mark = ((dx < 0) == (dy < 0)) ? "\\" : "/";
+            PaintPalette::set_node_text(m_arrows[i], mark);
         }
     }
 
@@ -6947,12 +7515,18 @@ private:
     int32_t m_anchor = 4;
     ETCS::RID m_w_label = 0;
     ETCS::RID m_h_label = 0;
-    ETCS::RID m_cells[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    ETCS::RID m_cells[9]  = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    ETCS::RID m_arrows[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     // The import prompt (BindImportPrompt) and the file it is asking about.
     ETCS::RID   m_prompt_palette = 0;
     ETCS::RID   m_prompt_pane    = 0;
     ETCS::RID   m_prompt_input   = 0;
     ETCS::RID   m_prompt_caption = 0;
+    PaintTool*  m_tool = nullptr;
+    PaintPages* m_pages = nullptr;
+    ETCS::RID   m_page_row[PAGE_ROWS]   = { 0, 0, 0, 0, 0 };
+    ETCS::RID   m_page_label[PAGE_ROWS] = { 0, 0, 0, 0, 0 };
+    int64_t     m_page_id[PAGE_ROWS]    = { 0, 0, 0, 0, 0 };
     std::string m_pending;
 };
 
@@ -7802,6 +8376,14 @@ public:
     bool KeyDown(uint16_t key)
     {
         if (!m_document) return false;
+        /*
+     * A NAME BEING TYPED IN THE LAYER WINDOW TAKES EVERY KEY, ahead of the
+     * chords and the text boxes both. That is what "captures input" means: while
+     * the field is open ctrl+z is a z, Delete is a character and not a verb, and
+     * nothing the keyboard does reaches the picture. It closes on Enter or
+     * Escape (PaintLayerPanel::KeyIn), and only the panel knows it is open.
+     */
+        if (m_panel && m_panel->KeyIn(key)) return true;
         // GLFW's codes. Named rather than compared as bare numbers, because a
         // bare 259 in a paint program is unreadable.
         constexpr uint16_t KEY_ESCAPE = 256, KEY_ENTER = 257, KEY_BACKSPACE = 259;
@@ -9284,6 +9866,13 @@ DEFINE_WORK_FUNC(PaintDocument, ImportImage)
 
 // ImportCanvas <path> -- a new page the image's size, with the image on it.
 // See PaintDocument::ImportCanvas.
+// NewLayer -- an empty, page-sized layer above the active one, made active.
+DEFINE_WORK_FUNC(PaintDocument, NewLayer)
+{
+    (void)ctx; (void)data;
+    self.NewLayer();
+}
+
 DEFINE_WORK_FUNC(PaintDocument, ImportCanvas)
 {
     (void)ctx;
@@ -9871,13 +10460,23 @@ DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindDocument, (ETCS::RID, document))
     self.BindDocument(document);
 }
 
-// AddRow <bg> <eye> <label> <delete> -- top of the window first, matching the
-// order a script lays them out in. Any of the four may be 0.
+// AddRow <bg> <eye> <thumb> <label> <delete> -- top of the window first,
+// matching the order a script lays them out in. Any of the five may be 0; the
+// thumbnail is a raster the panel paints the layer into (see paint_thumb).
 DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, AddRow,
-    (ETCS::RID, bg), (ETCS::RID, eye), (ETCS::RID, label), (ETCS::RID, del))
+    (ETCS::RID, bg), (ETCS::RID, eye), (ETCS::RID, thumb),
+    (ETCS::RID, label), (ETCS::RID, del))
 {
     (void)ctx;
-    self.AddRow(bg, eye, label, del);
+    self.AddRow(bg, eye, thumb, label, del);
+}
+
+// BindAdd <node> -- pressing it adds a layer above the active one
+// (PaintDocument::NewLayer).
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindAdd, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindAdd(node);
 }
 
 // BindTitle <node> -- a press here drags the window; BindWindow <pane> -- the
@@ -10190,6 +10789,50 @@ DEFINE_WORK_FUNC(PaintCanvasMenu, Load)
 // BindImportPrompt <palette> <pane> <input> <caption> -- the popup that asks
 // what an arriving file is for; OfferImport <path> asks it. See
 // PaintCanvasMenu::OfferImport.
+// BindPages <pages> -- the store the menu lists and `new` adds to; BindPageRow
+// <index> <node> <label> -- one listed page; LoadPage <index> -- go to it.
+// See PaintCanvasMenu's pages note.
+// BindAnchorArrow <index> <label> -- the arrow drawn on that cell, pointing
+// away from whichever cell is chosen (PaintCanvasMenu::BindAnchorArrow).
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindAnchorArrow,
+    (int32_t, index), (ETCS::RID, label))
+{
+    (void)ctx;
+    self.BindAnchorArrow(index, label);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindPages, (ETCS::RID, pages))
+{
+    (void)ctx;
+    self.BindPages(pages);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindPageRow,
+    (int32_t, index), (ETCS::RID, node), (ETCS::RID, label))
+{
+    (void)ctx;
+    self.BindPageRow(index, node, label);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, LoadPage, (int32_t, index))
+{
+    (void)ctx;
+    self.LoadPage(index);
+}
+
+DEFINE_WORK_FUNC(PaintCanvasMenu, RefreshPages)
+{
+    (void)ctx; (void)data;
+    self.RefreshPages();
+}
+
+// BindTool <tool> -- what an import leaves selected (PaintCanvasMenu::BindTool).
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindTool, (ETCS::RID, tool))
+{
+    (void)ctx;
+    self.BindTool(tool);
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindImportPrompt,
     (ETCS::RID, palette), (ETCS::RID, pane), (ETCS::RID, input), (ETCS::RID, caption))
 {

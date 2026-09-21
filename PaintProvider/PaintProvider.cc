@@ -36,7 +36,7 @@ ETCS_TAG_BLOCK_BASIC(PaintLayer,
 // is that plus a clear (PaintDocument::Resize). ImportCanvas is New sized to a
 // file plus ImportImage (PaintDocument::ImportCanvas).
 ETCS_TAG_BLOCK_BASIC(PaintDocument,
-    Create, SetActiveLayer, ClearLayer, RenderToSurface,
+    Create, SetActiveLayer, ClearLayer, RenderToSurface, NewLayer,
     MoveLayerTo, RenameLayer, RemoveLayer, IsolateLayer, ClearIsolate,
     BindGlyphs, AddTextBox, SetTextBoxText, RemoveTextBox,
     ShowTextBoxes, SelectTextBox,
@@ -87,7 +87,8 @@ ETCS_TAG_BLOCK_BASIC(PaintRepeat,
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
 ETCS_TAG_BLOCK_BASIC(PaintLayerPanel,
-    Create, BindDocument, AddRow, BindTitle, BindWindow, SetHoverDim, SetEyeColors, SetRowColors,
+    Create, BindDocument, AddRow, BindAdd, BindTitle, BindWindow,
+    SetHoverDim, SetEyeColors, SetRowColors,
     Scroll, Refresh, CommitRename,
     SelectRow, ToggleRow, RemoveRow, MoveRow, ArmRename, HoverRow,
     Report, Delete)
@@ -105,9 +106,11 @@ ETCS_TAG_BLOCK_BASIC(PaintColorWheel,
 // pick. See PaintCanvasMenu.
 ETCS_TAG_BLOCK_BASIC(PaintCanvasMenu,
     Create, BindSurface, StepWidth, StepHeight, SetAnchor,
-    BindWidthReadout, BindHeightReadout, BindAnchorCell,
+    BindWidthReadout, BindHeightReadout, BindAnchorCell, BindAnchorArrow,
     ApplyResize, ApplyNew, Save, Load,
-    BindImportPrompt, OfferImport, ImportAsLayer, ImportAsCanvas, ImportCancel, Report, Delete)
+    BindTool, BindPages, BindPageRow, LoadPage, RefreshPages,
+    BindImportPrompt, OfferImport, ImportAsLayer, ImportAsCanvas, ImportCancel,
+    Report, Delete)
 
 // HYBRID for the same reason PaintInput is: its consume edges are the standing
 // control-thread ends of the window's producers, not one-shot calls.

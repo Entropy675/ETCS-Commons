@@ -346,7 +346,7 @@ gear.SetOrder(21)
 # until opened, for the reason wheel_pane is. Not retained: its contents are
 # nodes (paint_menu.etcs) and the compositor draws them from the tree.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D menu_pane)
-menu_pane.Create(200, 224)
+menu_pane.Create(200, 348)
 menu_pane.SetPosition(4, 18)
 menu_pane.SetOrder(29)
 menu_pane.SetBackground(0.10, 0.10, 0.13, 0.96)
@@ -371,6 +371,10 @@ menu_input.BindPalette(@palette)
 
 run PaintProvider/scripts/paint_menu.etcs pane=menu_pane palette=palette menu=menu
 
+# The store the menu lists and that `new` adds to. Bound after the script has
+# declared the rows, so the first RefreshPages has somewhere to write.
+menu.BindPages(@pages)
+
 palette.BindRouter(@router)
 palette.AddPopup(@gear, @menu_pane, @menu_input)
 
@@ -393,6 +397,7 @@ import_input.BindRoot(@import_pane)
 import_input.BindPalette(@palette)
 
 run PaintProvider/scripts/paint_import.etcs pane=import_pane palette=palette menu=menu
+menu.BindTool(@brush)
 menu.BindImportPrompt(@palette, @import_pane, @import_input, @import_name)
 
 # `view` presents whatever sheet_root composed -- the document plus the readout

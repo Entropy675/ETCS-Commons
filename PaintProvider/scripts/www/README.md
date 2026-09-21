@@ -166,6 +166,17 @@ pixels so that a 2px mark is two pixels rather than three; stroking a path with 
 wide brush still spills half the width either side of it, which is what stroking
 means.
 
+## A selection belongs to one layer
+
+A lift is cut from the active layer and dropped onto the active layer, and the
+whole of that contract is that the two are the same layer. Nothing enforced it:
+the layer window is a different pane's input, so a press on a row never touched
+the canvas's drag state, and a selection lifted from Ink and dropped after
+clicking Paper wrote Ink's pixels into Paper. `PaintDocument::SetActiveLayer`
+now lands any carry before the ground moves -- on the layer it came from, where
+the user last put it -- which covers every caller at once: the panel, the
+exported verb, a page load, an import.
+
 ## Selecting, and moving what is selected
 
 The `select` slice sits between `brush` and `line` in the bar, which is now
@@ -256,6 +267,13 @@ else — 16-bit, a format stb does not know, a side over 16384 — is refused wi
 line saying what was found and what is accepted, and so is a picture that would
 not fit the browser's fixed heap (see the note under the gear).
 
+An import arrives SELECTED, with the select tool already holding it. What
+anyone does first with a picture they have just brought in is put it where they
+want it, and that was three steps nobody was told about -- pick select, draw a
+region round the image, then drag. The import knows the extent (the new layer's
+raster IS the image), so it states it as the selection and switches the tool:
+press inside and drag, and the first press lifts it.
+
 The header's two controls sit beside the brand. **upload** writes the chosen file
 to `/uploads/<name>` and calls `menu.OfferImport(<path>)`, which opens a prompt
 over the paper asking what the picture is for: **new layer** (`ImportImage`),
@@ -283,27 +301,69 @@ lost its captions says so.
 
 ## The layer window
 
-Top-right of the paper: a title bar and seven rows of eye / name / delete, built by
-`PaintProvider/scripts/paint_layers.etcs` on the toolbar's bargain (`PaintLayerPanel`
-maps nodes to layer actions and owns none of the drawing). The highlighted row is
-the layer the brush is on; a press on another row makes that the drawing layer, the
-eye toggles visibility, the red box removes the layer, and dragging a row onto
-another restacks. Hovering a row isolates its layer (everything else dims to 0.25)
-so a layer can be found by looking.
+Top-right of the paper: a title bar with a **+** on it and seven rows, built by
+`PaintProvider/scripts/paint_layers.etcs` on the toolbar's bargain
+(`PaintLayerPanel` maps nodes to layer actions and owns none of the drawing). A
+row is `[eye][thumb][name .......][x]`, five nodes for five questions.
 
-The title bar is the handle: press it and the window follows the pointer until the
-release (`PaintLayerPanel::BindTitle` / `BindWindow`). There is no close button, on
-purpose — the window is the only thing that says which layer is active, and a window
-that can be dismissed will be. The bottom row has no delete either: the base layer
-is the page's ground and `PaintDocument::RemoveLayer` refuses it (`ClearLayer`
-empties it), so the panel hides a button that would only ever say no.
+    +          a new, page-sized, transparent layer directly above the active
+               one -- not on top of everything, because "add a layer" while
+               working on layer 2 of 5 means one to draw on next to this
+    eye        show or hide that layer; every layer has one, the base included,
+               since hiding the paper to see through it is what it is for
+    thumb      what is ON the layer, drawn from its own pixels over a checker.
+               A name says which layer you MEANT; the picture says which one
+               you are looking at, and with two imported images the names are
+               all there otherwise is. Averaged, not sampled: a page is 1024
+               wide and a thumb is 24, so one tap per pixel reads one source
+               pixel in 1800 and a six-pixel stroke survives in none of them
+    name       press to choose the layer, press again to rename it: the field
+               opens on the row, takes every key until Enter (keep) or Escape
+               (drop), and shows what is being typed with a caret. While it is
+               open the keyboard is the panel's -- ctrl+z is a z
+    x          remove the layer. The bottom row has none: the base is the
+               page's ground and PaintDocument::RemoveLayer refuses it
+               (ClearLayer empties it instead)
 
-The window follows the document rather than being told: an import, a page switch
-or a resize changes the stack with no press on a row, and the next input event
-re-reads it (`PaintInput` compares `PaintDocument::revision`). By verb:
+Dragging a row onto another restacks; hovering one isolates its layer
+(everything else dims to 0.25) so a layer can be found by looking. The title
+bar is the handle -- press it and the window follows the pointer -- and there
+is no close button, on purpose: the window is the only thing that says which
+layer is active, and a window that can be dismissed will be.
+
+**The rows say what the picture shows**, and that took three fixes. A layer's
+own properties -- an eye, a rename, a restack, an opacity -- now touch the
+document (`PaintLayer::touch_document`), so the window re-reads the stack after
+a change made anywhere, not just after one made in the window; the comment that
+promised this named a function that was never written. Hover isolation is
+re-asserted whenever the rows are re-bound, so a row deleted or scrolled away
+under the pointer cannot leave the picture faded with the eye column still
+saying "visible". And a layer's opacity was applied twice on screen -- `BlitTo`
+multiplies by it and `RenderToSurface` passed it in as well -- so a layer at 50%
+showed at 25% while the export, which composites once, showed it at 50%.
+
+By verb:
 
     layers.SelectRow(1)   layers.ToggleRow(0)   layers.RemoveRow(0)   layers.MoveRow(0, 1)
-    layers.Report()
+    doc.NewLayer()        layers.CommitRename(backdrop)               layers.Report()
+
+## Pages: `new` keeps the one you were on
+
+The gear menu's **new** makes a NEW PAGE at the size the two steppers show. It
+used to call `PaintDocument::New`, which clears the layers where they stand: the
+picture that was there was gone, the history gained nothing, and the page list
+stayed empty however many times it was pressed. It goes through the store now
+(`PaintPages::NewAt`) -- the present page is saved to its slot first, then a
+fresh one opens -- which is what makes a second page exist to go back to.
+
+The menu lists the last five, newest first, with the one on screen highlighted;
+a press on a row loads that page. The store is the same sqlite database
+`ctrl+PageUp` / `ctrl+PageDown` already stepped through, and it holds the
+pixels: each layer goes in as its raw bytes behind a PAM header (about 6 MB for
+a two-layer 1024x768 page), so a page comes back as the picture it was rather
+than as its dimensions. Verified end to end in the browser: a mark on page 1,
+`new`, a different mark on page 2, then the page-1 row -- and the first mark is
+back and the second is gone.
 
 ## The gear: a new canvas, a resize, save and load
 
@@ -312,10 +372,13 @@ settings menu over the sheet. It holds a width and a height stepped by 64
 (64..8192), a 3x3 grid of anchor cells, and four buttons:
 
     resize   the page re-stated around its pixels: the bright cell is the part
-             of the page that stays put, and new room is transparent -- paper
-             on the paper layer, which is the bottom layer when nothing shows
-             through it (PaintDocument::Resize)
-    new      the same extent with every layer cleared, paper to white
+             of the page that stays put, every OTHER cell carries an arrow
+             pointing away from it -- the direction the new room appears in, so
+             the grid reads as a diagram of the resize rather than as nine
+             buttons -- and new room is transparent, paper on the paper layer,
+             which is the bottom layer when nothing shows through it
+             (PaintDocument::Resize)
+    new      a NEW PAGE at the size shown, the present one saved first
     save     the header's download, from inside the sheet
     load     the header's upload -- see below
 
