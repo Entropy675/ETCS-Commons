@@ -22,16 +22,23 @@ The page holds the runtime, two canvases and the terminal:
     #toolbar    640x64    the palette strip, above the ETCS Shell block
     iframe      shell     ShellProvider's own page, embedded as the terminal
 
-Deploy is the same two steps every page in this tree uses — build, then copy the
-outputs into `www/`:
+Deploy is build, and that is all of it — there is no copy step any more:
 
     ace wasm make module WindowProvider
     ace wasm make module RenderProvider
     ace wasm make module PaintProvider
     ace wasm make module ShellProvider
     ace wasm make loader etcs
-    cp bin/etcs.js bin/etcs.wasm bin/{Window,Render,Paint,Shell}Provider.wasm \
-       modules/PaintProvider/scripts/www/
+
+`ace wasm make` writes every web artifact into `bin/wasm/` (`WASM_DIR` in ETCS's
+Makefile, `ARTIFACT_DIR` in the generated `loaders/Makefile`), the serve scripts
+mount that one directory at `/wasm/`, and this page fetches its modules and its
+glue from there. The `cp ... www/` line that used to be here is gone, and good:
+these binaries are shared and they move in epochs — one etcs.wasm and one .wasm
+per provider, built together, refusing each other across a rebuild — so a
+per-page copy was N chances to be one epoch behind, and being behind did not 404.
+It answered 200 with last epoch's binary and the loader refused it on a manifest
+hash, which reads as a build problem and is not one.
 
 (`ace wasm make modules` builds only the modules whose own manifest declares
 `"Web"`; PaintProvider and ShellProvider build from `default.json` and so are

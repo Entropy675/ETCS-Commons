@@ -5,7 +5,15 @@
     "scan -- so adding a provider to the browser runtime is an edit here and",
     "nothing else. Load order is the order these appear in.",
     "RenderProvider before PaintProvider because a PaintSurface takes a Surface,",
-    "and ShellProvider last so the navigator comes up in the embedded terminal."
+    "and ShellProvider last so the navigator comes up in the embedded terminal.",
+    "NAMES, NOT PATHS. These are fetched from the SHARED artifact directory --",
+    "/wasm/, which is bin/wasm/ mounted by the serve scripts -- and staged into",
+    "MEMFS under the bare name, because preload_web_modules dlopens by name and",
+    "run_script opens by name. The url and the staged name are different things.",
+    "Optional \"base\": pin that directory (a CDN, a second origin) and the page",
+    "skips its own same-origin-then-beside-then-remote walk. See resolveWasmBase",
+    "in index.html. \"glue\" comes from the same base -- it and etcs.wasm are one",
+    "link's output, and a mismatched pair fails before any ETCS code runs."
   ],
   "modules": [
     "WindowProvider.wasm",

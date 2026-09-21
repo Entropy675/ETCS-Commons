@@ -1,7 +1,17 @@
-# BUILD OUTPUT, COPIED IN. The page fetches the wasm and the glue from here by
-# name (modules.json), but they are produced by `ace wasm make`, not edited, and a
-# 2MB binary per provider does not belong in the history of the page that loads
-# them. See README.md for the deploy step.
+# BUILD OUTPUT THAT NO LONGER BELONGS HERE AT ALL.
+#
+# The page used to fetch the wasm and the glue from this directory by name, so
+# `ace wasm make` outputs had to be copied in after every build -- ignored here
+# because a 2MB binary per provider does not belong in the history of the page
+# that loads them.
+#
+# They are not copied in any more: `ace wasm make` writes bin/wasm/, the serve
+# scripts mount that at /wasm/, and the page resolves its base there (see
+# resolveWasmBase in index.html). The entries stay so that a tree which still
+# has the old copies keeps them out of a commit -- and so a stale one sitting
+# here cannot be mistaken for the current artifact. Safe to delete them; the
+# page prefers /wasm/ and only falls back to this directory for a deployment
+# made before the split.
 etcs.js
 etcs.wasm
 *.wasm

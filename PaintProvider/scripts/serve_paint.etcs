@@ -39,6 +39,15 @@ web.spawn(NetworkProvider::FileHtmlPage tree)
 tree.LoadFromDisk(ACE_ROOT/modules/PaintProvider/scripts/www)
 tree.SetDefaultExtension(.html)
 
+# THE RUNTIME BINARIES, from bin/wasm/ rather than from www/ beside the page.
+# `ace wasm make ...` writes there and nothing else does, so what is served is
+# what was last built -- where the old arrangement (copy the artifacts into www/
+# after each build) answered 200 with last epoch's binary the moment the copy was
+# forgotten, and the loader then refused it on a manifest hash that reads like a
+# build problem and is not one. The page finds them here on its own: /wasm/ is
+# the first base it tries (resolveWasmBase, www/index.html).
+tree.MountTree(wasm ACE_ROOT/bin/wasm)
+
 # ── the mounts ───────────────────────────────────────────────────────────────
 #
 # Each at the path the page stages it under (www/modules.json), which is the path

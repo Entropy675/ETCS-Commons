@@ -6,7 +6,13 @@
     "WindowProvider first: it is the one this page exists for, and load order is",
     "the order these appear in.",
     "ShellProvider second so the navigator still comes up in the embedded",
-    "terminal -- drop it and the canvas still works, with nothing to type at."
+    "terminal -- drop it and the canvas still works, with nothing to type at.",
+    "NAMES, NOT PATHS. These are fetched from the SHARED artifact directory --",
+    "/wasm/, which is bin/wasm/ mounted by serve_web.etcs -- and staged into",
+    "MEMFS under the bare name, because preload_web_modules dlopens by name and",
+    "run_script opens by name. The url and the staged name are different things.",
+    "Optional \"base\": pin that directory and the page skips its own",
+    "same-origin-then-beside-then-remote walk. See resolveWasmBase in index.html."
   ],
   "modules": [
     "WindowProvider.wasm",

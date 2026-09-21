@@ -147,11 +147,20 @@ patch this page came with:
   browser's main thread, because the callback that would set it is delivered by
   the event loop the spin refuses to return to.
 
-Build, then copy the outputs into `www/`:
+Build. There is no copy step any more:
 
     ace make loader etcs EMSCRIPTEN=1
     ace make module WindowProvider EMSCRIPTEN=1
     ace make module ShellProvider  EMSCRIPTEN=1
+
+Every web artifact lands in `bin/wasm/` (`WASM_DIR` in ETCS's Makefile,
+`ARTIFACT_DIR` in the generated `loaders/Makefile`), `serve_web.etcs` mounts that
+one directory at `/wasm/`, and this page resolves its base there. The
+`cp bin/... www/` line that used to be here is gone: these binaries are shared and
+they move in epochs — one `etcs.wasm` and one `.wasm` per provider, built
+together, refusing each other across a rebuild — so a per-page copy was one more
+chance to be an epoch behind, and being behind did not 404. It answered 200 with
+the old binary and the loader refused it on a manifest hash.
 
 No pool-size flag on that first line. `-sPTHREAD_POOL_SIZE=0` is already in the
 generated loader Makefile, and `-DPTHREAD_POOL_SIZE=0` would not set it anyway:
@@ -189,9 +198,11 @@ sleep in the program is instrumented end to end.
 `modules.json`'s `"glue"` key names the file the page loads, so whatever the web
 path emits has to match it -- `etcs.js`, as written. An extensionless `etcs` is
 served as `application/octet-stream`, which the browser warns is not a valid
-JavaScript MIME type, and it lands on the same name as the NATIVE `etcs` binary in
-`bin/` -- `copy_loaders` then moves the glue over it. Naming the web output
-`etcs.js` is what keeps those two apart; see the ACE patch that goes with this.
+JavaScript MIME type, and it used to land on the same name as the NATIVE `etcs`
+binary in `bin/`, which `copy_loaders` then moved the glue over. Naming the web
+output `etcs.js` is what keeps those two apart. The collision itself is gone now
+that `copy_loaders` writes `bin/wasm/` on the web path (`ARTIFACT_DIR`), but the
+MIME half of the argument still stands and is why the name has an extension.
 
 ## Why the navigator did not come up on this page: 30 missing GLFW symbols
 
