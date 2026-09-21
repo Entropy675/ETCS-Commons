@@ -241,8 +241,9 @@ public:
         std::ifstream in(disk_path, std::ios::binary);
         if (!in.is_open())
         {
-            ETCS_LOG("FileHtmlPage", "MountFile: failed to open '" << disk_path
-                     << "' -- nothing mounted at '" << url_path << "'.");
+            if (!warn_if_unexpanded(disk_path, "MountFile"))
+                ETCS_LOG("FileHtmlPage", "MountFile: failed to open '" << disk_path
+                         << "' -- nothing mounted at '" << url_path << "'.");
             return false;
         }
         std::string bytes((std::istreambuf_iterator<char>(in)),
@@ -297,6 +298,34 @@ public:
         return true;
     }
 
+    /*
+ * A PATH THAT STILL SAYS ACE_ROOT IS A VERSION SKEW, NOT A MISSING FILE.
+ *
+ * ACE_ROOT is expanded by the executor before a statement's arguments ever
+ * reach a work function (core/CommandExecutor.h). So a literal one arriving
+ * here means the script being run is NEWER than the binary running it, and the
+ * open that follows will fail for a reason that has nothing to do with the
+ * filesystem -- "failed to open 'ACE_ROOT/modules/...'" reads as a wrong path
+ * and sends the reader looking in the wrong place. This is the same class of
+ * mistake the loader/module manifest check catches, on the one axis it does not
+ * cover: a .etcs script is DATA, so editing one takes effect immediately, while
+ * the runtime that interprets it does not change until it is rebuilt.
+ *
+ * Named here rather than guarded against, because the module cannot fix it --
+ * it can only say what happened, once, at the first path that shows it.
+ */
+    static bool warn_if_unexpanded(const std::string& path, const char* verb)
+    {
+        if (path.compare(0, 9, "ACE_ROOT/") != 0) return false;
+        ETCS_LOG("FileHtmlPage", verb << ": '" << path << "' still contains ACE_ROOT, "
+                 "which the executor expands before a work function sees it. This "
+                 "runtime does not, so it is older than the script -- rebuild the "
+                 "NATIVE binaries with `ace make all`. `ace wasm make ...` builds "
+                 "only the browser artifacts and never touches bin/*.so or bin/etcs, "
+                 "which is what a server script like this one actually runs on.");
+        return true;
+    }
+
     // --- Tree construction from disk ---
     //
     // Walks disk_path non-recursively at each level, addTag<FileHtmlPage>
@@ -308,20 +337,41 @@ public:
     // wire boundary; it's read once at load time and served directly out
     // of process memory for the module's whole lifetime. Symlinks and
     // other special entries are skipped rather than guessed at.
-    void LoadFromDisk(const std::string& disk_path)
+    // Returns how many entries it took. ZERO IS NOT AN ERROR ON ITS OWN -- an
+    // empty directory is a legal thing to serve -- but it is the only number a
+    // caller can compare against what it expected, so it is handed back rather
+    // than swallowed. See the work function, which is what reports it.
+    size_t LoadFromDisk(const std::string& disk_path)
     {
         kind_ = Kind::Directory;
+        warn_if_unexpanded(disk_path, "LoadFromDisk");
 
         namespace fs = std::filesystem;
         std::error_code ec;
-        for (const auto& entry : fs::directory_iterator(disk_path, ec))
+
+        /*
+ * CHECKED HERE, BEFORE THE LOOP, and that is the whole of this fix.
+ *
+ * The check used to be the first statement INSIDE the range-for -- which never
+ * runs when the construction failed, because a directory_iterator that took an
+ * error compares equal to end(). So a path that does not exist walked zero
+ * entries, reported nothing, and left a Directory node with no children; every
+ * request under it then 404'd with the log insisting the tree had loaded. A
+ * mistyped or unresolved path is the most likely thing to be wrong here and it
+ * was the one thing that said nothing.
+ */
+        auto it = fs::directory_iterator(disk_path, ec);
+        if (ec)
         {
-            if (ec)
-            {
-                ETCS_LOG("FileHtmlPage", "LoadFromDisk: directory_iterator error on '"
-                         << disk_path << "': " << ec.message());
-                break;
-            }
+            ETCS_LOG("FileHtmlPage", "LoadFromDisk: cannot read '" << disk_path
+                     << "' -- " << ec.message() << ". Nothing was loaded, so every "
+                     "path under this tree will 404.");
+            return 0;
+        }
+
+        size_t taken = 0;
+        for (const auto& entry : it)
+        {
 
             const std::string name = entry.path().filename().string();
             FileHtmlPage* child = addTag<FileHtmlPage>();
@@ -348,9 +398,11 @@ public:
             {
                 continue; // symlink / special file -- skip rather than guess intent
             }
+            ++taken;
 
             children_by_name_[name] = child;
         }
+        return taken;
     }
 
     // --- Path resolution ---

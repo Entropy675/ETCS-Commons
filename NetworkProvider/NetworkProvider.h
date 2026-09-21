@@ -1171,11 +1171,17 @@ DEFINE_WORK_FUNC(StaticHtmlPage, Delete)
 // FileHtmlPage
 // ===========================================================================
 
+// Reports WHAT IT TOOK rather than that it ran. "Loaded 'x'" is true of a path
+// that does not exist, and that sentence is the reason a served tree with
+// nothing in it looked like a working one -- see FileHtmlPage::LoadFromDisk on
+// why the failure was silent. A count can be compared against what the caller
+// expected; a verb in the past tense cannot.
 DEFINE_WORK_FUNC(FileHtmlPage, LoadFromDisk)
 {
     (void)ctx;
-    self.LoadFromDisk(data.toString());
-    ETCS_LOG("FileHtmlPage::LoadFromDisk", "Loaded '" << data.toString()
+    const size_t taken = self.LoadFromDisk(data.toString());
+    ETCS_LOG("FileHtmlPage::LoadFromDisk", "Loaded " << taken << " entr"
+             << (taken == 1 ? "y" : "ies") << " from '" << data.toString()
              << "' into RID:" << self.getRID());
 }
 
