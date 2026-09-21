@@ -145,7 +145,7 @@ its own labels, so the numbers are not clipped by a provider with a wider advanc
 ## Selecting, and moving what is selected
 
 The `select` slice sits between `brush` and `line` in the bar, which is now
-seventeen 60px slices (1020x64, 2px in from either edge of the 1024 sheet). One
+sixteen 60px slices (960x64, 32px in from either edge of the 1024 sheet; rect and oval share one `shape` slice whose arrow steps rect, oval, triangle, diamond, star). One
 tool, four ways of drawing the boundary — the word under `select` says which,
 and the arrow at the top of the slice steps through them:
 
@@ -196,6 +196,97 @@ All of it is reachable without a pointer, in document coordinates:
 
 `MoveSelection` is the carry in one call, for a script that knows the offset;
 two `Report`s either side of it are the assertion that the ink moved.
+
+## Raw images in and out
+
+Three verbs on the document, each taking a path:
+
+    doc.ImportImage(/path/to/photo.pam)    # a new layer, sized to the image, on top, active
+    doc.ExportImage(/path/to/out.pam)      # the visible layers composited, alpha included
+    doc.ExportLayer(/path/to/layer.pam)    # the active layer alone, with its alpha
+    canvas.Render()                        # then show it, as after any scripted change
+
+They work from the terminal on both substrates with no change of spelling. That is
+the design: the browser hands the page a `File` and the desktop hands the shell a
+path, and those are two ways of arriving at bytes at a name the process can open.
+The page already stages every script it boots into the emscripten filesystem
+(`preRun`: `FS.mkdirTree`, `FS.writeFile`), so an upload is one more file written
+the same way and a download is one file read back. One import and one export, no
+`#ifdef` in either, and the page holds no image code — it is a file proxy
+(`PaintDocument::ImportImage`, and the PAM note above `PaintImage`).
+
+The header has the two controls: **upload** writes the chosen file to
+`/uploads/<name>` and calls `doc.ImportImage` then `canvas.Render`; **download**
+calls `doc.ExportImage(/exports/paint.pam)`, reads the file back and hands it to
+the browser as `paint.pam`. Every verb says in the terminal what it did — path,
+size, layer — or why it did not.
+
+The format is PAM (`P7`, `TUPLTYPE RGB_ALPHA`, `MAXVAL 255`) out, and PAM
+(`RGB_ALPHA` or `RGB`) or PPM (`P6`) in, 8 bits per channel. That is the pixel
+buffer with a text header — literally the raw pixels `Pixels_` stores — and GIMP,
+ImageMagick and netpbm open and write it:
+
+    convert photo.png -depth 8 photo.pam     # -depth 8: ImageMagick writes 16-bit PAM otherwise
+    convert paint.pam paint.png
+
+There is no image codec in `libs/`, and vendoring one is a decision about the tree
+rather than about this feature. PNG is one header (stb_image / lodepng) away and
+drops in at `paint_pam_read`: a second reader filling the same `PaintImage` is all a
+second format costs. Anything else — 16-bit, grayscale, a PNG handed to the upload
+button — is refused with a line saying what was found and what is accepted.
+
+An import is a layer spawned the way the boot script spawns one (`addTag<PaintLayer>`
+is what `doc.spawn(PaintProvider::PaintLayer)` reduces to), so it is the document's
+typed child like every other and shows in `doc.Report()`. It is not in the undo
+history, which snapshots the active layer's bytes; undoing an import is
+`doc.RemoveLayer`. The export is what `RenderToSurface` shows less the view: visible
+layers at their opacity, a lift in flight at its depth, onto a transparent page — not
+the hover dim, not the selection outline, and not the text boxes, which are strings
+drawn through a `Glyphs` target by RID; the export log counts those so a file that
+lost its captions says so.
+
+## The gear: a new canvas, a resize, save and load
+
+The octagon in the ruler's top-left corner, above the extent label, opens a
+settings menu over the sheet. It holds a width and a height stepped by 64
+(64..8192), a 3x3 grid of anchor cells, and four buttons:
+
+    resize   the page re-stated around its pixels: the bright cell is the part
+             of the page that stays put, and new room is transparent -- paper
+             on the paper layer, which is the bottom layer when nothing shows
+             through it (PaintDocument::Resize)
+    new      the same extent with every layer cleared, paper to white
+    save     the header's download, from inside the sheet
+    load     the header's upload -- see below
+
+Neither `resize` nor `new` is an undo step: the history is three whole-layer
+snapshots restored only into a buffer of the same size, so it is dropped rather
+than left to refuse one press at a time. Both are verbs too:
+
+    doc.Resize(1600, 1200, 4)     # w h anchor (0 top-left .. 4 centre .. 8 bottom-right)
+    doc.New(1024, 768)
+    canvas.Render()
+
+The menu is the toolbar's bargain again: `PaintCanvasMenu` holds the pending
+numbers and pushes them onto the readouts, the look is
+`PaintProvider/scripts/paint_menu.etcs`, and every control in it is a rectangle
+bound with `palette.AddCall(@node, @menu, PaintCanvasMenu.StepWidth, 64)` -- the
+general entry, a node that calls a verb. The gear itself is
+`palette.AddPopup(@gear, @menu_pane, @menu_input)`: pressing it opens the pane
+the way the colour wheel opens (into the router and drawn, one fact), and a
+press anywhere outside the pane closes it and is swallowed, so putting the menu
+away never leaves a dab.
+
+`save` and `load` cannot finish in the runtime -- a path becomes a file the user
+can see only through the page -- so the verbs raise a DOM event (`etcs-menu`)
+and `index.html` answers with the same download and upload the header buttons
+run. `load` clicks the file input from a call proxied off the router's Worker;
+a file dialog needs transient user activation, and whether the canvas press
+that opened the menu still counts by then is the browser's decision and is
+untested from this path. The header's `upload` is the fallback that always
+works. On the desktop the two buttons log the verb to type instead
+(`doc.ExportImage(<path>)` / `doc.ImportImage(<path>)`), since no file dialog
+exists there yet.
 
 ## Deploying
 

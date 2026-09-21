@@ -41,7 +41,7 @@ ETCS_TAG_BLOCK_BASIC(ImageSurface,
 // Draw is the whole subtree in one call, which is what a scene living in the
 // entity tree buys over one living in a script.
 ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
-    Create, AddPoint, ClearPoints, SetFill, SetOrder, Draw, Clear, DrawRect, Blit, Delete)
+    Create, AddPoint, ClearPoints, SetFill, SetOrder, SetHidden, Draw, Clear, DrawRect, Blit, Delete)
 
 // The merge point: a Drawable2D that owns pixels, so everything nested under
 // it renders into its buffer and reaches the destination as one Blit. Drawing
@@ -78,4 +78,4 @@ ETCS_TAG_BLOCK_BASIC(Camera3D,
 // compositor, a camera, an offscreen layer or the device surface identically.
 ETCS_TAG_BLOCK_BASIC(TextLabel,
     Create, SetText, SetSize, SetPosition, SetOrder, SetColor, SetBackground,
-    SetPadding, BindFps, Measure, Rasterize, Draw, Delete)
+    SetPadding, SetHidden, BindFps, Measure, Rasterize, Draw, Delete)

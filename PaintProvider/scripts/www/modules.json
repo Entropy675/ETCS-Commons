@@ -11,6 +11,7 @@
     "WindowProvider.wasm",
     "RenderProvider.wasm",
     "PaintProvider.wasm",
+    "DatabaseProvider.wasm",
     "ShellProvider.wasm"
   ],
   "_scripts": [
@@ -26,6 +27,7 @@
     "paint_routed_pointer.etcs",
     "PaintProvider/scripts/paint_toolbar.etcs",
     "PaintProvider/scripts/paint_wheel.etcs",
+    "PaintProvider/scripts/paint_menu.etcs",
     "RenderProvider/scripts/render_frames.etcs"
   ],
   "boot": "boot_paint_panels.etcs",

@@ -1,12 +1,15 @@
 #ifndef DATABASEPROVIDER_CONTRACT__
 
-#if defined(__EMSCRIPTEN__)
-    //#define DATABASEPROVIDER_CONTRACT__
-    //#include "Web/WASMDatabaseProvider.h"
-    //typedef WASMDatabaseProvider DatabaseProvider;
-    // We don't support WASM globally yet... 
-
-#elif defined(_WIN32) || defined(__linux__)
+/*
+ * THE SAME ENGINE IN THE BROWSER, over the same interface: a path. sqlite is
+ * portable C over a filesystem, and emscripten gives it one -- MEMFS by default,
+ * IDBFS where the page mounts it (PaintProvider's page mounts /persist there, and
+ * syncs it to IndexedDB), so a database at a path is durable across reloads with
+ * no engine of its own for the web. That is the whole reason there is no
+ * Web/ leaf: the Sqlite one IS the web one. THREADSAFE=1 and no load-extension
+ * (manifests/DatabaseProvider.json) are what the side module needs of it.
+ */
+#if defined(__EMSCRIPTEN__) || defined(_WIN32) || defined(__linux__)
     #define DATABASEPROVIDER_CONTRACT__
     #include "OS/OSLocalDatabase.h"
     typedef OSLocalDatabase LocalDatabase;

@@ -145,13 +145,12 @@ bar_bg.AddPoint(0, 768)
 bar_bg.SetFill(0.16, 0.16, 0.19, 1.0)
 bar_bg.SetOrder(19)
 
-# Seventeen 60px slices: six colours, nine tools, radius and alpha
-# (paint_toolbar.etcs). The slices keep their width and the bar grows, because
-# a slice narrower than its word is a control you cannot read; 2px either side
-# is what a 1024 window has left over.
+# Sixteen 60px slices: six colours, eight tools, radius and alpha
+# (paint_toolbar.etcs) -- rect and oval are one shape slice now, which is what
+# gave the row its margins back.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D bar)
-bar.Create(1020, 64)
-bar.SetPosition(2, 704)
+bar.Create(960, 64)
+bar.SetPosition(32, 704)
 bar.SetOrder(20)
 
 spawn PaintProvider::PaintPalette palette
@@ -258,6 +257,25 @@ input.BindPalette(@palette)
 input.BindWheel(@wheel)
 input.SetWheelPane(0)
 
+# ── the pages: this session's history of canvases, kept in a database ────────
+#
+# ONE FILE, ONE PATH, TWO SUBSTRATES. The database is sqlite at a path, here as
+# on the desktop; in the browser the path is under /persist, which index.html
+# mounts on IDBFS and syncs to IndexedDB, so it outlives the tab. Nothing about
+# the store is web-specific, and nothing about it is paint-specific either: the
+# pages type talks to it through the Database family (Prepare/Bind/Step), and
+# any other module with bytes to keep can do the same.
+#
+# ctrl+PageDown / ctrl+PageUp switch pages: the present page is saved first if
+# it changed since it was loaded (PaintDocument::revision), then the neighbour
+# is loaded. `pages.New()` opens a fresh page; `pages.List()` says what is kept.
+spawn DatabaseProvider::LocalDatabase db
+db.Connect(/persist/pages.db)
+spawn PaintProvider::PaintPages pages
+pages.Create(@doc, @db)
+pages.BindSurface(@canvas)
+input.BindPages(@pages)
+
 spawn PaintProvider::PaintInput wheel_input
 wheel_input.Create(@doc, @brush, @canvas)
 wheel_input.BindRoot(@wheel_pane)
@@ -274,6 +292,67 @@ router.AddPane(@sheet_root, @input)
 
 wheel.BindRouter(@router)
 wheel.BindPane(@wheel_pane, @wheel_input)
+
+# ── the gear, and the settings menu it opens ─────────────────────────────────
+#
+# IN THE RULER'S CORNER, above the extent label. The corner of the margin is the
+# one place on the sheet that is neither picture nor toolbar nor scale: the band
+# is 36px, its label sits at y=16 (draw_edge_ruler puts the extent at
+# oy - band_h + 2), so an octagon in the 2..14 square above it overlaps nothing.
+# A child of sheet_root like the zoom steps, for the same reason: the band is
+# drawn INTO the sheet's retained raster and children go over it every compose,
+# so the ruler's own clear never takes the gear with it.
+#
+# A press on it is scenery routed to `input` -- inside sheet_root, outside the
+# canvas -- and PaintInput::RouteEvent asks the palette first, which is where
+# AddPopup answers (PaintPalette::Apply). The palette needs the router to open
+# anything, since open means routed (PaintColorWheel::Open).
+sheet_root.spawn(RenderProvider::PolygonDrawable2D gear)
+gear.Create()
+gear.AddPoint(8, 2)
+gear.AddPoint(12, 4)
+gear.AddPoint(14, 8)
+gear.AddPoint(12, 12)
+gear.AddPoint(8, 14)
+gear.AddPoint(4, 12)
+gear.AddPoint(2, 8)
+gear.AddPoint(4, 4)
+gear.SetFill(0.94, 0.89, 0.78, 0.92)
+gear.SetOrder(21)
+
+# The menu's pane: order 29, above everything but the wheel, so the two popups
+# rank as popups against the sheet and the wheel still wins if both were open
+# (the palette closes the wheel when it opens this, so they are not). Hidden
+# until opened, for the reason wheel_pane is. Not retained: its contents are
+# nodes (paint_menu.etcs) and the compositor draws them from the tree.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D menu_pane)
+menu_pane.Create(200, 224)
+menu_pane.SetPosition(4, 18)
+menu_pane.SetOrder(29)
+menu_pane.SetBackground(0.10, 0.10, 0.13, 0.96)
+menu_pane.SetHidden(1)
+
+# The pending extent and anchor the menu edits, seeded from the document, and
+# the surface it re-renders once a resize or a new canvas has landed.
+spawn PaintProvider::PaintCanvasMenu menu
+menu.Create(@doc)
+menu.BindSurface(@canvas)
+
+# Its own input, exactly as the wheel has one: a pane is a root to pick in and
+# an input to hand the pick to (PaintRouter::AddPane), and this pane is not the
+# sheet. The palette is bound because every control in the menu is a palette
+# entry (AddCall) -- and because, with a popup open, the palette is what says a
+# press on the pane's backing is the popup's and not a stroke (PaintPalette::
+# Apply), so no BindCanvas is needed here.
+spawn PaintProvider::PaintInput menu_input
+menu_input.Create(@doc, @brush, @canvas)
+menu_input.BindRoot(@menu_pane)
+menu_input.BindPalette(@palette)
+
+run PaintProvider/scripts/paint_menu.etcs pane=menu_pane palette=palette menu=menu
+
+palette.BindRouter(@router)
+palette.AddPopup(@gear, @menu_pane, @menu_input)
 
 # `view` presents whatever sheet_root composed -- the document plus the readout
 # over it. Retained, so a zoom or a stroke shows up without anything having to

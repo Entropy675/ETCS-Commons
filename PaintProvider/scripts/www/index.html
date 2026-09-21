@@ -64,6 +64,19 @@
       letter-spacing: .12em; text-decoration: none;
     }
     header .brand:hover { text-decoration: underline; }
+    /* The two file controls, in the header because that is the one strip of
+       the page that is not a canvas: the sheet is GLFW's and the toolbar is a
+       node inside it, so a DOM control anywhere else would sit on something
+       that is drawn. Styled as the terminal's chrome, not as the toolbar's
+       slices -- they are the page's, and the page is monospace on --panel. */
+    header .files { display: flex; align-items: center; gap: 8px; }
+    header .files input[type=file] { display: none; }
+    header .btn {
+      color: var(--fg); background: transparent; border: 1px solid var(--line);
+      border-radius: 4px; padding: 1px 10px; font: inherit; font-size: 12px;
+      line-height: 1.5; cursor: pointer;
+    }
+    header .btn:hover { border-color: var(--accent); color: var(--accent); }
 
     /* Centres the canvas in whatever box the grid gave it, and min-height:0 is
        what lets that box actually shrink -- a grid item defaults to min-content,
@@ -153,6 +166,15 @@
   <div id="layout">
     <header>
       <a class="brand" href="/" target="_top">ETCS Paint</a>
+      <!-- Raw images in and out: a PAM/PPM file becomes a layer, and the
+           composite comes back as a PAM. The page only moves bytes between the
+           browser and the runtime's filesystem; the verbs do the work (see the
+           script below, and README.md). -->
+      <span class="files">
+        <label class="btn" for="upload" title="PAM (RGB_ALPHA or RGB) or PPM, 8-bit -- becomes a new layer">upload</label>
+        <input id="upload" type="file" accept=".pam,.ppm,image/x-portable-arbitrarymap,image/x-portable-pixmap"/>
+        <button id="download" class="btn" type="button" title="the visible layers, composited, as PAM">download</button>
+      </span>
       <span id="status">loading…</span>
     </header>
     <div id="stage">
@@ -277,6 +299,135 @@
   canvas.addEventListener('auxclick', blockMiddleDefault, { capture: true });
   canvas.addEventListener('pointerdown', blockMiddleDefault, { capture: true });
   canvas.addEventListener('pointerup', blockMiddleDefault, { capture: true });
+
+  /*
+   * ── raw images in and out ──────────────────────────────────────────────
+   *
+   * THE PAGE IS A FILE PROXY HERE, and nothing more. The verbs take a PATH
+   * (PaintDocument::ImportImage / ExportImage), so what the page does is what
+   * preRun already does for the scripts it boots: put bytes at a name in the
+   * runtime's own filesystem, then say the name. Decoding, the new layer and
+   * the composite are the document's -- the same lines work from the terminal,
+   * and on the desktop the path is a real one. That is why there is no image
+   * code on this side and no second copy of anything.
+   *
+   * Under /uploads and /exports rather than beside the staged scripts, so a
+   * file that happens to share a script's name cannot replace it.
+   */
+  function etcsFS() { return (typeof FS !== 'undefined') ? FS : (window.Module && window.Module.FS); }
+  // Set from onRuntimeInitialized below, which is the one signal this page
+  // already trusts for "runtime ready". Module.calledRun is not it: with the
+  // REPL detached to a worker the main module's run() is not what says the
+  // session is up, and reading it here refused every click with the runtime
+  // plainly live behind it.
+  let runtimeIsUp = false;
+  function runtimeUp() { return runtimeIsUp && !!(window.Module && window.Module.ccall); }
+  function callVerb(name, work, args) {
+    return window.Module.ccall('etcs_web_call', 'number',
+                               ['string', 'string', 'string'], [name, work, args]);
+  }
+
+  /*
+   * WRITING /persist BACK. IDBFS does not write through: a change to a file in
+   * it reaches IndexedDB only when syncfs(false) is called. The C++ side says
+   * when (PaintPages after every Save, via an `etcs-persist` event), and the
+   * page also flushes on pagehide, which is the last moment a closing tab gives
+   * it. navigator.storage.persist() is the "may this survive storage pressure"
+   * request -- the browser's own file-storage grant -- asked once; a refusal
+   * changes nothing here but how long the browser promises to keep it.
+   */
+  let persistTimer = 0;
+  function persistNow(why) {
+    const fs = etcsFS();
+    if (!fs || !fs.syncfs) return;
+    fs.syncfs(false, function (err) {
+      if (err) log('[etcs] /persist: write to IndexedDB failed (' + why + '): ' + err + '\n', 'err');
+    });
+  }
+  window.etcsPersist = function (why) {          // reachable from C++ through EM_ASM
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(function () { persistNow(why || 'requested'); }, 250);
+  };
+  window.addEventListener('etcs-persist', function (e) { window.etcsPersist(e.detail); });
+  window.addEventListener('pagehide', function () { persistNow('pagehide'); });
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().then(function (granted) {
+      log('[etcs] persistent storage ' + (granted ? 'granted' : 'not granted') + '\n');
+    }).catch(function () {});
+  }
+
+  const uploadEl = document.getElementById('upload');
+  const downloadEl = document.getElementById('download');
+
+  uploadEl.addEventListener('change', async function () {
+    const file = uploadEl.files && uploadEl.files[0];
+    uploadEl.value = '';                       // so the same file can be chosen twice
+    if (!file) return;
+    if (!runtimeUp()) { log('[etcs] upload: runtime is not up yet\n', 'err'); return; }
+    try {
+      const fs = etcsFS();
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      // The file's name is the layer's (ImportImage takes its stem), kept as
+      // given except for what a path cannot carry.
+      const path = '/uploads/' + file.name.replace(/[\/\\]/g, '_');
+      try { fs.mkdirTree('/uploads'); } catch (e) {}
+      fs.writeFile(path, bytes);
+      callVerb('doc', 'ImportImage', path);
+      // The document changed; the surface shows it when asked, as after every
+      // scripted change (canvas.Render() in boot_paint_panels.etcs).
+      callVerb('canvas', 'Render', '');
+    } catch (e) {
+      log('[etcs] upload failed: ' + e + '\n', 'err');
+    }
+  });
+
+  // One function, two callers: the header button and the sheet's own menu
+  // (below). The export is the same export whichever asked for it.
+  function downloadComposite() {
+    if (!runtimeUp()) { log('[etcs] download: runtime is not up yet\n', 'err'); return; }
+    try {
+      const fs = etcsFS();
+      const path = '/exports/paint.pam';
+      try { fs.mkdirTree('/exports'); } catch (e) {}
+      try { fs.unlink(path); } catch (e) {}     // a stale file must not pass for this export
+      callVerb('doc', 'ExportImage', path);     // says in the terminal if it refused
+      const bytes = fs.readFile(path);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/x-portable-arbitrarymap' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'paint.pam';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (e) {
+      log('[etcs] download failed: ' + e + '\n', 'err');
+    }
+  }
+  downloadEl.addEventListener('click', downloadComposite);
+
+  /*
+   * ── the sheet's menu, reaching the page's file controls ────────────────
+   *
+   * The gear's menu has "save" and "load", and a save or a load is a thing
+   * only the PAGE can finish: the verbs take a path, and turning a path into a
+   * file the user can see is the download above and the upload's file dialog.
+   * So the runtime raises an event naming which (PaintCanvasMenu::Save, a
+   * MAIN_THREAD_EM_ASM dispatch) and this answers with the same code the
+   * header buttons run -- there is one download and one upload on this page.
+   *
+   * "load" is the one to watch. A file dialog opens only on transient user
+   * activation, and the press that reached the menu was a mousedown on the
+   * canvas, handled by GLFW, routed on a Worker and proxied back here -- the
+   * activation is a few milliseconds old by then and should still stand
+   * (browsers grant several seconds), but whether it does is the browser's
+   * decision and has not been tested from this path. If a click on "load"
+   * does nothing, that is why; the header's upload button is the same upload
+   * from a real click and always works.
+   */
+  window.addEventListener('etcs-menu', function (ev) {
+    const what = ev && ev.detail;
+    if (what === 'save') { downloadComposite(); return; }
+    if (what === 'load') { uploadEl.click(); return; }
+    log('[etcs] menu: unknown request "' + what + '"\n', 'err');
+  });
 
   window.addEventListener('message', function (ev) {
     if (ev.origin !== ORIGIN) return;
@@ -411,9 +562,33 @@
           // is missing too, and reporting the first one is what tells you which.
           log('[etcs] preRun FS error: ' + e + '\n', 'err');
         }
+        /*
+         * /persist OUTLIVES THE TAB. Everything else on this filesystem is
+         * MEMFS and gone on reload; this one directory is IDBFS, a MEMFS view
+         * of an IndexedDB store, and what the page store keeps its sqlite file
+         * in (boot_paint_panels.etcs: db.Connect(/persist/pages.db)). The
+         * database is just a file at a path -- the same file the desktop
+         * writes -- which is why nothing on the C++ side knows the browser is
+         * involved. syncfs(true) pulls last time's bytes in before main() runs;
+         * addRunDependency holds the runtime until it has, because a database
+         * opened before its file arrives would be a fresh one written over it.
+         */
+        try {
+          FS.mkdir('/persist');
+          FS.mount(IDBFS, {}, '/persist');
+          Module.addRunDependency('etcs-persist');
+          FS.syncfs(true, function (err) {
+            if (err) log('[etcs] /persist: could not read IndexedDB: ' + err + '\n', 'err');
+            else     log('[etcs] /persist mounted from IndexedDB\n');
+            Module.removeRunDependency('etcs-persist');
+          });
+        } catch (e) {
+          log('[etcs] /persist: IDBFS unavailable (' + e + ') -- pages will not outlive this tab\n', 'err');
+        }
       }],
       onRuntimeInitialized: function () {
         setStatus('runtime ready', 'ok');
+        runtimeIsUp = true;
         log('[etcs] runtime initialized; boot script: '
             + (man.boot || '(none)') + '\n', 'ok');
         if (shellReady) toShell({ etcs: 'enable', enabled: true });

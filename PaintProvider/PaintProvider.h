@@ -18,6 +18,10 @@
 #include <vector>
 
 #if defined(__EMSCRIPTEN__)
+// For MAIN_THREAD_EM_ASM: the canvas menu's save/load reach the page's own
+// file controls by dispatching a DOM event (PaintCanvasMenu::page_event).
+#include <emscripten.h>
+#include <emscripten/em_asm.h>
 extern "C" void etcs_web_shell_write(const char* text);
 extern "C" int  etcs_web_shell_try_pop_line(char* out, int cap);
 #endif
@@ -235,17 +239,23 @@ static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
  * source-over, for the reason ScaledComposite.h gives: one output pixel written
  * once, and a preview that blends differently from the drop it previews is a
  * lie about where the pixels will land.
+ *
+ * THE ARITHMETIC IS ON BYTES, so it is stated on bytes: the Pixels_ overload
+ * below unpacks its destination and forwards. A DESTINATION that is not an
+ * entity exists too -- the composite PaintDocument::ExportImage writes to a
+ * file, which has no RID to resolve a family on and must not be given one
+ * (spawning an entity to hold a scratch buffer is the thing the note above
+ * refuses). One blend, two ways of naming where it lands, rather than a sixth
+ * copy of the same twelve lines.
  */
-static inline void paint_composite_raw_scaled(Pixels_& dst,
-                                              const uint8_t* sp, uint32_t sw, uint32_t sh,
-                                              int32_t x, int32_t y,
-                                              uint32_t dw, uint32_t dh, float opacity)
+static inline void paint_composite_raw_scaled_bytes(uint8_t* dp, uint32_t dstw, uint32_t dsth,
+                                                    uint32_t dstride,
+                                                    const uint8_t* sp, uint32_t sw, uint32_t sh,
+                                                    int32_t x, int32_t y,
+                                                    uint32_t dw, uint32_t dh, float opacity)
 {
-    if (!sp || sw == 0 || sh == 0 || dw == 0 || dh == 0 || opacity <= 0.0f) return;
-    uint8_t* dp = dst.PixelData();
-    if (!dp) return;
-    const uint32_t dstw = dst.PixelWidth(), dsth = dst.PixelHeight();
-    const uint32_t dstride = dst.PixelStride(), sstride = sw * 4;
+    if (!sp || !dp || sw == 0 || sh == 0 || dw == 0 || dh == 0 || opacity <= 0.0f) return;
+    const uint32_t sstride = sw * 4;
     const float o = (opacity > 1.0f) ? 1.0f : opacity;
 
     const int64_t x0 = std::max<int64_t>(0, x);
@@ -278,6 +288,15 @@ static inline void paint_composite_raw_scaled(Pixels_& dst,
             d[3] = static_cast<uint8_t>(oa);
         }
     }
+}
+
+static inline void paint_composite_raw_scaled(Pixels_& dst,
+                                              const uint8_t* sp, uint32_t sw, uint32_t sh,
+                                              int32_t x, int32_t y,
+                                              uint32_t dw, uint32_t dh, float opacity)
+{
+    paint_composite_raw_scaled_bytes(dst.PixelData(), dst.PixelWidth(), dst.PixelHeight(),
+                                     dst.PixelStride(), sp, sw, sh, x, y, dw, dh, opacity);
 }
 
 /*
@@ -459,8 +478,88 @@ enum class PaintToolKind : uint8_t
     Smudge,     // carry pixels along the stroke instead of laying new ones
     Ruler,      // measure and show; commit nothing
     Glyph,      // drag a box; prompt for text; fit the run inside it
-    Select      // drag a region; drag INSIDE it to carry its pixels elsewhere
+    Select,     // drag a region; drag INSIDE it to carry its pixels elsewhere
+    Shape,      // the two corners again, as whichever outline PaintShapeMode names
+    Eyedrop     // one press: the colour under it becomes the tool's, then the
+                // previous kind comes back (PaintColorWheel::BeginPick)
 };
+
+/*
+ * ── the shape tool's modes ───────────────────────────────────────────────
+ *
+ * ONE SLICE, SEVERAL OUTLINES. Rect and ellipse were two tools and the bar was
+ * running out of room for the third; they are the same gesture -- two corners --
+ * differing only in what is drawn between them, which is what a MODE is for
+ * (the select tool's is the precedent). Rect and Ellipse stay as kinds of their
+ * own for the scripts that name them; Shape with the matching mode draws the
+ * same thing through the same primitive.
+ */
+enum class PaintShapeMode : uint8_t { Rect, Ellipse, Triangle, Diamond, Star };
+
+inline const char* paint_shape_mode_name(PaintShapeMode m)
+{
+    switch (m)
+    {
+    case PaintShapeMode::Rect:     return "rect";
+    case PaintShapeMode::Ellipse:  return "oval";
+    case PaintShapeMode::Triangle: return "triangle";
+    case PaintShapeMode::Diamond:  return "diamond";
+    case PaintShapeMode::Star:     return "star";
+    }
+    return "rect";
+}
+inline PaintShapeMode paint_shape_mode_from(const std::string& n)
+{
+    if (n == "oval" || n == "ellipse") return PaintShapeMode::Ellipse;
+    if (n == "triangle") return PaintShapeMode::Triangle;
+    if (n == "diamond")  return PaintShapeMode::Diamond;
+    if (n == "star")     return PaintShapeMode::Star;
+    return PaintShapeMode::Rect;
+}
+inline PaintShapeMode paint_shape_mode_next(PaintShapeMode m)
+{
+    return static_cast<PaintShapeMode>((static_cast<uint8_t>(m) + 1) % 5);
+}
+
+// The outline's vertices for two corners, in document space. Rect and ellipse
+// are not here: they have their own primitives (DrawRectOutline / Ellipse) and a
+// polygon approximation of a circle would be a worse circle.
+inline void paint_shape_vertices(PaintShapeMode m, int32_t ax, int32_t ay,
+                                 int32_t bx, int32_t by,
+                                 std::vector<std::pair<int32_t, int32_t>>& out)
+{
+    out.clear();
+    const int32_t lx = std::min(ax, bx), rx = std::max(ax, bx);
+    const int32_t ty = std::min(ay, by), byy = std::max(ay, by);
+    const double cx = (lx + rx) * 0.5, cy = (ty + byy) * 0.5;
+    const double rw = (rx - lx) * 0.5, rh = (byy - ty) * 0.5;
+    switch (m)
+    {
+    case PaintShapeMode::Triangle:
+        out = { { static_cast<int32_t>(cx), ty }, { rx, byy }, { lx, byy } };
+        break;
+    case PaintShapeMode::Diamond:
+        out = { { static_cast<int32_t>(cx), ty }, { rx, static_cast<int32_t>(cy) },
+                { static_cast<int32_t>(cx), byy }, { lx, static_cast<int32_t>(cy) } };
+        break;
+    case PaintShapeMode::Star:
+    {
+        // Five points, inner radius at 0.42 of the outer -- the proportion of a
+        // regular pentagram's inner pentagon, so it reads as a star and not a
+        // fat pentagon or a spiky asterisk.
+        const double PI = 3.14159265358979323846;
+        for (int i = 0; i < 10; ++i)
+        {
+            const double ang = -PI / 2.0 + i * PI / 5.0;
+            const double k = (i % 2 == 0) ? 1.0 : 0.42;
+            out.emplace_back(static_cast<int32_t>(std::lround(cx + std::cos(ang) * rw * k)),
+                             static_cast<int32_t>(std::lround(cy + std::sin(ang) * rh * k)));
+        }
+        break;
+    }
+    default: break;
+    }
+}
 
 inline const char* paint_tool_kind_name(PaintToolKind k)
 {
@@ -470,6 +569,8 @@ inline const char* paint_tool_kind_name(PaintToolKind k)
     case PaintToolKind::Line:    return "line";
     case PaintToolKind::Rect:    return "rect";
     case PaintToolKind::Ellipse: return "ellipse";
+    case PaintToolKind::Shape:   return "shape";
+    case PaintToolKind::Eyedrop: return "eyedrop";
     case PaintToolKind::Fill:    return "fill";
     case PaintToolKind::Smudge:  return "smudge";
     case PaintToolKind::Ruler:   return "ruler";
@@ -492,6 +593,8 @@ inline PaintToolKind paint_tool_kind_from(const std::string& name)
     if (name == "ruler")   return PaintToolKind::Ruler;
     if (name == "glyph")   return PaintToolKind::Glyph;
     if (name == "select")  return PaintToolKind::Select;
+    if (name == "shape")   return PaintToolKind::Shape;
+    if (name == "eyedrop") return PaintToolKind::Eyedrop;
     if (name != "brush")
         ETCS_LOG("PaintTool", "unknown tool kind '" << name << "' -- using the brush.");
     return PaintToolKind::Brush;
@@ -565,11 +668,12 @@ inline bool paint_kind_is_anchored(PaintToolKind k)
 {
     return k == PaintToolKind::Line || k == PaintToolKind::Rect
         || k == PaintToolKind::Ellipse || k == PaintToolKind::Ruler
-        || k == PaintToolKind::Glyph || k == PaintToolKind::Select;
+        || k == PaintToolKind::Glyph || k == PaintToolKind::Select
+        || k == PaintToolKind::Shape;
 }
 inline bool paint_kind_is_placed(PaintToolKind k)
 {
-    return k == PaintToolKind::Fill;
+    return k == PaintToolKind::Fill || k == PaintToolKind::Eyedrop;
 }
 
 inline bool paint_is_pan_button(uint16_t key)
@@ -676,6 +780,11 @@ public:
     void SetMode(const std::string& name) { m_mode = paint_select_mode_from(name); }
     void CycleMode() { m_mode = paint_select_mode_next(m_mode); }
     PaintSelectMode mode() const { return m_mode; }
+    // The shape tool's, kept separately: switching tools must not forget which
+    // outline the other one was on.
+    void SetShape(const std::string& name) { m_shape = paint_shape_mode_from(name); }
+    void CycleShape() { m_shape = paint_shape_mode_next(m_shape); }
+    PaintShapeMode shape() const { return m_shape; }
 
     void SetRadius(float radius)
     {
@@ -800,6 +909,7 @@ private:
     float   m_alpha     = 1.0f;
     uint32_t m_tolerance = 24;
     PaintSelectMode m_mode = PaintSelectMode::Rect;
+    PaintShapeMode  m_shape = PaintShapeMode::Rect;
     bool m_active = false;
     std::vector<PaintStrokePoint> m_points;
 };
@@ -1484,6 +1594,60 @@ public:
         return true;
     }
 
+    /*
+ * ── re-stating the raster ────────────────────────────────────────────────
+ *
+ * A NEW EXTENT WITH THE OLD PIXELS TRANSLATED INTO IT: what was at (x, y) is at
+ * (x + dx, y + dy), whatever falls outside the new raster is gone, and what
+ * nothing landed on is `ground` -- transparent when none is given, which is what
+ * every layer but the paper wants (PaintDocument::Resize says which one is the
+ * paper and why).
+ *
+ * Copied out and back rather than moved in place, because the row pitch
+ * changes with the width and an in-place shift would read rows it had already
+ * overwritten. Allocate is idempotent at the same size (Pixels_::Allocate), so
+ * the fill below is what empties the buffer, not the allocation.
+ */
+    void Rebase(uint32_t w, uint32_t h, int32_t dx, int32_t dy, const float* ground = nullptr)
+    {
+        if (w == 0 || h == 0) return;
+        std::vector<uint8_t> old;
+        const int32_t ow = static_cast<int32_t>(this->PixelWidth());
+        const int32_t oh = static_cast<int32_t>(this->PixelHeight());
+        const bool had = SnapshotBytes(old);
+
+        this->Allocate(w, h);
+        uint8_t* px = this->PixelData();
+        if (!px) return;
+        const uint8_t g[4] = {
+            ground ? paint_to_byte(ground[0]) : uint8_t(0), ground ? paint_to_byte(ground[1]) : uint8_t(0),
+            ground ? paint_to_byte(ground[2]) : uint8_t(0), ground ? paint_to_byte(ground[3]) : uint8_t(0) };
+        for (size_t i = 0; i < this->PixelBytes(); i += 4) ::std::memcpy(px + i, g, 4);
+
+        if (had)
+        {
+            const int32_t nw = static_cast<int32_t>(w), nh = static_cast<int32_t>(h);
+            const int32_t x0 = std::max(0, dx), x1 = std::min(nw, dx + ow);
+            const int32_t y0 = std::max(0, dy), y1 = std::min(nh, dy + oh);
+            for (int32_t y = y0; y < y1 && x0 < x1; ++y)
+                ::std::memcpy(px + (static_cast<size_t>(y) * w + x0) * 4,
+                              old.data() + (static_cast<size_t>(y - dy) * ow + (x0 - dx)) * 4,
+                              static_cast<size_t>(x1 - x0) * 4);
+        }
+        etcs_mark_observed(this);
+    }
+
+    // Nothing shows through anywhere: every alpha is 255. This is what makes a
+    // layer a GROUND rather than marks on one -- see PaintDocument::ground_layer.
+    bool Opaque() const
+    {
+        const uint8_t* px = this->PixelData();
+        if (!px) return false;
+        for (size_t i = 3; i < this->PixelBytes(); i += 4)
+            if (px[i] != 255) return false;
+        return true;
+    }
+
     void DropPixels(const uint8_t* bytes, uint32_t bw, uint32_t bh, int32_t x, int32_t y)
     {
         if (!bytes || bw == 0 || bh == 0) return;
@@ -1601,6 +1765,226 @@ private:
 
 
 /*
+ * ── RAW IMAGES: PAM IN, PAM OUT ──────────────────────────────────────────────
+ *
+ * A PATH IS THE INTERFACE, on both substrates, and that is the whole design.
+ * A browser hands the page a File and a desktop hands the shell a path; those
+ * are two ways of arriving at one thing, bytes at a name the process can open.
+ * The page already stages every script it boots into the emscripten filesystem
+ * (index.html's preRun: FS.mkdirTree, FS.writeFile), so an upload is one more
+ * file written the same way and a download is one file read back. So there is
+ * one import and one export with no #ifdef in either, and the substrate's part
+ * is getting bytes to and from a name -- which it was already doing.
+ *
+ * PAM, BECAUSE IT IS THE PIXELS. P7 with TUPLTYPE RGB_ALPHA is exactly what
+ * Pixels_ stores -- RGBA8, non-premultiplied, row-major, top-left -- behind a
+ * seven-line text header, so a write is the header and one write of the buffer
+ * and a read is a tokenizer and one copy. GIMP, ImageMagick and netpbm open it.
+ * There is no image codec in libs/, and vendoring one is a decision about the
+ * tree, not about this feature: PNG is one header (stb_image, lodepng) away and
+ * it drops in HERE -- paint_pam_read fills a PaintImage, and a second reader
+ * filling the same struct is all a second format costs. Until that call is
+ * made this reads its own PAM plus P6 PPM (what most tools mean by "raw" when
+ * alpha is not wanted) and writes PAM only.
+ *
+ * REFUSED WITH A REASON, never silently: a header this cannot read says what it
+ * found and what it takes, because "nothing happened" from an upload button is
+ * the failure nobody can act on.
+ *
+ * Free functions on std types only, so they can be checked in a test that has
+ * no runtime under it.
+ */
+struct PaintImage
+{
+    uint32_t w = 0, h = 0;
+    std::vector<uint8_t> rgba;       // w*h*4, the Pixels_ format
+};
+
+// A side longer than this is not a picture anyone paints on here; it is a
+// header that lies, and the allocation it asks for is the harm.
+static constexpr uint32_t PAINT_IMAGE_MAX_SIDE = 16384;
+
+// The header tokenizer both formats share: words split on whitespace, `#` to
+// end of line a comment (PPM says so, PAM allows it). Stops on the byte after
+// the word, which is how the caller finds where the raster starts.
+struct PaintPamCursor
+{
+    const uint8_t* p = nullptr;
+    size_t n = 0;
+    size_t i = 0;
+
+    static bool ws(uint8_t c)
+    {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+    }
+    bool word(std::string& out)
+    {
+        for (;;)
+        {
+            while (i < n && ws(p[i])) ++i;
+            if (i < n && p[i] == '#') { while (i < n && p[i] != '\n') ++i; continue; }
+            break;
+        }
+        if (i >= n) return false;
+        const size_t s = i;
+        while (i < n && !ws(p[i])) ++i;
+        out.assign(reinterpret_cast<const char*>(p + s), i - s);
+        return true;
+    }
+};
+
+static inline bool paint_pam_number(const std::string& t, uint32_t& v)
+{
+    if (t.empty() || t.size() > 9) return false;
+    v = 0;
+    for (char ch : t)
+    {
+        if (ch < '0' || ch > '9') return false;
+        v = v * 10 + static_cast<uint32_t>(ch - '0');
+    }
+    return true;
+}
+
+static inline bool paint_pam_parse(const uint8_t* p, size_t n, PaintImage& out, std::string& why)
+{
+    PaintPamCursor c{ p, n, 0 };
+    std::string tok;
+    if (!c.word(tok)) { why = "empty file"; return false; }
+
+    uint32_t w = 0, h = 0, depth = 0, maxval = 0;
+    if (tok == "P6")
+    {
+        std::string a, b, m;
+        if (!c.word(a) || !c.word(b) || !c.word(m)
+         || !paint_pam_number(a, w) || !paint_pam_number(b, h) || !paint_pam_number(m, maxval))
+        { why = "P6 header is not 'width height maxval'"; return false; }
+        depth = 3;
+    }
+    else if (tok == "P7")
+    {
+        std::string tupl;
+        for (;;)
+        {
+            if (!c.word(tok)) { why = "P7 header has no ENDHDR"; return false; }
+            if (tok == "ENDHDR") break;
+            std::string v;
+            if (!c.word(v)) { why = "P7 header ends inside " + tok; return false; }
+            bool ok = true;
+            if      (tok == "WIDTH")    ok = paint_pam_number(v, w);
+            else if (tok == "HEIGHT")   ok = paint_pam_number(v, h);
+            else if (tok == "DEPTH")    ok = paint_pam_number(v, depth);
+            else if (tok == "MAXVAL")   ok = paint_pam_number(v, maxval);
+            else if (tok == "TUPLTYPE") tupl = v;
+            else { why = "P7 header has an unknown field '" + tok + "'"; return false; }
+            if (!ok) { why = "P7 " + tok + " is not a number: '" + v + "'"; return false; }
+        }
+        if (depth != 3 && depth != 4)
+        { why = "DEPTH " + std::to_string(depth) + " -- only 3 (RGB) and 4 (RGB_ALPHA) are read"; return false; }
+        if (!tupl.empty() && tupl != "RGB_ALPHA" && tupl != "RGB")
+        { why = "TUPLTYPE " + tupl + " -- only RGB_ALPHA and RGB are read"; return false; }
+        if (!tupl.empty() && ((tupl == "RGB_ALPHA") != (depth == 4)))
+        { why = "TUPLTYPE " + tupl + " does not match DEPTH " + std::to_string(depth); return false; }
+    }
+    else
+    {
+        why = "magic '" + tok + "' -- accepted: P7 (PAM, TUPLTYPE RGB_ALPHA or RGB) and P6 (PPM)";
+        return false;
+    }
+
+    if (maxval != 255)
+    { why = "MAXVAL " + std::to_string(maxval) + " -- only 8 bits per channel (255) is read"; return false; }
+    if (w == 0 || h == 0 || w > PAINT_IMAGE_MAX_SIDE || h > PAINT_IMAGE_MAX_SIDE)
+    {
+        why = "size " + std::to_string(w) + "x" + std::to_string(h) + " -- 1.."
+            + std::to_string(PAINT_IMAGE_MAX_SIDE) + " on a side";
+        return false;
+    }
+
+    // Exactly one whitespace byte between the header and the raster (both
+    // formats say so), and it is the byte the cursor stopped on.
+    size_t at = c.i;
+    if (at >= n || !PaintPamCursor::ws(p[at])) { why = "no raster after the header"; return false; }
+    ++at;
+    const size_t need = static_cast<size_t>(w) * h * depth;
+    if (n - at < need)
+    {
+        why = "raster is short: " + std::to_string(n - at) + " bytes for "
+            + std::to_string(w) + "x" + std::to_string(h) + "x" + std::to_string(depth);
+        return false;
+    }
+
+    out.w = w; out.h = h;
+    out.rgba.resize(static_cast<size_t>(w) * h * 4);
+    if (depth == 4)
+        ::std::memcpy(out.rgba.data(), p + at, need);
+    else
+        for (size_t s = 0, d = 0; s < need; s += 3, d += 4)
+        {
+            out.rgba[d + 0] = p[at + s + 0];
+            out.rgba[d + 1] = p[at + s + 1];
+            out.rgba[d + 2] = p[at + s + 2];
+            out.rgba[d + 3] = 255;
+        }
+    return true;
+}
+
+static inline bool paint_pam_read(const std::string& path, PaintImage& out, std::string& why)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) { why = "cannot open " + path; return false; }
+    in.seekg(0, std::ios::end);
+    const std::streamoff len = in.tellg();
+    if (len < 0) { why = "cannot size " + path; return false; }
+    in.seekg(0, std::ios::beg);
+    std::vector<uint8_t> bytes(static_cast<size_t>(len));
+    if (len > 0 && !in.read(reinterpret_cast<char*>(bytes.data()), len))
+    { why = "short read on " + path; return false; }
+    return paint_pam_parse(bytes.data(), bytes.size(), out, why);
+}
+
+// The file's bytes, in memory: the header and the raster, nothing else. Split
+// from the writer so a PAM can go somewhere that is not a path -- a database
+// row (PaintPages) -- and still be the same bytes the export produces, which
+// is what lets one reader (paint_pam_parse) serve both.
+static inline bool paint_pam_encode(const uint8_t* rgba, uint32_t w, uint32_t h,
+                                    std::vector<uint8_t>& out, std::string& why)
+{
+    if (!rgba || w == 0 || h == 0) { why = "nothing to write"; return false; }
+    const std::string header = "P7\nWIDTH " + std::to_string(w) + "\nHEIGHT " + std::to_string(h)
+                             + "\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n";
+    const size_t raster = static_cast<size_t>(w) * h * 4;
+    out.resize(header.size() + raster);
+    ::std::memcpy(out.data(), header.data(), header.size());
+    ::std::memcpy(out.data() + header.size(), rgba, raster);
+    return true;
+}
+
+static inline bool paint_pam_write(const std::string& path,
+                                   const uint8_t* rgba, uint32_t w, uint32_t h, std::string& why)
+{
+    std::vector<uint8_t> bytes;
+    if (!paint_pam_encode(rgba, w, h, bytes, why)) return false;
+    std::ofstream o(path, std::ios::binary | std::ios::trunc);
+    if (!o) { why = "cannot open " + path + " for writing"; return false; }
+    o.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!o) { why = "write to " + path + " failed"; return false; }
+    return true;
+}
+
+// "photo", from "/uploads/photo.pam" -- what an imported layer is called. The
+// directory is where it came from and the extension is how it was carried;
+// neither is the picture's name.
+static inline std::string paint_path_stem(const std::string& path)
+{
+    const size_t slash = path.find_last_of("/\\");
+    std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    const size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos && dot > 0) base.erase(dot);
+    return base.empty() ? std::string("Image") : base;
+}
+
+
+/*
  * ── A TEXT BOX ───────────────────────────────────────────────────────────────
  *
  * TEXT THAT IS STILL TEXT. The glyph tool used to prompt for a string, rasterise
@@ -1702,6 +2086,7 @@ public:
  */
     void MoveLayerTo(ETCS::RID layer_rid, int32_t depth)
     {
+        Touch();
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
         auto* moved = static_cast<PaintLayer*>(raw->getTrueType());
@@ -1719,8 +2104,27 @@ public:
             stack[i]->SetOrder(static_cast<int32_t>(i));
     }
 
+/*
+ * ── has anything changed, and since when ─────────────────────────────────
+ *
+ * A COUNT, NOT A FLAG. "Dirty" as a bool has to be cleared by whoever saved,
+ * and two savers -- the page store and, one day, an autosave -- would clear
+ * it for each other. A revision that only ever climbs lets each reader keep
+ * the number it last saw and compare; nothing is reset and nobody's answer
+ * depends on who asked before them (PaintPages::dirty).
+ *
+ * ONE SEAM, the same one the history has: Remember() is called at every
+ * pixel commit, so it calls this. The structural verbs -- reorder, rename,
+ * remove, import, the text boxes, a layer's own properties through
+ * touch_document -- call it directly, because they change what a page IS and
+ * Remember does not see them.
+ */
+    void Touch() { ++m_revision; }
+    uint64_t revision() const { return m_revision; }
+
     void RenameLayer(ETCS::RID layer_rid, const std::string& name)
     {
+        Touch();
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
         if (auto* l = static_cast<PaintLayer*>(raw->getTrueType())) l->SetName(name);
@@ -1738,6 +2142,7 @@ public:
  */
     void RemoveLayer(ETCS::RID layer_rid)
     {
+        Touch();
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
         auto* layer = static_cast<PaintLayer*>(raw->getTrueType());
@@ -1844,6 +2249,7 @@ public:
     uint32_t AddTextBoxColoured(int32_t x, int32_t y, int32_t w, int32_t h,
                                 float r, float g, float bl, float a)
     {
+        Touch();
         PaintTextBox b;
         b.rgba[0] = r; b.rgba[1] = g; b.rgba[2] = bl; b.rgba[3] = a;
         b.x = x; b.y = y;
@@ -1864,6 +2270,7 @@ public:
 
     bool SetTextBoxText(uint32_t id, const std::string& text)
     {
+        Touch();
         PaintTextBox* b = FindTextBox(id);
         if (!b) return false;
         b->text = text;
@@ -1872,6 +2279,7 @@ public:
 
     bool RemoveTextBox(uint32_t id)
     {
+        Touch();
         for (auto it = m_text.begin(); it != m_text.end(); ++it)
             if (it->id == id) { m_text.erase(it); return true; }
         return false;
@@ -2160,6 +2568,18 @@ public:
         return true;     // floating: see above
     }
 
+    // The Delete key: the pixels go and the outline stays, so the same region
+    // can be filled or pasted into next. Cut without the copy.
+    bool DeleteSelection()
+    {
+        if (m_sel.empty() || !m_active_layer) return false;
+        Remember();
+        if (m_sel.lifted()) { m_sel.lift.clear(); m_sel.dx = m_sel.dy = 0; return true; }
+        if (!LiftSelection()) return false;
+        m_sel.lift.clear();
+        return true;
+    }
+
     // Copy, then take the pixels: the lift clears them and the buffer is let go.
     bool CutSelection()
     {
@@ -2196,6 +2616,7 @@ public:
 
     void Remember()
     {
+        Touch();
         if (!m_active_layer) return;
         HistoryEntry e;
         e.layer = m_active_layer->getRID();
@@ -2236,6 +2657,383 @@ public:
         draw_selection(surface, x, y, zoom);
     }
 
+    /*
+ * ── raw images in and out ────────────────────────────────────────────────
+ *
+ * BY PATH, and the page and the terminal call the same three verbs: see the
+ * PAM note above PaintImage for why a path is the one interface the browser
+ * and the desktop share.
+ *
+ * IMPORT IS A NEW LAYER, made the way the boot script makes one. addTag<> is
+ * what `doc.spawn(PaintProvider::PaintLayer)` reduces to -- _make_child_
+ * PaintLayer is `parent->addTag<PaintLayer>()` (ETCS_API.h) -- so the layer is
+ * this document's typed child like every other, and membership is parenthood
+ * with nothing to keep in step (OrderedLayers). A module may not spawn ANOTHER
+ * module's type (PaintLayerPanel's note); its own it spawns exactly this way,
+ * as Shell and ChessNode do.
+ *
+ * SIZED TO THE IMAGE, not the page: a layer's raster is its own (PaintLayer::
+ * Create), the blit clips at the page edge, and resampling on the way in would
+ * throw away pixels the user may yet pan into view. On top and active, because
+ * what was just brought in is what is about to be worked on.
+ *
+ * NOT REMEMBERED. The history is whole-layer snapshots of the active layer
+ * (Remember), and a new layer has no earlier bytes to return to; undoing an
+ * import is RemoveLayer, which is what a row's delete already does.
+ */
+    bool ImportImage(const std::string& path)
+    {
+        Touch();
+        PaintImage img;
+        std::string why;
+        if (!paint_pam_read(path, img, why))
+        {
+            ETCS_LOG("PaintDocument", "import " << path << ": " << why);
+            return false;
+        }
+        PaintLayer* layer = this->addTag<PaintLayer>();
+        if (!layer)
+        {
+            ETCS_LOG("PaintDocument", "import " << path << ": could not spawn a layer under '"
+                     << m_name << "'.");
+            return false;
+        }
+        layer->Create(img.w, img.h);
+        layer->RestoreBytes(img.rgba);
+        layer->SetName(paint_path_stem(path));
+
+        // One past the highest key, which is the top: MoveLayerTo keeps the
+        // stack dense, so nothing is above it and nothing has to be renumbered.
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        int32_t top = 0;
+        for (auto* l : stack)
+            if (l != layer) top = std::max(top, l->order() + 1);
+        layer->SetOrder(top);
+
+        // A carry in flight belongs to the layer that was active; it lands there
+        // before the active layer changes under it (fresh_selection says why).
+        if (m_sel.lifted()) DropSelection();
+        m_active_layer = layer;
+
+        ETCS_LOG("PaintDocument", "imported " << path << " " << img.w << "x" << img.h
+                 << " -> layer '" << layer->name() << "' RID:" << layer->getRID()
+                 << " order=" << top << ", active");
+        return true;
+    }
+
+    /*
+ * THE COMPOSITE IS WHAT RenderToSurface SHOWS, less the view: the visible
+ * layers bottom first, each at its own opacity, and a lift in flight at the
+ * active layer's depth -- the same walk, through the same blend
+ * (paint_composite_raw_scaled_bytes is what BlitTo and draw_lift land through
+ * on a host-backed view; 1:1 here, since a file has no zoom). Onto a
+ * transparent page, so a picture with no paper layer leaves with its alpha
+ * rather than over a colour nobody asked for.
+ *
+ * NOT THE DIM: that is a hover (SetDim) and a file is precisely the trace a
+ * hover must not leave. NOT THE TEXT BOXES: they are strings drawn through a
+ * Glyphs target by RID (draw_text_boxes) and a buffer has no RID; the export
+ * log counts them so a file that lost its captions says so. Not the selection
+ * outline, which is chrome.
+ */
+    bool CompositeVisible(std::vector<uint8_t>& out, size_t* shown = nullptr) const
+    {
+        if (m_width == 0 || m_height == 0) return false;
+        out.assign(static_cast<size_t>(m_width) * m_height * 4, 0);
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        size_t n = 0;
+        for (auto* layer : stack)
+        {
+            if (!layer->visible()) continue;
+            ++n;
+            paint_composite_raw_scaled_bytes(out.data(), m_width, m_height, m_width * 4,
+                                             layer->PixelData(), layer->width(), layer->height(),
+                                             0, 0, layer->width(), layer->height(),
+                                             layer->opacity());
+            if (layer == m_active_layer && m_sel.lifted())
+                paint_composite_raw_scaled_bytes(out.data(), m_width, m_height, m_width * 4,
+                                                 m_sel.lift.data(), m_sel.width(), m_sel.height(),
+                                                 m_sel.x0 + m_sel.dx, m_sel.y0 + m_sel.dy,
+                                                 m_sel.width(), m_sel.height(),
+                                                 layer->opacity());
+        }
+        if (shown) *shown = n;
+        return true;
+    }
+
+    /*
+ * ONE PIXEL OF WHAT IS SEEN, for the eyedropper. The same walk as
+ * CompositeVisible, bottom to top through the visible layers with each one's
+ * opacity, over transparent -- and not a call to it, because compositing the
+ * whole page to read one pixel is a frame's worth of work for a click.
+ * Straight source-over on straight RGBA, which is what the layers hold.
+ */
+    bool SampleAt(int32_t x, int32_t y, float rgba[4]) const
+    {
+        if (x < 0 || y < 0 || static_cast<uint32_t>(x) >= m_width
+            || static_cast<uint32_t>(y) >= m_height) return false;
+        float dr = 0, dg = 0, db = 0, da = 0;
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        for (auto* layer : stack)
+        {
+            if (!layer->visible()) continue;
+            const uint8_t* px = layer->PixelData();
+            if (!px || static_cast<uint32_t>(x) >= layer->width()
+                || static_cast<uint32_t>(y) >= layer->height()) continue;
+            const uint8_t* p = px + (static_cast<size_t>(y) * layer->width() + x) * 4;
+            const float sa = (p[3] / 255.0f) * layer->opacity();
+            if (sa <= 0.0f) continue;
+            const float sr = p[0] / 255.0f, sg = p[1] / 255.0f, sb = p[2] / 255.0f;
+            const float oa = sa + da * (1.0f - sa);
+            if (oa > 0.0f)
+            {
+                dr = (sr * sa + dr * da * (1.0f - sa)) / oa;
+                dg = (sg * sa + dg * da * (1.0f - sa)) / oa;
+                db = (sb * sa + db * da * (1.0f - sa)) / oa;
+            }
+            da = oa;
+        }
+        rgba[0] = dr; rgba[1] = dg; rgba[2] = db; rgba[3] = da;
+        return true;
+    }
+
+    bool ExportImage(const std::string& path)
+    {
+        std::vector<uint8_t> px;
+        size_t shown = 0;
+        if (!CompositeVisible(px, &shown))
+        {
+            ETCS_LOG("PaintDocument", "export " << path << ": '" << m_name << "' has no extent.");
+            return false;
+        }
+        std::string why;
+        if (!paint_pam_write(path, px.data(), m_width, m_height, why))
+        {
+            ETCS_LOG("PaintDocument", "export " << path << ": " << why);
+            return false;
+        }
+        ETCS_LOG("PaintDocument", "exported " << path << " " << m_width << "x" << m_height
+                 << " PAM RGB_ALPHA, " << shown << " visible layer(s)"
+                 << (m_text.empty() ? std::string()
+                                    : "; " + std::to_string(m_text.size())
+                                      + " text box(es) are not in it"));
+        return true;
+    }
+
+    // The active layer's own bytes, alpha and all, at its own size -- what
+    // SnapshotBytes already hands the history.
+    bool ExportLayer(const std::string& path)
+    {
+        if (!m_active_layer)
+        {
+            ETCS_LOG("PaintDocument", "export layer " << path << ": no active layer.");
+            return false;
+        }
+        std::vector<uint8_t> px;
+        if (!m_active_layer->SnapshotBytes(px))
+        {
+            ETCS_LOG("PaintDocument", "export layer " << path << ": '" << m_active_layer->name()
+                     << "' has no pixels -- Create it first.");
+            return false;
+        }
+        std::string why;
+        if (!paint_pam_write(path, px.data(), m_active_layer->width(), m_active_layer->height(), why))
+        {
+            ETCS_LOG("PaintDocument", "export layer " << path << ": " << why);
+            return false;
+        }
+        ETCS_LOG("PaintDocument", "exported layer '" << m_active_layer->name() << "' RID:"
+                 << m_active_layer->getRID() << " " << m_active_layer->width() << "x"
+                 << m_active_layer->height() << " PAM RGB_ALPHA -> " << path);
+        return true;
+    }
+
+    /*
+ * ── re-stating the page ──────────────────────────────────────────────────
+ *
+ * ANCHORED, NOT SCALED. A resize here is a change of EXTENT: the picture keeps
+ * its pixels and the page grows or shrinks around them, and the anchor says
+ * which part of the page stays where it is -- a 3x3 grid, 0 the top-left
+ * corner, 4 the centre, 8 the bottom-right, read as (anchor % 3, anchor / 3).
+ * Growing from the centre puts new room on every side; growing from the
+ * top-left puts it all on the right and the bottom. Resampling is a different
+ * operation with a different name and does not exist here yet.
+ *
+ * EVERY LAYER TAKES THE PAGE'S SIZE, translated by the page's own shift. A layer
+ * is allowed its own raster (an import is sized to its image, ImportImage), but
+ * once the page is re-stated the honest answer to "how big is this layer" is the
+ * page: what an oversize layer kept beyond the old edge was already outside the
+ * composite (CompositeVisible clips to the page), and keeping nine separate
+ * extents in step across a shift is bookkeeping nobody can see the result of.
+ *
+ * THE PAPER'S NEW AREA IS PAPER, everything else's is transparent. Which layer
+ * is the paper is answered by ground_layer; the colour is the convention the
+ * page boots with (boot_paint_panels.etcs: `paper.Clear(1.0, 1.0, 1.0, 1.0)`).
+ *
+ * NOT UNDOABLE, AND THE HISTORY IS DROPPED RATHER THAN LEFT TO LIE. The store
+ * is three whole-layer snapshots of the ACTIVE layer at its current size
+ * (Remember), restored only into a buffer of the same size (RestoreBytes is
+ * size-checked) -- so no entry it can hold brings back the old extent, and an
+ * entry kept across a resize answers every later Undo with "layer size changed
+ * -- entry dropped" one press at a time. Clearing them says the same thing
+ * once. A resize becomes a step when the history is the replayed event stream
+ * the note above Remember describes.
+ *
+ * The selection and the text boxes go with the pixels, since they are places
+ * IN the picture; a lift in flight lands first, on the page it was cut from.
+ */
+    bool Resize(uint32_t w, uint32_t h, int anchor)
+    {
+        Touch();
+        if (!extent_ok(w, h, "resize")) return false;
+        if (m_sel.lifted()) DropSelection();
+
+        const int32_t dx = anchor_shift(anchor % 3, m_width, w);
+        const int32_t dy = anchor_shift(anchor / 3, m_height, h);
+
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        PaintLayer* paper = ground_layer(stack);
+        for (auto* l : stack) l->Rebase(w, h, dx, dy, (l == paper) ? PAPER_CLEAR : nullptr);
+
+        // The mask re-stated in the new page's space, pixel for pixel with the
+        // layers it selects on.
+        if (!m_sel.empty())
+        {
+            PaintSelection moved;
+            moved.Reset(w, h);
+            for (int32_t y = m_sel.y0; y <= m_sel.y1; ++y)
+                for (int32_t x = m_sel.x0; x <= m_sel.x1; ++x)
+                    if (m_sel.at(x, y)) moved.Set(x + dx, y + dy);
+            m_sel = std::move(moved);
+        }
+        else m_sel.Reset(w, h);
+        for (PaintTextBox& b : m_text) { b.x += dx; b.y += dy; }
+
+        m_undo.clear();
+        m_redo.clear();
+        ETCS_LOG("PaintDocument", "'" << m_name << "' " << m_width << "x" << m_height
+                 << " -> " << w << "x" << h << " anchored at " << anchor
+                 << " (pixels moved by " << dx << "," << dy << "), " << stack.size()
+                 << " layer(s)" << (paper ? ", paper '" + paper->name() + "' extended" : "")
+                 << "; history dropped -- a resize is not a step the snapshot store can hold.");
+        m_width = w;
+        m_height = h;
+        return true;
+    }
+
+    /*
+ * A NEW CANVAS: the same layers, the new extent, and nothing on them -- paper
+ * to its clear colour, every other layer transparent. The layers stay rather
+ * than being removed and re-spawned, because their names, order and the rows a
+ * layer window has bound to them are the user's arrangement, not the picture.
+ * The text boxes are the picture, so they go; the clipboard is not, so it
+ * stays. Not undoable, for the reason Resize gives.
+ */
+    bool New(uint32_t w, uint32_t h)
+    {
+        Touch();
+        if (!extent_ok(w, h, "new")) return false;
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        PaintLayer* paper = ground_layer(stack);
+        for (auto* l : stack)
+        {
+            l->Allocate(w, h);          // idempotent at the same size: Clear is what empties it
+            if (l == paper) l->Clear(PAPER_CLEAR[0], PAPER_CLEAR[1], PAPER_CLEAR[2], PAPER_CLEAR[3]);
+            else            l->Clear(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+        m_sel.Reset(w, h);               // the lift goes with it: there is nothing to land on
+        m_text.clear();
+        m_text_sel = 0;
+        m_undo.clear();
+        m_redo.clear();
+        m_width = w;
+        m_height = h;
+        ETCS_LOG("PaintDocument", "'" << m_name << "' new " << w << "x" << h << ", "
+                 << stack.size() << " layer(s) cleared"
+                 << (paper ? ", paper '" + paper->name() + "' to its clear colour" : ""));
+        return true;
+    }
+
+
+    /*
+ * ── becoming another page ────────────────────────────────────────────────
+ *
+ * The two halves a page store needs and nothing else here provides: every
+ * layer GONE, and a layer MADE from bytes rather than from a file. Both are
+ * the document's because both are statements about its children.
+ *
+ * DESTROYED, NOT DETACHED. RemoveLayer detaches so a script's name still
+ * resolves; a page switch is the opposite case -- nobody holds these layers
+ * and the next switch would leak another stack of rasters, 3 MB each at this
+ * size. So each goes through the same DestroyEvent a Delete verb fires, keyed
+ * the way SqliteLocalDatabase::DeleteConcrete keys its own, which runs the
+ * destructor and returns the arena footprint. The RID is read before the
+ * event because the pointer is not valid after it.
+ *
+ * NO HOLD ACROSS THIS: a DestroyEvent waits on the ordering thread, and the
+ * ordering thread may be waiting on a lifetime hold -- the one deadlock the
+ * mechanism can build (Entity.h, lifetime_hold_depth). A caller that has a
+ * Held<> open reads what it needs, drops it, and only then calls here.
+ *
+ * The history goes with the layers: its entries name them by RID and a step
+ * onto a dead one is dropped with a message, but a page that was never
+ * painted on has nothing to undo TO, and saying so is more honest than an
+ * entry that fails later (the same reason an import is not remembered). The
+ * text boxes go too: they are content, and content that belongs to the page
+ * being left cannot stay on the one arriving.
+ */
+    void DestroyLayers()
+    {
+        m_sel.Reset(m_width, m_height);              // the carry's layer is about to go, lift and all
+        m_active_layer = nullptr;
+        m_undo.clear();
+        m_redo.clear();
+        m_text.clear();
+        m_text_sel = 0;
+
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        for (PaintLayer* l : stack)
+        {
+            const std::string key = l->getSourceModule().toString() + ":" + l->getSourceTag().toString();
+            const ETCS::RID rid = l->getRID();
+            if (!ETCS::DestroyEvent{key.c_str(), l}())
+                ETCS_LOG("PaintDocument", "layer RID:" << rid << " refused to be destroyed -- detaching it instead.");
+        }
+        // Whatever refused is still a child; it must at least leave the stack.
+        OrderedLayers(stack);
+        for (PaintLayer* l : stack) l->detachFromParent();
+        Touch();
+    }
+
+    // The import's shape (ImportImage) with the file taken out: a typed child,
+    // sized to its bytes, with its own name, key, visibility and opacity, made
+    // ACTIVE if asked. The caller keys it -- a stored page brings its own
+    // dense order, so nothing is renumbered here.
+    PaintLayer* SpawnLayer(const PaintImage& img, const std::string& name, int32_t order,
+                           bool visible, float opacity, bool active)
+    {
+        PaintLayer* layer = this->addTag<PaintLayer>();
+        if (!layer)
+        {
+            ETCS_LOG("PaintDocument", "could not spawn layer '" << name << "' under '" << m_name << "'.");
+            return nullptr;
+        }
+        layer->Create(img.w, img.h);
+        layer->RestoreBytes(img.rgba);
+        layer->SetName(name);
+        layer->SetOrder(order);
+        layer->SetVisible(visible);
+        layer->SetOpacity(opacity);
+        if (active) m_active_layer = layer;
+        Touch();
+        return layer;
+    }
 
     /*
  * ── drawing the text boxes ───────────────────────────────────────────────
@@ -2476,12 +3274,52 @@ private:
     bool      m_text_warned = false;
     ETCS::RID m_glyphs = 0;
     // The one selection, and the pixels it is carrying if any. See PaintSelection.
+    uint64_t m_revision = 0;     // climbs on every change -- see Touch
     PaintSelection m_sel;
     PaintSelection m_clip;     // the clipboard: a selection's shape and bytes, kept
 
     struct HistoryEntry { ETCS::RID layer = 0; std::vector<uint8_t> bytes; };
     std::vector<HistoryEntry> m_undo;
     std::vector<HistoryEntry> m_redo;
+
+    // What the paper is cleared to -- the page's convention, stated once here
+    // for the two verbs that have to make new paper (Resize, New) rather than
+    // read back from a layer that may have been painted on since.
+    static constexpr float PAPER_CLEAR[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+    // The same ceiling a file is held to: a page bigger than this is an
+    // allocation, not a picture (PAINT_IMAGE_MAX_SIDE).
+    static bool extent_ok(uint32_t w, uint32_t h, const char* what)
+    {
+        if (w != 0 && h != 0 && w <= PAINT_IMAGE_MAX_SIDE && h <= PAINT_IMAGE_MAX_SIDE) return true;
+        ETCS_LOG("PaintDocument", what << " " << w << "x" << h << " refused -- 1.."
+                 << PAINT_IMAGE_MAX_SIDE << " on a side.");
+        return false;
+    }
+
+    // One axis of the anchor: where the old extent's origin lands in the new
+    // one so that the near edge (0), the middle (1) or the far edge (2) stays put.
+    static int32_t anchor_shift(int a, uint32_t before, uint32_t after)
+    {
+        const int32_t d = static_cast<int32_t>(after) - static_cast<int32_t>(before);
+        return (a <= 0) ? 0 : (a == 1) ? d / 2 : d;
+    }
+
+    /*
+ * WHICH LAYER IS THE PAPER: the bottom of the stack, when nothing shows through
+ * it. The bottom because that is where the page puts it and an import lands on
+ * top (ImportImage), so it stays the bottom; opaque because a paper is a ground
+ * -- the thing every other layer is seen against -- and a bottom layer with
+ * holes in it is not that, it is ink over the dark layer beyond the page, and
+ * treating it as paper would fill its holes in. Nothing else is remembered
+ * about which layer was spawned as `paper`, so this is a question asked of the
+ * pixels each time rather than a flag that could be stale.
+ */
+    static PaintLayer* ground_layer(const std::vector<PaintLayer*>& stack)
+    {
+        if (stack.empty() || !stack.front()->Opaque()) return nullptr;
+        return stack.front();
+    }
 
     // Move one entry from `from` to `to`, exchanging it with the layer's
     // current bytes so the step is its own inverse.
@@ -2510,6 +3348,7 @@ private:
             return false;
         }
         to.push_back(std::move(now));
+        Touch();
         return true;
     }
 };
@@ -2984,6 +3823,24 @@ private:
                                       static_cast<uint32_t>(ph), w[0], w[1], w[2], w[3]);
         }
 
+        // THE EDGE, ONE PIXEL OF BLACK ALONG THE PANE'S BOUNDARY, on the band's
+        // side of it. The boundary used to be whatever contrast the band's colour
+        // happened to have against the paper and against the dark layer outside
+        // the page, and against the second of those it had almost none. A line
+        // that is black regardless of either colour is a boundary regardless of
+        // either colour. Drawn on the band, not the pane: the pane's edge pixels
+        // are the picture's, and this is chrome.
+        if (outside)
+        {
+            const float k = 0.0f;
+            if (bt > 0) dst->DrawRect(ox - (bl > 0 ? 1 : 0), oy - 1,
+                                      static_cast<uint32_t>(pw + (bl > 0) + (br > 0)), 1, k, k, k, 1.0f);
+            if (bb > 0) dst->DrawRect(ox - (bl > 0 ? 1 : 0), oy + ph,
+                                      static_cast<uint32_t>(pw + (bl > 0) + (br > 0)), 1, k, k, k, 1.0f);
+            if (bl > 0) dst->DrawRect(ox - 1, oy, 1, static_cast<uint32_t>(ph), k, k, k, 1.0f);
+            if (br > 0) dst->DrawRect(ox + pw, oy, 1, static_cast<uint32_t>(ph), k, k, k, 1.0f);
+        }
+
         // One tick length per side, so a side with a narrow margin gets a short
         // tick instead of one that runs off the frame.
         const int32_t tl = outside ? std::min(major, bl) : major;
@@ -3006,12 +3863,13 @@ private:
             const int32_t hx = ox + hvx;
             if (outside)
             {
-                if (tt > 0) dst->DrawRect(cx, oy - tt, 1, static_cast<uint32_t>(tt), r, g, b, a);
-                if (tb > 0) dst->DrawRect(cx, oy + ph, 1, static_cast<uint32_t>(tb), r, g, b, a);
+                // From one pixel out, so the edge line underneath stays whole.
+                if (tt > 1) dst->DrawRect(cx, oy - tt, 1, static_cast<uint32_t>(tt - 1), r, g, b, a);
+                if (tb > 1) dst->DrawRect(cx, oy + ph + 1, 1, static_cast<uint32_t>(tb - 1), r, g, b, a);
                 if (half && bt >= minor)
-                    dst->DrawRect(hx, oy - minor, 1, static_cast<uint32_t>(minor), r, g, b, a);
+                    dst->DrawRect(hx, oy - minor, 1, static_cast<uint32_t>(minor - 1), r, g, b, a);
                 if (half && bb >= minor)
-                    dst->DrawRect(hx, oy + ph, 1, static_cast<uint32_t>(minor), r, g, b, a);
+                    dst->DrawRect(hx, oy + ph + 1, 1, static_cast<uint32_t>(minor - 1), r, g, b, a);
                 // No label at the origin: the corner carries the extent, and a
                 // "0" under it is two numbers fighting for twelve pixels.
                 if (glyphs && d != 0 && bt >= band_h)
@@ -3044,12 +3902,12 @@ private:
             const int32_t hy = oy + hvy;
             if (outside)
             {
-                if (tl > 0) dst->DrawRect(ox - tl, cy, static_cast<uint32_t>(tl), 1, r, g, b, a);
-                if (tr > 0) dst->DrawRect(ox + pw, cy, static_cast<uint32_t>(tr), 1, r, g, b, a);
+                if (tl > 1) dst->DrawRect(ox - tl, cy, static_cast<uint32_t>(tl - 1), 1, r, g, b, a);
+                if (tr > 1) dst->DrawRect(ox + pw + 1, cy, static_cast<uint32_t>(tr - 1), 1, r, g, b, a);
                 if (half && bl >= minor)
-                    dst->DrawRect(ox - minor, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
+                    dst->DrawRect(ox - minor, hy, static_cast<uint32_t>(minor - 1), 1, r, g, b, a);
                 if (half && br >= minor)
-                    dst->DrawRect(ox + pw, hy, static_cast<uint32_t>(minor), 1, r, g, b, a);
+                    dst->DrawRect(ox + pw + 1, hy, static_cast<uint32_t>(minor - 1), 1, r, g, b, a);
                 if (glyphs && d != 0 && bl >= band_v)
                     glyphs->RasterizeText(dst_rid, std::to_string(d).c_str(), 0, label_px,
                                           ox - band_v + 2, cy + 3, r, g, b, a);
@@ -3132,11 +3990,452 @@ private:
     ETCS::RID m_glyphs     = 0;
     // The surface the ruler marks, when the pane is inset in a larger one.
     ETCS::RID m_ruler_frame = 0;
-    // Walnut, and a warm off-white to mark it with. Dark enough that the cream
-    // reads cleanly on it, and far enough from both the neutral dark outside the
-    // page and the page's white that the boundary is obvious without a line.
-    float m_ruler_bg[4]  = { 0.30f, 0.20f, 0.12f, 1.0f };
+    // THE PAGE'S OWN HEADER COLOUR (#1b1c14, the --panel of index.html), so the
+    // margin reads as part of the page's chrome rather than a third surface
+    // between it and the paper. Near-black, so the marks are a warm off-white;
+    // the boundary to the paper is not left to contrast at all -- see the
+    // one-pixel edge in draw_edge_ruler.
+    float m_ruler_bg[4]  = { 0.106f, 0.110f, 0.078f, 1.0f };
     float m_ruler_ink[4] = { 0.94f, 0.89f, 0.78f, 0.92f };
+};
+
+/*
+ * ── PaintPages: the pages of this session, kept in a database ───────────────
+ *
+ * A HISTORY OF PAGES, AND ONE OF THEM IS THE PRESENT. The document is the
+ * thing being painted on; this is the set of things it has been, each one a
+ * row per layer in a database another module owns. "Current" is the slot the
+ * present was last loaded from or saved to -- the "last changed" slot -- and
+ * it is the one Save writes into. Nothing is current until something has been
+ * saved or loaded, which is what m_current == 0 means.
+ *
+ * THROUGH THE FAMILY, BY RID. The database is reached as a Database_ through
+ * the ontology (ontology/Database.h), never through DatabaseProvider's header:
+ * this module says what it needs of a database -- a statement with bound
+ * values, stepped a row at a time -- and any leaf claiming the family answers.
+ * That is also why locality is nobody's business here: the boot script names a
+ * file under /persist in the browser and a relative path on a desktop, and this
+ * type does not know which.
+ *
+ * PAM IN THE BLOB, because it is already the pixels (the note above
+ * PaintImage): a layer row is the same bytes ExportLayer writes to a file,
+ * read back by the same parser, so nothing here has a format of its own and a
+ * row pulled out of the database with any sqlite tool is a picture GIMP opens.
+ *
+ * QUICK SWITCH IS SAVE-THEN-LOAD, and the save is conditional on the document
+ * having changed since it was loaded (PaintDocument::revision): switching away
+ * from a page you only looked at must not touch its row, and switching away
+ * from one you painted on must not lose the paint. The neighbour is the next
+ * or previous id, wrapping -- by id and not by recency, because a page that
+ * moved to the front every time it was saved would reorder the ring under the
+ * keys that walk it.
+ *
+ * WHAT A PAGE DOES NOT CARRY, and says so when it matters: the text boxes.
+ * They are strings, not pixels, and the export has the same gap for the same
+ * reason (ExportImage); Save counts them so a page that lost its captions says
+ * so in the log rather than in the next session.
+ */
+class PaintPages : public DeletableBase<PaintPages>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintPages);
+
+    PaintPages() = default;
+    bool DeleteConcrete() override { return true; }
+
+    /*
+     * Bind the document and the database, and make sure the tables exist.
+     * The schema is created here rather than by the script because the
+     * script cannot know the columns this type reads -- a script that spells
+     * them differently would be a page store that saves and never loads.
+     */
+    bool Create(ETCS::RID document, ETCS::RID database)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintDocument", document);
+        m_document = raw ? static_cast<PaintDocument*>(raw->getTrueType()) : nullptr;
+        m_db = database;
+        m_current = 0;
+        m_loaded_rev = m_document ? m_document->revision() : 0;
+        if (!m_document) { ETCS_LOG("PaintPages", "Create: no PaintDocument at RID:" << document); return false; }
+
+        ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+        if (!db) { ETCS_LOG("PaintPages", "Create: no Database at RID:" << database << " -- Connect it first."); return false; }
+
+        static const char* const schema[] = {
+            "CREATE TABLE IF NOT EXISTS pages("
+            " id INTEGER PRIMARY KEY, name TEXT NOT NULL,"
+            " width INTEGER NOT NULL, height INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+            // ord is the layer's POSITION in the stack, bottom first, not its
+            // order key: two layers may share a key (PaintLayer says so) and a
+            // stored page wants a dense, unique stacking back.
+            "CREATE TABLE IF NOT EXISTS page_layers("
+            " page_id INTEGER NOT NULL, ord INTEGER NOT NULL, name TEXT NOT NULL,"
+            " visible INTEGER NOT NULL, opacity REAL NOT NULL, active INTEGER NOT NULL DEFAULT 0,"
+            " pam BLOB NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS page_layers_by_page ON page_layers(page_id, ord)",
+        };
+        for (const char* sql : schema)
+        {
+            Stmt st(*db, sql);
+            if (!st || st.step() < 0) { ETCS_LOG("PaintPages", "Create: schema failed -- see the database's log."); return false; }
+        }
+        m_loaded_rev = m_document->revision();   // what is on screen at boot is not yet a change
+        ETCS_LOG("PaintPages", "bound to '" << m_document->name() << "', " << count_pages(*db) << " page(s) stored.");
+        return true;
+    }
+
+    int64_t current() const { return m_current; }
+    bool dirty() const { return m_document && m_document->revision() != m_loaded_rev; }
+
+    /*
+     * The present into its slot -- a new one if it has none. One transaction:
+     * a page with half its layers is not a page, and the database's own
+     * guard rolls back on any exit that is not the commit.
+     */
+    bool Save()
+    {
+        if (!m_document) return false;
+        ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+        if (!db) { ETCS_LOG("PaintPages", "Save: the database is gone."); return false; }
+
+        std::vector<PaintLayer*> stack = m_document->layers();
+        auto guard = db->Transaction();
+
+        if (m_current == 0)
+        {
+            Stmt ins(*db, "INSERT INTO pages(name, width, height, updated_at) VALUES(?, ?, ?, ?)");
+            if (!ins || !ins.bind(1, text(m_document->name())) || !ins.bind(2, DatabaseValue::integer(m_document->width()))
+                || !ins.bind(3, DatabaseValue::integer(m_document->height())) || !ins.bind(4, DatabaseValue::integer(now()))
+                || ins.step() < 0)
+                return false;
+            m_current = last_insert_id(*db);
+            if (m_current == 0) return false;
+            // A page made with no name is named after its row, the one thing
+            // that is certainly unique and reads back as itself in List.
+            if (m_document->name().empty()) m_document->SetName("Page " + std::to_string(m_current));
+        }
+        {
+            Stmt up(*db, "UPDATE pages SET name = ?, width = ?, height = ?, updated_at = ? WHERE id = ?");
+            if (!up || !up.bind(1, text(m_document->name())) || !up.bind(2, DatabaseValue::integer(m_document->width()))
+                || !up.bind(3, DatabaseValue::integer(m_document->height())) || !up.bind(4, DatabaseValue::integer(now()))
+                || !up.bind(5, DatabaseValue::integer(m_current)) || up.step() < 0)
+                return false;
+        }
+        {
+            Stmt del(*db, "DELETE FROM page_layers WHERE page_id = ?");
+            if (!del || !del.bind(1, DatabaseValue::integer(m_current)) || del.step() < 0) return false;
+        }
+        size_t bytes = 0;
+        for (size_t i = 0; i < stack.size(); ++i)
+        {
+            PaintLayer* l = stack[i];
+            std::vector<uint8_t> pam;
+            std::string why;
+            if (!paint_pam_encode(l->PixelData(), l->width(), l->height(), pam, why))
+            {
+                ETCS_LOG("PaintPages", "Save: layer '" << l->name() << "': " << why << " -- page not saved.");
+                return false;
+            }
+            Stmt ins(*db, "INSERT INTO page_layers(page_id, ord, name, visible, opacity, active, pam)"
+                          " VALUES(?, ?, ?, ?, ?, ?, ?)");
+            if (!ins || !ins.bind(1, DatabaseValue::integer(m_current)) || !ins.bind(2, DatabaseValue::integer((int64_t)i))
+                || !ins.bind(3, text(l->name())) || !ins.bind(4, DatabaseValue::integer(l->visible() ? 1 : 0))
+                || !ins.bind(5, DatabaseValue::real(l->opacity()))
+                || !ins.bind(6, DatabaseValue::integer(l == m_document->activeLayer() ? 1 : 0))
+                || !ins.bind(7, DatabaseValue::blob(pam.data(), pam.size())) || ins.step() < 0)
+                return false;
+            bytes += pam.size();
+        }
+        if (!guard.commit()) { ETCS_LOG("PaintPages", "Save: commit failed -- page not saved."); return false; }
+
+        m_loaded_rev = m_document->revision();
+        ETCS_LOG("PaintPages", "saved page " << m_current << " '" << m_document->name() << "' "
+                 << m_document->width() << "x" << m_document->height() << ", " << stack.size()
+                 << " layer(s), " << bytes << " bytes of PAM"
+                 << (m_document->textBoxCount() ? "; " + std::to_string(m_document->textBoxCount())
+                                                  + " text box(es) are not in it" : std::string()));
+        persist();
+        return true;
+    }
+
+    /*
+ * THE FILE IS WRITTEN; NOW THE BROWSER HAS TO KEEP IT. sqlite has put the bytes
+ * on the filesystem, and on the desktop that is the end of it. In the browser
+ * the filesystem under /persist is a MEMFS view of IndexedDB that only reaches
+ * the store when the page calls syncfs -- so the page is told, once per save,
+ * through the same event bridge the menu uses. Nothing here knows what the page
+ * does with it, and on the desktop this is a no-op by construction.
+ */
+    void persist()
+    {
+#if defined(__EMSCRIPTEN__)
+        MAIN_THREAD_EM_ASM({
+            window.dispatchEvent(new CustomEvent('etcs-persist', { detail: 'save' }));
+        });
+#endif
+    }
+
+    /*
+     * A stored page onto the document, replacing what is there. Read first,
+     * then destroy, then spawn: the read holds the database, and a
+     * DestroyEvent must not be fired from inside a hold (PaintDocument::
+     * DestroyLayers says why), so the rows are copied out and the hold
+     * dropped before a single layer goes.
+     */
+    bool Load(int64_t id)
+    {
+        if (!m_document) return false;
+        struct Row { int64_t ord; std::string name; bool visible; float opacity; bool active; std::vector<uint8_t> pam; };
+        std::vector<Row> rows;
+        std::string name;
+        int64_t w = 0, h = 0;
+        {
+            ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+            if (!db) { ETCS_LOG("PaintPages", "Load: the database is gone."); return false; }
+            Stmt page(*db, "SELECT name, width, height FROM pages WHERE id = ?");
+            if (!page || !page.bind(1, DatabaseValue::integer(id)) || page.step() != 1)
+            {
+                ETCS_LOG("PaintPages", "Load: no page " << id << " -- List says which exist.");
+                return false;
+            }
+            name = str(page.col(0));
+            w = page.col(1).i;
+            h = page.col(2).i;
+            Stmt lay(*db, "SELECT ord, name, visible, opacity, active, pam FROM page_layers WHERE page_id = ? ORDER BY ord");
+            if (!lay || !lay.bind(1, DatabaseValue::integer(id))) return false;
+            for (int rc = lay.step(); rc == 1; rc = lay.step())
+            {
+                Row r;
+                r.ord     = lay.col(0).i;
+                r.name    = str(lay.col(1));
+                r.visible = lay.col(2).i != 0;
+                r.opacity = static_cast<float>(lay.col(3).d);
+                r.active  = lay.col(4).i != 0;
+                const DatabaseValue blob = lay.col(5);
+                if (blob.p && blob.n)
+                    r.pam.assign(static_cast<const uint8_t*>(blob.p), static_cast<const uint8_t*>(blob.p) + blob.n);
+                rows.push_back(std::move(r));
+            }
+        }
+
+        m_document->DestroyLayers();
+        m_document->Create(static_cast<uint32_t>(w), static_cast<uint32_t>(h), name);
+        size_t spawned = 0;
+        bool any_active = false;
+        for (const Row& r : rows)
+        {
+            PaintImage img;
+            std::string why;
+            if (!paint_pam_parse(r.pam.data(), r.pam.size(), img, why))
+            {
+                ETCS_LOG("PaintPages", "Load: page " << id << " layer " << r.ord << " '" << r.name
+                         << "': " << why << " -- skipped.");
+                continue;
+            }
+            if (m_document->SpawnLayer(img, r.name, static_cast<int32_t>(r.ord), r.visible, r.opacity, r.active))
+            {
+                ++spawned;
+                any_active = any_active || r.active;
+            }
+        }
+        // The top is what is about to be worked on when the row did not say
+        // -- the same choice an import makes.
+        if (!any_active)
+        {
+            std::vector<PaintLayer*> stack = m_document->layers();
+            if (!stack.empty()) m_document->SetActiveLayer(stack.back()->getRID());
+        }
+        m_current = id;
+        m_loaded_rev = m_document->revision();
+        ETCS_LOG("PaintPages", "loaded page " << id << " '" << name << "' " << w << "x" << h << ", "
+                 << spawned << " of " << rows.size() << " layer(s).");
+        repaint();
+        return true;
+    }
+
+    /*
+     * A fresh page becomes current: the present is kept if it has anything
+     * unsaved, then the document is emptied and given the two layers the boot
+     * script starts with -- paper under ink, ink active -- because a page
+     * with nothing to paint on is not a page anyone can use. Saved at once,
+     * so it has an id and Next/Prev can find it.
+     */
+    bool New()
+    {
+        if (!m_document) return false;
+        flush();
+        const uint32_t w = m_document->width() ? m_document->width() : 1024;
+        const uint32_t h = m_document->height() ? m_document->height() : 768;
+        m_document->DestroyLayers();
+        m_document->Create(w, h, "");           // named after its row by Save
+
+        PaintImage sheet;
+        sheet.w = w; sheet.h = h;
+        sheet.rgba.assign(static_cast<size_t>(w) * h * 4, 255);         // white paper
+        if (!m_document->SpawnLayer(sheet, "Paper", 0, true, 1.0f, false)) return false;
+        std::fill(sheet.rgba.begin(), sheet.rgba.end(), 0);            // transparent ink
+        if (!m_document->SpawnLayer(sheet, "Ink", 1, true, 1.0f, true)) return false;
+
+        m_current = 0;
+        const bool ok = Save();
+        repaint();
+        return ok;
+    }
+
+    bool Next() { return step(+1); }
+    bool Prev() { return step(-1); }
+
+    // The surface to repaint when the document under it is swapped. The
+    // document does not know who shows it; a load that leaves the old picture
+    // on screen until the next stroke is a load that looks like it failed.
+    void BindSurface(ETCS::RID surface) { m_surface = surface; }
+    void repaint()
+    {
+        if (m_surface == 0) return;
+        ETCS::Entity* raw = paint_resolve_tag("PaintSurface", m_surface);
+        if (raw) static_cast<PaintSurface*>(raw->getTrueType())->Render();
+    }
+
+    void List()
+    {
+        ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+        if (!db) { ETCS_LOG("PaintPages", "List: the database is gone."); return; }
+        Stmt st(*db, "SELECT p.id, p.name, p.width, p.height, p.updated_at,"
+                     " (SELECT COUNT(*) FROM page_layers l WHERE l.page_id = p.id)"
+                     " FROM pages p ORDER BY p.id");
+        if (!st) return;
+        size_t n = 0;
+        for (int rc = st.step(); rc == 1; rc = st.step(), ++n)
+        {
+            const int64_t id = st.col(0).i;
+            ETCS_LOG("PaintPages", "  page " << id << " '" << str(st.col(1)) << "' "
+                     << st.col(2).i << "x" << st.col(3).i << ", " << st.col(5).i
+                     << " layer(s), updated " << st.col(4).i
+                     << (id == m_current ? (dirty() ? "  <- current, changed" : "  <- current") : ""));
+        }
+        ETCS_LOG("PaintPages", n << " page(s)"
+                 << (m_current == 0 ? "; the present is not in a slot yet" : ""));
+    }
+
+    // The slot goes; the picture on screen does not. Deleting the current page
+    // leaves the present as an unsaved page, which the next Save gives a new
+    // row -- the alternative, emptying the document, would make a wrong id
+    // typed into Delete cost the work in front of you.
+    bool Delete(int64_t id)
+    {
+        ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+        if (!db) { ETCS_LOG("PaintPages", "Delete: the database is gone."); return false; }
+        auto guard = db->Transaction();
+        {
+            Stmt del(*db, "DELETE FROM page_layers WHERE page_id = ?");
+            if (!del || !del.bind(1, DatabaseValue::integer(id)) || del.step() < 0) return false;
+        }
+        {
+            Stmt del(*db, "DELETE FROM pages WHERE id = ?");
+            if (!del || !del.bind(1, DatabaseValue::integer(id)) || del.step() < 0) return false;
+        }
+        if (!guard.commit()) return false;
+        if (id == m_current) m_current = 0;
+        ETCS_LOG("PaintPages", "deleted page " << id
+                 << (m_current == 0 ? "; the present is no longer in a slot" : ""));
+        return true;
+    }
+
+private:
+    PaintDocument* m_document = nullptr;
+    ETCS::RID      m_db = 0;
+    ETCS::RID      m_surface = 0;      // repainted after a load -- see BindSurface
+    int64_t        m_current = 0;       // the slot the present came from or went to; 0 is none
+    uint64_t       m_loaded_rev = 0;    // the document's revision at that moment -- see dirty()
+
+    // One statement, finalized when the scope ends whatever the path out --
+    // which is what makes every early `return false` above leave nothing open
+    // for the transaction guard's rollback to trip over.
+    struct Stmt
+    {
+        Database_& db;
+        void*      s;
+        Stmt(Database_& d, const char* sql) : db(d), s(d.Prepare(sql)) {}
+        ~Stmt() { if (s) db.Finalize(s); }
+        Stmt(const Stmt&) = delete;
+        Stmt& operator=(const Stmt&) = delete;
+        explicit operator bool() const { return s != nullptr; }
+        bool bind(int i, const DatabaseValue& v) { return db.Bind(s, i, v); }
+        int  step() { return db.Step(s); }
+        DatabaseValue col(int c) { DatabaseValue v; db.Column(s, c, v); return v; }
+    };
+
+    static DatabaseValue text(const std::string& s) { return DatabaseValue::text(s.data(), s.size()); }
+    static std::string str(const DatabaseValue& v)
+    {
+        return (v.kind == DatabaseValue::Text && v.p) ? std::string(static_cast<const char*>(v.p), v.n) : std::string();
+    }
+    static int64_t now()
+    {
+        using namespace std::chrono;
+        return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+    }
+    static int64_t last_insert_id(Database_& db)
+    {
+        Stmt st(db, "SELECT last_insert_rowid()");
+        return (st && st.step() == 1) ? st.col(0).i : 0;
+    }
+    static int64_t count_pages(Database_& db)
+    {
+        Stmt st(db, "SELECT COUNT(*) FROM pages");
+        return (st && st.step() == 1) ? st.col(0).i : 0;
+    }
+
+    // Keep the present if leaving it would lose something: a page that changed
+    // since it was loaded -- or, for a present that was never given a slot,
+    // since this store was bound to it. Not "has layers": every boot page has
+    // layers, and a slot for each untouched boot would be a page a session
+    // never asked for.
+    void flush()
+    {
+        if (!m_document) return;
+        if (dirty()) Save();
+    }
+
+    /*
+ * THE PAGES AS A STRIP, NOT A RING. Forward from the last page is a NEW page,
+ * which is how a second page comes to exist from the keyboard at all -- a
+ * ring would have nowhere to put one and would need a separate verb the hand
+ * on ctrl+PageDown does not know about. Back from the first page stays. The
+ * present is flushed before either move (a changed page is saved; a page that
+ * was never given a slot and has layers in it gets one), and loading the page
+ * already on screen is refused: it would destroy and rebuild the same layers
+ * for nothing and drop the undo history on the way.
+ */
+    bool step(int dir)
+    {
+        if (!m_document) return false;
+        flush();
+        std::vector<int64_t> ids;
+        {
+            ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+            if (!db) { ETCS_LOG("PaintPages", "switch: the database is gone."); return false; }
+            Stmt st(*db, "SELECT id FROM pages ORDER BY id");
+            if (!st) return false;
+            for (int rc = st.step(); rc == 1; rc = st.step()) ids.push_back(st.col(0).i);
+        }
+        size_t at = ids.size();
+        for (size_t i = 0; i < ids.size(); ++i) if (ids[i] == m_current) { at = i; break; }
+        int64_t target = 0;
+        if (at == ids.size())                          // the present has no slot
+            target = ids.empty() ? 0 : (dir > 0 ? ids.front() : ids.back());
+        else if (dir > 0)
+            target = (at + 1 < ids.size()) ? ids[at + 1] : 0;
+        else
+            target = (at > 0) ? ids[at - 1] : ids[at];
+        if (target == 0)
+        {
+            ETCS_LOG("PaintPages", "switch: past the last page -- opening a new one.");
+            return New();
+        }
+        if (target == m_current) { ETCS_LOG("PaintPages", "switch: page " << m_current << " is the first."); return false; }
+        return Load(target);
+    }
 };
 
 /*
@@ -3305,6 +4604,62 @@ public:
     }
 
     /*
+ * ── the general entry ────────────────────────────────────────────────────
+ *
+ * A NODE THAT CALLS A VERB. Every kind above is a verb this type knows how to
+ * apply to a tool or a view; this one is any verb on any entity, named the way
+ * Entity::call names it ("PaintCanvasMenu.StepWidth") with the argument text a
+ * script would have written after it. It is what lets a whole panel be script:
+ * the canvas menu's steppers, cells and buttons are rectangles bound here, and
+ * the thing they drive never learns what a pointer is.
+ *
+ * The other kinds are not rewritten onto this one, because they are not calls
+ * -- a swatch changes the tool AND records itself as the last colour, a delta
+ * repeats while held, a tool change drops the selection. This is the kind for
+ * the case with no such second half. The tag is read out of the action, since
+ * the RID map is keyed by tag and an action already carries its own.
+ */
+    void AddCall(ETCS::RID node, ETCS::RID target, const std::string& action, const std::string& args)
+    {
+        if (node == 0 || target == 0 || action.find('.') == std::string::npos)
+        {
+            ETCS_LOG("PaintPalette", "AddCall on RID:" << node << " needs a target and a "
+                     "'Tag.Action' -- got '" << action << "'.");
+            return;
+        }
+        Entry e{ Kind::Call, {}, 0.0f, PaintToolKind::Brush };
+        e.target = target;
+        e.action = action;
+        e.args   = args;
+        m_entries[node] = e;
+    }
+
+    /*
+ * A NODE THAT OPENS A PANE, and closes it when it is pressed again -- or when
+ * anything else is pressed while it is open, which is what makes it a popup
+ * rather than a panel. Open is what it is for the colour wheel (PaintColorWheel::
+ * Open): membership of the routing set AND drawn, one fact, so a pane that is
+ * merely invisible cannot go on swallowing clicks.
+ *
+ * The state lives here rather than on the pane's own type, because there is no
+ * such type: the pane is a compositor from another module and its contents are
+ * a script. One popup at a time, since the second would need to know about the
+ * first to dismiss it. The router is needed to open anything, so BindRouter.
+ */
+    void AddPopup(ETCS::RID node, ETCS::RID pane, ETCS::RID input)
+    {
+        if (node == 0 || pane == 0 || input == 0) return;
+        Entry e{ Kind::Popup, {}, 0.0f, PaintToolKind::Brush };
+        e.slot   = pane;
+        e.target = input;
+        m_entries[node] = e;
+    }
+
+    // The router a popup joins while open. By RID and called by verb name, for
+    // the reason PaintColorWheel gives: PaintRouter is declared below this type.
+    void BindRouter(ETCS::RID router) { m_router = router; }
+
+    /*
  * REPLACE A SWATCH'S COLOUR, which is what a colour wheel pick does to the slot
  * it was opened from.
  *
@@ -3346,7 +4701,9 @@ public:
     // True when `node` was one of ours -- which is also the answer to "was
     // this press a tool change rather than a brush stroke", and the only
     // thing the input edge needs from this type.
-    bool Apply(ETCS::RID node)
+    // The entry a picked node means: its own, or the nearest ancestor's -- a
+    // label drawn on a swatch is picked as the label and means the swatch.
+    auto resolve_entry(ETCS::RID node)
     {
         auto it = m_entries.find(node);
         if (it == m_entries.end() && node != 0)
@@ -3361,14 +4718,41 @@ public:
                 if (it != m_entries.end()) break;
             }
         }
+        return it;
+    }
+
+    bool Apply(ETCS::RID node)
+    {
+        auto it = resolve_entry(node);
+
+        /*
+     * WHILE A POPUP IS OPEN, WHERE THE PRESS LANDED DECIDES FIRST. Outside the
+     * pane -- the picture, the toolbar, the node that opened it -- it dismisses,
+     * and is swallowed for the reason PaintInput swallows the press that closes
+     * the wheel: a dismissal that also drew a dab would leave a mark for every
+     * popup ever put away. Inside the pane it is the popup's: an entry there
+     * applies as any entry does, and a press on the pane's own backing does
+     * nothing at all rather than falling through to whatever the pane's input
+     * would otherwise make of it.
+     */
+        if (m_popup_open != 0)
+        {
+            if (!node_within(node, m_popup_open)) { close_popup(); return true; }
+            if (it == m_entries.end()) return true;
+        }
         if (it == m_entries.end()) return false;
+
+        const Entry& e = it->second;
+        // The two kinds that apply to no tool, ahead of the tool check.
+        if (e.kind == Kind::Popup) { open_popup(e.slot, e.target); return true; }
+        if (e.kind == Kind::Call)  { call_entry(it->first, e); return true; }
+
         if (!m_tool)
         {
             ETCS_LOG("PaintPalette", "selection on RID:" << node
                      << " has no tool bound -- nothing to apply it to.");
             return true;   // still ours: it was a palette press, it just went nowhere
         }
-        const Entry& e = it->second;
         if (e.kind == Kind::Color)
         {
             m_tool->SetColor(e.rgba[0], e.rgba[1], e.rgba[2], e.rgba[3]);
@@ -3406,6 +4790,20 @@ public:
         {
             m_tool->SetKind(paint_tool_kind_name(e.tool));
             ETCS_LOG("PaintPalette", "tool -> " << paint_tool_kind_name(e.tool));
+            /*
+             * LEAVING THE SELECT TOOL DROPS THE SELECTION. A region left standing
+             * under the brush is a trap: it looks like it should mask the stroke
+             * and it does not, and the next select-tool press inside it would
+             * carry it. A carry in flight lands where it hovers (ClearSelection).
+             * Switching TO select keeps whatever is there.
+             */
+            if (e.tool != PaintToolKind::Select && m_surface && m_surface->document()
+                && m_surface->document()->hasSelection())
+            {
+                m_surface->document()->ClearSelection();
+                m_surface->Render();
+                ETCS_LOG("PaintPalette", "selection cleared -- tool changed");
+            }
         }
         else
         {
@@ -3426,6 +4824,54 @@ public:
         return true;
     }
 
+
+    /*
+ * ── click and hold ───────────────────────────────────────────────────────
+ *
+ * A stepper pressed and held steps again, and again, and there is no clock to
+ * step it on: while the button is held still no input arrives. The tick that
+ * does exist is the FRAME -- a node that answers Animating() is visited every
+ * composition (Drawable_::Animating, and TextLabel::BindFps is the precedent
+ * for a node doing work in that visit). PaintRepeat is that node; it asks this
+ * palette to Tick() once per frame while something is held.
+ *
+ * COUNTED IN FRAMES, NOT MILLISECONDS, for the same reason HeldCharge counts
+ * accesses: the frame is the only clock, and a rate stated in its own units
+ * cannot drift from it. The hold itself is a HeldCharge with a LARGE capacity,
+ * spent one per frame: a real release ends it, a stated release (the mask)
+ * ends it, and a pointer that left the page and never came back ends it after
+ * the capacity -- which is the "much higher threshold" a mode wants, against
+ * the four a stroke gets.
+ */
+    static constexpr uint32_t REPEAT_DELAY_FRAMES = 22;   // ~360ms before the first repeat
+    static constexpr uint32_t REPEAT_EVERY_FRAMES = 3;    // then ~20 a second
+
+    // Called after Apply() accepted a press: a delta entry becomes the held one.
+    void Hold(ETCS::RID node)
+    {
+        auto it = resolve_entry(node);
+        if (it == m_entries.end()) return;
+        const Kind k = it->second.kind;
+        if (k != Kind::RadiusDelta && k != Kind::AlphaDelta && k != Kind::Zoom) return;
+        m_held = it->first;
+        m_held_frames = 0;
+        m_hold.Press();
+    }
+    void Release() { m_held = 0; m_hold.Release(); }
+    bool holding() const { return m_held != 0; }
+
+    // One frame of holding. The ACCESS that spends the charge -- see HeldCharge.
+    void Tick()
+    {
+        if (m_held == 0) return;
+        if (!m_hold.Held()) { ETCS_LOG("PaintPalette", "hold lapsed -- released."); Release(); return; }
+        ++m_held_frames;
+        if (m_held_frames < REPEAT_DELAY_FRAMES) return;
+        if ((m_held_frames - REPEAT_DELAY_FRAMES) % REPEAT_EVERY_FRAMES == 0) Apply(m_held);
+    }
+
+    // Frames of unconfirmed holding a stepper survives. See HeldCharge.
+    void SetHoldCapacity(uint16_t n) { m_hold.SetCapacity(n); }
 
     /*
  * RESOLVE FIRST, THEN COMPARE, THEN REPAINT -- the same order PaintLayerPanel's
@@ -3463,9 +4909,19 @@ public:
         }
         if (target == m_hovering) return;
 
+        /*
+     * THE GENERAL ENTRIES ARE NOT RESTYLED HERE, in either pass. Their look
+     * belongs to whoever bound them -- the canvas menu paints its anchor cells
+     * to show the chosen one (PaintCanvasMenu::show_anchor) -- and this type
+     * never learned an idle colour for them, so a hover that wrote one back
+     * would erase a state it did not know was there.
+     */
         for (const auto& [rid, e] : m_entries)
-            set_node_fill(rid, e.idle[0], e.idle[1], e.idle[2], e.idle[3]);
+            if (owns_look(e)) set_node_fill(rid, e.idle[0], e.idle[1], e.idle[2], e.idle[3]);
         m_hovering = target;
+        // The caption of whatever was hovered goes away with the hover; the new
+        // target's, if it has one, appears. See AddHoverLabel.
+        show_hover_label(target);
         if (target == 0) return;
 
         node = target;
@@ -3473,6 +4929,7 @@ public:
         const float t = (ref.kind == Kind::Color) ? 0.40f : 0.60f;
         for (const auto& [rid, e] : m_entries)
         {
+            if (!owns_look(e)) continue;
             if (rid != node && !same_hover_group(ref, e)) continue;
             set_node_fill(rid,
                           e.idle[0] + (1.0f - e.idle[0]) * t,
@@ -3484,9 +4941,32 @@ public:
 
     void SetRadiusReadout(ETCS::RID label) { m_radius_readout = label; }
     void SetAlphaReadout(ETCS::RID label) { m_alpha_readout = label; }
+
+    /*
+ * A CAPTION THAT APPEARS ON HOVER. Two bare numbers at the end of the bar were
+ * a guess as to which was which, and a permanent caption under each is clutter
+ * on a strip that is mostly read at a glance. So the caption is a node the
+ * script places and hides, and hovering any entry of the stepper's GROUP -- the
+ * +, the -, the number -- reveals it; leaving hides it again. Shown and hidden
+ * through SetHidden rather than drawn here, for the reason this class draws
+ * nothing: the tree already knows how.
+ */
+    void AddHoverLabel(ETCS::RID entry, ETCS::RID label)
+    {
+        if (entry == 0 || label == 0) return;
+        m_hover_labels[entry] = label;
+        set_node_hidden(label, true);
+    }
     // The label that shows the select tool's mode -- written by the arrow, as
     // the radius readout is written by its +/- (see AddModeArrow).
     void SetModeReadout(ETCS::RID label) { m_mode_readout = label; }
+    // The shape slice's, written by its arrow the same way. Bind it with
+    // AddHoverLabel as well and it shows only while the slice is hovered.
+    void SetShapeReadout(ETCS::RID label)
+    {
+        m_shape_readout = label;
+        if (m_tool) set_node_text(label, paint_shape_mode_name(m_tool->shape()));
+    }
 
 void Report() const
     {
@@ -3497,13 +4977,93 @@ void Report() const
             if (e.kind == Kind::Color)
                 ETCS_LOG("PaintPalette", "  RID:" << rid << "  colour "
                          << e.rgba[0] << ", " << e.rgba[1] << ", " << e.rgba[2]);
+            else if (e.kind == Kind::Call)
+                ETCS_LOG("PaintPalette", "  RID:" << rid << "  calls RID:" << e.target
+                         << " " << e.action << "(" << e.args << ")");
+            else if (e.kind == Kind::Popup)
+                ETCS_LOG("PaintPalette", "  RID:" << rid << "  opens pane RID:" << e.slot
+                         << (e.slot == m_popup_open ? " (open)" : ""));
             else
                 ETCS_LOG("PaintPalette", "  RID:" << rid << "  radius " << e.radius);
         }
     }
 
+    /*
+ * HOW THIS TYPE REACHES A NODE IT DOES NOT OWN: by verb name over Entity::call,
+ * since the node is another module's drawable (the header note says why there
+ * is no other way). Public and static because they are the one seam for that,
+ * and the canvas menu drives its readouts and its anchor cells through the same
+ * three calls rather than a second copy of them.
+ */
+    static void set_node_fill(ETCS::RID node, float r, float g, float b, float a)
+    {
+        if (node == 0) return;
+        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+        if (!node_e) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
+        if (!e) return;
+        const std::string tag = e->getSourceTag().toString();
+        if (tag.find("PolygonDrawable2D") == std::string::npos) return;
+        ETCS::Buffer action;
+        action.write((tag + ".SetFill").c_str());
+        ETCS::Buffer payload;
+        payload.write((std::to_string(r) + " " + std::to_string(g) + " "
+                     + std::to_string(b) + " " + std::to_string(a)).c_str());
+        try { e->call(action, payload); } catch (...) {}
+        // sheet_root is retained: mark the whole parent chain or the bar
+        // never gets re-blitted into the sheet and fills look like a no-op.
+        for (ETCS::Entity* n = e; n; n = n->getParent())
+            etcs_mark_observed(n);
+    }
+
+    static void set_node_hidden(ETCS::RID node, bool hidden)
+    {
+        if (node == 0) return;
+        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+        if (!node_e) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
+        if (!e) return;
+        ETCS::Buffer action;
+        action.write((e->getSourceTag().toString() + ".SetHidden").c_str());
+        ETCS::Buffer payload;
+        payload.write(hidden ? "1" : "0");
+        try { e->call(action, payload); } catch (...) {}
+        for (ETCS::Entity* n = e; n; n = n->getParent())
+            etcs_mark_observed(n);
+    }
+
+    static void set_node_text(ETCS::RID node, const std::string& text)
+    {
+        if (node == 0) return;
+        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+        if (!node_e) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
+        if (!e) return;
+        ETCS::Buffer action;
+        action.write((e->getSourceTag().toString() + ".SetText").c_str());
+        ETCS::Buffer payload;
+        payload.write(text.c_str());
+        try { e->call(action, payload); } catch (...) {}
+        for (ETCS::Entity* n = e; n; n = n->getParent())
+            etcs_mark_observed(n);
+    }
+
+    // Whether `node` is `pane` or sits anywhere inside it -- the walk
+    // resolve_entry makes, asked a different question.
+    static bool node_within(ETCS::RID node, ETCS::RID pane)
+    {
+        if (node == 0 || pane == 0) return false;
+        ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+        for (ETCS::Entity* e = h ? static_cast<ETCS::Entity*>(h.get()) : nullptr; e; e = e->getParent())
+            if (e->getRID() == pane) return true;
+        return false;
+    }
+
+    ETCS::RID openPopup() const { return m_popup_open; }
+
 private:
-    enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, AlphaDelta, WheelArrow, ModeArrow };
+    enum class Kind : uint8_t { Color, Size, Tool, Zoom, RadiusDelta, AlphaDelta, WheelArrow, ModeArrow,
+                                Call, Popup };
     struct Entry {
         Kind kind;
         float rgba[4];
@@ -3512,9 +5072,16 @@ private:
         float idle[4] = { 0.16f, 0.16f, 0.20f, 1.0f };
         // The arrows only: the entry this arrow is a control FOR -- a colour
         // for a wheel arrow, a tool for a mode arrow. An arrow belongs to a
-        // specific slice, not to "whatever was pressed last".
+        // specific slice, not to "whatever was pressed last". A popup's PANE.
         ETCS::RID slot = 0;
+        // A call's target and what to say to it; a popup's input (AddPopup).
+        ETCS::RID   target = 0;
+        std::string action;
+        std::string args;
     };
+
+    // Whether Hover may restyle this entry -- see the note in Hover.
+    static bool owns_look(const Entry& e) { return e.kind != Kind::Call && e.kind != Kind::Popup; }
 
     static bool same_hover_group(const Entry& a, const Entry& b)
     {
@@ -3574,65 +5141,148 @@ private:
     void step_mode_for(ETCS::RID arrow, ETCS::RID slot)
     {
         auto sit = m_entries.find(slot);
-        if (sit == m_entries.end() || sit->second.kind != Kind::Tool
-            || sit->second.tool != PaintToolKind::Select)
+        const bool is_select = sit != m_entries.end() && sit->second.kind == Kind::Tool
+                               && sit->second.tool == PaintToolKind::Select;
+        const bool is_shape  = sit != m_entries.end() && sit->second.kind == Kind::Tool
+                               && sit->second.tool == PaintToolKind::Shape;
+        if (!is_select && !is_shape)
         {
             ETCS_LOG("PaintPalette", "mode arrow on RID:" << arrow << " names RID:" << slot
-                     << ", which is not the select tool's slice.");
+                     << ", which is neither the select nor the shape slice.");
             return;
         }
-        if (m_tool->kind() != PaintToolKind::Select)
-            m_tool->SetKind(paint_tool_kind_name(PaintToolKind::Select));
-        m_tool->CycleMode();
-        set_node_text(m_mode_readout, paint_select_mode_label(m_tool->mode()));
-        ETCS_LOG("PaintPalette", "select mode -> " << paint_select_mode_name(m_tool->mode()));
+        // Stepping the mode also takes the tool: an arrow pressed is a choice of
+        // what to draw next, and asking for a second press to draw it is a
+        // choice nobody meant to make.
+        const PaintToolKind want = is_select ? PaintToolKind::Select : PaintToolKind::Shape;
+        if (m_tool->kind() != want) m_tool->SetKind(paint_tool_kind_name(want));
+        if (is_select)
+        {
+            m_tool->CycleMode();
+            set_node_text(m_mode_readout, paint_select_mode_label(m_tool->mode()));
+            ETCS_LOG("PaintPalette", "select mode -> " << paint_select_mode_name(m_tool->mode()));
+        }
+        else
+        {
+            m_tool->CycleShape();
+            set_node_text(m_shape_readout, paint_shape_mode_name(m_tool->shape()));
+            ETCS_LOG("PaintPalette", "shape -> " << paint_shape_mode_name(m_tool->shape()));
+        }
     }
 
-    static void set_node_fill(ETCS::RID node, float r, float g, float b, float a)
+    /*
+ * The call a general entry makes. The target is resolved NOW, by the tag its
+ * action names, rather than held: it belongs to whoever spawned it and may be
+ * gone by the time the button is pressed, and a stale pointer is the one
+ * failure this mapping must not have.
+ */
+    void call_entry(ETCS::RID node, const Entry& e)
     {
-        if (node == 0) return;
-        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-        if (!node_e) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
-        if (!e) return;
-        const std::string tag = e->getSourceTag().toString();
-        if (tag.find("PolygonDrawable2D") == std::string::npos) return;
-        ETCS::Buffer action;
-        action.write((tag + ".SetFill").c_str());
-        ETCS::Buffer payload;
-        payload.write((std::to_string(r) + " " + std::to_string(g) + " "
-                     + std::to_string(b) + " " + std::to_string(a)).c_str());
-        try { e->call(action, payload); } catch (...) {}
-        // sheet_root is retained: mark the whole parent chain or the bar
-        // never gets re-blitted into the sheet and fills look like a no-op.
-        for (ETCS::Entity* n = e; n; n = n->getParent())
-            etcs_mark_observed(n);
+        const std::string tag = e.action.substr(0, e.action.find('.'));
+        ETCS::Entity* t = paint_resolve_tag(tag.c_str(), e.target);
+        if (!t)
+        {
+            ETCS_LOG("PaintPalette", "RID:" << node << " calls " << e.action << " on RID:"
+                     << e.target << ", which is not a live " << tag << ".");
+            return;
+        }
+        ETCS::Buffer act; act.write(e.action.c_str());
+        ETCS::Buffer arg; arg.write(e.args.c_str());
+        try { t->call(act, arg); } catch (...) {}
     }
 
-    static void set_node_text(ETCS::RID node, const std::string& text)
+    /*
+ * Open and close are the wheel's (PaintColorWheel::Open / Close): the pane
+ * joins the router and is drawn, or leaves it and is hidden, as one change.
+ * Closing re-renders the surface for the reason the wheel's BindSurface gives
+ * -- the sheet is retained, and nothing but PaintSurface::Render puts back what
+ * the pane was covering. The wheel is closed on the way in, because two popups
+ * would each have to know about the other to dismiss it.
+ */
+    void open_popup(ETCS::RID pane, ETCS::RID input)
     {
-        if (node == 0) return;
-        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-        if (!node_e) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
-        if (!e) return;
-        ETCS::Buffer action;
-        action.write((e->getSourceTag().toString() + ".SetText").c_str());
-        ETCS::Buffer payload;
-        payload.write(text.c_str());
-        try { e->call(action, payload); } catch (...) {}
-        for (ETCS::Entity* n = e; n; n = n->getParent())
-            etcs_mark_observed(n);
+        if (m_router == 0)
+        {
+            ETCS_LOG("PaintPalette", "popup pane RID:" << pane
+                     << " pressed with no router bound -- BindRouter first.");
+            return;
+        }
+        if (m_popup_open == pane) { close_popup(); return; }
+        if (m_popup_open != 0) close_popup();
+        if (ETCS::Entity* w = paint_resolve_tag("PaintColorWheel", m_wheel))
+        {
+            ETCS::Buffer act; act.write("PaintColorWheel.Close");
+            ETCS::Buffer none;
+            try { w->call(act, none); } catch (...) {}
+        }
+        if (ETCS::Entity* r = paint_resolve_tag("PaintRouter", m_router))
+        {
+            ETCS::Buffer act; act.write("PaintRouter.AddPane");
+            ETCS::Buffer arg; arg.write((std::to_string(pane) + " " + std::to_string(input)).c_str());
+            try { r->call(act, arg); } catch (...) {}
+        }
+        set_node_hidden(pane, false);
+        m_popup_open = pane;
+        ETCS_LOG("PaintPalette", "popup pane RID:" << pane << " opened.");
+    }
+
+    void close_popup()
+    {
+        if (m_popup_open == 0) return;
+        if (ETCS::Entity* r = paint_resolve_tag("PaintRouter", m_router))
+        {
+            ETCS::Buffer act; act.write("PaintRouter.RemovePane");
+            ETCS::Buffer arg; arg.write(std::to_string(m_popup_open).c_str());
+            try { r->call(act, arg); } catch (...) {}
+        }
+        set_node_hidden(m_popup_open, true);
+        ETCS_LOG("PaintPalette", "popup pane RID:" << m_popup_open << " closed.");
+        m_popup_open = 0;
+        if (m_surface) m_surface->Render();
+    }
+
+    // The label for a hovered target: its own, or the one bound to any entry in
+    // the same group (a group shares one caption). 0 hides whatever is showing.
+    void show_hover_label(ETCS::RID target)
+    {
+        ETCS::RID want = 0;
+        if (target != 0)
+        {
+            auto tit = m_entries.find(target);
+            for (const auto& [entry, label] : m_hover_labels)
+            {
+                if (entry == target) { want = label; break; }
+                auto eit = m_entries.find(entry);
+                if (tit != m_entries.end() && eit != m_entries.end()
+                    && same_hover_group(tit->second, eit->second)) { want = label; break; }
+            }
+        }
+        if (want == m_hover_label_shown) return;
+        if (m_hover_label_shown != 0) set_node_hidden(m_hover_label_shown, true);
+        if (want != 0) set_node_hidden(want, false);
+        m_hover_label_shown = want;
     }
 
     std::unordered_map<ETCS::RID, Entry> m_entries;
+    std::unordered_map<ETCS::RID, ETCS::RID> m_hover_labels;   // entry -> caption
+    ETCS::RID m_hover_label_shown = 0;
+    // The held stepper, if any -- see Hold/Tick. 600 frames is ten seconds at
+    // sixty: a hold whose release was lost to the page ends on its own then.
+    ETCS::RID  m_held = 0;
+    uint32_t   m_held_frames = 0;
+    HeldCharge m_hold{ 600 };
     PaintTool* m_tool = nullptr;
     PaintSurface* m_surface = nullptr;
     ETCS::RID m_hovering = 0;
     ETCS::RID m_radius_readout = 0;
     ETCS::RID m_alpha_readout = 0;
     ETCS::RID m_mode_readout = 0;
+    ETCS::RID m_shape_readout = 0;
     ETCS::RID m_wheel = 0;
+    // The popup that is open, if one is, and the router it is open IN. See
+    // AddPopup: one at a time, and open means routed.
+    ETCS::RID m_router = 0;
+    ETCS::RID m_popup_open = 0;
 
     mutable ETCS::RID m_last_color = 0;
 };
@@ -4210,6 +5860,7 @@ public:
 
         const int32_t w = static_cast<int32_t>(px->PixelWidth());
         const int32_t h = static_cast<int32_t>(px->PixelHeight());
+        m_pane_h = h;
         const uint32_t stride = px->PixelStride();
         const double PI = 3.14159265358979323846;
         const double rad = static_cast<double>(m_radius);
@@ -4222,7 +5873,18 @@ public:
                 uint8_t* p = row + static_cast<size_t>(x) * 4;
                 float r = 0, g = 0, b = 0, a = 1.0f;
 
-                if (in_value_strip(x, y))
+                if (in_pick_button(x, y))
+                {
+                    // A pale tab with a dark dropper glyph: a bar with a bulb at
+                    // its end, drawn as two rectangles. Legible at 8 px, and
+                    // distinct from every disc colour by being nearly grey.
+                    const int32_t bx = x - 6, by = y - (m_pane_h - 18);
+                    const bool bar  = (bx >= 8 && bx < 24 && by >= 6 && by < 8);
+                    const bool bulb = (bx >= 24 && bx < 30 && by >= 4 && by < 10);
+                    if (bar || bulb) { r = 0.12f; g = 0.12f; b = 0.14f; }
+                    else             { r = 0.86f; g = 0.86f; b = 0.84f; }
+                }
+                else if (in_value_strip(x, y))
                 {
                     // Black at the bottom, the pure hue-plane brightness at the
                     // top: the axis the disc cannot show, because a disc has two
@@ -4378,8 +6040,41 @@ public:
  * caller treat "missed the disc" the same way it treats "clicked the canvas",
  * which is what makes the wheel feel like a popup rather than a trap.
  */
+    /*
+ * ── the eyedropper ───────────────────────────────────────────────────────
+ *
+ * A BUTTON IN THE WHEEL'S OWN RASTER, like the value strip, because the wheel
+ * paints its pane and picks by position -- a node for it would be the one
+ * thing in this pane that is not read the way everything else here is. Pressing
+ * it closes the wheel and puts the tool into Eyedrop; the next press on the
+ * picture samples what is seen there (PaintDocument::SampleAt) and hands it to
+ * Apply, which is the same door a disc pick goes through, so the aimed swatch
+ * takes it too. Then the previous kind comes back (EndPick).
+ */
+    void BeginPick()
+    {
+        if (!m_tool) return;
+        m_kind_before_pick = m_tool->kind();
+        m_tool->SetKind(paint_tool_kind_name(PaintToolKind::Eyedrop));
+        Close();
+        ETCS_LOG("PaintColorWheel", "eyedropper: press the picture to take its colour");
+    }
+    void EndPick()
+    {
+        if (!m_tool) return;
+        if (m_tool->kind() == PaintToolKind::Eyedrop)
+            m_tool->SetKind(paint_tool_kind_name(m_kind_before_pick));
+    }
+
+    // The bottom-left corner of the pane, clear of the disc: 40x14 at (6, h-18).
+    bool in_pick_button(int32_t x, int32_t y) const
+    {
+        return x >= 6 && x < 46 && y >= m_pane_h - 18 && y < m_pane_h - 4;
+    }
+
     PaintPick Pick(int32_t x, int32_t y)
     {
+        if (in_pick_button(x, y)) { BeginPick(); return PaintPick::Picked; }
         // The strip first: it overlaps nothing, and a press in it is a change of
         // brightness rather than a choice of colour, so it must not dismiss.
         if (in_value_strip(x, y))
@@ -4553,6 +6248,10 @@ private:
     ETCS::RID m_input  = 0;
     int32_t  m_cx = 0, m_cy = 0;
     uint32_t m_radius = 1;
+    // The pane's height as last painted: the eyedropper button is placed from
+    // the bottom edge, and Pick() has to agree with PaintDisc about where it is.
+    int32_t  m_pane_h = 220;
+    PaintToolKind m_kind_before_pick = PaintToolKind::Brush;
     float    m_value = 1.0f;
     bool     m_open  = false;
     ETCS::RID m_slot = 0;
@@ -4564,6 +6263,196 @@ private:
 };
 
 
+/*
+ * ── PaintCanvasMenu ──────────────────────────────────────────────────────
+ *
+ * THE PENDING STATE OF THE SETTINGS MENU, and nothing else: a width, a height
+ * and an anchor that the menu's steppers and cells edit, and that two buttons
+ * hand to the document as a resize or a new canvas. Pending rather than live,
+ * because a page re-stated on every stepper press would be nine resizes to get
+ * from 1024 to 1600, each one clipping and shifting the picture.
+ *
+ * NO PIXELS AND NO NODES, on the toolbar's bargain (PaintPalette's header
+ * note): the menu's look is a script -- PaintProvider/scripts/paint_menu.etcs
+ * -- and every control in it is a rectangle the palette maps to a verb here
+ * (PaintPalette::AddCall). What this type adds is the part that is about the
+ * canvas: what the numbers mean, where they may go, and pushing them back onto
+ * the readouts the script bound, as the surface pushes its zoom
+ * (PaintSurface::push_zoom_label) -- so a stepper, a script and a Report all
+ * leave the same number on screen.
+ *
+ * Steps of 64 because the page's own sizes are multiples of it and a finer step
+ * is thirty presses to a common size; the range is the file reader's.
+ */
+class PaintCanvasMenu : public DeletableBase<PaintCanvasMenu>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintCanvasMenu);
+
+    PaintCanvasMenu() = default;
+    bool DeleteConcrete() override { return true; }
+
+    static constexpr int32_t STEP_PX = 64;
+    static constexpr int32_t MIN_PX  = 64;
+    static constexpr int32_t MAX_PX  = 8192;
+
+    // Seeded from the document's extent, so the menu opens showing the page as
+    // it is and "resize" with nothing stepped is a no-op rather than a surprise.
+    bool Create(ETCS::RID document)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintDocument", document);
+        if (!raw) { ETCS_LOG("PaintCanvasMenu", "Create: RID:" << document << " is not a PaintDocument."); return false; }
+        m_document = static_cast<PaintDocument*>(raw->getTrueType());
+        m_width  = std::clamp(static_cast<int32_t>(m_document->width()),  MIN_PX, MAX_PX);
+        m_height = std::clamp(static_cast<int32_t>(m_document->height()), MIN_PX, MAX_PX);
+        m_anchor = 4;
+        this->addTag("active");
+        return true;
+    }
+
+    // The view to re-render once the document changes under it -- the same
+    // reason the palette and the wheel bind one.
+    void BindSurface(ETCS::RID surface)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintSurface", surface);
+        if (raw) m_surface = static_cast<PaintSurface*>(raw->getTrueType());
+    }
+
+    void StepWidth(int32_t delta)  { m_width  = clamp_px(m_width  + delta); push_readouts(); }
+    void StepHeight(int32_t delta) { m_height = clamp_px(m_height + delta); push_readouts(); }
+
+    void SetAnchor(int32_t anchor)
+    {
+        m_anchor = std::clamp(anchor, 0, 8);
+        show_anchor();
+    }
+
+    void BindWidthReadout(ETCS::RID label)  { m_w_label = label; push_readouts(); }
+    void BindHeightReadout(ETCS::RID label) { m_h_label = label; push_readouts(); }
+
+    // The nine cells, by grid index; painted at once so the chosen one shows
+    // from the moment the script binds it.
+    void BindAnchorCell(int32_t index, ETCS::RID node)
+    {
+        if (index < 0 || index > 8 || node == 0) return;
+        m_cells[index] = node;
+        show_anchor();
+    }
+
+    void ApplyResize()
+    {
+        if (!m_document) { ETCS_LOG("PaintCanvasMenu", "resize: no document -- Create first."); return; }
+        if (m_document->Resize(static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height), m_anchor)
+            && m_surface)
+            m_surface->Render();
+    }
+
+    void ApplyNew()
+    {
+        if (!m_document) { ETCS_LOG("PaintCanvasMenu", "new: no document -- Create first."); return; }
+        if (m_document->New(static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height)) && m_surface)
+            m_surface->Render();
+    }
+
+    /*
+ * SAVE AND LOAD ARE THE PAGE'S, and this only says so. The file verbs take a
+ * path (PaintDocument::ExportImage / ImportImage) and a path is something the
+ * SUBSTRATE produces: in the browser it is the page's download and upload
+ * controls that turn a path into a file the user can see, and there is no file
+ * dialog on the desktop side yet. So under emscripten this raises a DOM event
+ * the page listens for and answers with the same code its header buttons run;
+ * natively it names the verb to type.
+ */
+    void Save() { page_event("save"); }
+    void Load() { page_event("load"); }
+
+    void Report() const
+    {
+        ETCS_LOG("PaintCanvasMenu", "pending " << m_width << "x" << m_height
+                 << " anchor " << m_anchor << " (" << anchor_name(m_anchor) << ")"
+                 << ", document " << (m_document ? std::to_string(m_document->width()) + "x"
+                                                   + std::to_string(m_document->height())
+                                                 : std::string("unbound")));
+    }
+
+    int32_t width()  const { return m_width; }
+    int32_t height() const { return m_height; }
+    int32_t anchor() const { return m_anchor; }
+
+private:
+    static int32_t clamp_px(int32_t v) { return std::clamp(v, MIN_PX, MAX_PX); }
+
+    static const char* anchor_name(int32_t a)
+    {
+        static const char* names[9] = { "top-left", "top", "top-right", "left", "centre",
+                                        "right", "bottom-left", "bottom", "bottom-right" };
+        return (a >= 0 && a < 9) ? names[a] : "?";
+    }
+
+    // Through the palette's seam, since these are its nodes' verbs -- see
+    // PaintPalette::set_node_text.
+    void push_readouts()
+    {
+        PaintPalette::set_node_text(m_w_label, std::to_string(m_width));
+        PaintPalette::set_node_text(m_h_label, std::to_string(m_height));
+    }
+
+    /*
+ * THE CHOSEN CELL IS THE BRIGHT ONE. All nine are written every time rather
+ * than the two that changed, because a cell may have been bound since the last
+ * change and there is no cheaper way to know. The colours are here rather than
+ * in the script because the script's initial fill is overwritten on bind
+ * anyway: the palette's control colour for the rest, the page's gold for the
+ * one that counts.
+ */
+    void show_anchor()
+    {
+        for (int32_t i = 0; i < 9; ++i)
+        {
+            if (m_cells[i] == 0) continue;
+            if (i == m_anchor) PaintPalette::set_node_fill(m_cells[i], 0.79f, 0.71f, 0.35f, 1.0f);
+            else               PaintPalette::set_node_fill(m_cells[i], 0.22f, 0.22f, 0.27f, 1.0f);
+        }
+    }
+
+    /*
+ * MAIN_THREAD_EM_ASM, not EM_ASM, for the reason etcs_web_shell_write gives:
+ * this runs on the router's thread, a Worker with no window. It is proxied to
+ * the page and waits for it, so the listener's own synchronous verb calls
+ * (ExportImage, from the download path) run on the main thread while this
+ * thread is parked, not against it.
+ *
+ * "load" clicks a file input from a proxied call. A browser opens a file dialog
+ * only on transient user activation, and whether the activation of the press
+ * that reached the gear's menu -- a canvas mousedown, then a Worker, then this
+ * proxy -- is still standing when the page gets here is the browser's call, not
+ * this code's. Untested here. The header's upload button is the same code from
+ * a real click, and remains the way that always works.
+ */
+    void page_event(const char* what)
+    {
+#if defined(__EMSCRIPTEN__)
+        MAIN_THREAD_EM_ASM({
+            var what = UTF8ToString($0);
+            window.dispatchEvent(new CustomEvent('etcs-menu', { detail: what }));
+        }, what);
+        ETCS_LOG("PaintCanvasMenu", what << " -> the page (etcs-menu event).");
+#else
+        ETCS_LOG("PaintCanvasMenu", what << ": no file dialog on this substrate. From the terminal: "
+                 << (what[0] == 's' ? "doc.ExportImage(<path>)"
+                                    : "doc.ImportImage(<path>), then canvas.Render()"));
+#endif
+    }
+
+    PaintDocument* m_document = nullptr;
+    PaintSurface*  m_surface  = nullptr;
+    int32_t m_width  = 1024;
+    int32_t m_height = 768;
+    int32_t m_anchor = 4;
+    ETCS::RID m_w_label = 0;
+    ETCS::RID m_h_label = 0;
+    ETCS::RID m_cells[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+};
 
 
 class PaintInput : public DeletableBase<PaintInput>
@@ -4764,11 +6653,13 @@ public:
         if (m_palette && is_press && m_palette->Apply(hit_rid))
         {
             m_on_palette = true;
+            m_palette->Hold(hit_rid);           // a stepper keeps stepping until let go
             return;
         }
         if (is_release && m_on_palette)
         {
             m_on_palette = false;               // the press that ended was a selection
+            m_palette->Release();
             return;
         }
 
@@ -4938,6 +6829,14 @@ public:
     // phantom drag costs a line across the picture; something that reads a hold
     // as a MODE raises it. See HeldCharge.
     void SetHoldCapacity(uint16_t n) { m_pan_hold.SetCapacity(n); m_stroke_hold.SetCapacity(n); }
+
+    void BindPages(ETCS::RID pages)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintPages", pages);
+        if (!raw) return;
+        m_pages = static_cast<PaintPages*>(raw->getTrueType());
+    }
+
 
     void HandleEvent(const InputEvent& ev)
     {
@@ -5385,6 +7284,41 @@ public:
      *   ctrl+y          redo      request named them as "the latter two")
      *   ctrl+c / x / v  copy, cut, paste the selection
      */
+/*
+     * ── chords ───────────────────────────────────────────────────────────
+     *
+     * Read before the text box gets the key, because ctrl+z in a box means the
+     * document's undo, not a letter. GLFW's codes: the letter keys are their
+     * ASCII uppercase. Each is glue to a document verb -- a script or the
+     * terminal reaches the same thing by name.
+     *
+     *   ctrl+z          undo
+     *   ctrl+shift+z    redo     (the two redo spellings, both honoured: the
+     *   ctrl+y          redo      request named them as "the latter two")
+     *   ctrl+c / x / v  copy, cut, paste the selection
+     *   ctrl+PageUp     the previous page      (PaintPages::Prev)
+     *   ctrl+PageDown   the next page          (PaintPages::Next)
+     *
+     * PageUp/PageDown and not ctrl+Tab, which is what a browser means by
+     * "next tab" and what the window uses as its capture escape -- a chord
+     * the substrate takes first is not a chord this program has.
+     */
+        constexpr uint16_t KEY_PAGE_UP = 266, KEY_PAGE_DOWN = 267;
+        if (paint_modifiers().ctrl() && (key == KEY_PAGE_UP || key == KEY_PAGE_DOWN))
+        {
+            if (!m_pages) { ETCS_LOG("PaintInput", "chord ctrl+Page" << (key == KEY_PAGE_UP ? "Up" : "Down") << " -- no pages bound (BindPages)."); return true; }
+            // A switch replaces the layers under everything: the carry, the
+            // panel's rows and the view all describe the page that was.
+            const bool did = (key == KEY_PAGE_UP) ? m_pages->Prev() : m_pages->Next();
+            if (did)
+            {
+                m_sel_carry = false;
+                if (m_panel) m_panel->Refresh();
+                repaint_view();
+            }
+            return true;
+        }
+
         if (paint_modifiers().ctrl())
         {
             constexpr uint16_t KEY_C = 67, KEY_V = 86, KEY_X = 88, KEY_Y = 89, KEY_Z = 90;
@@ -5423,6 +7357,13 @@ public:
                 m_document->ClearSelection();
                 m_sel_carry = false;
                 ETCS_LOG("PaintInput", "selection cleared");
+                repaint_view();
+                return true;
+            }
+            if (key == KEY_DELETE && m_document->hasSelection())
+            {
+                m_sel_carry = false;
+                ETCS_LOG("PaintInput", "selection " << (m_document->DeleteSelection() ? "deleted" : "not deleted"));
                 repaint_view();
                 return true;
             }
@@ -5632,6 +7573,33 @@ private:
         case PaintToolKind::Ellipse:
             preview_ellipse(view, vax, vay, vbx, vby, c, w);
             break;
+        case PaintToolKind::Shape:
+            switch (m_tool->shape())
+            {
+            case PaintShapeMode::Rect:
+                preview_line(view, vax, vay, vbx, vay, c, w);
+                preview_line(view, vbx, vay, vbx, vby, c, w);
+                preview_line(view, vbx, vby, vax, vby, c, w);
+                preview_line(view, vax, vby, vax, vay, c, w);
+                break;
+            case PaintShapeMode::Ellipse:
+                preview_ellipse(view, vax, vay, vbx, vby, c, w);
+                break;
+            default:
+            {
+                // In VIEW space, so the projected outline is the one committed.
+                std::vector<std::pair<int32_t, int32_t>> v;
+                paint_shape_vertices(m_tool->shape(), ax, ay, bx, by, v);
+                for (size_t i = 0; i < v.size(); ++i)
+                {
+                    const auto& p0 = v[i]; const auto& p1 = v[(i + 1) % v.size()];
+                    preview_line(view, m_surface->DocToViewX(p0.first), m_surface->DocToViewY(p0.second),
+                                 m_surface->DocToViewX(p1.first), m_surface->DocToViewY(p1.second), c, w);
+                }
+                break;
+            }
+            }
+            break;
         case PaintToolKind::Ruler:
             preview_ruler(view, vax, vay, vbx, vby, ax, ay, bx, by, z);
             break;
@@ -5659,6 +7627,24 @@ private:
         case PaintToolKind::Line:    layer->StrokeLine(ax, ay, bx, by, brush); break;
         case PaintToolKind::Rect:    layer->DrawRectOutline(ax, ay, bx, by, brush); break;
         case PaintToolKind::Ellipse: layer->DrawEllipseOutline(ax, ay, bx, by, brush); break;
+        case PaintToolKind::Shape:
+            switch (m_tool->shape())
+            {
+            case PaintShapeMode::Rect:    layer->DrawRectOutline(ax, ay, bx, by, brush); break;
+            case PaintShapeMode::Ellipse: layer->DrawEllipseOutline(ax, ay, bx, by, brush); break;
+            default:
+            {
+                std::vector<std::pair<int32_t, int32_t>> v;
+                paint_shape_vertices(m_tool->shape(), ax, ay, bx, by, v);
+                for (size_t i = 0; i < v.size(); ++i)
+                {
+                    const auto& p0 = v[i]; const auto& p1 = v[(i + 1) % v.size()];
+                    layer->StrokeLine(p0.first, p0.second, p1.first, p1.second, brush);
+                }
+                break;
+            }
+            }
+            break;
         // A glyph commit places a BOX, not pixels, and a box is the document's
         // rather than the layer's -- see PaintTextBox and place_text_box.
         case PaintToolKind::Glyph:   place_text_box(ax, ay, bx, by); break;
@@ -5682,6 +7668,28 @@ private:
             const size_t n = layer->FloodFill(x, y, m_tool->brush().color,
                                               m_tool->tolerance());
             ETCS_LOG("PaintInput", "fill at " << x << "," << y << " -> " << n << " px");
+        }
+        else if (kind == PaintToolKind::Eyedrop)
+        {
+            /*
+         * THE COLOUR UNDER THE PRESS, as seen -- every visible layer composited
+         * at that pixel, not the active layer's byte, because what the user
+         * pointed at is the picture. Through the wheel when there is one, so the
+         * swatch slot the wheel was aimed at takes the colour exactly as a pick
+         * on the disc would; otherwise straight onto the tool. Then the kind that
+         * was in use comes back: an eyedropper is a one-press detour, not a
+         * mode you have to find your way out of.
+         */
+            float c[4] = { 0, 0, 0, 0 };
+            if (m_document->SampleAt(x, y, c))
+            {
+                if (m_wheel) m_wheel->Apply(c[0], c[1], c[2], c[3] > 0.0f ? 1.0f : 0.0f);
+                else         m_tool->SetColor(c[0], c[1], c[2], 1.0f);
+                ETCS_LOG("PaintInput", "eyedrop at " << x << "," << y << " -> "
+                         << c[0] << ", " << c[1] << ", " << c[2] << " (a " << c[3] << ")");
+            }
+            if (m_wheel) m_wheel->EndPick();
+            else         m_tool->SetKind("brush");
         }
         repaint_view();
     }
@@ -5971,6 +7979,7 @@ private:
     uint16_t m_pan_button = 0;
     // The two holds this input can be in, each re-judged per event while live.
     // See still_held. Capacity is deliberately small: see SetHoldCapacity.
+    PaintPages*      m_pages = nullptr;   // quick switch -- see BindPages
     HeldCharge m_pan_hold{ 4 };
     HeldCharge m_stroke_hold{ 4 };
     uint16_t   m_stroke_button = 0;
@@ -6020,6 +8029,62 @@ private:
  * priority with the same SetOrder it already uses for a swatch.
  */
 
+
+/*
+ * ── PaintRepeat ──────────────────────────────────────────────────────────
+ *
+ * THE FRAME, LENT TO THE PALETTE AS A CLOCK. It draws nothing and has no extent;
+ * it exists to be VISITED. While the palette has a stepper held it answers yes
+ * to Animating(), which keeps the compositor above it composing every frame,
+ * and each of those compositions calls DrawInto -- which is where it asks the
+ * palette to Tick(). With nothing held it answers no and costs nothing, and the
+ * bar settles like any other still picture.
+ *
+ * A child of the bar, spawned by the toolbar script beside the buttons it
+ * serves. Not a thread, not a timer: there is no clock in this page but the
+ * frame, and this is the one way in the tree to be told when it happens.
+ */
+class PaintRepeat : public Drawable2DBase<PaintRepeat>,
+                    public DeletableBase<PaintRepeat>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintRepeat);
+
+    int32_t m_order = 0;
+    bool operator<(const PaintRepeat& o) const { return m_order < o.m_order; }
+    int32_t Order() override { return m_order; }
+    bool DeleteConcrete() override { return true; }
+
+    void BindPalette(ETCS::RID palette) { m_palette = palette; }
+
+    bool Animating() override
+    {
+        PaintPalette* p = palette();
+        return p && p->holding();
+    }
+
+    Rect2D BoundsConcrete() override { return Rect2D{ 0, 0, 0, 0 }; }
+    bool ContainsLocalConcrete(int32_t, int32_t) override { return false; }
+    WindowSize GetSizeConcrete() override { return WindowSize{ 0, 0 }; }
+    // A Drawable2D is a Surface; this one has no pixels and takes no drawing.
+    void ClearConcrete(float, float, float, float) override {}
+    void DrawRectConcrete(int32_t, int32_t, uint32_t, uint32_t,
+                          float, float, float, float) override {}
+    void BlitConcrete(Surface_*, int32_t, int32_t, uint32_t, uint32_t, float) override {}
+    void DrawIntoConcrete(Surface_*) override
+    {
+        if (PaintPalette* p = palette()) p->Tick();
+    }
+
+private:
+    PaintPalette* palette()
+    {
+        if (m_palette == 0) return nullptr;
+        ETCS::Entity* raw = paint_resolve_tag("PaintPalette", m_palette);
+        return raw ? static_cast<PaintPalette*>(raw->getTrueType()) : nullptr;
+    }
+    ETCS::RID m_palette = 0;
+};
 
 class PaintRouter : public DeletableBase<PaintRouter>
 {
@@ -6318,6 +8383,14 @@ DEFINE_WORK_FUNC(PaintTool, SetKind)
 
 // SetMode <rect|ellipse|wand|lasso> -- how the select tool draws its boundary.
 // Read by that kind alone; see PaintSelectMode.
+// SetShape <rect|oval|triangle|diamond|star> -- the shape tool's outline.
+DEFINE_WORK_FUNC(PaintTool, SetShape)
+{
+    (void)ctx;
+    std::string name; data >> name;
+    self.SetShape(name);
+}
+
 DEFINE_WORK_FUNC(PaintTool, SetMode)
 {
     (void)ctx;
@@ -6591,6 +8664,11 @@ DEFINE_WORK_FUNC(PaintDocument, CopySelection)
     (void)ctx; (void)data;
     ETCS_LOG("PaintDocument", "copy: " << (self.CopySelection() ? "taken" : "nothing selected"));
 }
+DEFINE_WORK_FUNC(PaintDocument, DeleteSelection)
+{
+    (void)ctx; (void)data;
+    ETCS_LOG("PaintDocument", "delete: " << (self.DeleteSelection() ? "cleared" : "nothing selected"));
+}
 DEFINE_WORK_FUNC(PaintDocument, CutSelection)
 {
     (void)ctx; (void)data;
@@ -6630,6 +8708,66 @@ DEFINE_WORK_FUNC_TYPED(PaintDocument, RenderToSurface,
 {
     (void)ctx;
     self.RenderToSurface(target, x, y);
+}
+
+// ImportImage <path> / ExportImage <path> / ExportLayer <path> -- the rest of
+// the line, as SetName takes it, because a path has dots and may have spaces;
+// a quoted one is unquoted, since a script that quoted it meant the inside.
+// The same three lines from the terminal on either substrate and from the
+// page's two buttons (index.html), which write and read the browser's own
+// filesystem and call these -- see the PAM note above PaintImage.
+static inline std::string paint_path_arg(ETCS::Buffer& data)
+{
+    std::string s = data.restAsString();
+    const char* ws = " \t\r\n";
+    const size_t a = s.find_first_not_of(ws);
+    if (a == std::string::npos) return std::string();
+    const size_t b = s.find_last_not_of(ws);
+    s = s.substr(a, b - a + 1);
+    if (s.size() >= 2 && (s.front() == '\'' || s.front() == '"') && s.back() == s.front())
+        s = s.substr(1, s.size() - 2);
+    return s;
+}
+
+DEFINE_WORK_FUNC(PaintDocument, ImportImage)
+{
+    (void)ctx;
+    const std::string path = paint_path_arg(data);
+    if (path.empty()) { ETCS_LOG("PaintDocument", "ImportImage needs a path."); return; }
+    self.ImportImage(path);
+}
+
+DEFINE_WORK_FUNC(PaintDocument, ExportImage)
+{
+    (void)ctx;
+    const std::string path = paint_path_arg(data);
+    if (path.empty()) { ETCS_LOG("PaintDocument", "ExportImage needs a path."); return; }
+    self.ExportImage(path);
+}
+
+DEFINE_WORK_FUNC(PaintDocument, ExportLayer)
+{
+    (void)ctx;
+    const std::string path = paint_path_arg(data);
+    if (path.empty()) { ETCS_LOG("PaintDocument", "ExportLayer needs a path."); return; }
+    self.ExportLayer(path);
+}
+
+// Resize <w> <h> <anchor 0..8> -- the page re-stated around its pixels, the
+// anchored cell of a 3x3 grid staying put (0 top-left, 4 centre, 8
+// bottom-right). New <w> <h> -- the same extent with every layer cleared.
+// Neither is a history step: see PaintDocument::Resize. Render the surface
+// after either, as after any scripted change.
+DEFINE_WORK_FUNC_TYPED(PaintDocument, Resize, (uint32_t, w), (uint32_t, h), (int32_t, anchor))
+{
+    (void)ctx;
+    self.Resize(w, h, anchor);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintDocument, New, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    self.New(w, h);
 }
 
 /*
@@ -6908,6 +9046,98 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddSize, (ETCS::RID, node), (float, radius)
     self.AddSize(node, radius);
 }
 
+// SetHoldCapacity <frames> -- how long a held stepper keeps stepping with no
+// release in sight. 600 by default; see PaintPalette::Tick.
+DEFINE_WORK_FUNC_TYPED(PaintPalette, SetHoldCapacity, (int32_t, n))
+{
+    (void)ctx;
+    self.SetHoldCapacity(static_cast<uint16_t>(n < 1 ? 1 : n));
+}
+
+// PaintRepeat: BindPalette <rid> -- whose steppers this frame-visit serves.
+DEFINE_WORK_FUNC_TYPED(PaintRepeat, BindPalette, (ETCS::RID, palette))
+{
+    (void)ctx;
+    self.BindPalette(palette);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Create <doc_rid> <db_rid> -- the database must already be Connected: the
+// schema is applied here, and a connection is the script's decision (a path
+// is where a page store lives, and only the script knows the substrate).
+DEFINE_WORK_FUNC_TYPED(PaintPages, Create, (ETCS::RID, document), (ETCS::RID, database))
+{
+    (void)ctx;
+    self.Create(document, database);
+}
+
+// BindSurface <rid> -- the surface repainted when a page is loaded.
+DEFINE_WORK_FUNC_TYPED(PaintPages, BindSurface, (ETCS::RID, surface))
+{
+    (void)ctx;
+    self.BindSurface(surface);
+}
+
+DEFINE_WORK_FUNC(PaintPages, Save)
+{
+    (void)ctx; (void)data;
+    self.Save();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPages, Load, (int64_t, id))
+{
+    (void)ctx;
+    self.Load(id);
+}
+
+DEFINE_WORK_FUNC(PaintPages, New)
+{
+    (void)ctx; (void)data;
+    self.New();
+}
+
+DEFINE_WORK_FUNC(PaintPages, Next)
+{
+    (void)ctx; (void)data;
+    self.Next();
+}
+
+DEFINE_WORK_FUNC(PaintPages, Prev)
+{
+    (void)ctx; (void)data;
+    self.Prev();
+}
+
+DEFINE_WORK_FUNC(PaintPages, List)
+{
+    (void)ctx; (void)data;
+    self.List();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPages, Delete, (int64_t, id))
+{
+    (void)ctx;
+    self.Delete(id);
+}
+
+// The entity, not a page: Delete takes a page id, so the verb every other
+// type spells Delete is Destroy here -- two meanings of one word on one type
+// would make `pages.Delete(3)` a coin toss.
+DEFINE_WORK_FUNC(PaintPages, Destroy)
+{
+    (void)ctx; (void)data;
+    self.DeleteConcrete();
+}
+
+// AddHoverLabel <entry_rid> <label_rid> -- a caption shown while that entry's
+// group is hovered, hidden otherwise. See PaintPalette::AddHoverLabel.
+DEFINE_WORK_FUNC_TYPED(PaintPalette, AddHoverLabel, (ETCS::RID, entry), (ETCS::RID, label))
+{
+    (void)ctx;
+    self.AddHoverLabel(entry, label);
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintPalette, AddRadiusDelta, (ETCS::RID, node), (float, delta))
 {
     (void)ctx;
@@ -6932,6 +9162,13 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddModeArrow, (ETCS::RID, node), (ETCS::RID
 {
     (void)ctx;
     self.AddModeArrow(node, slot);
+}
+
+// SetShapeReadout <label> -- the shape slice's current outline, by name.
+DEFINE_WORK_FUNC_TYPED(PaintPalette, SetShapeReadout, (ETCS::RID, label))
+{
+    (void)ctx;
+    self.SetShapeReadout(label);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintPalette, SetModeReadout, (ETCS::RID, label))
@@ -7000,10 +9237,46 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, SetColorOf,
                  << " -- not a colour swatch of this palette.");
 }
 
+/*
+ * AddCall <node_rid> <target_rid> <Tag.Action> <args...> -- pressing the node
+ * calls that verb on that entity with the rest of the line as its argument
+ * text, exactly as a script line would. The general entry; see
+ * PaintPalette::AddCall for why the older kinds are not spelled with it.
+ */
+DEFINE_WORK_FUNC(PaintPalette, AddCall)
+{
+    (void)ctx;
+    ETCS::RID node = 0, target = 0;
+    std::string action;
+    data >> node >> target >> action;
+    self.AddCall(node, target, action, data.restAsString());
+}
+
+// AddPopup <node_rid> <pane_rid> <input_rid> -- pressing the node opens the
+// pane (routed through that input) and pressing anywhere closes it. BindRouter
+// <rid> is what it opens into.
+DEFINE_WORK_FUNC_TYPED(PaintPalette, AddPopup, (ETCS::RID, node), (ETCS::RID, pane), (ETCS::RID, input))
+{
+    (void)ctx;
+    self.AddPopup(node, pane, input);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPalette, BindRouter, (ETCS::RID, router))
+{
+    (void)ctx;
+    self.BindRouter(router);
+}
+
 DEFINE_WORK_FUNC(PaintPalette, Report)
 {
     (void)ctx; (void)data;
     self.Report();
+}
+
+DEFINE_WORK_FUNC(PaintRepeat, Delete)
+{
+    (void)ctx; (void)data;
+    self.DeleteConcrete();
 }
 
 DEFINE_WORK_FUNC(PaintPalette, Delete)
@@ -7249,6 +9522,100 @@ DEFINE_WORK_FUNC(PaintColorWheel, Delete)
     self.DeleteConcrete();
 }
 
+// ── PaintCanvasMenu ──────────────────────────────────────────────────────
+//
+// The menu's look is paint_menu.etcs; every verb here is what one of its
+// nodes says when pressed (PaintPalette::AddCall), and every one is equally a
+// line a script or the page can type.
+
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, Create, (ETCS::RID, document))
+{
+    (void)ctx;
+    self.Create(document);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindSurface, (ETCS::RID, surface))
+{
+    (void)ctx;
+    self.BindSurface(surface);
+}
+
+// StepWidth <delta> / StepHeight <delta> -- in pixels, clamped to 64..8192.
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, StepWidth, (int32_t, delta))
+{
+    (void)ctx;
+    self.StepWidth(delta);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, StepHeight, (int32_t, delta))
+{
+    (void)ctx;
+    self.StepHeight(delta);
+}
+
+// SetAnchor <0..8> -- which cell of the 3x3 grid stays put on resize.
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, SetAnchor, (int32_t, anchor))
+{
+    (void)ctx;
+    self.SetAnchor(anchor);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindWidthReadout, (ETCS::RID, label))
+{
+    (void)ctx;
+    self.BindWidthReadout(label);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindHeightReadout, (ETCS::RID, label))
+{
+    (void)ctx;
+    self.BindHeightReadout(label);
+}
+
+// BindAnchorCell <index 0..8> <node_rid> -- the cell's fill shows whether it
+// is the chosen one, from now on.
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindAnchorCell, (int32_t, index), (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindAnchorCell(index, node);
+}
+
+DEFINE_WORK_FUNC(PaintCanvasMenu, ApplyResize)
+{
+    (void)ctx; (void)data;
+    self.ApplyResize();
+}
+
+DEFINE_WORK_FUNC(PaintCanvasMenu, ApplyNew)
+{
+    (void)ctx; (void)data;
+    self.ApplyNew();
+}
+
+DEFINE_WORK_FUNC(PaintCanvasMenu, Save)
+{
+    (void)ctx; (void)data;
+    self.Save();
+}
+
+DEFINE_WORK_FUNC(PaintCanvasMenu, Load)
+{
+    (void)ctx; (void)data;
+    self.Load();
+}
+
+DEFINE_WORK_FUNC(PaintCanvasMenu, Report)
+{
+    (void)ctx; (void)data;
+    self.Report();
+}
+
+DEFINE_WORK_FUNC(PaintCanvasMenu, Delete)
+{
+    (void)ctx; (void)data;
+    self.DeleteConcrete();
+}
+
 // ── PaintRouter ──────────────────────────────────────────────────────────
 //
 // The arbiter's script surface. Panes are added by RID pairs and the priority is
@@ -7413,6 +9780,15 @@ DEFINE_WORK_FUNC_TYPED(PaintInput, SetHoldCapacity, (int32_t, n))
 {
     (void)ctx;
     self.SetHoldCapacity(static_cast<uint16_t>(n < 1 ? 1 : n));
+}
+
+// BindPages <rid> -- the page store the ctrl+PageUp/PageDown chords switch.
+DEFINE_WORK_FUNC(PaintInput, BindPages)
+{
+    (void)ctx;
+    ETCS::RID pages = 0;
+    data >> pages;
+    self.BindPages(pages);
 }
 
 DEFINE_WORK_FUNC(PaintInput, BindCanvas)

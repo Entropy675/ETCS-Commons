@@ -6,13 +6,13 @@
 // thread / OS event pump affinity).
 ETCS_MODULE_EXPORT_MAIN(PaintProvider,
     "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette "
-    "PaintRouter PaintLayerPanel PaintColorWheel")
+    "PaintRouter PaintLayerPanel PaintColorWheel PaintRepeat PaintCanvasMenu PaintPages")
 
 // SetKind is what makes one tool eight: radius/colour/hardness vary
 // independently of it, and the kind is the shape of the whole gesture rather
 // than which nib is loaded. See PaintToolKind.
 ETCS_TAG_BLOCK_BASIC(PaintTool,
-    SetRadius, SetColor, SetKind, SetMode, SetText, SetTextSize, SetTolerance,
+    SetRadius, SetColor, SetKind, SetMode, SetShape, SetText, SetTextSize, SetTolerance,
     SetMotionCoalesceMs, SetAlphaPercent,
     BeginStroke, MoveStroke, EndStroke, CancelStroke, Delete)
 
@@ -24,13 +24,18 @@ ETCS_TAG_BLOCK_BASIC(PaintLayer,
 
 // The selection verbs are the document's because the selection is: one per
 // document, shown by every surface onto it (PaintDocument's selection note).
+// So are the file verbs: an import is a new layer of THIS stack and an export
+// is its composite, and both take a path (PaintDocument::ImportImage). And the
+// extent verbs: Resize re-states the page around every layer at once, and New
+// is that plus a clear (PaintDocument::Resize).
 ETCS_TAG_BLOCK_BASIC(PaintDocument,
     Create, SetActiveLayer, ClearLayer, RenderToSurface,
     MoveLayerTo, RenameLayer, RemoveLayer, IsolateLayer, ClearIsolate,
     BindGlyphs, AddTextBox, SetTextBoxText, RemoveTextBox,
     ShowTextBoxes, SelectTextBox,
     SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
-    CopySelection, CutSelection, PasteSelection, Undo, Redo,
+    CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo,
+    ImportImage, ExportImage, ExportLayer, Resize, New,
     Report, Delete)
 
 // The projection verbs sit beside Render because every one of them ends in a
@@ -42,7 +47,7 @@ ETCS_TAG_BLOCK_BASIC(PaintSurface,
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
-     BindRoot, BindCanvas, BindPalette, BindPanel, BindGlyphs, SetHoldCapacity,
+     BindRoot, BindCanvas, BindPalette, BindPanel, BindGlyphs, SetHoldCapacity, BindPages,
      BindWheel, SetWheelPane,
      Pointer, Press, Release, Report, Delete),
     (ConsumeInput, ConsumePointer, ConsumeRouted, ConsumeRoutedPointer))
@@ -60,8 +65,17 @@ ETCS_TAG_BLOCK_HYBRID(PaintInput,
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
-    BindWheel, AddWheelArrow, AddModeArrow, SetModeReadout,
+    BindWheel, AddWheelArrow, AddModeArrow, SetModeReadout, SetShapeReadout, SetHoldCapacity, AddHoverLabel,
+    AddCall, AddPopup, BindRouter,
     SetColorOf, Report, Delete)
+
+// The pages of this session, kept in a database -- see PaintPages.
+ETCS_TAG_BLOCK_BASIC(PaintPages,
+    Create, BindSurface, Save, Load, New, Next, Prev, List, Delete, Destroy)
+
+// The frame, lent to the palette as a clock -- see PaintRepeat.
+ETCS_TAG_BLOCK_BASIC(PaintRepeat,
+    BindPalette, Delete)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
@@ -76,6 +90,15 @@ ETCS_TAG_BLOCK_BASIC(PaintLayerPanel,
 ETCS_TAG_BLOCK_BASIC(PaintColorWheel,
     Create, BindTool, BindPalette, BindRouter, BindPane, BindSurface, SetValue,
     Open, OpenAt, SetTargetSlot, Close, Pick, Report, Delete)
+
+// The settings menu's PENDING extent and anchor, and the two verbs that hand
+// them to the document. Its controls are script nodes bound through
+// PaintPalette::AddCall, which is why nothing here is a pick. See
+// PaintCanvasMenu.
+ETCS_TAG_BLOCK_BASIC(PaintCanvasMenu,
+    Create, BindSurface, StepWidth, StepHeight, SetAnchor,
+    BindWidthReadout, BindHeightReadout, BindAnchorCell,
+    ApplyResize, ApplyNew, Save, Load, Report, Delete)
 
 // HYBRID for the same reason PaintInput is: its consume edges are the standing
 // control-thread ends of the window's producers, not one-shot calls.

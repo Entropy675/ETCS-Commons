@@ -1235,6 +1235,21 @@ DEFINE_WORK_FUNC_TYPED(TextLabel, SetBackground,
     self.SetBackground(r, g, b, a);
 }
 
+// SetHidden <0|1> -- the same verb the compositor answers, for the same reason:
+// a caption that is only shown on hover is a label somebody else hides and
+// shows, and Drawable_::Hidden is where every drawable keeps that.
+DEFINE_WORK_FUNC_TYPED(TextLabel, SetHidden, (int32_t, hidden))
+{
+    (void)ctx;
+    self.SetHidden(hidden != 0);
+}
+
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, SetHidden, (int32_t, hidden))
+{
+    (void)ctx;
+    self.SetHidden(hidden != 0);
+}
+
 DEFINE_WORK_FUNC_TYPED(TextLabel, SetPadding, (uint32_t, px))
 {
     (void)ctx;
