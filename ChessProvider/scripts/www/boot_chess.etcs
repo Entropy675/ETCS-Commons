@@ -1,0 +1,41 @@
+#!/usr/bin/env etcs
+
+# ONE NODE, BOTH SEATS LOCAL. This is the whole boot: a ChessNode is the
+# ordering domain a ChessGame needs (ChessGame::streamOf() answers null, and
+# every verb refuses, with none in front of it -- see ChessNode.h), so the
+# node exists here for that reason alone. Nothing about rendering lives in
+# this script because nothing about the board is drawn by ETCS: the page is
+# the same DOM grid of squares the server-authoritative chess.html already
+# used, just fed from this runtime instead of from fetch(). See this folder's
+# README, "Why no canvas", for the rest of that reasoning -- and for why
+# there is no `detach` here, no window, no frame pump: a ChessGame is text
+# state, not pixels, so nothing here needs one. The runtime's own REPL
+# worker (ETCS_REPL_SHELL, on for every web loader build) is what keeps this
+# session alive regardless, exactly as it does for ShellProvider's own
+# terminal-only page.
+
+spawn ChessProvider::ChessNode game
+game.Mount(game)
+
+# Warms the match into existence so the page's FIRST call is a move, not a
+# race with lazy match creation (ChessNode::createGameLocked runs on the
+# first Request that names a match). Spent here instead of on the first
+# click, which is also what tells the terminal the board is actually up
+# before anyone has touched it.
+game.Request(game/white/local/fen)
+
+# THE SAME NODE THE HOSTED ONE IS. What follows is chess_web.etcs
+# (NetworkProvider/scripts) minus its static pages: the same HttpServer,
+# the same route (every /game/... path answered by this node's Request, the
+# listing verbs rooms and players included), the same CORS header. Every
+# line of it takes in a browser except the last: Start() asks the OS for a
+# listening socket and a browser has none to give, so ConnectionManager
+# logs `listen() failed`, HttpServer logs `not started`, and the page goes
+# on -- which is the honest outcome, and the point. This node is a name
+# server in kind; what it lacks is an address anyone else can dial, and
+# that is the peer link's job (README, "Name servers, all the way down").
+ensure NetworkProvider::HttpServer web
+web.SetPort(8080)
+web.AddRoute(@game Request @game Filter)
+web.AddHeader(Access-Control-Allow-Origin *)
+web.Start()

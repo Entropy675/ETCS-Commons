@@ -1,0 +1,58 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# SERVE THE LOCAL CHESS PAGE -- one board, both seats, a terminal -- over TLS.
+#
+#     etcs modules/ChessProvider/scripts/serve_chess.etcs
+#     then open https://localhost:8444/
+#
+# Same shape as serve_paint.etcs: the two isolation headers a -pthread build's
+# Workers die without (`wasmMemory is undefined`), the runtime mounted from
+# bin/wasm rather than copied beside the page, and every mount spelled from
+# ACE_ROOT so the cwd does not matter. Port 8444, not 8443, so this and the
+# paint page can run side by side.
+#
+# Generate a self-signed cert first, once (see NetworkProvider/scripts/
+# tls_server.etcs for why the -addext line is not optional):
+#
+#   openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+#     -keyout /tmp/etcs-key.pem -out /tmp/etcs-cert.pem \
+#     -subj "/CN=localhost" \
+#     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+
+spawn NetworkProvider::HttpServer web
+web.SetPort(8444)
+web.EnableTLS(/tmp/etcs-cert.pem /tmp/etcs-key.pem)
+
+# Cross-origin isolation, which is what makes SharedArrayBuffer -- and
+# therefore threads, and therefore ChessOpEvent's blocking wait -- available
+# at all. Confirm from the page's console with `crossOriginIsolated,
+# typeof SharedArrayBuffer`: true / "function".
+web.AddHeader(Cross-Origin-Opener-Policy same-origin)
+web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
+
+web.spawn(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(ACE_ROOT/modules/ChessProvider/scripts/www)
+tree.SetDefaultExtension(.html)
+
+# The shared artifact directory, at the path every page in this tree resolves
+# against first (WASM_BASE_CANDIDATES, index.html).
+tree.MountTree(wasm ACE_ROOT/bin/wasm)
+
+# The site's own icons, so the page wears the same mark here as it does served
+# from anticurrententropy.com.
+tree.MountTree(favicon ACE_ROOT/scripts/www/favicon)
+
+# The boot script, at the path it is staged under (www/modules.json) -- the
+# same path the OS side would read it from, so it needs no second spelling.
+tree.MountFile(boot_chess.etcs ACE_ROOT/modules/ChessProvider/scripts/www/boot_chess.etcs)
+
+# The terminal view, from ShellProvider's own page rather than a copy of it.
+tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)
+
+# The whole served surface: a name the page asks for and this does not list is
+# a 404 waiting to happen.
+tree.ListPaths()
+
+web.Start()
+web.IsStarted()

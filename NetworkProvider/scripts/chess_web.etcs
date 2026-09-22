@@ -13,5 +13,12 @@ tree.LoadFromDisk(./www)
 tree.ListPaths()
 
 web.AddRoute(@game Request @game Filter)
+# The node is a name server for pages served from OTHER origins -- the wasm
+# chess page reads /game/rooms and /game/players from wherever it is hosted.
+# A browser only lets a page read a cross-origin answer that says so; this
+# header is that permission. Wide open on purpose: rooms and players are the
+# public listing, every verb behind them is keyed by self, nothing here is
+# credentialed. Written into every response by HttpServer::Serve.
+web.AddHeader(Access-Control-Allow-Origin *)
 web.Start()
 web.IsStarted()

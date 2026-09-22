@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "THE INCLUDE LIST for the local chess page, and the source of truth for what",
+    "it loads -- same contract as PaintProvider's modules.json (that folder's",
+    "README explains why: no candidate list, no directory scan, an edit here is",
+    "the whole of adding or dropping a provider). ChessProvider before",
+    "ShellProvider so the board's own globals exist before the navigator comes",
+    "up in the embedded terminal.",
+    "NetworkProvider IS here, and not because the page can serve anything -- it",
+    "cannot, there is no listening socket in a browser, and boot_chess.etcs's",
+    "HttpServer.Start says so in the terminal. It is here because the runtime on",
+    "this side of an address is meant to be the same runtime as on the other:",
+    "the hosted node is ChessProvider + NetworkProvider on Linux, so this page is",
+    "ChessProvider + NetworkProvider in a browser, same types, same verbs, same",
+    "boot-script shape -- the transport is the only thing the browser lacks. See",
+    "this folder's README, 'Name servers, all the way down'.",
+    "NO WindowProvider AND NO RenderProvider. Both are OPTIONAL and both are",
+    "left out on purpose -- see this folder's README, 'Why no canvas': the board",
+    "is DOM (a CSS grid of squares, exactly like the server-authoritative",
+    "chess.html this replaces), not a GPU surface, so there is no framebuffer",
+    "for either provider to own. ShellProvider's own page ships the same way",
+    "('and optionally WindowProvider.wasm' -- ShellProvider/scripts/www/README.md)."
+  ],
+  "modules": [
+    "ChessProvider.wasm",
+    "NetworkProvider.wasm",
+    "ShellProvider.wasm"
+  ],
+  "_scripts": [
+    "Staged into the browser's filesystem by the page, under these names, before",
+    "main() runs -- so each one must also answer over HTTP (../serve_chess.etcs",
+    "mounts it). Just the one script: the whole board lives in one ChessNode, so",
+    "there is nothing here for a second script to wire up the way Paint's",
+    "toolbar/menu/layers panels need one each."
+  ],
+  "scripts": [
+    "boot_chess.etcs"
+  ],
+  "boot": "boot_chess.etcs",
+  "_glue": [
+    "The emscripten loader output. STAGED AS .js: served extensionless it",
+    "arrives as application/octet-stream, which the browser warns is not a",
+    "valid JavaScript MIME type, and it would land on the same name as the",
+    "NATIVE etcs binary in bin/. Naming it here rather than probing also",
+    "removes a guaranteed failed fetch on every load."
+  ],
+  "glue": "etcs.js"
+}

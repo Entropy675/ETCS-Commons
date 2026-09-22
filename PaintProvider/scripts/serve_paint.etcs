@@ -42,6 +42,10 @@ tree.SetDefaultExtension(.html)
 # page tries /wasm/ first (resolveWasmBase, www/index.html).
 tree.MountTree(wasm ACE_ROOT/bin/wasm)
 
+# The site's own icons, so the page wears the same mark here as it does served
+# from anticurrententropy.com.
+tree.MountTree(favicon ACE_ROOT/scripts/www/favicon)
+
 # ── the mounts ───────────────────────────────────────────────────────────────
 #
 # Each at the path the page stages it under (www/modules.json), which is the path

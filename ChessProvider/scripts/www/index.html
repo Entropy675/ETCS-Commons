@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>ETCS Chess</title>
+<!-- The site's own marks, mounted at /favicon by the serve script so these
+     resolve here exactly as they do on anticurrententropy.com. -->
+<link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
+<link rel="icon" href="/favicon/favicon.ico">
+<link rel="apple-touch-icon" href="/favicon/apple-touch-icon.png">
+<link rel="manifest" href="/favicon/site.webmanifest">
+<style>
+  :root {
+    /* The exact palette the server-authoritative chess.html used, so this
+       replacement reads as the same product rather than a reskin. */
+    --light:#e8e2d5; --dark:#7a8a6f; --sel:#c9b458; --ink:#1c1c1a;
+    --bg:#14150f; --panel:#1b1c14; --line:#3b3d31; --dim:#8d907c;
+    --err:#d4674f; --ok:#7a9a5a;
+    /* The board is the page -- everything else here is a caption underneath
+       it, not a competing element, so it gets first claim on both viewport
+       dimensions. 120px was chosen as a ceiling rather than left uncapped
+       only so an ultrawide monitor doesn't turn a single square into
+       furniture; the 210px height budget is the real chrome below the
+       board (status line, FEN, the controls row) now that those were
+       tightened to cost as little vertical space as they credibly can. */
+    --sq: min(120px, calc((100vw - 24px) / 8), calc((100vh - 210px) / 8));
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--light);
+               font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  body { overflow-y:auto; }
+  .hidden { display:none !important; }
+
+  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+           padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header .brand { color:var(--sel); letter-spacing:.12em; text-decoration:none; font-weight:bold; }
+  header .spacer { flex:1; }
+  #status { color:var(--dim); font-size:12px; }
+  #status.err { color:var(--err); } #status.ok { color:var(--ok); }
+
+  /* STACKED BY DEFAULT, side by side once there is room -- same breakpoint
+     PaintProvider's page uses, for the same reason: the terminal and (here)
+     the chat both want a real floor rather than whatever the board leaves. */
+  #layout { display:grid; gap:0.75rem; padding:0.75rem; max-width:1400px; margin:0 auto;
+            grid-template-columns:1fr;
+            grid-template-areas:"board" "chat" "term"; }
+  @media (min-width:62rem) {
+    #layout { grid-template-columns:minmax(0,1fr) minmax(22rem, 34%);
+              grid-template-rows:auto minmax(0,1fr) minmax(0,1fr);
+              grid-template-areas:"board chat" "board term"; }
+  }
+
+  #board-col { grid-area:board; display:flex; flex-direction:column; align-items:center; gap:7px; }
+  #boardwrap { display:flex; flex-direction:column; width:max-content; max-width:100%; }
+  #boardbar { display:flex; align-items:center; gap:2px; flex-wrap:nowrap; padding:1px 3px;
+              background:var(--panel); border:3px solid var(--line); border-bottom-width:0; }
+  #boardbar button { padding:0 5px; font-size:10px; line-height:1.45; letter-spacing:.02em; }
+  #ply { color:var(--dim); font-size:9px; margin-left:auto; padding-left:8px; white-space:nowrap; }
+
+  #board { display:grid; grid-auto-flow:row; grid-template-columns:repeat(8,var(--sq));
+           grid-template-rows:repeat(8,var(--sq)); border:3px solid var(--line);
+           box-shadow:0 10px 40px #0008; }
+  .sq { display:flex; align-items:center; justify-content:center;
+        font-size:calc(var(--sq) * 0.68); line-height:1; user-select:none; cursor:pointer; }
+  .sq.light{background:var(--light);} .sq.dark{background:var(--dark);}
+  .sq.sel { outline:3px solid var(--sel); outline-offset:-3px; }
+  .sq span { color:var(--ink); text-shadow:0 1px 0 #fff6; }
+  .sq.b span { color:#16160f; text-shadow:0 1px 0 #8886; }
+  .sq.last { box-shadow: inset 0 0 10px 2px #70500080; }
+  .sq.flash { animation: lastflash 1.15s ease-in-out 1 both; }
+  @keyframes lastflash {
+    0%   { box-shadow: inset 0 0 10px  2px #70500080; }
+    18%  { box-shadow: inset 0 0 22px  7px #d9b45cf0; }
+    40%  { box-shadow: inset 0 0 10px  2px #70500060; }
+    62%  { box-shadow: inset 0 0 22px  7px #d9b45cf0; }
+    100% { box-shadow: inset 0 0 10px  2px #70500080; }
+  }
+  @media (prefers-reduced-motion: reduce) { .sq.flash { animation:none; } }
+  #board.review { filter:grayscale(1) brightness(.62) contrast(.9); pointer-events:none; }
+
+  #gamestatus { min-height:1.4em; letter-spacing:.04em; }
+  #gamestatus.review { color:var(--sel); }
+  #gamestatus.bad { color:var(--err); }
+  #fen { font-size:11px; color:var(--dim); word-break:break-all; max-width:100%; text-align:center; }
+
+  /* ONE CARD PER SEAT, side by side, with New game folded into the same
+     row rather than a row of its own -- one caption line under the board,
+     not three. A card starts as an open seat with one button, Join; once
+     this page has taken the seat it shows what a seat can do (resign,
+     draw, leave). The original page had one resign button and one draw
+     button, because the server told each browser which seat it held; here
+     the cards say it. See this folder's README, "The causal graph, as the
+     page shows it".
+     Deliberately smaller type/padding than the page default (below): these
+     are captions to the board, not controls competing with it for
+     attention, and the board is what just got the room to be the actual
+     focal point. */
+  #seatctl { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; align-items:center; }
+  .seat { display:flex; flex-direction:column; gap:3px; align-items:center;
+          padding:4px 8px; border:1px solid var(--line); background:var(--panel); }
+  .seat .who { font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); }
+  .seat .row { display:flex; gap:3px; }
+  .seat button, #reset { font-size:10.5px; padding:3px 7px; }
+  /* A seat this page holds. The colour is the selection colour on purpose:
+     "mine" and "selected" are the same claim, made about a seat instead of a
+     square. A seat somebody ELSE holds (taken, not mine -- only reachable once
+     the peer link exists) dims instead. */
+  .seat.mine { border-color:var(--sel); }
+  .seat.mine .who { color:var(--sel); }
+  .seat.taken { opacity:.55; }
+  .seat .leave { color:var(--dim); border-color:transparent; padding-left:4px; padding-right:4px; }
+
+  input, button { font:inherit; font-size:12px; background:var(--panel); color:var(--light);
+                  border:1px solid var(--line); padding:5px 8px; }
+  button { cursor:pointer; }
+  button:hover:not(:disabled) { background:var(--sel); color:var(--ink); }
+  button:disabled { opacity:.4; cursor:default; }
+  button.primary { background:var(--sel); color:var(--ink); }
+
+  /* ── chat: half the pane ──────────────────────────────────────────────
+     The pane that was ALL chat on the server-authoritative page is now
+     split with the terminal (see #layout's grid-template-areas): chat gets
+     the top half, the terminal the bottom half, each with its own floor so
+     neither collapses to nothing on a short viewport. */
+  #chat-col { grid-area:chat; display:flex; flex-direction:column; gap:6px; min-height:12rem; }
+  #chat-col h3, #term-col h3 { margin:0; font-weight:normal; color:var(--dim); font-size:11px;
+                                letter-spacing:.1em; text-transform:uppercase; }
+  #chat { flex:1; min-height:8rem; overflow-y:auto; background:var(--panel);
+          border:1px solid var(--line); padding:8px; font-size:12px; white-space:pre-wrap; }
+  #chat .sys { color:var(--dim); font-style:italic; } #chat .sys::before { content:'· '; }
+  #say { width:100%; }
+
+  #term-col { grid-area:term; display:flex; flex-direction:column; gap:6px; min-height:12rem; }
+  #shell { flex:1; min-height:8rem; width:100%; border:1px solid var(--line);
+           border-radius:6px; background:var(--panel); }
+
+  .veil { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+          background:#0009; z-index:10; }
+  .veil.on { display:flex; }
+  .veil .box { display:flex; gap:6px; padding:16px; background:var(--panel);
+               border:1px solid var(--line); box-shadow:0 10px 40px #000a; }
+  #over .box { flex-direction:column; gap:14px; padding:24px 32px; text-align:center; }
+  #over h2 { margin:0; font-size:20px; font-weight:normal; letter-spacing:.06em; color:var(--sel); }
+  #over p { margin:0; color:var(--dim); font-size:12px; }
+  #promo button { width:64px; height:64px; font-size:42px; background:var(--light); color:var(--ink); }
+
+  /* ── the name-server menu ─────────────────────────────────────────────
+     Rooms and players, read off whichever node the field names. The table
+     styling is the server-authoritative page's own, kept so a listing read
+     from a hosted node looks like the same listing that node's own page
+     shows -- because it is the same two verbs. */
+  #online .box { flex-direction:column; gap:10px; padding:18px 22px; width:min(56rem, calc(100vw - 32px));
+                 max-height:calc(100vh - 32px); overflow-y:auto; }
+  .ns-head { display:flex; align-items:center; gap:10px; }
+  .ns-head h2 { margin:0; font-size:15px; font-weight:normal; letter-spacing:.08em; color:var(--sel); flex:1; }
+  .ns-head button { padding:1px 8px; font-size:14px; line-height:1.3; }
+  .ns-blurb, .ns-foot { margin:0; color:var(--dim); font-size:11px; line-height:1.5; }
+  .ns-blurb code { color:var(--light); }
+  .ns-row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .ns-row label { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); }
+  .ns-row input { flex:1 1 18rem; min-width:0; }
+  #ns-local { font-size:10.5px; padding:3px 7px; }
+  .ns-status { min-height:1.3em; font-size:11px; color:var(--dim); }
+  .ns-status.err { color:var(--err); } .ns-status.ok { color:var(--ok); }
+  .ns-cols { display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start; }
+  .ns-cols > div { flex:1 1 300px; min-width:0; display:flex; flex-direction:column; gap:6px; }
+  .ns-cols h3 { margin:0; font-weight:normal; color:var(--dim); font-size:11px;
+                letter-spacing:.1em; text-transform:uppercase; }
+  .ns-cols table { border-collapse:collapse; width:100%; font-size:12px; }
+  .ns-cols th { text-align:left; font-weight:normal; color:var(--dim); font-size:10px;
+                letter-spacing:.08em; text-transform:uppercase; padding:3px 6px;
+                border-bottom:1px solid var(--line); }
+  .ns-cols td { padding:4px 6px; border-bottom:1px solid #2a2c22; white-space:nowrap; }
+  .ns-cols td.key { color:var(--sel); }
+  .ns-cols td button { font-size:10.5px; padding:2px 7px; }
+  .st-waiting { color:var(--dim); } .st-playing { color:#8fbf7a; }
+  .st-checkmate, .st-stalemate, .st-draw, .st-resign-white, .st-resign-black { color:#d4a24f; }
+  .full { color:var(--err); }
+  .empty { color:var(--dim); padding:8px 6px; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">ETCS CHESS</span>
+  <span class="spacer"></span>
+  <button id="online-btn" title="rooms and players, read off a name server">Play online</button>
+  <span id="status">loading…</span>
+</header>
+
+<div id="layout">
+  <section id="board-col">
+    <div id="boardwrap">
+      <div id="boardbar">
+        <button id="rw-first" class="hidden" title="first position (Home)">&#x23EE;</button>
+        <button id="rw-back" title="back one move (←)">&#x25C0;</button>
+        <button id="rw-fwd" class="hidden" title="forward one move (→)">&#x25B6;</button>
+        <button id="rw-last" class="hidden" title="latest position (End)">&#x23ED;</button>
+        <button id="rw-live" class="hidden primary" title="return to the live board (Esc)">Live</button>
+        <span id="ply"></span>
+      </div>
+      <div id="board"></div>
+    </div>
+    <div id="gamestatus">connecting…</div>
+    <div id="fen"></div>
+    <div id="seatctl">
+      <div class="seat" id="seat-w">
+        <span class="who" id="who-w">White</span>
+        <div class="row">
+          <button id="join-w" title="take the white seat">Join</button>
+          <button id="resign-w" class="hidden">Resign</button>
+          <button id="draw-w" class="hidden" title="offer a draw, or accept one">Draw</button>
+          <button id="leave-w" class="hidden leave" title="give the white seat up">leave</button>
+        </div>
+      </div>
+      <div class="seat" id="seat-b">
+        <span class="who" id="who-b">Black</span>
+        <div class="row">
+          <button id="join-b" title="take the black seat">Join</button>
+          <button id="resign-b" class="hidden">Resign</button>
+          <button id="draw-b" class="hidden" title="offer a draw, or accept one">Draw</button>
+          <button id="leave-b" class="hidden leave" title="give the black seat up">leave</button>
+        </div>
+      </div>
+      <button id="reset">New game</button>
+    </div>
+  </section>
+
+  <section id="chat-col">
+    <h3>Chat</h3>
+    <div id="chat"></div>
+    <input id="say" placeholder="say something, enter to send" maxlength="80">
+  </section>
+
+  <section id="term-col">
+    <h3>Terminal</h3>
+    <!-- Same bridge PaintProvider's page uses: the shell page detects being
+         framed and boots no runtime of its own, lines cross by postMessage. -->
+    <iframe id="shell" src="shell" title="ETCS shell"></iframe>
+  </section>
+</div>
+
+<div id="promo" class="veil"><div class="box"></div></div>
+<div id="over" class="veil"><div class="box">
+  <h2 id="over-title">Game over</h2><p id="over-sub"></p>
+  <button id="over-new" class="primary">New game</button>
+</div></div>
+
+<!-- The name-server menu. There is no special "name server" type anywhere
+     in this: a name server is any ChessNode, asked its two listing verbs
+     (rooms, players) -- the hosted node at anticurrententropy.com is one
+     instance of that, the default, and this page's OWN node is another
+     ("this node" below reads the very same two verbs off the local runtime
+     through the same rendering). See this folder's README, "Name servers,
+     all the way down". -->
+<div id="online" class="veil"><div class="box">
+  <div class="ns-head">
+    <h2>Play online</h2>
+    <button id="online-close" title="close (Esc)">&times;</button>
+  </div>
+  <p class="ns-blurb">A name server is any ETCS chess node, asked what it has:
+    <code>rooms</code> and <code>players</code>. The one below is only the default --
+    point this at another node (a friend's, your own) and it reads the same way,
+    and "this node" is this page's own runtime answering the same two verbs.</p>
+  <div class="ns-row">
+    <label for="ns-url">Name server</label>
+    <input id="ns-url" value="https://anticurrententropy.com/chess/lobby" spellcheck="false" list="ns-known">
+    <datalist id="ns-known">
+      <option value="https://anticurrententropy.com/chess/lobby"></option>
+      <option value="local"></option>
+    </datalist>
+    <button id="ns-local" title="this page's own node">this node</button>
+    <button id="ns-refresh">Refresh</button>
+  </div>
+  <div id="ns-status" class="ns-status"></div>
+  <div class="ns-cols">
+    <div>
+      <h3>Rooms</h3>
+      <table><thead><tr><th>match</th><th>here</th><th>seats</th><th>state</th><th></th></tr></thead>
+        <tbody id="ns-rooms"></tbody></table>
+      <div id="ns-no-rooms" class="empty">no matches on this node</div>
+      <div class="ns-row">
+        <input id="ns-new-room" placeholder="new match name" maxlength="32" spellcheck="false">
+        <button id="ns-make">Create</button>
+      </div>
+    </div>
+    <div>
+      <h3>Players</h3>
+      <table><thead><tr><th>name</th><th>W</th><th>L</th><th>D</th><th>games</th><th>idle</th></tr></thead>
+        <tbody id="ns-players"></tbody></table>
+      <div id="ns-no-players" class="empty">nobody on this node</div>
+    </div>
+  </div>
+  <p class="ns-foot">This build reads a node; it does not yet connect to one. Joining or
+    creating a match through a name server is the peer link -- the next patch.</p>
+</div></div>
+
+<script>
+(function () {
+const $ = id => document.getElementById(id);
+const statusEl = $('status');
+const shellFrame = $('shell');
+const ORIGIN = window.location.origin;
+
+// ── the log / shell bridge ──────────────────────────────────────────────────
+// Identical in shape to PaintProvider's page: one pane for boot output and
+// runtime output, replayed into the terminal once the framed shell view says
+// it is ready. See that folder's README for why a second box for boot lines
+// was the wrong call.
+const ANSI_STRIP = /\x1b\[[0-9;?]*[A-Za-z]/g;
+function log(text, cls) {
+  termWrite(text);
+  if (cls === 'err') setStatus(String(text).replace(ANSI_STRIP,'').trim().split('\n')[0], 'err');
+}
+function setStatus(s, cls) { statusEl.textContent = s; statusEl.className = cls || ''; }
+
+let shellReady = false;
+const pending = [];
+function toShell(msg) { if (shellFrame.contentWindow) shellFrame.contentWindow.postMessage(msg, ORIGIN); }
+function termWrite(text) {
+  if (!shellReady) { pending.push(text); if (pending.length > 2000) pending.shift(); return; }
+  toShell({ etcs:'out', text: text });
+}
+window.etcsTermWrite = function (t) { if (t != null) termWrite(String(t)); };
+
+/*
+ * PULLING THE TERMINAL'S OUTPUT, on this page's clock rather than the
+ * runtime's.
+ *
+ * The C++ side accumulates what it writes and hands over whatever has piled
+ * up when asked (etcs_web_shell_drain in loaders/etcs.cc). Every line used to
+ * cost a cross-thread proxy from whichever thread logged it, a postMessage,
+ * and a forced layout in the terminal frame -- several thousand times over a
+ * boot. Draining on an interval turns all of that into one call, one message
+ * and one reflow per tick.
+ *
+ * setInterval, not requestAnimationFrame: a hidden tab stops painting frames
+ * but the runtime keeps logging, and rAF would leave the buffer to grow until
+ * the tab came back. The interval is throttled when hidden, which is the
+ * right behaviour -- slower, not stopped.
+ */
+const SHELL_DRAIN_MS = 60;
+let shellDrainTimer = 0;
+function drainShellOutput() {
+  const mod = window.Module;
+  if (!mod || !mod.ccall) return;
+  let text = '';
+  try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
+  catch (e) { return; }                 // runtime gone or not exporting it
+  if (text) termWrite(text);
+}
+function startShellDrain() {
+  if (shellDrainTimer) return;
+  shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
+}
+
+function pushLine(line) {
+  const mod = window.Module;
+  if (!mod) { log('[etcs] line dropped, runtime not up: ' + line + '\n', 'err'); return; }
+  try { mod.ccall('etcs_web_shell_push_line', null, ['string'], [line]); }
+  catch (e) { log('[etcs] push_line failed: ' + e + '\n', 'err'); }
+}
+window.addEventListener('message', function (ev) {
+  if (ev.origin !== ORIGIN || ev.source !== shellFrame.contentWindow) return;
+  const m = ev.data;
+  if (!m || typeof m !== 'object') return;
+  if (m.etcs === 'view-ready') {
+    shellReady = true;
+    for (const t of pending) toShell({ etcs:'out', text: t });
+    pending.length = 0;
+    toShell({ etcs:'enable', enabled: !!(window.Module && window.Module.calledRun) });
+    return;
+  }
+  if (m.etcs === 'line') { pushLine(String(m.line == null ? '' : m.line)); return; }
+});
+
+// ── the include list ─────────────────────────────────────────────────────────
+function normalizeWasmList(raw) {
+  let arr = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (raw && Array.isArray(raw.modules)) arr = raw.modules;
+  return arr.map(function (x) {
+    x = String(x).trim();
+    if (!x) return null;
+    if (!/\.wasm$/i.test(x)) x += '.wasm';
+    x = x.replace(/^\.\//, '');
+    if (/^etcs(\.wasm)?$/i.test(x) || /worker/i.test(x)) return null;
+    return x;
+  }).filter(Boolean);
+}
+async function fetchManifest() {
+  const r = await fetch('modules.json', { cache:'no-store' });
+  if (!r.ok) throw new Error('modules.json HTTP ' + r.status + ' -- required (no fallback list)');
+  const j = await r.json();
+  const wasm = normalizeWasmList(j);
+  if (!wasm.length) throw new Error('modules.json names no modules');
+  const scripts = (j && Array.isArray(j.scripts) ? j.scripts : [])
+    .map(s => String(s).trim().replace(/^\.\//, '')).filter(Boolean);
+  const boot = (j && j.boot) ? String(j.boot).trim().replace(/^\.\//, '') : '';
+  const glue = (j && j.glue) ? String(j.glue).trim().replace(/^\.\//, '') : '';
+  const base = (j && j.base) ? String(j.base).trim() : '';
+  log('[etcs] modules.json -> ' + wasm.join(', ') + '\n');
+  if (scripts.length) log('[etcs] scripts -> ' + scripts.join(', ') + '\n');
+  return { wasm, scripts, boot, glue, base };
+}
+
+// A 200 is not evidence -- every wrong answer a web server gives is markup, and
+// unchecked it surfaces inside the glue as `index out of bounds`, where nothing
+// points back at the fetch that caused it.
+function checkStaged(name, kind, buf) {
+  const magic = buf.length >= 4 && buf[0] === 0x00 && buf[1] === 0x61
+             && buf[2] === 0x73 && buf[3] === 0x6d;
+  if (kind === 'module' && !magic)
+    throw new Error(name + ' is not a wasm module (starts '
+                    + Array.from(buf.slice(0, 4)).map(b => b.toString(16)).join(' ') + ')');
+  if (kind === 'script' && magic)
+    throw new Error(name + ' is a wasm binary, not a script');
+}
+
+/*
+ * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES: the binaries are
+ * shared and move in epochs, so they live in bin/wasm/, mounted at /wasm/ by
+ * the serve scripts. Identical across every page in this tree on purpose --
+ * two pages disagreeing about it would undo the shared directory. The base
+ * affects only the FETCH; MEMFS keeps the bare name, since preload_web_modules
+ * dlopens by name.
+ */
+const WASM_BASE_CANDIDATES = ['/wasm/', './', 'https://anticurrententropy.com/wasm/'];
+let wasm_base = null;
+let wasm_probe = null;   // {name, buf} -- the module the probe already pulled
+
+function joinBase(base, name) {
+  return (base === './') ? name : base.replace(/\/*$/, '/') + name;
+}
+
+async function resolveWasmBase(declared, firstModule) {
+  const candidates = declared ? [declared] : WASM_BASE_CANDIDATES;
+  const tried = [];
+  for (const base of candidates) {
+    const url = joinBase(base, firstModule);
+    try {
+      const r = await fetch(url, { cache:'no-store' });
+      if (!r.ok) { tried.push(base + ' HTTP ' + r.status); continue; }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      checkStaged(firstModule, 'module', buf);
+      wasm_base = base; wasm_probe = { name: firstModule, buf: buf };
+      log('[etcs] wasm base -> ' + base + '\n', 'ok');
+      return base;
+    } catch (e) { tried.push(base + ' ' + (e && e.message ? e.message : e)); }
+  }
+  throw new Error('no wasm base answered for ' + firstModule + ': ' + tried.join('; '));
+}
+
+async function fetchAll(names, kind, base) {
+  const out = {};
+  for (const name of names) {
+    if (wasm_probe && wasm_probe.name === name) {
+      out[name] = wasm_probe.buf;
+      log('[etcs] staged ' + name + ' (' + wasm_probe.buf.byteLength
+          + ' bytes, from the base probe)\n', 'ok');
+      continue;
+    }
+    setStatus('fetch ' + name);
+    const url = base ? joinBase(base, name) : name;
+    const r = await fetch(url, { cache:'no-store' });
+    if (!r.ok) throw new Error('fetch ' + url + ' failed HTTP ' + r.status);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    if (!buf.byteLength) throw new Error(url + ' is empty');
+    checkStaged(name, kind, buf);
+    out[name] = buf;
+    log('[etcs] staged ' + name + ' (' + buf.byteLength + ' bytes)\n', 'ok');
+  }
+  return out;
+}
+function loadGlue(src) {
+  return new Promise(function (resolve, reject) {
+    const s = document.createElement('script');
+    s.src = src; s.async = true; s.onload = resolve; s.onerror = reject;
+    document.body.appendChild(s);
+  });
+}
+
+let runtimeIsUp = false;
+function runtimeUp() { return runtimeIsUp && !!(window.Module && window.Module.ccall); }
+
+// runtimeUp() alone is not enough to accept input: the wasm instance being up
+// says nothing about whether boot_chess.etcs has reached its own `spawn` yet
+// (see onRuntimeInitialized's own retry loop below, and this folder's
+// README). A click landing in that window used to reach callResult anyway,
+// get 'game' is not a live global name back as an empty string, and silently
+// lose the move with no retry -- unlike boot's own loop, nothing ever asked
+// again on the click's behalf. boardReady only flips true once that retry
+// loop has actually seen a real position back, so every input path below
+// checks it instead of (or alongside) runtimeUp().
+let boardReadyFlag = false;
+function boardReady() { return runtimeUp() && boardReadyFlag; }
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+// ── the call bridge: etcs_web_call_async ─────────────────────────────────────
+//
+// etcs_web_call (loaders/etcs.cc, shared by every wasm page in this tree)
+// dispatches a verb and throws its answer away -- right for a fire-and-forget
+// command, wrong here: a move's whole point is the FEN it produces, a status
+// query is nothing BUT its answer.
+//
+// An earlier version of this bridge (etcs_web_call_result) got the answer
+// back by blocking: a caller-owned output buffer the work function's response
+// was copied into before the ccall returned. That is fine for a call made
+// from a ThreadPool worker (the native path), and fatal for a call made from
+// page JS: `Module.ccall` runs the WHOLE export inline on whichever thread
+// calls it, which for a click handler is the browser's one real main
+// thread -- and a chess move blocks on ChessOpEvent until its EventStream's
+// ordering thread answers. Blocking THAT thread froze the tab, every time
+// (proven, not theorised -- see this folder's README). etcs_web_call_async
+// (etcs.cc) fixes this at the source: it only enqueues, onto a ThreadPool
+// worker where blocking is exactly what the thread is for, and answers by
+// calling back into this page (`window.__etcs_call_done`) once the worker is
+// done, the same way etcs_web_shell_write already reaches the page from
+// off-main-thread output. This wrapper is what turns that callback into an
+// ordinary awaitable call site, so the rest of this file reads like the
+// synchronous version it replaced.
+let __etcsCallSeq = 1;
+const __etcsPending = new Map();
+window.__etcs_call_done = function (handle, ok, text) {
+  const p = __etcsPending.get(handle);
+  if (!p) return; // stale/duplicate -- nothing waiting on it any more
+  __etcsPending.delete(handle);
+  p.resolve(ok ? text : null);
+};
+function callResult(name, work, args) {
+  if (!runtimeUp()) return Promise.resolve(null);
+  const mod = window.Module;
+  const handle = __etcsCallSeq++;
+  return new Promise(function (resolve) {
+    __etcsPending.set(handle, { resolve: resolve });
+    mod.ccall('etcs_web_call_async', null,
+              ['number', 'string', 'string', 'string'],
+              [handle, name, work, args == null ? '' : args]);
+  });
+}
+
+// ── the board ─────────────────────────────────────────────────────────────
+const GLYPH = { K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',
+                k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟' };
+const boardEl=$('board'), gsEl=$('gamestatus'), fenEl=$('fen'), chatEl=$('chat'), sayEl=$('say');
+let squares=[], selected=null, lastFen='', overShown='';
+
+const isFen = s => typeof s==='string' && s.split(' ')[0].split('/').length===8;
+
+for (let y=0;y<8;y++) for (let x=0;x<8;x++) {
+  const d=document.createElement('div');
+  d.className='sq '+((x+y)%2?'dark':'light');
+  d.dataset.alg='abcdefgh'[x]+(8-y);
+  d.dataset.idx=y*8+x;
+  d.onclick=()=>clickSquare(d);
+  boardEl.appendChild(d); squares.push(d);
+}
+
+function draw(fen){
+  const rows=fen.split(' ')[0].split('/'); let i=0;
+  for(let y=0;y<8;y++) for(const ch of rows[y]){
+    if(ch>='1'&&ch<='8'){ for(let k=0;k<+ch;k++) set(squares[i++],''); }
+    else set(squares[i++],ch);
+  }
+  fenEl.textContent=fen;
+}
+function set(sq,ch){
+  sq.innerHTML = ch ? '<span>'+GLYPH[ch]+'</span>' : '';
+  sq.classList.toggle('b', ch && ch===ch.toLowerCase());
+}
+function flash(m){ gsEl.textContent=m; gsEl.className='bad'; }
+
+// Whoever is about to move is whoever a click acts as -- provided this page
+// has JOINED that seat (see "seats" below). The server-authoritative page
+// derived this same field for its OWN review math (plyFromFen); here it is
+// what stands in for the login it no longer has: the side to move names the
+// self a move is sent as, and the seat cards say whether that self is one
+// this page holds.
+function sideToMoveOf(fen){ return fen.split(' ')[1]==='b' ? 'black' : 'white'; }
+function pathFor(self, verb, arg){
+  return 'game/' + self + '/local/' + verb + (arg!=null && arg!=='' ? '/' + arg : '');
+}
+
+// ── seats ─────────────────────────────────────────────────────────────────
+// Which of the two seats THIS PAGE has taken. Joining is the page declaring
+// which self it will move as -- 'white' and 'black' are the two selves this
+// page can be, the same tokens the move verb has always claimed with -- and
+// the causal claim itself still lands where ChessGame puts it: on that
+// self's first legal move (applyMoveLocked, "claim by moving"). This is
+// exactly the server-authoritative page's own seat model with the one step
+// it left implicit made explicit: there you were a viewer until your first
+// move; here you are a viewer until you say which seat you are taking, and
+// then until your first move. Leaving is the same verb that page sent on
+// departure (leave), which releases the seat if the first move had already
+// claimed it. Hotseat is joining both; a peer, once the link exists, is the
+// other seat reading "taken" without this page having joined it.
+const seats = { white:false, black:false };
+const seatEl = { white:$('seat-w'), black:$('seat-b') };
+const whoEl  = { white:$('who-w'),  black:$('who-b')  };
+const btns   = { white:{ join:$('join-w'), resign:$('resign-w'), draw:$('draw-w'), leave:$('leave-w') },
+                 black:{ join:$('join-b'), resign:$('resign-b'), draw:$('draw-b'), leave:$('leave-b') } };
+let seatHeld = { white:'open', black:'open' };   // what statusLineLocked last said
+let drawOfferBy = '';                            // 'white' | 'black' | ''
+function renderSeats(){
+  for(const c of ['white','black']){
+    const mine = seats[c];
+    const takenByOther = !mine && seatHeld[c]==='taken';
+    seatEl[c].classList.toggle('mine', mine);
+    seatEl[c].classList.toggle('taken', takenByOther);
+    whoEl[c].textContent = c[0].toUpperCase()+c.slice(1)
+      + (mine ? ' · you' : takenByOther ? ' · taken' : ' · open');
+    btns[c].join.classList.toggle('hidden', mine);
+    btns[c].join.disabled = takenByOther;
+    for(const k of ['resign','draw','leave']) btns[c][k].classList.toggle('hidden', !mine);
+    // The draw button is one verb for both directions (drawLocked); the
+    // label says which direction it would be from this seat right now.
+    if(mine){
+      const theirs = drawOfferBy && drawOfferBy!==c;
+      btns[c].draw.textContent = drawOfferBy===c ? 'offered…' : theirs ? 'Accept draw' : 'Draw';
+      btns[c].draw.disabled = (drawOfferBy===c);
+    }
+  }
+}
+function joinSeat(c){
+  if(!boardReady()){ flash('still starting up…'); return; }
+  if(seats[c]) return;
+  seats[c]=true; renderSeats();
+  if(gsEl.className==='bad') gsEl.className='';
+  refreshStatus();
+}
+async function leaveSeat(c){
+  if(!boardReady()||!seats[c]) return;
+  seats[c]=false; renderSeats();
+  // Releases the seat in the game if a move had claimed it; a no-op if not.
+  await callResult('game','Request', pathFor(c,'leave'));
+  await refreshStatus(); await refreshChat();
+}
+$('join-w').onclick=()=>joinSeat('white');  $('join-b').onclick=()=>joinSeat('black');
+$('leave-w').onclick=()=>leaveSeat('white'); $('leave-b').onclick=()=>leaveSeat('black');
+
+function clickSquare(sq){
+  if(!boardReady()){ flash('still starting up…'); return; }
+  if(ply>=0){ flash('reviewing — press Live to move'); return; }
+  const side = sideToMoveOf(lastFen || 'x w');
+  if(!seats[side]){ flash('join '+side+' to move'); return; }
+  // moveInFlight guards against exactly the race a fast double-click (or a
+  // script driving clicks back to back) can hit now that move() is async:
+  // sideToMoveOf(lastFen) reads lastFen, and lastFen is only updated once
+  // the IN-FLIGHT move's own round trip resolves. A second click landing
+  // before that happens would compute `self` from the position BEFORE the
+  // first move, sending it as the wrong side -- silently rejected by the
+  // seat check server-side (NOT YOUR TURN), which looks like a dropped
+  // click rather than the race it is. Refusing new input until the
+  // in-flight move resolves is simpler and safer than trying to queue or
+  // reorder moves client-side.
+  if(moveInFlight){ flash('still resolving the last move'); return; }
+  if(!selected){ selected=sq; sq.classList.add('sel'); return; }
+  const from=selected.dataset.alg, to=sq.dataset.alg;
+  const glyph=selected.textContent, isBlack=selected.classList.contains('b');
+  selected.classList.remove('sel'); selected=null;
+  if(from===to) return;
+  const isPawn = glyph===GLYPH.P||glyph===GLYPH.p;
+  if(isPawn && to[1]===(isBlack?'1':'8')){ askPromotion(from+to,isBlack); return; }
+  move(from+to);
+}
+
+const PROMO=[['q','Q','q'],['r','R','r'],['b','B','b'],['n','N','n']];
+const promoEl=$('promo');
+function askPromotion(uci,black){
+  const box=promoEl.firstElementChild; box.innerHTML='';
+  for(const [letter,w,b] of PROMO){
+    const btn=document.createElement('button');
+    btn.textContent=GLYPH[black?b:w];
+    btn.onclick=()=>{ promoEl.classList.remove('on'); move(uci+letter); };
+    box.appendChild(btn);
+  }
+  promoEl.classList.add('on');
+}
+promoEl.onclick=ev=>{ if(ev.target===promoEl) promoEl.classList.remove('on'); };
+
+function clearLast(){ for(const e of boardEl.querySelectorAll('.last,.flash')) e.classList.remove('last','flash'); }
+function highlightLast(to, pulse){
+  clearLast();
+  const sq = boardEl.querySelector('[data-alg="'+to+'"]');
+  if(!sq) return;
+  sq.classList.add('last');
+  if(!pulse) return;
+  void sq.offsetWidth;
+  sq.classList.add('flash');
+}
+
+let moveInFlight = false;
+async function move(uci){
+  if(!boardReady()){ flash('still starting up…'); return; } // askPromotion's own buttons bypass clickSquare's guard -- re-checked here
+  if(moveInFlight){ flash('still resolving the last move'); return; }
+  const self = sideToMoveOf(lastFen || 'x w'); // 'w' default: opening position
+  if(!seats[self]){ flash('join '+self+' to move'); return; }
+  moveInFlight = true;
+  try {
+    const t = ((await callResult('game', 'Request', pathFor(self, 'move', uci))) || '').trim();
+    if(t==='ILLEGAL') flash(uci+' — illegal');
+    else if(t==='NOT YOUR TURN') flash('not '+self+'’s turn');
+    else if(t==='NOT YOUR SEAT') flash(self+'’s seat is held by someone else');
+    else if(t==='GAME OVER') flash('this game is finished');
+    else if(isFen(t)){
+      gsEl.className=''; lastFen=t; noteLive(uci,t);
+      if(ply>=0) await goLive(true);
+      draw(t); highlightLast(uci.slice(2,4),true);
+      await refreshStatus();
+      await refreshChat();   // the move, and a first move's seat claim, are narrated there
+    }
+    else flash('runtime said: '+(t||'(empty)'));
+  } finally {
+    moveInFlight = false;
+  }
+}
+
+// ── review: stepping back through the game ────────────────────────────────
+// The server-authoritative page fetched this a page at a time because every
+// request was a round trip it wanted to spend sparingly. A local call is not
+// a round trip -- loadPage below still respects the C++ side's own frame
+// budget (ChessGame::kFrameBudget), so a long game is still several calls,
+// but nothing here is asynchronous and there is no cache to keep in sync
+// with a server, because there is no server.
+let histMap = new Map(), histBase = 0, histEnd = 0, ply = -1;
+
+function parsePage(t){
+  const nl=t.indexOf('\n');
+  if(nl<0) return null;
+  const m=/^(\d+) (\d+)$/.exec(t.slice(0,nl));
+  if(!m) return null;
+  return { base:+m[1], next:+m[2], lines:t.slice(nl+1).split('\n').filter(Boolean) };
+}
+function histRow(l){
+  const sp=l.indexOf(' ');
+  if(sp<0) return null;
+  const r={uci:l.slice(0,sp), fen:l.slice(sp+1).trim()};
+  return isFen(r.fen) ? r : null;
+}
+// 'local' has no seat and needs none: fen/status/history/chat are reads, and
+// touchLocked/reapLocked do not mind an identity that never claims anything.
+async function loadPage(from){
+  const t = await callResult('game', 'Request', pathFor('local', 'history', String(Math.max(0,from))));
+  if(!t) return null;
+  const p = parsePage(t);
+  if(!p) return null;
+  histBase = p.base;
+  let i = Math.max(from, p.base);
+  for(const l of p.lines){ const r=histRow(l); if(r) histMap.set(i,r); i++; }
+  histEnd = Math.max(histEnd, p.next);
+  return p;
+}
+async function syncEnd(){
+  let from = lastFen ? 0 : 0, guard = 0;
+  histMap.clear(); histBase=0; histEnd=0;
+  while(guard++ < 400){
+    const p = await loadPage(from);
+    if(!p || !p.lines.length || p.next<=from) break;
+    from = p.next;
+  }
+}
+function noteLive(uci,fen){
+  const idx = histEnd;
+  histMap.set(idx,{uci:uci||'-', fen});
+  histEnd = idx+1;
+}
+
+function reviewUi(){
+  const on=(ply>=0), last=histEnd-1;
+  $('rw-fwd').classList.toggle('hidden',!on);
+  $('rw-first').classList.toggle('hidden',!on);
+  $('rw-last').classList.toggle('hidden',!on);
+  $('rw-live').classList.toggle('hidden',!on);
+  $('rw-back').disabled = on ? (ply<=histBase) : (histEnd<2);
+  $('rw-fwd').disabled  = on && ply>=last;
+  $('rw-first').disabled= on && ply<=histBase;
+  $('rw-last').disabled = on && ply>=last;
+  $('ply').textContent = on ? (ply+' / '+last) : '';
+  boardEl.classList.toggle('review',on);
+}
+async function showPly(i){
+  await syncEnd();
+  const want=Math.max(histBase,Math.min(histEnd-1,i));
+  const h=histMap.get(want);
+  if(!h){ reviewUi(); return; }
+  ply=want;
+  draw(h.fen);
+  if(h.uci&&h.uci!=='-'&&h.uci.length>=4) highlightLast(h.uci.slice(2,4)); else clearLast();
+  gsEl.className='review';
+  gsEl.textContent=(ply===0?'starting position'
+                    :((h.uci&&h.uci!=='-') ? 'after '+h.uci : 'move '+ply))
+                   +' — '+(histEnd-1-ply)+' behind the live board';
+  reviewUi();
+}
+async function goLive(quiet){
+  ply=-1; reviewUi();
+  if(quiet===true) return;
+  if(lastFen) draw(lastFen);
+  gsEl.className=''; gsEl.textContent='live';
+  await refreshStatus();
+}
+async function stepBack(){
+  await syncEnd();
+  if(histEnd<2){ flash('no earlier position to show'); reviewUi(); return; }
+  await showPly(ply<0 ? histEnd-2 : ply-1);
+}
+$('rw-back').onclick=stepBack;
+$('rw-fwd').onclick=()=>{ if(ply>=0&&ply<histEnd-1) showPly(ply+1); };
+$('rw-first').onclick=async ()=>{ await syncEnd(); await showPly(histBase); };
+$('rw-last').onclick=async ()=>{ await syncEnd(); await showPly(histEnd-1); };
+$('rw-live').onclick=()=>goLive();
+document.addEventListener('keydown',async ev=>{
+  const t=ev.target;
+  if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA')) return;
+  if(ev.key==='ArrowLeft')  { ev.preventDefault(); await stepBack(); }
+  else if(ev.key==='ArrowRight'){ ev.preventDefault(); if(ply>=0&&ply<histEnd-1) await showPly(ply+1); }
+  else if(ev.key==='Home')  { if(ply>=0){ ev.preventDefault(); await syncEnd(); await showPly(histBase); } }
+  else if(ev.key==='End')   { if(ply>=0){ ev.preventDefault(); await syncEnd(); await showPly(histEnd-1); } }
+  else if(ev.key==='Escape'){ if(ply>=0){ ev.preventDefault(); await goLive(); } }
+});
+
+// ── game over ────────────────────────────────────────────────────────────
+const overEl=$('over');
+function showGameOver(state,side){
+  if(overShown===state) return;
+  overShown=state;
+  if(state==='resign-white'||state==='resign-black'){
+    const quit=(state==='resign-white')?'White':'Black';
+    $('over-title').textContent='Resignation';
+    $('over-sub').textContent=quit+' resigned — '+((quit==='White')?'Black':'White')+' wins.';
+  } else if(state==='draw'){
+    $('over-title').textContent='Draw'; $('over-sub').textContent='Agreed by both players.';
+  } else if(state==='checkmate'){
+    $('over-title').textContent='Checkmate';
+    $('over-sub').textContent=((side==='w')?'Black':'White')+' wins.';
+  } else {
+    $('over-title').textContent='Stalemate';
+    $('over-sub').textContent='Draw — no legal move, and no check.';
+  }
+  overEl.classList.add('on');
+}
+function hideGameOver(){ overEl.classList.remove('on'); overShown=''; }
+
+async function doReset(){
+  if(!boardReady()) return;
+  // 'local', not a seat: reset needs none (the server page's own reasoning --
+  // requiring one would strand a game whose loser closed their tab).
+  const t = ((await callResult('game','Request', pathFor('local','reset'))) || '').trim();
+  hideGameOver();
+  histMap.clear(); histBase=0; histEnd=0; ply=-1;
+  clearLast(); reviewUi();
+  if(isFen(t)){ lastFen=t; noteLive('',t); draw(t); }
+  // Reset clears the seats in the game, so the page's own claims clear with
+  // them: colours are re-taken next round, same as the server page.
+  seats.white=false; seats.black=false; drawOfferBy=''; renderSeats();
+  gsEl.className=''; gsEl.textContent='new game';
+  await refreshStatus();
+}
+$('reset').onclick=doReset;
+$('over-new').onclick=doReset;
+
+// ── status ───────────────────────────────────────────────────────────────
+// "side state role wSeat bSeat drawoffer" -- read as 'local' (a permanent
+// viewer). The ROLE field is not needed: which seats this page holds is
+// what the seat cards say, not what statusLineLocked reports a spectator's
+// role as. The seat fields ARE used -- they are how a seat somebody else
+// holds shows up here once the peer link exists -- and the offer field is
+// read once more as 'white' when an offer stands, because a viewer is only
+// ever told an offer is "theirs", not whose.
+async function refreshStatus(){
+  if(!runtimeUp()) return;
+  const p = ((await callResult('game','Request', pathFor('local','status'))) || '').trim().split(/\s+/);
+  if(p.length<3) return;
+  const [side,state] = p;
+  seatHeld.white = p[3]||'open'; seatHeld.black = p[4]||'open';
+  const offer = p[5]||'none';
+  if(offer==='none') drawOfferBy='';
+  else {
+    const w = ((await callResult('game','Request', pathFor('white','status'))) || '').trim().split(/\s+/);
+    drawOfferBy = (w[5]==='mine') ? 'white' : 'black';
+  }
+  renderSeats();
+  if(gsEl.className!=='bad' && ply<0){
+    const mover=(side==='w'?'white':'black');
+    gsEl.textContent=mover+' to move'+(state!=='ok'?' — '+state:'')
+      +(!seats[mover] && state==='ok' ? ' — seat open' : '')
+      +(drawOfferBy ? ' — draw offered by '+drawOfferBy : '');
+  }
+  if(state==='checkmate'||state==='stalemate'||state==='draw'||state.startsWith('resign'))
+    showGameOver(state,side);
+  else if(overShown) hideGameOver();
+}
+
+// ── seated actions, one set of controls per seat this page holds ───────────
+// See the CSS comment above #seatctl for why there are two of everything
+// instead of one "resign" / one "offer draw": the seat model in ChessGame is
+// two tokens claimed by moving (applyMoveLocked), and 'white' / 'black' are
+// exactly the tokens Move already claims above -- so a button fixed to one
+// colour lines up with the seat that colour already holds, with nothing new
+// to keep straight in the C++. Offering and accepting are still one verb
+// (drawLocked): press White's once to offer, Black's once to accept, in
+// either order -- the second press is whichever token did NOT make the
+// standing offer. The cards only show these once the seat is joined, which
+// is what the server page did with its own controls (visible once seated).
+async function seated(self, verb){
+  if(!boardReady()||!seats[self]) return;
+  const t = ((await callResult('game','Request', pathFor(self, verb))) || '').trim();
+  if(t==='NOT YOUR SEAT'||t==='GAME OVER'){ flash(t.toLowerCase()); return; }
+  await refreshStatus(); await refreshChat();
+}
+$('resign-w').onclick=()=>{ if(confirm('White resigns?')) seated('white','resign'); };
+$('resign-b').onclick=()=>{ if(confirm('Black resigns?')) seated('black','resign'); };
+$('draw-w').onclick=()=>seated('white','draw');
+$('draw-b').onclick=()=>seated('black','draw');
+
+// ── chat ─────────────────────────────────────────────────────────────────
+// Authored as 'local': there is one keyboard, so unlike the multiplayer page
+// there is no second identity to tell a line apart from. A name field is a
+// reasonable follow-up (see this folder's README) and not required for the
+// feature -- the log, and narration inside it (seat claims, moves, the
+// outcome -- ChessGame::logLocked), are unchanged from the server-
+// authoritative page's own chat verb.
+let chatFrom = 0, chatLines = [];
+function chatLine(text){
+  const d=document.createElement('div');
+  if(text.startsWith('* ')){ d.className='sys'; d.textContent=text.slice(2); }
+  else d.textContent=text;
+  return d;
+}
+function renderChat(next){
+  const pinned = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4;
+  chatEl.textContent='';
+  for(const l of next) chatEl.appendChild(chatLine(l));
+  chatLines = next;
+  if(pinned) chatEl.scrollTop = chatEl.scrollHeight;
+}
+async function refreshChat(){
+  if(!runtimeUp()) return;
+  let from = 0, all = [], guard = 0;
+  while(guard++ < 64){
+    const t = await callResult('game','Request', pathFor('local','chat', String(from)));
+    if(!t) break;
+    const p = parsePage(t);
+    if(!p){ if(t) all = t.split('\n').filter(Boolean); break; }
+    if(p.lines.length) all = all.concat(p.lines);
+    if(p.next<=from || !p.lines.length) break;
+    from = p.next;
+  }
+  renderChat(all);
+}
+sayEl.addEventListener('keydown',async ev=>{
+  if(ev.key!=='Enter'||!sayEl.value.trim()) return;
+  if(!boardReady()) return;
+  const t = sayEl.value.trim().replace(/%/g,'%20');
+  sayEl.value='';
+  await callResult('game','Request', pathFor('local','say',encodeURIComponent(t)));
+  await refreshChat();
+  chatEl.scrollTop = chatEl.scrollHeight;
+});
+
+// ── the name-server menu ───────────────────────────────────────────────────
+// A name server is a ChessNode asked its two listing verbs. Nothing here is
+// specific to the hosted one: nsGet() reads `rooms` and `players` off
+// whatever the field names, and the special name `local` reads them off THIS
+// page's own node through the same call bridge every move goes through --
+// same verbs, same line format, same rendering. That is what "every node is
+// a name server" means at the level of this page: the default remote is one
+// instance of the thing, not a different kind of thing. The assumption
+// underneath, stated: the exact same ETCS runtime sits on the other side of
+// any address, and whether it is in a page or in a server on Linux does not
+// matter -- so nothing in this file may branch on which it is. The address
+// (nsResolve) is the only thing that varies by where a node is.
+//
+// Line formats are the node's own (ChessNode::roomsLocked, ChessLobby::
+// profileLocked), unchanged from what the server-authoritative page parses:
+//   rooms:   "match here seats state"
+//   players: "name W L D locked|open games idle"
+//
+// A remote node is a cross-origin fetch. A node that does not send
+// Access-Control-Allow-Origin for this page's origin is reported as
+// unreachable -- the browser withholds the body, there is nothing to parse.
+// See this folder's README, "Name servers, all the way down", for the state
+// of that on the hosted node today.
+const onlineEl=$('online'), nsUrlEl=$('ns-url'), nsStatusEl=$('ns-status');
+const lines = t => t.split('\n').map(l => l.trim()).filter(Boolean);
+// What the field names, resolved. `local` is this page's own node. Anything
+// else is an address: scheme optional (https assumed -- a node on the open
+// internet is behind TLS, and a bare host is how one gets typed), port 443
+// for https unless `host:port` says otherwise, 80 for http likewise. The
+// verbs are read at <base>/rooms and <base>/players, so the path is the
+// node's mount as seen from outside. `shown` spells the port out even when
+// it is the default, so the status line says exactly what was dialled.
+function nsResolve(){
+  const raw=(nsUrlEl.value||'').trim();
+  const low=raw.toLowerCase();
+  if(low===''||low==='local'||low==='this node') return { local:true, shown:'this node' };
+  let u;
+  try { if(/\s/.test(raw)) throw 0; u=new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://'+raw); }
+  catch(e){ throw new Error("'"+raw+"' is not a node address"); }
+  if(u.protocol!=='https:'&&u.protocol!=='http:') throw new Error(u.protocol+' is not a scheme a node is served on');
+  if(!u.hostname) throw new Error("'"+raw+"' names no host");
+  const port = u.port || (u.protocol==='https:' ? '443' : '80');
+  const path = u.pathname.replace(/\/+$/,'');
+  return { local:false, base:u.protocol+'//'+u.hostname+':'+port+path,
+           shown:u.hostname+':'+port+path };
+}
+function nsSay(m, cls){ nsStatusEl.textContent=m; nsStatusEl.className='ns-status'+(cls?' '+cls:''); }
+async function nsGet(node, verb){
+  if(node.local){
+    if(!runtimeUp()) throw new Error('runtime not up');
+    const t = await callResult('game','Request','game/'+verb);
+    if(t==null) throw new Error("'game' did not answer");
+    return t;
+  }
+  const r = await fetch(node.base+'/'+verb, { mode:'cors', cache:'no-store', credentials:'omit' });
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.text();
+}
+function stateCell(s){ return '<td class="st-'+s+'">'+s+'</td>'; }
+function notYet(what){
+  nsSay(what+' -- the peer link is the next patch; this build only reads what a node has.', 'err');
+}
+function renderRooms(text){
+  const tb=$('ns-rooms'); tb.innerHTML='';
+  const ls=lines(text);
+  let shown=0;
+  for(const line of ls){
+    const p=line.split(/\s+/);
+    // Four fields, numeric counts -- the server page's own guard, for the
+    // same reason: an error body must not render as a plausible match.
+    if(p.length!==4||!/^\d+$/.test(p[1])||!/^\d+$/.test(p[2])) throw new Error('node said: '+line);
+    const [m,here,seats,state]=p, full=(+seats>=2);
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td class="key">'+m+'</td><td>'+here+'</td><td class="'+(full?'full':'')+'">'+seats+
+                 '/2</td>'+stateCell(state)+'<td></td>';
+    const b=document.createElement('button');
+    b.textContent=full?'watch':'join';
+    b.onclick=()=>notYet((full?'watching':'joining')+" '"+m+"'");
+    tr.lastElementChild.appendChild(b); tb.appendChild(tr); shown++;
+  }
+  $('ns-no-rooms').classList.toggle('hidden', shown>0);
+}
+function renderPlayers(text){
+  const tb=$('ns-players'); tb.innerHTML='';
+  const ls=lines(text);
+  let shown=0;
+  for(const line of ls){
+    const p=line.split(/\s+/);
+    if(p.length<7) continue;
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td class="key">'+p[0]+'</td><td>'+p[1]+'</td><td>'+p[2]+'</td><td>'+p[3]+
+                 '</td><td>'+p[5]+'</td><td>'+p[6]+'s</td>';
+    tb.appendChild(tr); shown++;
+  }
+  $('ns-no-players').classList.toggle('hidden', shown>0);
+}
+// Generation-counted rather than a busy flag: a read of the default remote
+// that is still failing to connect must not swallow a click on "this node"
+// -- the newer read wins, the older one's answer (or error) is dropped.
+let nsGen=0;
+async function refreshLobby(){
+  const gen=++nsGen;
+  let node;
+  try { node=nsResolve(); } catch(e){ nsSay(e.message, 'err'); return; }
+  const where=node.shown;
+  nsSay('reading '+where+'…');
+  try {
+    const [r,p]=await Promise.all([nsGet(node,'rooms'), nsGet(node,'players')]);
+    if(gen!==nsGen) return;
+    renderRooms(r); renderPlayers(p);
+    nsSay('read '+where+' at '+new Date().toLocaleTimeString(), 'ok');
+  } catch(e){
+    if(gen!==nsGen) return;
+    $('ns-rooms').innerHTML=''; $('ns-players').innerHTML='';
+    $('ns-no-rooms').classList.remove('hidden'); $('ns-no-players').classList.remove('hidden');
+    const cors = !node.local && /TypeError|Failed to fetch|NetworkError/.test(String(e));
+    nsSay(where+' unreachable'+(cors ? ' from this origin -- down, or not sending CORS headers (see README)'
+                                     : ': '+(e&&e.message||e)), 'err');
+  }
+}
+function openLobby(){ onlineEl.classList.add('on'); refreshLobby(); }
+function closeLobby(){ onlineEl.classList.remove('on'); }
+$('online-btn').onclick=openLobby;
+$('online-close').onclick=closeLobby;
+onlineEl.onclick=ev=>{ if(ev.target===onlineEl) closeLobby(); };
+$('ns-refresh').onclick=refreshLobby;
+$('ns-local').onclick=()=>{ nsUrlEl.value='local'; refreshLobby(); };
+nsUrlEl.addEventListener('keydown',ev=>{ if(ev.key==='Enter') refreshLobby(); });
+$('ns-make').onclick=()=>{
+  const k=$('ns-new-room').value.trim();
+  if(!k||/[\/\s]/.test(k)){ nsSay('a match name is one word, no slashes', 'err'); return; }
+  let node; try { node=nsResolve(); } catch(e){ nsSay(e.message, 'err'); return; }
+  notYet("creating '"+k+"' on "+node.shown);
+};
+$('ns-new-room').addEventListener('keydown',ev=>{ if(ev.key==='Enter') $('ns-make').click(); });
+window.addEventListener('keydown',ev=>{ if(ev.key==='Escape' && onlineEl.classList.contains('on')) closeLobby(); });
+
+// ── boot ─────────────────────────────────────────────────────────────────
+async function boot() {
+  setStatus('fetching…');
+  const man = await fetchManifest();
+  // Base first: decided by fetching man.wasm[0], whose bytes fetchAll reuses.
+  setStatus('locating runtime…');
+  await resolveWasmBase(man.base, man.wasm[0]);
+  const blobs = Object.assign({}, await fetchAll(man.wasm, 'module', wasm_base),
+                                  await fetchAll(man.scripts, 'script', null));
+  if (man.boot && !blobs[man.boot])
+    throw new Error('modules.json boot="' + man.boot + '" is not in its scripts list');
+
+  var Module = {
+    arguments: man.boot ? [man.boot] : [],
+    print: function (t) { window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n')); },
+    printErr: function (t) { log(t + (String(t).endsWith('\n') ? '' : '\n'), 'err'); },
+    dynamicLibraries: [],
+    // etcs.wasm is fetched by the GLUE, not by this page, so the base has to
+    // reach it through emscripten. `return path` resolved against the PAGE,
+    // which asks /chess/etcs.wasm once the artifacts sit at /wasm/.
+    locateFile: function (path) { return joinBase(wasm_base, path); },
+    preRun: [function () {
+      try {
+        for (const name of Object.keys(blobs)) {
+          const slash = name.lastIndexOf('/');
+          if (slash > 0) { try { FS.mkdirTree(name.slice(0, slash)); } catch (e) {} }
+          try { FS.writeFile(name, blobs[name]); }
+          catch (e) { FS.createDataFile('/', name.replace(/^\.\//, ''), blobs[name], true, true, true); }
+        }
+        log('[etcs] MEMFS preload complete (' + Object.keys(blobs).length + ' files)\n');
+      } catch (e) {
+        log('[etcs] preRun FS error: ' + e + '\n', 'err');
+      }
+    }],
+    onRuntimeInitialized: async function () {
+      setStatus('runtime ready', 'ok');
+      runtimeIsUp = true;
+      startShellDrain();
+      log('[etcs] runtime initialized; boot script: ' + (man.boot || '(none)') + '\n', 'ok');
+      if (shellReady) toShell({ etcs:'enable', enabled: true });
+      // The board's first paint: game.Request(game/white/local/fen) already
+      // ran inside boot_chess.etcs, so this is meant to be a read of what
+      // that produced, not a second attempt to create the match. But
+      // onRuntimeInitialized only means the wasm instance itself is up --
+      // it says nothing about whether the boot SCRIPT that runs after it
+      // has reached its `spawn` yet, and empirically it has not always: the
+      // very first call here can land before 'game' is a live global. So it
+      // retries briefly instead of assuming readiness.
+      //
+      // This loop is also the ONLY thing standing between a fast click and
+      // exactly the same race: boardReadyFlag (checked by every input path
+      // below -- clickSquare, seated, doReset, the chat handler) does not
+      // flip true until this loop actually gets a real position back.
+      // Without that gate a click landing in this same window used to reach
+      // callResult anyway, get the identical 'game' is not a live global
+      // name failure this loop itself retries past, and lose the move for
+      // good -- unlike this loop, nothing ever asked again on the click's
+      // behalf (see this folder's README for how that was found).
+      let fen = null;
+      for (let tries = 0; tries < 50 && fen == null; tries++) {
+        fen = await callResult('game', 'Request', pathFor('local', 'fen'));
+        if (fen == null) await sleep(100);
+      }
+      if (fen == null) {
+        log('[etcs] boot: game/local/fen never resolved -- boot_chess.etcs may not have run\n', 'err');
+      } else if (isFen(fen.trim())) {
+        lastFen = fen.trim(); noteLive('', lastFen); draw(lastFen);
+        boardReadyFlag = true;
+        // A click landing in the retry window above got exactly one flash --
+        // 'still starting up...' (clickSquare's own boardReady() guard) --
+        // and refreshStatus() below will not touch gsEl while its class is
+        // 'bad', by design: that guard is what keeps a real flash (illegal
+        // move, not your turn, game over) on screen instead of being raced
+        // by the next status poll. But 'still starting up...' isn't one of
+        // those -- it's not stale information about the game, it's a true
+        // statement that stopped being true the instant boardReadyFlag did,
+        // and it is the one flash this file ever sets before boardReady()
+        // can be true, so nothing else could be mistaken for it here. Clear
+        // it now so refreshStatus() reports the real position instead of
+        // leaving a "starting up" message on a board that has started.
+        if (gsEl.className === 'bad' && gsEl.textContent === 'still starting up…') {
+          gsEl.className = ''; gsEl.textContent = '';
+        }
+      }
+      await refreshStatus();
+      await refreshChat();
+    },
+    onAbort: function (r) {
+      setStatus('aborted', 'err');
+      log('[abort] ' + r + '\n', 'err');
+      if (shellReady) toShell({ etcs:'enable', enabled: false });
+    }
+  };
+  window.Module = Module;
+
+  // Through the base, like the modules: the glue lives with the runtime it
+  // loads, not with the page.
+  if (man.glue) { setStatus('loading ' + man.glue + '…'); await loadGlue(joinBase(wasm_base, man.glue)); }
+  else {
+    setStatus('loading glue…');
+    log('[etcs] modules.json names no "glue" -- probing etcs.js then etcs\n');
+    try { await loadGlue(joinBase(wasm_base, 'etcs.js')); }
+    catch (_) { await loadGlue(joinBase(wasm_base, 'etcs')); }
+  }
+}
+boot().catch(function (e) {
+  setStatus('boot failed', 'err');
+  log('[etcs] boot: ' + e + '\n', 'err');
+});
+})();
+</script>
+</body>
+</html>

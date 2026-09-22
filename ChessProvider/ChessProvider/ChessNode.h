@@ -87,6 +87,41 @@ public:
             // change is about WHO owns the domain, not about where it
             // allocates. Moving it to getArena() is a separate question.
             stream_.start(ETCS::MemoryArena::getInstance());
+#if defined(__EMSCRIPTEN__)
+            // start() itself cannot tell "mid-preload" from "long after
+            // boot" -- see its own comment (EventStream.h) on why every
+            // attempt at teaching it to guess from shared cross-module state
+            // failed, one direction or the other, under this tree's
+            // per-module wasm linking. So it always starts sync
+            // (main-thread poll, no ordering pthread), correct only for a
+            // stream that exists before boot's own promotion pass runs.
+            //
+            // This call_once is never one of those. ChessNode::stream() is
+            // reached for the first time from op() -- Request/Players/Rooms
+            // -- and nothing calls any of those before a ChessNode exists,
+            // and nothing spawns a ChessNode before a script runs, and no
+            // script runs until etcs_boot_runtime_threads has already
+            // finished (loaders/etcs.cc hands a script to a worker only
+            // after arming every module's runtime). So by construction,
+            // every call into this lambda is already past the one window
+            // sync mode exists to protect -- there is no "too early" case to
+            // guess wrong here, which is exactly why this promotes
+            // unconditionally instead of trying to detect readiness the way
+            // start() itself no longer does.
+            //
+            // Skipping this line is not a slower chess game, it is a silent
+            // one: left in sync_emscripten_ mode, the stream drains only
+            // while something happens to be polling it inline, which is
+            // preload's own single-threaded assumption -- and once
+            // etcs_web_call_async (etcs.cc) is doing its job correctly (off
+            // the browser's real main thread, on a ThreadPool worker, which
+            // is precisely where ChessOpEvent's wait is SUPPOSED to block),
+            // nothing is ever inline with this stream again. The worker
+            // spins against a ring nobody drains, forever, with no error --
+            // proven empirically before this call existed (see this
+            // module's scripts/www/README.md).
+            stream_.arm_emscripten_ordering_thread();
+#endif
         });
         return stream_;
     }
