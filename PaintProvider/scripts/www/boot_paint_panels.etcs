@@ -41,15 +41,44 @@ view.Clear(0.13, 0.13, 0.15, 1.0)
 # layer panel spawns and deletes its rows on every Refresh with this same edge
 # running, and the panes below are shown and hidden the same way.
 
-spawn RenderProvider::CompositeDrawable2D sheet_root
+# THE STAGE: what the frame edge presents, and the only reason it exists is that
+# "the scene" and "the throbber" have to be hidden and shown independently.
+#
+# A node has one parent, so the throbber cannot be inside the scene it covers
+# AND survive the scene being hidden. One level of wrapper solves it and nothing
+# else does: stage holds exactly two children, and each is switched on its own.
+#
+# sheet_root keeps its identity, its size, its position and every reference to
+# it (BindRulerFrame, BindRoot, AddPane below) -- it is one level deeper and
+# still at 0,0, so no coordinate anywhere moves.
+spawn RenderProvider::CompositeDrawable2D stage
+stage.Create(1024, 768)
+stage.SetPosition(0, 0)
+stage.SetOrder(0)
+stage.SetBackground(0.13, 0.13, 0.15, 1.0)
+
+stage.spawn(RenderProvider::CompositeDrawable2D sheet_root)
 sheet_root.Create(1024, 768)
 sheet_root.SetPosition(0, 0)
 sheet_root.SetOrder(0)
-sheet_root.SetBackground(0.13, 0.13, 0.15, 1.0)
+
+# HIDDEN UNTIL IT IS FINISHED, which is the whole point of the wrapper.
+#
+# Composing the scene from the top and letting it fill in was the first version
+# of this, and it showed: panes appearing one at a time, a canvas half built,
+# a toolbar arriving after the picture. A wait indicator exists to say "not
+# yet", and a scene assembling itself underneath one says the opposite.
+#
+# Hidden is also not picked (ontology/DrawableBase.h), so a click during boot
+# cannot land on a control that is not ready to answer it.
+sheet_root.SetHidden(1)
 
 # THE SESSION'S THROBBER, and the name is the point.
 #
-# Spawned once, here, because this is the first thing that needs one -- and kept
+# A sibling of the scene rather than a child of it, so hiding one does not hide
+# the other -- which is the reason `stage` exists at all.
+#
+# Spawned once, here, because this is the first thing that needs one, and kept
 # afterwards rather than deleted, so anything else with a wait in it (a new
 # canvas, a page switch, an import) shows THIS one instead of building another.
 # Two lines, from any subscript:
@@ -78,19 +107,32 @@ sheet_root.SetBackground(0.13, 0.13, 0.15, 1.0)
 # that script's root is, which may be nothing the compose root walks. A
 # subscript that has to work either way places what it gets.
 #
-# Lowercase, against the shape of the word: TitleCase after a dot is an ACTION
-# everywhere in this language, so a TitleCase entity name is the one spelling
-# that reads as something it is not at a glance.
-#
 # No SetOrder: the type defaults to the top (Throbber::ORDER_ON_TOP), because
 # for a wait indicator that is not a layout choice but what the thing is.
 # 464,318 centres a 96px ring -- 132px tall with its caption -- in 1024x768,
 # which is arithmetic that only reads as correct next to both numbers.
-sheet_root.spawn(RenderProvider::Throbber main_throbber)
+stage.spawn(RenderProvider::Throbber main_throbber)
 main_throbber.Create(96)
 main_throbber.SetPosition(464, 318)
 
-view.Compose(@sheet_root)
+# HIDDEN FROM THE START, AND NOT BECAUSE NOTHING NEEDS ONE DURING BOOT -- because
+# nothing in here CAN draw during boot, which is a measured fact rather than a
+# guess. Against this page in a headless Chromium: modules loaded and this script
+# handed to a Worker at 0.45s, THIRTY-TWO of the session's thirty-four Workers
+# created in that same first half-second, and the runtime's first presented frame
+# at 10.5s. Cutting this script from 520 lines to 125 moved none of those
+# numbers. The delay is the runtime coming up: every pthread is a Worker, every
+# Worker re-instantiates all seven open side modules, and this script's own
+# Worker is one of thirty-four competing for cores while they do it. A frame edge
+# cannot paint the interval it would be painting for.
+#
+# The page covers that interval instead (bootThrobber, www/index.html), with the
+# same twelve dots in the same two colours. THIS one is for the waits that happen
+# afterwards, when the runtime is up and can actually draw: a new canvas, a page
+# switch, an import. Hidden, it costs one virtual call a frame.
+main_throbber.SetHidden(1)
+
+view.Compose(@stage)
 
 # THE EDGE, EARLY, and there is still exactly one of it -- what moved is when it
 # starts, not how many there are.
@@ -298,7 +340,21 @@ canvas.BindZoomLabel(@zoom_label)
 sheet_root.spawn(RenderProvider::CompositeDrawable2D layers_pane)
 layers_pane.Create(240, 224)
 layers_pane.SetPosition(740, 44)
-layers_pane.SetOrder(25)
+
+# UNDER THE TOOLBAR, and that is the one ordering rule this window has that is
+# not about z at all -- it is about what is furniture and what is a document
+# view. The toolbar is fixed to the sheet; the layers panel is a window the user
+# drags around. A dragged window passing over a fixed control and covering it
+# reads as the control having gone away, which for a palette you are mid-stroke
+# with is the wrong answer. 15 puts it above the picture (paper_pane is 1) and
+# below the bar and everything mounted on it (bar_bg 19, bar 20, the zoom
+# controls and the gear at 21).
+#
+# The popups stay ABOVE the toolbar (wheel 30, menu and import 29) on purpose:
+# those are opened deliberately, are modal in intent, and close on a press
+# elsewhere -- a thing you summoned should be on top of what you summoned it
+# from. This panel is not summoned; it is simply there.
+layers_pane.SetOrder(15)
 
 spawn PaintProvider::PaintLayerPanel layers
 run PaintProvider/scripts/paint_layers.etcs panel=layers_pane doc=doc list=layers
@@ -443,7 +499,7 @@ sheet_root.spawn(RenderProvider::CompositeDrawable2D menu_pane)
 menu_pane.Create(200, 372)
 menu_pane.SetPosition(4, 18)
 menu_pane.SetOrder(29)
-menu_pane.SetBackground(0.10, 0.10, 0.13, 0.96)
+menu_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
 menu_pane.SetHidden(1)
 
 # The pending extent and anchor the menu edits, seeded from the document, and
@@ -482,7 +538,7 @@ sheet_root.spawn(RenderProvider::CompositeDrawable2D import_pane)
 import_pane.Create(300, 90)
 import_pane.SetPosition(398, 300)
 import_pane.SetOrder(29)
-import_pane.SetBackground(0.10, 0.10, 0.13, 0.96)
+import_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
 import_pane.SetHidden(1)
 
 spawn PaintProvider::PaintInput import_input
@@ -504,7 +560,11 @@ menu.BindImportPrompt(@palette, @import_pane, @import_input, @import_name)
 # virtual call a frame (RenderProvider/Throbber.h) -- and it stays in the tree,
 # sized, placed and on top, so the next thing with a wait in it shows it with
 # one call instead of building a second throbber.
-main_throbber.SetHidden(1)
+# The scene, all at once, finished. One line, and it is the line this whole
+# arrangement was for: before it there was a throbber on a dark page, after it
+# there is a paint program -- and no frame in between showing half of one.
+sheet_root.SetHidden(0)
+
 
 # ── the pumps ────────────────────────────────────────────────────────────────
 #

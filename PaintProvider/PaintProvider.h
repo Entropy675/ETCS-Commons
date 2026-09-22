@@ -6810,10 +6810,17 @@ private:
     ETCS::RID m_dragging  = 0;
     ETCS::RID m_hovering  = 0;
     float m_hover_dim = 0.25f;
-    float m_eye_shown[3]  = { 0.85f, 0.85f, 0.88f };
-    float m_eye_hidden[3] = { 0.30f, 0.30f, 0.34f };
-    float m_row_sel[3]    = { 0.28f, 0.30f, 0.38f };
-    float m_row_idle[3]   = { 0.18f, 0.18f, 0.22f };
+    /*
+ * THE DEFAULTS ARE THE RULER'S, so a script that never calls SetEyeColors or
+ * SetRowColors gets the panel that belongs to this window rather than one a
+ * shade off the canvas background -- see paint_layers.etcs for the argument.
+ * Ink and band are PaintSurface::m_ruler_ink and m_ruler_bg; the selected row
+ * is the ruler's in-band highlight, the colour a tick takes inside the page.
+ */
+    float m_eye_shown[3]  = { 0.94f, 0.89f, 0.78f };
+    float m_eye_hidden[3] = { 0.35f, 0.36f, 0.28f };
+    float m_row_sel[3]    = { 0.35f, 0.55f, 0.95f };
+    float m_row_idle[3]   = { 0.15f, 0.16f, 0.11f };
 };
 
 /*
@@ -7532,7 +7539,7 @@ public:
             if (!info)
             {
                 PaintPalette::set_node_text(m_page_label[i], "");
-                PaintPalette::set_node_fill(m_page_row[i], 0.13f, 0.13f, 0.16f, 1.0f);
+                PaintPalette::set_node_fill(m_page_row[i], 0.106f, 0.110f, 0.078f, 1.0f);
                 continue;
             }
             const std::string name = info->name.empty()
@@ -7540,8 +7547,12 @@ public:
             PaintPalette::set_node_text(m_page_label[i],
                 name + "  " + std::to_string(info->w) + "x" + std::to_string(info->h));
             const bool current = (info->id == here && here != 0);
-            if (current) PaintPalette::set_node_fill(m_page_row[i], 0.28f, 0.30f, 0.38f, 1.0f);
-            else         PaintPalette::set_node_fill(m_page_row[i], 0.16f, 0.16f, 0.20f, 1.0f);
+            // The same two the layer rows use, and for the same reason: this is
+            // furniture in the same window, so an empty slot is the ruler's band,
+            // an idle row is one step up from it, and the current page is the
+            // ruler's in-band highlight. See paint_layers.etcs.
+            if (current) PaintPalette::set_node_fill(m_page_row[i], 0.35f, 0.55f, 0.95f, 1.0f);
+            else         PaintPalette::set_node_fill(m_page_row[i], 0.15f, 0.16f, 0.11f, 1.0f);
         }
     }
 

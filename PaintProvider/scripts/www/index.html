@@ -84,9 +84,18 @@
     /* Centres the canvas in whatever box the grid gave it, and min-height:0 is
        what lets that box actually shrink -- a grid item defaults to min-content,
        which for a 768px-tall canvas means it never yields. */
+    /* The boot throbber sits over the canvas, centred, and is removed the
+       moment the runtime's own picture arrives. pointer-events:none so it
+       cannot eat a click during the seconds it is up. */
+    #bootthrob {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none; z-index: 5;
+    }
     #stage {
       grid-area: stage; min-height: 0; min-width: 0;
       display: flex; align-items: center; justify-content: center;
+      position: relative;                 /* the boot throbber anchors to this */
     }
     /* The window's framebuffer. Create() resizes the ATTRIBUTES to whatever
        boot.etcs asked for; these rules only decide how big it is drawn, and
@@ -183,6 +192,11 @@
     </header>
     <div id="stage">
       <canvas id="canvas" width="1024" height="768"></canvas>
+      <!-- THE BOOT THROBBER, and it is page-side for a measured reason.
+           See bootThrobber() below: nothing inside the runtime can draw
+           during the window this covers, because the runtime is not
+           running yet. -->
+      <canvas id="bootthrob" width="240" height="300"></canvas>
     </div>
     <!-- The ShellProvider page, as the terminal VIEW only. It detects being
          framed and boots no runtime of its own; lines cross by postMessage.
@@ -859,6 +873,128 @@
       catch (_) { await loadGlue(joinBase(wasm_base, 'etcs')); }
     }
   }
+
+  /*
+   * ── the boot throbber ──────────────────────────────────────────────────────
+   *
+   * PAGE-SIDE, AND THAT IS A MEASURED DECISION RATHER THAN A SHORTCUT.
+   *
+   * RenderProvider has a Throbber leaf that rides the frame edge, and the
+   * obvious thing is to put one up on the first lines of boot_paint_panels.etcs
+   * and let the runtime draw it. That was tried, and the timeline says why it
+   * cannot work. Measured in a headless Chromium against this page:
+   *
+   *     0.45s   modules loaded, boot script handed to a Worker
+   *     0-0.5s  THIRTY-TWO of the session's thirty-four Workers created, in one
+   *             burst -- every pthread is a Worker and every Worker
+   *             re-instantiates all seven open side modules
+   *     10.5s   the first frame the runtime presents
+   *
+   * Cutting the boot script from 520 lines to 125 moved NONE of those numbers,
+   * which is the whole finding: the delay is not the scene being built, it is
+   * the runtime coming up, and the boot script's own Worker is one of
+   * thirty-four competing for cores while they all instantiate the same seven
+   * modules. A frame edge cannot draw before it exists, and it does not exist
+   * until the thing it would be drawing during has mostly finished.
+   *
+   * THE MAIN THREAD IS FINE THROUGHOUT, which is what makes this work: a rAF
+   * heartbeat recorded 852 frames over those 20 seconds with no gap above
+   * 250ms. The page is responsive the whole time the runtime is not, so the
+   * one thing that can paint the first ten seconds is the page. This costs one
+   * rAF loop and no Worker, and it is up on the first frame after
+   * DOMContentLoaded.
+   *
+   * THE SAME PICTURE AS THE RUNTIME'S, deliberately: twelve dots, the head
+   * bright blue fading back through violet, "ETCS" over it in off-white. The
+   * blue and the violet are the canvas's own box-shadow (rgba(0,0,255) and
+   * rgba(100,0,228) in the CSS above), so the wait indicator and the frame
+   * around the thing being waited for are the same two colours.
+   *
+   * STEPS PER FRAME, not per second, matching Throbber::AdvanceConcrete -- so a
+   * browser that is struggling shows a throbber that is visibly struggling,
+   * which during a boot is the single most useful thing it could be saying.
+   */
+  function bootThrobber() {
+    const el = document.getElementById('bootthrob');
+    const sheet = document.getElementById('canvas');
+    if (!el || !sheet) return;
+    const g = el.getContext('2d');
+    if (!g) { el.remove(); return; }
+
+    const RING = 96, DOTS = 12, TAIL = 0.45, STEP = 5.4 / 360;
+    const HEAD = [0.35, 0.55, 0.95], TAILC = [0.58, 0.40, 0.95];
+    const cx = el.width / 2, ringTop = 44, cy = ringTop + RING / 2;
+    const dotR = RING * 0.10, orbit = RING * 0.5 - dotR;
+    let phase = 0, stopped = false;
+
+    g.font = '600 24px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+    g.textAlign = 'center';
+    g.textBaseline = 'top';
+
+    function frame() {
+      if (stopped) return;
+      g.clearRect(0, 0, el.width, el.height);
+      g.fillStyle = 'rgba(240, 227, 199, 0.95)';    // the off-white the runtime uses
+      g.letterSpacing = '6px';
+      g.fillText('ETCS', cx, 8);
+      for (let i = 0; i < DOTS; i++) {
+        const at = i / DOTS;
+        // Short way round, so the tail stays continuous across the wrap --
+        // the same arithmetic as Throbber::repaint.
+        let d = phase - at; d = d - Math.floor(d); if (d > 0.5) d = 1 - d;
+        let t = 1 - (d / TAIL); if (t < 0) t = 0; t = t * t;
+        const a = 0.14 + (1 - 0.14) * t;
+        const c = HEAD.map((h, k) => Math.round(255 * (TAILC[k] + (h - TAILC[k]) * t)));
+        const ang = at * Math.PI * 2 - Math.PI / 2;
+        g.beginPath();
+        g.arc(cx + orbit * Math.cos(ang), cy + orbit * Math.sin(ang), dotR, 0, Math.PI * 2);
+        g.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a.toFixed(3) + ')';
+        g.fill();
+      }
+      phase = (phase + STEP) % 1;
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    /*
+     * IT LEAVES WHEN THERE IS SOMETHING TO LEAVE FOR, and the runtime's own
+     * picture is the only honest signal -- there is no channel from a script
+     * back to this page, and a timeout would be a guess that is wrong on both
+     * a fast machine and a slow one.
+     *
+     * The sheet stays at its background colour until boot_paint_panels.etcs
+     * unhides the scene on its last lines, so "the centre has something in it"
+     * means the scene arrived. Sampled every 200ms over a small centre block,
+     * which is cheap enough to be uninteresting next to a wasm boot.
+     *
+     * Read failures are counted, not swallowed: if the canvas is ever
+     * cross-origin or context-less this cannot work at all, and after a few
+     * seconds of that the overlay leaves anyway rather than covering the
+     * application forever.
+     */
+    let bad = 0;
+    const poll = setInterval(function () {
+      let done = false;
+      try {
+        const sg = sheet.getContext('2d', { willReadFrequently: true });
+        if (!sg) { bad++; }
+        else {
+          const w = 160, h = 160;
+          const d = sg.getImageData((sheet.width - w) / 2, (sheet.height - h) / 2, w, h).data;
+          let lit = 0;
+          for (let k = 0; k < d.length; k += 16)
+            if (d[k] > 45 || d[k + 1] > 45 || d[k + 2] > 70) lit++;
+          if (lit > 40) done = true;
+        }
+      } catch (e) { bad++; }
+      if (done || bad > 25) {
+        stopped = true; clearInterval(poll); el.remove();
+        log('[etcs] boot throbber done'
+            + (bad > 25 ? ' (could not read the sheet -- leaving anyway)' : '') + '\n');
+      }
+    }, 200);
+  }
+  bootThrobber();
 
   boot().catch(function (e) {
     setStatus('boot failed', 'err');

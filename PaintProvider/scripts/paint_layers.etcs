@@ -62,8 +62,27 @@ list.BindDocument(@doc)
 # selected/idle. The hover dim is how far every OTHER layer recedes while a row
 # is under the pointer -- 0.25 rather than 0 so the rest of the picture stays
 # legible as context, since isolating a layer is a way of finding it.
-list.SetEyeColors(0.85, 0.85, 0.88, 0.30, 0.30, 0.34)
-list.SetRowColors(0.28, 0.30, 0.38, 0.18, 0.18, 0.22)
+#
+# ── THE PANEL BELONGS TO THE RULER, NOT TO THE CANVAS ───────────────────────
+#
+# Every value below is taken from the edge ruler rather than invented: the
+# panel's ground is the ruler's own band (0.106, 0.110, 0.078 -- PaintSurface's
+# m_ruler_bg), its ink is the ruler's ink (0.94, 0.89, 0.78 -- m_ruler_ink), and
+# the selected row is the ruler's in-band highlight (0.35, 0.55, 0.95, the
+# colour a tick takes inside the page).
+#
+# It used to be a neutral grey-blue a shade off the canvas background, which is
+# the one thing it should NOT have matched: the canvas is the PICTURE, and a
+# panel the colour of the picture reads as part of it. The ruler is the other
+# furniture in this window -- the frame around the page -- and furniture should
+# look like furniture. Now the panel and the ruler are the same two colours, so
+# the eye groups them and neither competes with what is being drawn.
+#
+# The shown eye is the ruler's ink at full strength and the hidden one is that
+# same ink sunk most of the way into the band, so "off" is the same colour
+# turned down rather than a second, greyer one.
+list.SetEyeColors(0.94, 0.89, 0.78, 0.35, 0.36, 0.28)
+list.SetRowColors(0.35, 0.55, 0.95, 0.15, 0.16, 0.11)
 list.SetHoverDim(0.25)
 
 # ── the frame ────────────────────────────────────────────────────────────
@@ -78,7 +97,8 @@ layers_back.AddPoint(0, 0)
 layers_back.AddPoint(240, 0)
 layers_back.AddPoint(240, 224)
 layers_back.AddPoint(0, 224)
-layers_back.SetFill(0.13, 0.13, 0.16, 1.0)
+# The ruler's own band (PaintSurface::m_ruler_bg), exactly.
+layers_back.SetFill(0.106, 0.110, 0.078, 1.0)
 layers_back.SetOrder(0)
 
 # ── the title bar, which is the handle, and the + on it ──────────────────
@@ -94,7 +114,9 @@ layers_title.AddPoint(0, 0)
 layers_title.AddPoint(240, 0)
 layers_title.AddPoint(240, 22)
 layers_title.AddPoint(0, 22)
-layers_title.SetFill(0.22, 0.22, 0.27, 1.0)
+# One step up from the band rather than a different colour: a title bar is
+# the same material, lit.
+layers_title.SetFill(0.17, 0.18, 0.13, 1.0)
 layers_title.SetOrder(1)
 
 panel.spawn(RenderProvider::TextLabel layers_title_word)
@@ -111,7 +133,9 @@ layers_add.AddPoint(214, 3)
 layers_add.AddPoint(234, 3)
 layers_add.AddPoint(234, 19)
 layers_add.AddPoint(214, 19)
-layers_add.SetFill(0.30, 0.34, 0.30, 1.0)
+# The + keeps its green, pulled into the band's hue so it reads as a control
+# on this panel rather than a swatch borrowed from somewhere else.
+layers_add.SetFill(0.24, 0.33, 0.19, 1.0)
 layers_add.SetOrder(2)
 
 panel.spawn(RenderProvider::TextLabel layers_add_word)
@@ -143,7 +167,7 @@ row0_bg.AddPoint(4, 26)
 row0_bg.AddPoint(236, 26)
 row0_bg.AddPoint(236, 52)
 row0_bg.AddPoint(4, 52)
-row0_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row0_bg.SetFill(0.15, 0.16, 0.11, 1.0)
 row0_bg.SetOrder(1)
 
 panel.spawn(RenderProvider::PolygonDrawable2D row0_eye)
@@ -152,7 +176,7 @@ row0_eye.AddPoint(8, 33)
 row0_eye.AddPoint(22, 33)
 row0_eye.AddPoint(22, 45)
 row0_eye.AddPoint(8, 45)
-row0_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row0_eye.SetFill(0.94, 0.89, 0.78, 1.0)
 row0_eye.SetOrder(2)
 
 panel.spawn(RenderProvider::CompositeDrawable2D row0_thumb)
@@ -175,7 +199,7 @@ row0_del.AddPoint(216, 31)
 row0_del.AddPoint(232, 31)
 row0_del.AddPoint(232, 47)
 row0_del.AddPoint(216, 47)
-row0_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row0_del.SetFill(0.72, 0.31, 0.23, 1.0)
 row0_del.SetOrder(2)
 
 list.AddRow(@row0_bg, @row0_eye, @row0_thumb, @row0_name, @row0_del)
@@ -186,7 +210,7 @@ row1_bg.AddPoint(4, 54)
 row1_bg.AddPoint(236, 54)
 row1_bg.AddPoint(236, 80)
 row1_bg.AddPoint(4, 80)
-row1_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row1_bg.SetFill(0.15, 0.16, 0.11, 1.0)
 row1_bg.SetOrder(1)
 
 panel.spawn(RenderProvider::PolygonDrawable2D row1_eye)
@@ -195,7 +219,7 @@ row1_eye.AddPoint(8, 61)
 row1_eye.AddPoint(22, 61)
 row1_eye.AddPoint(22, 73)
 row1_eye.AddPoint(8, 73)
-row1_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row1_eye.SetFill(0.94, 0.89, 0.78, 1.0)
 row1_eye.SetOrder(2)
 
 panel.spawn(RenderProvider::CompositeDrawable2D row1_thumb)
@@ -218,7 +242,7 @@ row1_del.AddPoint(216, 59)
 row1_del.AddPoint(232, 59)
 row1_del.AddPoint(232, 75)
 row1_del.AddPoint(216, 75)
-row1_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row1_del.SetFill(0.72, 0.31, 0.23, 1.0)
 row1_del.SetOrder(2)
 
 list.AddRow(@row1_bg, @row1_eye, @row1_thumb, @row1_name, @row1_del)
@@ -229,7 +253,7 @@ row2_bg.AddPoint(4, 82)
 row2_bg.AddPoint(236, 82)
 row2_bg.AddPoint(236, 108)
 row2_bg.AddPoint(4, 108)
-row2_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row2_bg.SetFill(0.15, 0.16, 0.11, 1.0)
 row2_bg.SetOrder(1)
 
 panel.spawn(RenderProvider::PolygonDrawable2D row2_eye)
@@ -238,7 +262,7 @@ row2_eye.AddPoint(8, 89)
 row2_eye.AddPoint(22, 89)
 row2_eye.AddPoint(22, 101)
 row2_eye.AddPoint(8, 101)
-row2_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row2_eye.SetFill(0.94, 0.89, 0.78, 1.0)
 row2_eye.SetOrder(2)
 
 panel.spawn(RenderProvider::CompositeDrawable2D row2_thumb)
@@ -261,7 +285,7 @@ row2_del.AddPoint(216, 87)
 row2_del.AddPoint(232, 87)
 row2_del.AddPoint(232, 103)
 row2_del.AddPoint(216, 103)
-row2_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row2_del.SetFill(0.72, 0.31, 0.23, 1.0)
 row2_del.SetOrder(2)
 
 list.AddRow(@row2_bg, @row2_eye, @row2_thumb, @row2_name, @row2_del)
@@ -272,7 +296,7 @@ row3_bg.AddPoint(4, 110)
 row3_bg.AddPoint(236, 110)
 row3_bg.AddPoint(236, 136)
 row3_bg.AddPoint(4, 136)
-row3_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row3_bg.SetFill(0.15, 0.16, 0.11, 1.0)
 row3_bg.SetOrder(1)
 
 panel.spawn(RenderProvider::PolygonDrawable2D row3_eye)
@@ -281,7 +305,7 @@ row3_eye.AddPoint(8, 117)
 row3_eye.AddPoint(22, 117)
 row3_eye.AddPoint(22, 129)
 row3_eye.AddPoint(8, 129)
-row3_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row3_eye.SetFill(0.94, 0.89, 0.78, 1.0)
 row3_eye.SetOrder(2)
 
 panel.spawn(RenderProvider::CompositeDrawable2D row3_thumb)
@@ -304,7 +328,7 @@ row3_del.AddPoint(216, 115)
 row3_del.AddPoint(232, 115)
 row3_del.AddPoint(232, 131)
 row3_del.AddPoint(216, 131)
-row3_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row3_del.SetFill(0.72, 0.31, 0.23, 1.0)
 row3_del.SetOrder(2)
 
 list.AddRow(@row3_bg, @row3_eye, @row3_thumb, @row3_name, @row3_del)
@@ -315,7 +339,7 @@ row4_bg.AddPoint(4, 138)
 row4_bg.AddPoint(236, 138)
 row4_bg.AddPoint(236, 164)
 row4_bg.AddPoint(4, 164)
-row4_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row4_bg.SetFill(0.15, 0.16, 0.11, 1.0)
 row4_bg.SetOrder(1)
 
 panel.spawn(RenderProvider::PolygonDrawable2D row4_eye)
@@ -324,7 +348,7 @@ row4_eye.AddPoint(8, 145)
 row4_eye.AddPoint(22, 145)
 row4_eye.AddPoint(22, 157)
 row4_eye.AddPoint(8, 157)
-row4_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row4_eye.SetFill(0.94, 0.89, 0.78, 1.0)
 row4_eye.SetOrder(2)
 
 panel.spawn(RenderProvider::CompositeDrawable2D row4_thumb)
@@ -347,7 +371,7 @@ row4_del.AddPoint(216, 143)
 row4_del.AddPoint(232, 143)
 row4_del.AddPoint(232, 159)
 row4_del.AddPoint(216, 159)
-row4_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row4_del.SetFill(0.72, 0.31, 0.23, 1.0)
 row4_del.SetOrder(2)
 
 list.AddRow(@row4_bg, @row4_eye, @row4_thumb, @row4_name, @row4_del)
@@ -358,7 +382,7 @@ row5_bg.AddPoint(4, 166)
 row5_bg.AddPoint(236, 166)
 row5_bg.AddPoint(236, 192)
 row5_bg.AddPoint(4, 192)
-row5_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row5_bg.SetFill(0.15, 0.16, 0.11, 1.0)
 row5_bg.SetOrder(1)
 
 panel.spawn(RenderProvider::PolygonDrawable2D row5_eye)
@@ -367,7 +391,7 @@ row5_eye.AddPoint(8, 173)
 row5_eye.AddPoint(22, 173)
 row5_eye.AddPoint(22, 185)
 row5_eye.AddPoint(8, 185)
-row5_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row5_eye.SetFill(0.94, 0.89, 0.78, 1.0)
 row5_eye.SetOrder(2)
 
 panel.spawn(RenderProvider::CompositeDrawable2D row5_thumb)
@@ -390,7 +414,7 @@ row5_del.AddPoint(216, 171)
 row5_del.AddPoint(232, 171)
 row5_del.AddPoint(232, 187)
 row5_del.AddPoint(216, 187)
-row5_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row5_del.SetFill(0.72, 0.31, 0.23, 1.0)
 row5_del.SetOrder(2)
 
 list.AddRow(@row5_bg, @row5_eye, @row5_thumb, @row5_name, @row5_del)
@@ -401,7 +425,7 @@ row6_bg.AddPoint(4, 194)
 row6_bg.AddPoint(236, 194)
 row6_bg.AddPoint(236, 220)
 row6_bg.AddPoint(4, 220)
-row6_bg.SetFill(0.18, 0.18, 0.22, 1.0)
+row6_bg.SetFill(0.15, 0.16, 0.11, 1.0)
 row6_bg.SetOrder(1)
 
 panel.spawn(RenderProvider::PolygonDrawable2D row6_eye)
@@ -410,7 +434,7 @@ row6_eye.AddPoint(8, 201)
 row6_eye.AddPoint(22, 201)
 row6_eye.AddPoint(22, 213)
 row6_eye.AddPoint(8, 213)
-row6_eye.SetFill(0.85, 0.85, 0.88, 1.0)
+row6_eye.SetFill(0.94, 0.89, 0.78, 1.0)
 row6_eye.SetOrder(2)
 
 panel.spawn(RenderProvider::CompositeDrawable2D row6_thumb)
@@ -433,7 +457,7 @@ row6_del.AddPoint(216, 199)
 row6_del.AddPoint(232, 199)
 row6_del.AddPoint(232, 215)
 row6_del.AddPoint(216, 215)
-row6_del.SetFill(0.75, 0.28, 0.30, 1.0)
+row6_del.SetFill(0.72, 0.31, 0.23, 1.0)
 row6_del.SetOrder(2)
 
 list.AddRow(@row6_bg, @row6_eye, @row6_thumb, @row6_name, @row6_del)
