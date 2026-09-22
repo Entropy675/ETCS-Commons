@@ -1,12 +1,16 @@
 # ETCS Web Shell host page
 
-Serve this directory with the native ETCS HttpServer (COOP/COEP) together with:
+Serve this directory with the native ETCS HttpServer (COOP/COEP -- a `-pthread`
+build has no threads without cross-origin isolation) and mount `bin/wasm/` at
+`/wasm/`, which is where the page resolves `etcs.js`, `etcs.wasm` and
+`ShellProvider.wasm` from (resolveWasmBase in `index.html`; `WASM_DIR` in the
+ETCS Makefile on why the artifacts live there and not beside a page). Nothing is
+copied into this directory.
 
-- `etcs.js` (or extensionless `etcs` glue) + `etcs.wasm`
-- `ShellProvider.wasm` (and optionally `WindowProvider.wasm`)
+Build with `ace wasm make module ShellProvider` and `ace wasm make loader etcs`.
 
-Rebuild ShellProvider / etcs with `EMSCRIPTEN=1` after the WebTerminal bridge
-and ETCS `DL_EXTENSION=.wasm` patches.
+Embedded as the terminal of the paint and window pages, it skips its own boot and
+is a view only; served on its own it boots the runtime itself.
 
 The page terminal calls `etcs_web_shell_push_line` so `lsh::read_line` unblocks.
 

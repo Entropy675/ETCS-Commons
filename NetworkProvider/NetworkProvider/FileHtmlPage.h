@@ -301,11 +301,11 @@ public:
     // --- Serve a whole DIRECTORY at one url prefix ---
     //
     // LoadFromDisk takes the names it finds and answers them at THIS node's own
-    // level. There was no way to say "that directory, but under /paint", which
-    // is the shape a second SELF-CONTAINED site needs: one that brings its own
-    // index.html. Loaded flat beside the first, the two index.html files land on
-    // the same name and which one wins is attach order -- the same fragility
-    // run_website.etcs's header already has to explain about "/".
+    // level; this is "that directory, but under /paint", which is the shape a
+    // second SELF-CONTAINED site needs -- one that brings its own index.html.
+    // Loaded flat beside the first, the two index.html files land on the same
+    // name and which one wins is attach order, the same fragility
+    // run_website.etcs's header has to explain about "/".
     //
     // So: one named child, LoadFromDisk'd into. Resolution needs nothing new --
     // a Directory child already answers its own index.html for a bare path

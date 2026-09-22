@@ -295,32 +295,24 @@
   }
 
   /*
-   * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES.
+   * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES. The runtime
+   * binaries are shared and move in epochs, so they live in one place --
+   * bin/wasm/, mounted at /wasm/ by the serve scripts (Makefile, WASM_DIR, for
+   * the argument) -- and every page fetches them from there. The base affects
+   * only the FETCH; what is written into MEMFS stays the bare name, because
+   * preload_web_modules dlopens by name. Scripts are not in here: they are
+   * mounted beside the page at the paths the OS side reads them from.
    *
-   * The runtime binaries are SHARED and they move in epochs -- one etcs.wasm and
-   * one .wasm per provider, built together, refusing each other across a rebuild
-   * (the manifest check). So they live in one place, bin/wasm/, mounted at
-   * /wasm/ by the serve scripts, and every page fetches them from there.
+   * Resolved by trying: same-origin /wasm/ first, because a local server must
+   * not need a setting; then beside the page, which is what a deployment made
+   * before the shared directory looks like; then the known-good remote.
+   * modules.json may name a "base" to skip the walk. The first candidate whose
+   * bytes carry the WebAssembly magic wins -- a 200 is not evidence, and every
+   * wrong answer a web server gives is markup. Identical across every page in
+   * this tree on purpose: one shared artifact directory is the point, and two
+   * pages disagreeing about where it is would undo it.
    *
-   * They used to have to sit BESIDE the page, copied in after each build. That is
-   * the step this page's README used to spell out, and forgetting it does not
-   * produce a 404 -- it produces last epoch's binary answering 200 and a loader
-   * refusing it on a hash mismatch, which reads as a build problem and is not
-   * one.
-   *
-   * THE NAME AND THE URL ARE DIFFERENT THINGS. The base affects only the FETCH;
-   * what is written into MEMFS stays the bare name, because preload_web_modules
-   * dlopens by name and run_script opens by name.
-   *
-   * SCRIPTS ARE NOT IN HERE -- they are mounted next to the page at the paths the
-   * OS side reads them from. Only the modules and the glue are shared artifacts.
-   *
-   * RESOLVED BY TRYING: same-origin /wasm/ first, because a local server must not
-   * need a setting; then beside the page, which is every deployment made before
-   * this change; then the known-good remote. modules.json may name a "base" to
-   * skip the walk. Identical to PaintProvider's page on purpose -- one shared
-   * artifact directory is the point, and two pages disagreeing about where it is
-   * would undo it.
+   * The probe's bytes are kept: the first module has to be fetched anyway.
    */
   const WASM_BASE_CANDIDATES = ['/wasm/', './', 'https://anticurrententropy.com/wasm/'];
   let wasm_base = null;

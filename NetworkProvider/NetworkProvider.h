@@ -454,17 +454,13 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             // oversized response had do_send reading PAST the buffer.
             // Everything below is clamped to what SendBuffer holds.
             //
-            // SendBuffer() is fixed at ETCS_NETWORK_MAX_ASSET_SIZE (8 MiB):
-            // THAT macro is the knob for large assets, not NBuffer and not
-            // ETCS_NETWORK_MAX_HEADER_SIZE, which this comment used to name
-            // from before the two were split apart. Worth being exact about,
-            // because the two differ by 32x and believing the old number is
-            // believing this server cannot serve a 2 MiB wasm -- it can, and
-            // the split was made so it could. The real fix for UNBOUNDED
-            // assets is still a chunked send loop feeding several
-            // IOSubmission::Send calls, not yet wired here; until then the
-            // macro is a preallocation as well as a ceiling, which is the
-            // whole reason it is not simply enormous.
+            // SendBuffer() is ETCS_NETWORK_MAX_ASSET_SIZE (8 MiB): THAT macro
+            // is the knob for large assets -- not NBuffer, and not
+            // ETCS_NETWORK_MAX_HEADER_SIZE, which is 32x smaller and governs
+            // the request side only. The real fix for UNBOUNDED assets is a
+            // chunked send loop feeding several IOSubmission::Send calls, not
+            // yet wired here; until then the macro is a preallocation as well
+            // as a ceiling, which is why it is not simply enormous.
             const size_t cap = c->SendBuffer().size();
             const int hdr_fmt = snprintf(c->SendBuffer().data(), cap,
                 "HTTP/1.1 200 OK\r\n"
@@ -490,7 +486,7 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                 ETCS_LOG("HttpServer::Serve", "REFUSING '" << path << "' ("
                          << asset.length << " bytes): SendBuffer holds " << cap
                          << " (" << (cap - hdr_len) << " free after headers)"
-                         << " -- raise ETCS_NETWORK_MAX_HEADER_SIZE.");
+                         << " -- raise ETCS_NETWORK_MAX_ASSET_SIZE.");
                 const char* err = "asset exceeds send buffer";
                 const int e = snprintf(c->SendBuffer().data(), cap,
                     "HTTP/1.1 500 Internal Server Error\r\nConnection: %s\r\n"

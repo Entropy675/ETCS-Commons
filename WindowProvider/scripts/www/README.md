@@ -50,8 +50,7 @@ The served tree is this directory:
     index.html           this page      (a Directory node resolves "/" through it)
     modules.json         the include list: modules, scripts, boot, glue
     boot.etcs            handed to the runtime as argv[1]
-    etcs.js  etcs.wasm   build output, copied in
-    *.wasm               every provider named in modules.json
+    (modules, glue)      from bin/wasm/, mounted at /wasm/ -- not in this directory
 
 and mounted into that same tree FILE BY FILE by `../serve_web.etcs`, each at the
 exact URL the page fetches it from, without exposing the directory it lives in:
@@ -68,9 +67,9 @@ sits one level above this file.)
 WHY MOUNTS AND NOT COPIES. A page can only fetch what the server serves, and the
 runtime can only open what the page staged, so `detach window_events.etcs` in the
 browser needs that exact name to answer over HTTP. The reachable-by-URL set is
-whatever the tree holds, and a file one level up is not in it. The first version
-of this directory therefore held copies of all three -- which makes "the same pump
-script as the OS side" a claim a diff has to keep true rather than a fact.
+whatever the tree holds, and a file one level up is not in it. Copies would make
+"the same pump script as the OS side" a claim a diff has to keep true rather than
+a fact.
 `FileHtmlPage.MountFile` takes one url path and one file, so one line per file
 serves the ORIGINAL at the name the page wants, and there is exactly one copy of
 each script in the repo.
@@ -198,11 +197,7 @@ sleep in the program is instrumented end to end.
 `modules.json`'s `"glue"` key names the file the page loads, so whatever the web
 path emits has to match it -- `etcs.js`, as written. An extensionless `etcs` is
 served as `application/octet-stream`, which the browser warns is not a valid
-JavaScript MIME type, and it used to land on the same name as the NATIVE `etcs`
-binary in `bin/`, which `copy_loaders` then moved the glue over. Naming the web
-output `etcs.js` is what keeps those two apart. The collision itself is gone now
-that `copy_loaders` writes `bin/wasm/` on the web path (`ARTIFACT_DIR`), but the
-MIME half of the argument still stands and is why the name has an extension.
+JavaScript MIME type -- which is why the name has an extension.
 
 ## Why the navigator did not come up on this page: 30 missing GLFW symbols
 
@@ -244,10 +239,10 @@ module manifests -- `-sUSE_GLFW=3` from WindowProvider). Only the main module ha
 glue, so only the main link can carry them, and the loader cannot know which
 modules will `dlopen` in, so it takes all of them.
 
-CHECKING IT WITHOUT A BROWSER. `tools/wasm_link_check.py` does the set difference
-the linker declined to do:
+CHECKING IT WITHOUT A BROWSER. `ace wasm link` does the set difference the
+linker declined to do, against whatever is in `bin/wasm/`:
 
-    wasm_link_check.py bin/etcs.wasm bin/WindowProvider.wasm bin/ShellProvider.wasm
+    ace wasm link
 
 It reads the wasm import and export sections directly (no emsdk, no wabt), folds
 in symbols the sibling side modules export and names the glue mentions, and lists

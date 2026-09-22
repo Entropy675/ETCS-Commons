@@ -1,16 +1,7 @@
-# BUILD OUTPUT THAT NO LONGER BELONGS HERE AT ALL.
-#
-# The page used to fetch the wasm and the glue from this directory by name, so
-# `ace wasm make` outputs had to be copied in after every build -- ignored here
-# because a 2MB binary per provider does not belong in the history of the page
-# that loads them.
-#
-# They are not copied in any more: `ace wasm make` writes bin/wasm/, serve_web.etcs
-# mounts that at /wasm/, and the page resolves its base there (resolveWasmBase in
-# index.html). The entries stay so that a tree which still has the old copies
-# keeps them out of a commit -- and so a stale one sitting here cannot be mistaken
-# for the current artifact. Safe to delete them; the page prefers /wasm/ and only
-# falls back to this directory for a deployment made before the split.
+# Build output. The page fetches its modules and glue from bin/wasm/ (mounted
+# at /wasm/ by the serve scripts -- Makefile, WASM_DIR), never from here. Kept
+# ignored so a stale copy left in this directory can neither reach a commit nor
+# be mistaken for the current artifact; safe to delete.
 etcs.js
 etcs.wasm
 *.wasm

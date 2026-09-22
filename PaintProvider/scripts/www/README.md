@@ -33,12 +33,10 @@ Deploy is build, and that is all of it — there is no copy step any more:
 `ace wasm make` writes every web artifact into `bin/wasm/` (`WASM_DIR` in ETCS's
 Makefile, `ARTIFACT_DIR` in the generated `loaders/Makefile`), the serve scripts
 mount that one directory at `/wasm/`, and this page fetches its modules and its
-glue from there. The `cp ... www/` line that used to be here is gone, and good:
-these binaries are shared and they move in epochs — one etcs.wasm and one .wasm
-per provider, built together, refusing each other across a rebuild — so a
-per-page copy was N chances to be one epoch behind, and being behind did not 404.
-It answered 200 with last epoch's binary and the loader refused it on a manifest
-hash, which reads as a build problem and is not one.
+glue from there. Nothing is copied beside the page: a per-page copy is a chance
+to be one epoch behind, and a stale one does not 404 — it answers 200 and the
+loader refuses it on a manifest hash (the Makefile's `WASM_DIR` note has the
+whole argument).
 
 (`ace wasm make modules` builds only the modules whose own manifest declares
 `"Web"`; PaintProvider and ShellProvider build from `default.json` and so are
@@ -143,10 +141,10 @@ where an escape is bytes on screen rather than a colour.
 ## The drawing area is INSET, and the ruler lives in the margin
 
 `paper_pane` is a 952x632 pane at (36, 36) inside `sheet_root`, and the band around
-it is where the edge ruler's marks every 100 px go. They used to be drawn along the
-inside of the drawing area, which put them on the picture — over the paper near the
-edges, and paintable, so a stroke near a corner went through the scale it was being
-checked against.
+it is where the edge ruler's marks every 100 px go. Drawn along the inside of the
+drawing area instead they are on the picture — over the paper near the edges, and
+paintable, so a stroke near a corner goes through the scale it is being checked
+against (boot_paint_panels.etcs, at `paper_pane`).
 
 Nothing enforces that the band is unpaintable; two facts already in the tree do it:
 
@@ -513,19 +511,16 @@ tab, which is what `unreachable executed` on a two-axis resize was.
 
 ## Deploying
 
-`ace make loader etcs` and `ace make loaders` both now produce the INTERACTIVE
+`ace make loader etcs` and `ace make loaders` both produce the INTERACTIVE
 loader: `-DETCS_REPL_SHELL` is on by default for every loader build, because a wasm
 loader that has returned from `main` is a page nothing can call into.
 
-It used to be per-spelling, and the failure that made was quiet: without the define
-`drive_main_loop_then_exit` takes the drain path, so `serve_paint.etcs` ran every
-line — the server started, the mounts resolved, `ListPaths` printed — and then
-`wait_for_environment_drain` reported "all detached executors finished" and the
-process exited, because an `HttpServer` thread is not a detached executor. A serve
-script that looked like it worked and left nothing listening.
-
-Pass `-UETCS_REPL_SHELL` for the draining loader, which is the only way to ask for
-it now.
+Passing `-UETCS_REPL_SHELL` gets the draining loader, and its failure is quiet:
+`drive_main_loop_then_exit` takes the drain path, so `serve_paint.etcs` runs every
+line — the server starts, the mounts resolve, `ListPaths` prints — and then
+`wait_for_environment_drain` reports "all detached executors finished" and the
+process exits, because an `HttpServer` thread is not a detached executor. A serve
+script that looks like it worked and leaves nothing listening.
 
 ## What is not solved here
 

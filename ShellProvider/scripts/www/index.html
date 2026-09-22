@@ -398,20 +398,76 @@
     window.__etcsWasmNames = list;   // read by onRuntimeInitialized for the canvas
     // The glue, if the manifest names it. See the load site below for why.
     window.__etcsGlue = (j && j.glue) ? String(j.glue).trim().replace(/^\.\//, '') : '';
+    // Optional: pins the artifact directory and skips resolveWasmBase's walk.
+    window.__etcsBase = (j && j.base) ? String(j.base).trim() : '';
     return list;
+  }
+
+  /*
+   * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES. The runtime
+   * binaries are shared and move in epochs, so they live in one place --
+   * bin/wasm/, mounted at /wasm/ by the serve scripts (Makefile, WASM_DIR, for
+   * the argument) -- and every page fetches them from there. The base affects
+   * only the FETCH; what is written into MEMFS stays the bare name, because
+   * preload_web_modules dlopens by name. Scripts are not in here: they are
+   * mounted beside the page at the paths the OS side reads them from.
+   *
+   * Resolved by trying: same-origin /wasm/ first, because a local server must
+   * not need a setting; then beside the page, which is what a deployment made
+   * before the shared directory looks like; then the known-good remote.
+   * modules.json may name a "base" to skip the walk. The first candidate whose
+   * bytes carry the WebAssembly magic wins -- a 200 is not evidence, and every
+   * wrong answer a web server gives is markup. Identical across every page in
+   * this tree on purpose: one shared artifact directory is the point, and two
+   * pages disagreeing about where it is would undo it.
+   *
+   * The probe's bytes are kept: the first module has to be fetched anyway.
+   */
+  const WASM_BASE_CANDIDATES = ['/wasm/', './', 'https://anticurrententropy.com/wasm/'];
+  let wasm_base = null;
+  let wasm_probe = null;   // {name, buf} -- the module the probe already pulled
+  const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
+
+  function joinBase(base, name) {
+    return (base === './') ? name : base.replace(/\/*$/, '/') + name;
+  }
+
+  async function resolveWasmBase(declared, firstModule) {
+    const candidates = declared ? [declared] : WASM_BASE_CANDIDATES;
+    const tried = [];
+    for (const base of candidates) {
+      const url = joinBase(base, firstModule);
+      try {
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) { tried.push(base + ' HTTP ' + r.status); continue; }
+        const buf = new Uint8Array(await r.arrayBuffer());
+        const ok = buf.byteLength >= 4 && WASM_MAGIC.every(function (b, i) { return buf[i] === b; });
+        if (!ok) { tried.push(base + ' answered 200 with something that is not a module'); continue; }
+        wasm_base  = base;
+        wasm_probe = { name: firstModule, buf: buf };
+        append('[etcs] wasm base -> ' + base + '\n', 'ok');
+        return base;
+      } catch (e) {
+        tried.push(base + ' ' + (e && e.message ? e.message : e));
+      }
+    }
+    throw new Error('no wasm base serves ' + firstModule + ' -- tried '
+      + tried.join('; ') + '. `ace wasm make loader etcs` writes bin/wasm/, and a '
+      + 'serve script mounts it at /wasm/.');
   }
 
   async function fetchWasmBlobs(names) {
     const out = {};
     for (const name of names) {
-      setStatus('fetch ' + name);
-      const r = await fetch(name, { cache: 'no-store' });
-      if (!r.ok) {
-        throw new Error('fetch ' + name + ' failed HTTP ' + r.status);
-      }
-      const buf = new Uint8Array(await r.arrayBuffer());
-      if (buf.byteLength < 8) {
-        throw new Error(name + ' is empty');
+      let buf;
+      if (wasm_probe && wasm_probe.name === name) buf = wasm_probe.buf;
+      else {
+        setStatus('fetch ' + name);
+        const url = joinBase(wasm_base, name);
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) throw new Error('fetch ' + url + ' failed HTTP ' + r.status);
+        buf = new Uint8Array(await r.arrayBuffer());
+        if (buf.byteLength < 8) throw new Error(url + ' is empty');
       }
       out[name] = buf;
       out['./' + name] = buf;
@@ -434,6 +490,8 @@
   async function boot() {
     setStatus('fetching modules…');
     const names = await resolveWasmNames();
+    setStatus('locating runtime…');
+    await resolveWasmBase(window.__etcsBase, names[0]);
     const blobs = await fetchWasmBlobs(names);
     append('[etcs] ' + names.length + ' module(s) ready for MEMFS\n', 'sys');
 
@@ -450,7 +508,7 @@
         term.scrollTop = term.scrollHeight;
       },
       dynamicLibraries: [],
-      locateFile: function (path) { return path; },
+      locateFile: function (path) { return joinBase(wasm_base, path); },
       preRun: [function () {
         try {
           for (const name of Object.keys(blobs)) {
@@ -518,15 +576,15 @@
      */
     if (window.__etcsGlue) {
       setStatus('loading ' + window.__etcsGlue + '…');
-      await loadGlue(window.__etcsGlue);
+      await loadGlue(joinBase(wasm_base, window.__etcsGlue));
     } else {
       setStatus('loading glue…');
       append('[etcs] modules.json names no "glue" — probing etcs.js then etcs\n', 'sys');
       try {
-        await loadGlue('etcs.js');
+        await loadGlue(joinBase(wasm_base, 'etcs.js'));
       } catch (_) {
         append('[etcs] etcs.js missing, trying ./etcs\n', 'sys');
-        await loadGlue('etcs');
+        await loadGlue(joinBase(wasm_base, 'etcs'));
       }
     }
   }

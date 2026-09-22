@@ -633,41 +633,24 @@
   let man_module_count = 0;
 
   /*
-   * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES.
+   * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES. The runtime
+   * binaries are shared and move in epochs, so they live in one place --
+   * bin/wasm/, mounted at /wasm/ by the serve scripts (Makefile, WASM_DIR, for
+   * the argument) -- and every page fetches them from there. The base affects
+   * only the FETCH; what is written into MEMFS stays the bare name, because
+   * preload_web_modules dlopens by name. Scripts are not in here: they are
+   * mounted beside the page at the paths the OS side reads them from.
    *
-   * The runtime binaries are SHARED and they move in epochs -- one etcs.wasm and
-   * one .wasm per provider, all built together, all refusing each other across a
-   * rebuild (the manifest check). So they live in one place, bin/wasm/, mounted
-   * at /wasm/ by the serve scripts, and every page fetches them from there.
+   * Resolved by trying: same-origin /wasm/ first, because a local server must
+   * not need a setting; then beside the page, which is what a deployment made
+   * before the shared directory looks like; then the known-good remote.
+   * modules.json may name a "base" to skip the walk. The first candidate whose
+   * bytes carry the WebAssembly magic wins -- a 200 is not evidence, and every
+   * wrong answer a web server gives is markup. Identical across every page in
+   * this tree on purpose: one shared artifact directory is the point, and two
+   * pages disagreeing about where it is would undo it.
    *
-   * Previously they had to sit BESIDE the page, copied in after each build. That
-   * is the step this page's own README used to spell out, and forgetting it does
-   * not produce a 404 -- it produces last epoch's binary answering 200 and a
-   * loader refusing it on a hash mismatch, which reads as a build problem and is
-   * not one. It also stopped the page from being mounted anywhere but the root,
-   * because a relative name resolves against wherever the page ended up.
-   *
-   * THE NAME AND THE URL ARE DIFFERENT THINGS, and keeping them apart is the
-   * whole trick: the base only affects the FETCH. What is written into MEMFS
-   * stays the bare name, because preload_web_modules dlopens by name and
-   * run_script opens by name -- neither knows a url exists.
-   *
-   * SCRIPTS ARE NOT IN HERE. They are mounted next to the page, at the same
-   * relative paths the OS side reads them from, which is what lets a `detach`
-   * line be spelled once for both substrates. Only modules and the glue are
-   * shared artifacts.
-   *
-   * RESOLVED BY TRYING, not configured: same-origin /wasm/ first because a local
-   * server is the case that must not need a setting; then beside the page, which
-   * is every deployment made before this change; then the known-good remote, so
-   * a page opened from disk still boots. modules.json may name a "base" to skip
-   * the walk. First candidate that answers with an actual WebAssembly module
-   * wins -- a 200 is not evidence, as checkStaged's own comment says, and here
-   * the wrong answer would be a directory listing or an error page.
-   *
-   * The probe's BYTES ARE KEPT. The first module has to be fetched anyway; doing
-   * it once and remembering it is the difference between a probe that costs
-   * nothing and one that costs a megabyte.
+   * The probe's bytes are kept: the first module has to be fetched anyway.
    */
   const WASM_BASE_CANDIDATES = ['/wasm/', './', 'https://anticurrententropy.com/wasm/'];
   let wasm_base = null;
@@ -881,28 +864,28 @@
    *
    * RenderProvider has a Throbber leaf that rides the frame edge, and the
    * obvious thing is to put one up on the first lines of boot_paint_panels.etcs
-   * and let the runtime draw it. That was tried, and the timeline says why it
-   * cannot work. Measured in a headless Chromium against this page:
+   * and let the runtime draw it. It cannot work, and the timeline is why.
+   * Measured in a headless Chromium against this page:
    *
    *     0.45s   modules loaded, boot script handed to a Worker
-   *     0-0.5s  THIRTY-TWO of the session's thirty-four Workers created, in one
+   *     0-0.5s  nearly every Worker the session will have, created in one
    *             burst -- every pthread is a Worker and every Worker
-   *             re-instantiates all seven open side modules
-   *     10.5s   the first frame the runtime presents
+   *             re-instantiates every open side module
+   *     8.8s    the first frame the runtime presents (16 Workers, one shared
+   *             pool; 10.5s with a pool per image)
    *
-   * Cutting the boot script from 520 lines to 125 moved NONE of those numbers,
-   * which is the whole finding: the delay is not the scene being built, it is
-   * the runtime coming up, and the boot script's own Worker is one of
-   * thirty-four competing for cores while they all instantiate the same seven
-   * modules. A frame edge cannot draw before it exists, and it does not exist
-   * until the thing it would be drawing during has mostly finished.
+   * A boot script a quarter the length of this one moves none of those numbers:
+   * the delay is the runtime coming up, not the scene being built, and the
+   * script's own Worker is competing for cores with every other one while they
+   * all instantiate the same modules. A frame edge cannot draw before it
+   * exists, and it does not exist until the interval it would be drawing for
+   * has mostly passed.
    *
    * THE MAIN THREAD IS FINE THROUGHOUT, which is what makes this work: a rAF
-   * heartbeat recorded 852 frames over those 20 seconds with no gap above
-   * 250ms. The page is responsive the whole time the runtime is not, so the
-   * one thing that can paint the first ten seconds is the page. This costs one
-   * rAF loop and no Worker, and it is up on the first frame after
-   * DOMContentLoaded.
+   * heartbeat records ~850 frames over 20 seconds with no gap above 250ms. The
+   * page is responsive the whole time the runtime is not, so the one thing that
+   * can paint those seconds is the page. This costs one rAF loop and no Worker,
+   * and it is up on the first frame after DOMContentLoaded.
    *
    * THE SAME PICTURE AS THE RUNTIME'S, deliberately: twelve dots, the head
    * bright blue fading back through violet, "ETCS" over it in off-white. The

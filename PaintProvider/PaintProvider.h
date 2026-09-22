@@ -7986,11 +7986,11 @@ public:
      * A BUTTON ANYWHERE BUT THE PANEL CLOSES THE NAME FIELD.
      *
      * While the field is open it takes EVERY key ahead of the chords and the
-     * text boxes both (KeyDown, below) -- which is the point, but it meant the
-     * only ways out were Enter and Escape. Press the canvas, the toolbar, the
-     * wheel, another window: the field stayed open and invisible from there,
-     * and ctrl+z was a z. The panel's own press path already ends it for a
-     * row body, an eye and a delete; everywhere else had nobody to ask.
+     * text boxes both (KeyDown, below) -- which is the point, and which without
+     * this leaves Enter and Escape as the only ways out: a press on the canvas,
+     * the toolbar, the wheel or another window leaves the field open and
+     * invisible from there, and ctrl+z is a z. The panel's own press path ends
+     * it for a row body, an eye and a delete; this is everywhere else.
      *
      * HERE, because this is the only place that knows both that a button was
      * pressed and what it landed on -- the same reason the palette's

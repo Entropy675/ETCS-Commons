@@ -7,13 +7,8 @@
 # than off the canvas: the band is 0.106/0.110/0.078 (PaintSurface::m_ruler_bg),
 # a control is one step up from it, the ink is 0.94/0.89/0.78 (m_ruler_ink) and
 # anything selected takes the ruler's in-band highlight, 0.35/0.55/0.95.
-#
-# The point is what it is NOT. These used to be a neutral grey a shade off the
-# canvas background, and the canvas is the PICTURE -- furniture the colour of
-# the picture reads as part of it. The ruler is the other furniture in this
-# window, so the menus share its two colours and the eye groups them together,
-# away from whatever is being drawn. Same move as paint_layers.etcs, which
-# carries the longer version of the argument.
+# paint_layers.etcs has the argument (furniture should not be the colour of the
+# picture); this file just inherits the values.
 
 # THE SETTINGS MENU: what the gear in the sheet's top-left corner opens.
 #

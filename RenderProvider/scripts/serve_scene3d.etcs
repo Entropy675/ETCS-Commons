@@ -30,6 +30,11 @@ web.spawn(NetworkProvider::FileHtmlPage tree)
 tree.LoadFromDisk(./www)
 tree.SetDefaultExtension(.html)
 
+# The runtime binaries, from bin/wasm/ -- the one copy `ace wasm make` writes,
+# mounted rather than copied beside the page (Makefile, WASM_DIR, on why). The
+# page tries /wasm/ first (resolveWasmBase, www/index.html).
+tree.MountTree(wasm ACE_ROOT/bin/wasm)
+
 # ── the mounts ───────────────────────────────────────────────────────────────
 #
 # Each at the path the page stages it under (www/modules.json), which is the path

@@ -6,15 +6,13 @@
 #     etcs modules/PaintProvider/scripts/serve_paint.etcs
 #     then open https://localhost:8443/
 #
-# FROM ANY DIRECTORY, and that is a fix rather than a convenience. Every path
-# below used to be relative to the process's working directory -- which is not
-# a property of this script and not something it can check. Run it from
-# anywhere else and each MountFile refused, the page still answered 200 from
-# whatever else sat at that URL, and the first thing to notice was a script
-# thread dying with nothing pointing back here. The one that matters is
-# render_frames.etcs: it is the frame pump, so losing it leaves a black canvas
-# and a runtime that is otherwise working perfectly. ACE_ROOT resolves the same
-# way it does in the #IMPORT above (core/CommandExecutor.h).
+# FROM ANY DIRECTORY: every path below is ACE_ROOT-rooted (resolved the same way
+# as the #IMPORT above, core/CommandExecutor.h), because a relative one is a
+# property of the process's working directory, which this script cannot check.
+# A mount that refuses is not a visible 404 -- the page still answers 200 from
+# whatever sits at that URL, and the first sign is a script thread dying with
+# nothing pointing back here. render_frames.etcs is the one that matters: it is
+# the frame pump, so losing it leaves a black canvas on a working runtime.
 #
 # Same shape as WindowProvider's serve_web.etcs, and for the same reasons: one
 # FileHtmlPage child (two StaticHtmlPage siblings under one server is a coin
@@ -39,13 +37,9 @@ web.spawn(NetworkProvider::FileHtmlPage tree)
 tree.LoadFromDisk(ACE_ROOT/modules/PaintProvider/scripts/www)
 tree.SetDefaultExtension(.html)
 
-# THE RUNTIME BINARIES, from bin/wasm/ rather than from www/ beside the page.
-# `ace wasm make ...` writes there and nothing else does, so what is served is
-# what was last built -- where the old arrangement (copy the artifacts into www/
-# after each build) answered 200 with last epoch's binary the moment the copy was
-# forgotten, and the loader then refused it on a manifest hash that reads like a
-# build problem and is not one. The page finds them here on its own: /wasm/ is
-# the first base it tries (resolveWasmBase, www/index.html).
+# The runtime binaries, from bin/wasm/ -- the one copy `ace wasm make` writes,
+# mounted rather than copied beside the page (Makefile, WASM_DIR, on why). The
+# page tries /wasm/ first (resolveWasmBase, www/index.html).
 tree.MountTree(wasm ACE_ROOT/bin/wasm)
 
 # ── the mounts ───────────────────────────────────────────────────────────────

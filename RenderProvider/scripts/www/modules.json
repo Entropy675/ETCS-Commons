@@ -36,10 +36,9 @@
   ],
   "boot": "scene3d.etcs",
   "_glue": [
-    "The emscripten loader output. STAGED AS .js: served extensionless it arrives",
+    "The emscripten loader output, STAGED AS .js: served extensionless it arrives",
     "as application/octet-stream, which the browser warns is not a valid",
-    "JavaScript MIME type, and it would land on the same name as the NATIVE etcs",
-    "binary in bin/. Naming it here rather than probing also removes a guaranteed",
+    "JavaScript MIME type. Naming it here rather than probing removes a guaranteed",
     "failed fetch on every load."
   ],
   "glue": "etcs.js"

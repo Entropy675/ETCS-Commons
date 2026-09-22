@@ -31,11 +31,10 @@
 //
 // Deliberately absent, all flagged rather than forgotten:
 //   - validation layers (VulkanInstance::Create's own comment)
-//   - a script-driven frame loop: .etcs has no loop construct today, so
-//     Surface.RunDemo drives frames internally the way Window.Run already
-//     does. The real fix was a frame edge, and it is Surface.RunFrames now --
-//     see the frame-edge note below, and RenderProvider.cc on why this tag
-//     went back to BASIC when the stream pair retired.
+//   - a script-driven frame loop: .etcs has no loop construct, so the frame
+//     edge is Surface.RunFrames, a work function a script detaches (the
+//     frame-edge note below), and Surface.RunDemo drives frames internally
+//     the way Window.Run does.
 //   - resampling on blit (Pixels_::Composite's own comment)
 
 // Source resolution for Blit: a RID in, a Surface_* out, through the
@@ -46,10 +45,6 @@
 // the correctly-adjusted Surface_* interface pointer. So a script can blit
 // from ANY module's surface, not just one RenderProvider spawned, and this
 // module needs no compile-time knowledge of what the source concretely is.
-//
-// It replaces a module-local row scan that existed only because the family
-// aggregates were published but never populated -- fixed in core by
-// etcs_supertype_fanout, whose own comment carries the history.
 
 // rp_resolve_tag now lives in Contract_RenderProvider.h -- see its comment
 // there for why it had to move up.
@@ -222,32 +217,18 @@ DEFINE_WORK_FUNC(Surface, Delete)
 
 // ── Surface frame edge ───────────────────────────────────────────────────
 //
-// ONE TICK, NOT A PAIR, and the history is the argument for it.
+// ONE TICK, NOT A PAIR. The pacing is a number on the Presentable family and
+// the recording is a step on it (ontology/PresentableBase.h, which has the
+// argument: a standing produce body never returns its pool worker, so a pair
+// gives the pool a minimum size). Every queue-touching call happens on one
+// thread, which is the real invariant; it is whichever thread drives the
+// family. Splitting the Vulkan work instead -- acquire on one thread, submit
+// on another -- puts two threads on one VkQueue and one VkSwapchainKHR, both
+// of which the application must externally synchronise, and buys nothing.
 //
-// It was a produce/consume pair -- the same shape Window.ProduceEvents uses for
-// input, applied to output -- and the split was defensible on its own terms:
-// ProduceFrames was a CLOCK and nothing else, ConsumeFrames did every Vulkan
-// call, which kept one surface single-threaded from Vulkan's point of view
-// while getting frames off the poll thread. The tempting split the other way --
-// acquire on one side, submit on the other -- puts two threads on one VkQueue
-// and one VkSwapchainKHR, both of which the application must externally
-// synchronise, and buys nothing.
-//
-// WHAT THE PAIR COST is the part that was not written down: the produce half was
-// a standing loop on a ThreadPool worker, held for the surface's lifetime. A
-// stream body is enqueued (ETCS_MODULE_EXPORT_STREAM), so a standing one never
-// gives the worker back -- which is how the pool acquired a minimum size, and
-// how an image with two standing producers and one worker deadlocks. The ring
-// existed only to cross the boundary between the clock and the recording.
-//
-// So the clock became a NUMBER on the Presentable family and the recording
-// became a STEP on it (ontology/PresentableBase.h), the boundary disappeared,
-// and the ring with it. Every queue-touching call still happens on one thread,
-// which was the real invariant; it is now whichever thread drives the family.
-//
-// Draws still arrive from whatever thread calls Clear/DrawRect/Blit -- the
-// script's -- so the surface's own state is mutex-guarded and Present works
-// off a snapshot. See VulkanSurface::PresentConcrete.
+// Draws arrive from whatever thread calls Clear/DrawRect/Blit -- the script's
+// -- so the surface's own state is mutex-guarded and Present works off a
+// snapshot. See VulkanSurface::PresentConcrete.
 // Default pacing, in milliseconds, when the stream config says nothing.
 // ~60Hz, a placeholder for asking the swapchain about its present mode,
 // which is where real pacing belongs.
@@ -255,35 +236,17 @@ static constexpr uint32_t RENDER_FRAME_INTERVAL_MS = 16;
 
 /*
  * RunFrames [<interval_ms>] -- THE SESSION'S TICK, and the only standing loop
- * left on this path.
+ * on this path. Somebody has to call the Animated family's driver and a
+ * session needs exactly one caller: this is it, on a detached script thread
+ * the script asked for explicitly rather than a pool worker taken silently
+ * (the frame-edge note above on why not a stream pair). It advances EVERY
+ * Animated leaf, not just this surface -- the palette's click-and-hold and the
+ * layer window's fade ride the same tick -- and a session with no surface at
+ * all can drive the family from its own loop instead (ontology/Animated.h).
  *
- * This replaces a producer/consumer PAIR. One body paced and wrote a frame
- * token, the other read it and did the walk; both were loops that never
- * returned, so each held a thread for the whole session -- and the producer's
- * came out of the ThreadPool, because ETCS_MODULE_EXPORT_STREAM enqueues a
- * stream body there. That is how the pool acquired a MINIMUM size: an image with
- * two standing producers and one worker deadlocks, the second body queued behind
- * one that never finishes. A floor derived from whatever a script opens is not a
- * tuning parameter.
- *
- * THE RING WENT WITH THEM. It existed to cross a thread boundary between the
- * pacing and the recording, and ConsumeFrames' own comment already said the walk
- * belongs on the presenting thread -- so with both halves on one thread there
- * was nothing left for it to cross. Presenting is a step on the Presentable
- * family now (ontology/PresentableBase.h); the pacing is a number there too.
- *
- * WHAT THIS LOOP STILL IS, and why it is not nothing: somebody has to call the
- * family's driver, and a session needs exactly one caller. This is it -- a
- * detached script thread, which the script asked for explicitly, rather than a
- * pool worker taken silently. It advances EVERY Animated leaf, not just this
- * surface: the palette's click-and-hold and the layer window's fade ride the
- * same tick, and a session with no surface at all can drive the family from its
- * own loop instead (ontology/Animated.h).
- *
- * ENDS ON THE SURFACE'S OWN ANSWER, the same rule the old consumer used: a
- * surface goes retired for reasons this loop knows nothing about, and in the
- * moments between that and the closure ending this is the thing still walking a
- * tree being torn down.
+ * ENDS ON THE SURFACE'S OWN ANSWER: a surface goes retired for reasons this
+ * loop knows nothing about, and in the moments between that and the closure
+ * ending this is the thing still walking a tree being torn down.
  */
 DEFINE_WORK_FUNC(Surface, RunFrames)
 {
@@ -1256,15 +1219,9 @@ DEFINE_WORK_FUNC_TYPED(Throbber, SetSize, (uint32_t, size_px))
 }
 
 /*
- * SetStep <degrees per FRAME>, not per second, and the unit is the feature.
- *
- * The throbber advances once per frame and ignores the measured interval
- * (Throbber::AdvanceConcrete), so its speed is the frame edge's speed: raise
- * RunFrames and the spinner picks up with everything else, and a session whose
- * edge is struggling shows it on the one widget that is definitely on screen
- * while you wait. A caller wanting revolutions a second multiplies by the
- * interval they chose and accepts that the answer stops being true exactly when
- * it would have been misleading.
+ * SetStep <degrees per FRAME>, not per second: the throbber's speed is the frame
+ * edge's speed, on purpose (Throbber::AdvanceConcrete). A caller wanting
+ * revolutions a second multiplies by the interval they set on RunFrames.
  *
  * Clamped by the setter; the log reports what it settled on rather than what was
  * asked for, because a clamped value that echoes the request is a value you

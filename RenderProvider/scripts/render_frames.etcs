@@ -5,22 +5,10 @@
 #
 #     detach RenderProvider/scripts/render_frames.etcs view=<Surface>
 #
-# It was a stream edge -- `view.ProduceFrames() -> view.ConsumeFrames()` -- and
-# the split was real: one half owned TIMING, the other owned RECORDING, which
-# kept every queue-touching call on one thread while getting frames off the
-# poll thread.
-#
-# WHAT IT COST was a thread each, and the producer's came out of the ThreadPool:
-# a stream body is enqueued there, and a standing one never gives the worker
-# back. That is how a pool acquires a MINIMUM size, and how an image with two
-# standing producers and one worker deadlocks -- the second body queued behind
-# one that never returns. A floor set by whatever a script opens is not a
-# tuning parameter, it is a trap.
-#
-# So the clock became a number on the Presentable family and the recording
-# became a step on it (ontology/PresentableBase.h). There is no boundary left
-# between them, so there is no ring, no producer and no pool occupant -- one
-# loop, on the thread this `detach` asked for.
+# ONE LOOP, on the thread this `detach` asked for -- not a stream pair. The
+# pacing is a number on the Presentable family and presenting is a step on it
+# (ontology/PresentableBase.h, on why a standing produce body gives a pool a
+# minimum size), so there is no ring, no producer and no pool occupant.
 #
 # IT DRIVES MORE THAN THIS SURFACE. RunFrames advances every entity that claims
 # Animated (ontology/Animated.h), so the toolbar's click-and-hold repeat and the

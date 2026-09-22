@@ -38,14 +38,12 @@
  * one is still going down. The picture changes on every tick at any rate, and
  * more dots make it smoother rather than merely finer.
  *
- * AND THE SWEEP IS FRAME-COUPLED, WHICH TAKES NOTHING TO ARRANGE. Advance() is
- * already called once per frame-edge visit -- that is the family's hook and it
- * has always been per-frame. AnimatedBase's one addition is a StepClock that
- * measures the gap and hands it down, so a leaf can be rate-independent if it
- * wants to be. This one declines it: a fixed step per visit, dt dropped. Faster
- * edge, faster sweep; struggling edge, visibly slower spinner. See
- * AdvanceConcrete for why that is the right answer for this widget in
- * particular, and not a thing to generalise.
+ * AND THE SWEEP IS FRAME-COUPLED. Advance() is called once per frame-edge
+ * visit; AnimatedBase measures the gap and hands it down so a leaf can be
+ * rate-independent, and this one declines it -- a fixed step per visit, dt
+ * dropped. Faster edge, faster sweep; struggling edge, visibly slower spinner.
+ * AdvanceConcrete has why that is right for this widget in particular and not
+ * a thing to generalise.
  *
  * COLOUR: two shades, lerped across the tail, so the head and the tail are not
  * the same hue at different alphas -- that reads as a fading dot rather than as
@@ -98,8 +96,8 @@ public:
     static constexpr uint32_t DEFAULT_SIZE = 96;
     static constexpr uint32_t DEFAULT_DOTS = 12;
     // Degrees of sweep per FRAME, not per second -- see AdvanceConcrete. 5.4 is
-    // 0.9 revolutions a second at the frame edge's default 16ms, which is where
-    // this started and still the pace it reads best at.
+    // 0.9 revolutions a second at the frame edge's default 16ms, the pace it
+    // reads best at.
     static constexpr float    DEFAULT_STEP = 5.4f;
 
     // How much of the ring is lit behind the head, in turns. 0.45 is a bit
@@ -228,28 +226,21 @@ public:
     bool AnimatingConcrete() override { return !this->Hidden(); }
 
     /*
- * ONE STEP PER VISIT: dt_ms IS TAKEN AND DROPPED.
- *
- * Nothing about the DRIVING changes here -- Advance() is called once per
- * frame-edge visit either way, which is what the family's hook has always been.
- * The only question a leaf answers in this method is whether to consume the
- * measured interval AnimatedBase hands it, and this one says no.
+ * ONE STEP PER VISIT: dt_ms IS TAKEN AND DROPPED. The only question a leaf
+ * answers here is whether to consume the measured interval AnimatedBase hands
+ * it, and this one says no.
  *
  * For anything that models a real duration -- a fade, a key repeat, a camera --
  * the answer must be yes: those describe seconds, and a fade that finishes
  * sooner on a faster machine is a bug. A THROBBER MODELS NOTHING. It is not
  * showing the progress of anything, only that the runtime is still turning, so
- * there is no duration for it to get wrong.
- *
- * Given that, spending the dt makes it a READOUT instead: raise the frame edge
- * and it picks up with everything else, and an edge that is struggling shows as
- * a spinner visibly slowing down. Free diagnosis on the one widget certainly on
- * screen while you are waiting -- where a spinner keeping perfect time through a
- * stall is the one shape that actively hides the problem.
- *
- * dt is dropped rather than the signature narrowed, so the family's contract is
- * untouched and this is revertible in one line. If a caller wants a real-time
- * sweep, the frame interval is the knob (Surface::RunFrames).
+ * there is no duration for it to get wrong -- and ignoring the dt makes it a
+ * READOUT instead: raise the frame edge and it picks up with everything else,
+ * and an edge that is struggling shows as a spinner visibly slowing down. Free
+ * diagnosis on the one widget certainly on screen while you wait, where a
+ * spinner keeping perfect time through a stall is the shape that hides the
+ * problem. A caller who wants a real-time sweep has the frame interval
+ * (Surface::RunFrames).
  *
  * fmod, not a while-loop subtract: SetStep's ceiling is a quarter turn, so one
  * visit can never cross a whole revolution -- but a loop bounded by somebody
@@ -369,9 +360,9 @@ private:
 
     /*
  * ONE PASS, ONE MARK. ClearTo, N discs, one text run, and the Observable mark
- * that FillDisc/FillRect each raise is coalesced by the batch scope -- a
- * compositor above counted 23,746 marks for a 40-point stroke before batching
- * existed (ontology/ObservableBase.h), and this runs every frame forever.
+ * that FillDisc/FillRect each raise is coalesced by the batch scope -- unbatched,
+ * a 40-point stroke cost a compositor 23,746 marks (ontology/ObservableBase.h),
+ * and this runs every frame forever.
  *
  * Transparent clear, not a background fill: a throbber goes over whatever is
  * already there, and a caller who wants a plate behind it puts this in a pane

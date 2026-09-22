@@ -49,16 +49,10 @@
   ],
   "boot": "boot_paint.etcs",
   "_glue": [
-    "The emscripten loader output. em++ -o etcs emits TWO files: 'etcs', which is",
-    "JavaScript, and 'etcs.wasm'. Naming it here rather than probing removes a",
-    "guaranteed console error -- the page used to try 'etcs.js', fail, and fall",
-    "back to 'etcs', so every single load logged a failed script fetch.",
-    "STAGE IT AS .js. Served extensionless it arrives as application/octet-stream",
-    "and the browser complains that it is not a valid JavaScript MIME type; it",
-    "runs anyway today, and that is a warning worth not having. The server is not",
-    "the place to fix it -- an extensionless file is not evidence of JavaScript",
-    "(FileHtmlPage::MimeForExtension is right to refuse to guess) -- the deploy is,",
-    "because the deploy is what knows the file came out of em++."
+    "The emscripten loader output, STAGED AS .js: served extensionless it arrives",
+    "as application/octet-stream, which the browser warns is not a valid",
+    "JavaScript MIME type. Naming it here rather than probing removes a guaranteed",
+    "failed fetch on every load."
   ],
   "glue": "etcs.js"
 }

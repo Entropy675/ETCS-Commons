@@ -1,11 +1,8 @@
 #include "RenderProvider.h"
 
-// Surface is HYBRID: its frame pump is a produce/consume pair, which is
-// what lets a renderer run on its own thread while the window keeps the
-// poll loop (scripts/render_frames.etcs, and RenderProvider.h's own comment
-// on why the clock and the Vulkan work sit on the sides they do).
-// Instance and ImageSurface stay BASIC -- neither has anything continuous
-// to carry.
+// Every tag here is BASIC except Scene3D, whose input edge is a stream
+// consumer (see its block). Surface included: its frame pump is a work function
+// a script detaches, not a stream pair -- see the Surface block below.
 ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel Throbber")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
@@ -25,12 +22,9 @@ ETCS_TAG_BLOCK_BASIC(Device,
 // something composes a new frame; Present is the only call that touches the
 // GPU queue, and RunFrames is that same Present driven by a clock.
 //
-// BASIC, NOT HYBRID ANY MORE, and that is the visible half of the change: this
-// tag carried a stream pair whose produce half stood on a ThreadPool worker for
-// the surface's lifetime. Presenting is a step on the Presentable family now
-// (ontology/PresentableBase.h) and RunFrames is an ordinary work function that
-// a script detaches, so there is no stream, no ring and no pool occupant --
-// see RenderProvider.h's frame-edge note for why the pair existed at all.
+// BASIC: presenting is a step on the Presentable family
+// (ontology/PresentableBase.h) and RunFrames is an ordinary work function a
+// script detaches, so this tag has no stream, no ring and no pool occupant.
 ETCS_TAG_BLOCK_BASIC(Surface,
     Create, SetTarget, ResizeTo, Clear, DrawRect, Blit, Compose, Present,
     Delete, RunDemo, RunFrames)

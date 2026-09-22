@@ -17,25 +17,18 @@ main.spawn(RenderProvider::Surface view)
 view.Create(@gpu)
 view.Clear(0.13, 0.13, 0.15, 1.0)
 
-# ── something on screen before anything else exists ─────────────────────────
+# ── the root, the throbber and the edge go up FIRST ──────────────────────────
 #
-# EVERYTHING BELOW THIS TAKES ABOUT ELEVEN SECONDS in the browser, and until now
-# the canvas was blank for all of it -- the frame edge was detached on the last
-# line of this file, because that is when the scene it presents is finished. So
-# the one moment a wait indicator is actually wanted was the one moment nothing
-# was drawing.
+# What a frame edge presents is whatever is bound at the time, and the root it
+# presents is the same sheet_root the rest of this file fills in -- so all three
+# go up here and the scene appears inside a picture that is already being drawn.
+# Detaching the edge on the last line instead leaves the canvas blank for the
+# whole boot, which is the one interval a wait indicator is for.
 #
-# It does not have to be that way round. What a frame edge presents is whatever
-# is bound at the time, and the root it presents is the same sheet_root the rest
-# of this file fills in -- so the root, the throbber and the edge all go up here,
-# and the scene appears INSIDE a picture that is already being drawn rather than
-# replacing a placeholder.
-#
-# ONE ROOT, NOT TWO, and that is the change from the first version of this. A
-# separate boot root would have had to be swapped out, which means the throbber
-# lives in a tree nothing presents afterwards -- and a wait indicator that
-# cannot be shown again is one that has to be rebuilt by every caller that
-# wants one. In the real root it stays available for the whole session.
+# ONE ROOT, NOT A SEPARATE BOOT ROOT: a boot root has to be swapped out, which
+# leaves the throbber in a tree nothing presents afterwards, and a wait
+# indicator that cannot be shown again is one every later caller rebuilds. In
+# the real root it stays available for the whole session.
 #
 # Building a tree while the edge walks it is ordinary here, not a liberty: the
 # layer panel spawns and deletes its rows on every Refresh with this same edge
@@ -63,11 +56,10 @@ sheet_root.SetPosition(0, 0)
 sheet_root.SetOrder(0)
 
 # HIDDEN UNTIL IT IS FINISHED, which is the whole point of the wrapper.
-#
-# Composing the scene from the top and letting it fill in was the first version
-# of this, and it showed: panes appearing one at a time, a canvas half built,
-# a toolbar arriving after the picture. A wait indicator exists to say "not
-# yet", and a scene assembling itself underneath one says the opposite.
+# Composing the scene from the top and letting it fill in shows: panes appearing
+# one at a time, a canvas half built, a toolbar arriving after the picture. A
+# wait indicator exists to say "not yet", and a scene assembling itself
+# underneath one says the opposite.
 #
 # Hidden is also not picked (ontology/DrawableBase.h), so a click during boot
 # cannot land on a control that is not ready to answer it.
@@ -115,27 +107,18 @@ stage.spawn(RenderProvider::Throbber main_throbber)
 main_throbber.Create(96)
 main_throbber.SetPosition(464, 318)
 
-# HIDDEN FROM THE START, AND NOT BECAUSE NOTHING NEEDS ONE DURING BOOT -- because
-# nothing in here CAN draw during boot, which is a measured fact rather than a
-# guess. Against this page in a headless Chromium: modules loaded and this script
-# handed to a Worker at 0.45s, THIRTY-TWO of the session's thirty-four Workers
-# created in that same first half-second, and the runtime's first presented frame
-# at 10.5s. Cutting this script from 520 lines to 125 moved none of those
-# numbers. The delay is the runtime coming up: every pthread is a Worker, every
-# Worker re-instantiates all seven open side modules, and this script's own
-# Worker is one of thirty-four competing for cores while they do it. A frame edge
-# cannot paint the interval it would be painting for.
-#
-# The page covers that interval instead (bootThrobber, www/index.html), with the
-# same twelve dots in the same two colours. THIS one is for the waits that happen
-# afterwards, when the runtime is up and can actually draw: a new canvas, a page
-# switch, an import. Hidden, it costs one virtual call a frame.
+# HIDDEN FROM THE START, because nothing in here CAN draw during boot: the
+# runtime's first presented frame lands seconds after this script starts,
+# whatever the script contains (bootThrobber in www/index.html has the
+# measurement). The page covers that interval with the same twelve dots in the
+# same two colours. THIS one is for the waits that happen afterwards, when the
+# runtime is up and can draw: a new canvas, a page switch, an import. Hidden, it
+# costs one virtual call a frame.
 main_throbber.SetHidden(1)
 
 view.Compose(@stage)
 
-# THE EDGE, EARLY, and there is still exactly one of it -- what moved is when it
-# starts, not how many there are.
+# THE EDGE, and there is exactly one of it.
 detach RenderProvider/scripts/render_frames.etcs view=view
 
 
@@ -175,12 +158,10 @@ brush.SetColor(0.10, 0.10, 0.12, 1.0)
 
 # ── the sheet's own pane ─────────────────────────────────────────────────────
 #
-# The sheet needed no 2D tree while it was the only thing on it: `input` ran
-# unrouted and every position was a position on the picture. A popup over the
-# canvas changes that -- a pane has to exist for the wheel to be ON TOP of, and
-# the wheel has to be a pane for opening it to mean anything (PaintColorWheel:
-# open is membership of the routing set, because a drawable that is merely
-# invisible still swallows clicks).
+# A popup over the canvas needs a 2D tree: a pane has to exist for the wheel to
+# be ON TOP of, and the wheel has to be a pane for opening it to mean anything
+# (PaintColorWheel: open is membership of the routing set, because a drawable
+# that is merely invisible still swallows clicks).
 #
 # So the sheet gets a root at order 0, the same size as the document, and
 # BindCanvas names it as the thing that IS the picture -- anything else picked
@@ -190,12 +171,12 @@ brush.SetColor(0.10, 0.10, 0.12, 1.0)
 
 # ── the drawable pane, INSET, so the ruler has somewhere to be ───────────────
 #
-# THE MARGIN IS THE POINT, and it is 36 px on three sides. The edge ruler used to
-# be drawn along the inside of the drawing area, which put it on the picture: over
-# the paper near the edges, and paintable, so a stroke near a corner went through
-# the scale you were checking it against. Inset, the band between this pane and
-# sheet_root belongs to nobody who draws -- so the marks go there
-# (canvas.BindRulerFrame) and cannot be drawn on.
+# THE MARGIN IS THE POINT, and it is 36 px on three sides. A ruler drawn along
+# the inside of the drawing area is on the picture: over the paper near the
+# edges, and paintable, so a stroke near a corner goes through the scale you are
+# checking it against. Inset, the band between this pane and sheet_root belongs
+# to nobody who draws -- so the marks go there (canvas.BindRulerFrame) and cannot
+# be drawn on.
 #
 # AND NOTHING HAS TO ENFORCE THAT, which is why it is a pane rather than a rule.
 # The router hit-tests panes and PaintInput only treats a hit on the CANVAS node
@@ -247,7 +228,7 @@ canvas.Render()
 # Here two things write it: the paint document blits the picture in, and the
 # recompose draws the readout on top. Without retain the recompose wipes the
 # picture -- which reads as the sheet going blank the moment anything is
-# composed over it, and is exactly what it did before this line existed.
+# composed over it.
 #
 # Safe because the CLEAR still happens, from the other side: PaintSurface::Render
 # clears the target to its own background before blitting, so panning does not
@@ -393,8 +374,8 @@ wheel_pane.SetHidden(1)
 
 # RETAINED, and it has no children at all -- because the PICKER IS THE RASTER.
 #
-# The disc used to be twelve polygons drawn by a script over a backing rectangle,
-# and the number twelve was the bug: the pick was continuous while the picture was
+# Not twelve polygons drawn by a script over a backing rectangle -- the number
+# twelve is the bug: the pick was continuous while the picture was
 # not, so the colour you got was almost never the colour you clicked. Now
 # PaintColorWheel paints the pane's own pixels -- hue around, saturation outward,
 # a brightness strip down the right edge -- from exactly the conversion the pick
@@ -550,27 +531,18 @@ run PaintProvider/scripts/paint_import.etcs pane=import_pane palette=palette men
 menu.BindTool(@brush)
 menu.BindImportPrompt(@palette, @import_pane, @import_input, @import_name)
 
-# ── the boot screen stands down ─────────────────────────────────────────────
+# ── the scene, all at once, finished ────────────────────────────────────────
 #
-# No Compose here any more: sheet_root has been the compose root since the top
-# of this file, and everything above simply filled it in. The one thing left to
-# say is that the wait is over.
-#
-# HIDDEN, NOT DELETED. Hidden, AnimatingConcrete says no and it costs one
-# virtual call a frame (RenderProvider/Throbber.h) -- and it stays in the tree,
-# sized, placed and on top, so the next thing with a wait in it shows it with
-# one call instead of building a second throbber.
-# The scene, all at once, finished. One line, and it is the line this whole
-# arrangement was for: before it there was a throbber on a dark page, after it
-# there is a paint program -- and no frame in between showing half of one.
+# One line, and it is the line the stage wrapper exists for: before it there is
+# a throbber on a dark page, after it there is a paint program, and no frame in
+# between showing half of one. No Compose: stage has been the compose root since
+# the top of this file, and everything above simply filled it in.
 sheet_root.SetHidden(0)
-
 
 # ── the pumps ────────────────────────────────────────────────────────────────
 #
-# The frame edge is NOT here any more: it went up at the top of this file, with
-# the boot screen it was started to show. One edge per surface either way -- what
-# moved is when it starts, not how many there are.
+# The frame edge is not here: it is detached at the top of this file, and there
+# is one per surface.
 detach paint_routed_pointer.etcs window=main router=router
 
 main.ProduceEvents() -> router.ConsumeInput()

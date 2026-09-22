@@ -71,12 +71,12 @@ list.BindDocument(@doc)
 # the selected row is the ruler's in-band highlight (0.35, 0.55, 0.95, the
 # colour a tick takes inside the page).
 #
-# It used to be a neutral grey-blue a shade off the canvas background, which is
-# the one thing it should NOT have matched: the canvas is the PICTURE, and a
-# panel the colour of the picture reads as part of it. The ruler is the other
-# furniture in this window -- the frame around the page -- and furniture should
-# look like furniture. Now the panel and the ruler are the same two colours, so
-# the eye groups them and neither competes with what is being drawn.
+# Not a neutral grey-blue a shade off the canvas background, which is the one
+# thing it should NOT match: the canvas is the PICTURE, and a panel the colour
+# of the picture reads as part of it. The ruler is the other furniture in this
+# window -- the frame around the page -- and furniture should look like
+# furniture. With the panel and the ruler the same two colours the eye groups
+# them, and neither competes with what is being drawn.
 #
 # The shown eye is the ruler's ink at full strength and the hidden one is that
 # same ink sunk most of the way into the band, so "off" is the same colour

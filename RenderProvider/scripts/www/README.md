@@ -6,6 +6,12 @@ way:
     cd modules/RenderProvider/scripts && etcs serve_scene3d.etcs
     # then open https://localhost:8443/
 
+Build with `ace wasm make module RenderProvider` (and WindowProvider, ShellProvider
+and the `etcs` loader); the artifacts land in `bin/wasm/`, the serve script mounts
+that directory at `/wasm/`, and the page resolves its modules from there --
+nothing is copied beside the page (the ETCS Makefile's `WASM_DIR` note has the
+argument).
+
 Move the pointer over the canvas to look around. The terminal beside it is the
 other half of the page: the frame edge re-walks the tree every tick, so anything
 you type takes effect on the next frame.
