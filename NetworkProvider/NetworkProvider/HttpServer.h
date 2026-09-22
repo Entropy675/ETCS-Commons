@@ -4,6 +4,7 @@
 #include "ConnectionManager.h"
 #include "StaticHtmlPage.h"
 #include "FileHtmlPage.h"
+#include "RouteRequest.h"
 #include <string>
 #include <vector>
 
@@ -300,13 +301,15 @@ public:
     // any order, and unaffected by Stop/Start since nothing about them is
     // generated state.
     void AddRoute(ETCS::RID rid, const std::string& action,
-                  ETCS::RID filter_rid = 0, const std::string& filter_action = "")
+                  ETCS::RID filter_rid = 0, const std::string& filter_action = "",
+                  bool structured = false)
     {
         if (rid == 0 || action.empty()) return;
         for (auto& r : routes_)
             if (r.rid == rid && r.action == action) return;
-        routes_.push_back(Route{rid, action, filter_rid, filter_action});
+        routes_.push_back(Route{rid, action, filter_rid, filter_action, structured});
         ETCS_LOG("HttpServer", "AddRoute: RID:" << rid << " ." << action
+                 << (structured ? " (request)" : " (path)")
                  << (filter_rid ? " filtered by RID:" + std::to_string(filter_rid)
                                   + " ." + filter_action
                                 : std::string(" (catch-all)"))
@@ -363,12 +366,29 @@ public:
     // catch-all registered early must not swallow traffic a later filtered
     // route was added to claim.
     //
-    // On a match, `io` carries whatever the handler wrote, which becomes the
-    // response body. Returns false if nothing claimed the path, leaving the
-    // caller to fall through to the page tree.
-    bool DispatchRoute(const std::string& path, ETCS::Buffer& io,
-                       const ETCS::SignalContext& ctx) const
+    // On a match, `out` describes the response body. Returns false if nothing
+    // claimed the path, leaving the caller to fall through to the page tree.
+    //
+    // TWO ANSWER SHAPES, and `io` is why the caller still owns a buffer. An
+    // inline answer lives in `io` and `out.data` points into it, so `io` must
+    // outlive the send -- the contract Serve's own `route_body` comment has
+    // always stated. A RouteRef answer (RouteRequest.h) points at bytes the
+    // route itself owns instead, `io` holds only the sixty-four byte frame, and
+    // the 255-byte ceiling stops applying at all. Which one arrived is read off
+    // the frame, not configured: a route may answer either way per request, and
+    // a route that never heard of RouteRef is indistinguishable from one that
+    // chose inline today.
+    //
+    // The path handed to a filter and to a path-style route is req.path, which
+    // is query-stripped AND leading-slash-stripped. Both existing route filters
+    // (ChessNode, ForumNode) already skip leading slashes before comparing, and
+    // every node's own splitPath drops empty segments, so this is the same
+    // decision they were each making privately -- made once, here.
+    bool DispatchRoute(const RouteRequest& req, ETCS::Buffer& io,
+                       const ETCS::SignalContext& ctx,
+                       HtmlPage_::ResolvedAsset& out) const
     {
+        const std::string& path = req.path;
         for (int pass = 0; pass < 2; ++pass)
         {
             for (const auto& r : routes_)
@@ -418,8 +438,20 @@ public:
                     }
                 }
 
+                // A structured route is handed the ADDRESS of the request, as
+                // POD, which is the whole of the bypass: the request itself is
+                // a stack object in Serve that outlives this call, and nothing
+                // about it has to survive a 256-byte squeeze. A path-style
+                // route gets the string it always got.
                 ETCS::Buffer payload;
-                payload.writeString(path.c_str());
+                if (r.structured)
+                {
+                    const uint64_t p = static_cast<uint64_t>(
+                        reinterpret_cast<uintptr_t>(&req));
+                    payload.writeRaw(&p, sizeof(p));
+                }
+                else payload.writeString(path.c_str());
+
                 ETCS::Buffer action = qualifiedAction(target, r.action);
                 try { target->call(action, payload, ctx); }
                 catch (const std::exception& ex)
@@ -428,9 +460,27 @@ public:
                              << " threw: " << ex.what());
                     return false;
                 }
-                ETCS_LOG("HttpServer", "routed '" << path << "' -> RID:" << r.rid
-                         << " ." << r.action);
+
                 io = payload;
+                RouteRef ref;
+                if (RouteRef::Read(io, ref))
+                {
+                    out.matched   = true;
+                    out.data      = ref.data;
+                    out.length    = ref.length;
+                    out.mime_type = ref.mime[0] ? ref.mime : "text/plain";
+                    ETCS_LOG("HttpServer", "routed '" << path << "' -> RID:" << r.rid
+                             << " ." << r.action << " (" << out.length
+                             << " bytes by reference, " << out.mime_type << ")");
+                    return true;
+                }
+
+                out.matched   = true;
+                out.data      = io.buf;
+                out.length    = io.written;
+                out.mime_type = "text/plain";
+                ETCS_LOG("HttpServer", "routed '" << path << "' -> RID:" << r.rid
+                         << " ." << r.action << " (" << out.length << " bytes inline)");
                 return true;
             }
         }
@@ -479,12 +529,21 @@ private:
     // a route matches on (an invite code, a game id) only exists once the
     // request has been parsed, which is why this cannot live on the gate.
     // Optional filter, same convention as Subscriber: 0/"" means catch-all.
+    //
+    // `structured` says WHICH of the two payload shapes this target expects: a
+    // bare path string (every route written before RouteRequest existed) or a
+    // pointer to the parsed request. It is a property of the registration and
+    // not something HttpServer can infer, because both arrive as an
+    // ETCS::Buffer and a target that reads the wrong one reads garbage rather
+    // than failing -- so the script says it, once, on the line that names the
+    // action. AddRoute keeps the old shape so no existing script moves.
     struct Route
     {
         ETCS::RID   rid;
         std::string action;
         ETCS::RID   filter_rid    = 0;
         std::string filter_action;
+        bool        structured    = false;
         bool filtered() const { return filter_rid != 0 && !filter_action.empty(); }
     };
     int                  port_    = 8080;

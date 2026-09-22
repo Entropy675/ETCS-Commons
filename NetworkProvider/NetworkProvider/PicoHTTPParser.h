@@ -72,6 +72,17 @@ private:
     size_t accum_len_    = 0;
     size_t prev_len_     = 0;
 
+    // Where the header block ended -- phr_parse_request's own return on
+    // success, which was being used for flushParsed's body slice and then
+    // dropped. Kept so a route can see the BODY at all: everything downstream
+    // of the parser had a method-and-path view of a request and no way to ask
+    // for anything else, which is what made every node in this tree a GET
+    // surface whose whole vocabulary had to fit in a URL.
+    //
+    // Zero means "no complete request parsed", not "no body" -- the two differ
+    // and only one of them is safe to read from.
+    size_t header_len_   = 0;
+
 public:
     // Was private and unreferenced. HttpServer::Serve needs it: without a
     // reader, every response said Connection: close and the client burned a
@@ -137,7 +148,12 @@ public:
             prev_len_
         );
 
-        if (result > 0)  { state_ = State::Complete; return true; }
+        if (result > 0)
+        {
+            header_len_ = static_cast<size_t>(result);
+            state_ = State::Complete;
+            return true;
+        }
         if (result == -1){ state_ = State::Error;    return false; }
         state_ = State::Parsing;
         return false;
@@ -192,6 +208,7 @@ public:
 
             if (result > 0)
             {
+                header_len_ = static_cast<size_t>(result);
                 state_ = State::Complete;
                 flushParsed(io, result);
                 return;
@@ -215,6 +232,7 @@ public:
         num_headers_ = 0;
         accum_len_  = 0;
         prev_len_   = 0;
+        header_len_ = 0;
         state_      = State::Idle;
         std::memset(accum_,   0, kAccumCapacity);
         std::memset(headers_, 0, sizeof(headers_));
@@ -240,6 +258,32 @@ public:
 
     size_t GetNumHeaders() const { return num_headers_; }
     const struct phr_header* GetHeaders() const { return headers_; }
+
+    // The body, as a slice of the accumulator -- BORROWED, and only valid
+    // until this parser is reset for the next request on the connection.
+    //
+    // WHAT THIS IS NOT: a guarantee that the whole body arrived.
+    // ReadUntilParsed stops when picohttpparser says the REQUEST is complete,
+    // and for phr_parse_request that means the header block, not the entity.
+    // A body that fits in the same read is here in full; a larger one is here
+    // in part, with no second read coming. So a route that accepts bodies
+    // checks this length against its own Content-Length expectation rather
+    // than assuming, and the honest ceiling today is one read --
+    // ETCS_NETWORK_MAX_HEADER_SIZE, the accumulator's own size, is the hard
+    // one above that.
+    const char* GetBody() const
+    {
+        if (state_ != State::Complete || header_len_ == 0) return nullptr;
+        if (accum_len_ <= header_len_) return nullptr;
+        return accum_ + header_len_;
+    }
+
+    size_t GetBodyLen() const
+    {
+        if (state_ != State::Complete || header_len_ == 0) return 0;
+        if (accum_len_ <= header_len_) return 0;
+        return accum_len_ - header_len_;
+    }
 
 private:
     // Write the parsed header block back into io as one or more Buffer frames.

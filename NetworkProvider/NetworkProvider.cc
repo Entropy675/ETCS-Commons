@@ -5,7 +5,7 @@ ETCS_MODULE_EXPORT_MAIN(NetworkProvider,
 // HttpServer — root-level. A bag of config with Start/Stop; owns its gate and
 // its pages as typed children.
 ETCS_TAG_BLOCK_BASIC(HttpServer,
-    SetPort, AddHandler, ClearHandlers, AddRoute, ClearRoutes,
+    SetPort, AddHandler, ClearHandlers, AddRoute, AddRequestRoute, ClearRoutes,
     EnableTLS, ReloadCerts, AddHeader,
     Start, Stop, IsStarted,
     Serve, ListPaths, Delete
