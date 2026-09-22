@@ -1,0 +1,39 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A PAINT SESSION HOST. The counterpart to chess_lobby.etcs, and the same shape
+# for the same reason: a browser has no listening socket, so the page that is
+# drawing cannot be the thing viewers connect to. This node is.
+#
+#     etcs modules/PaintProvider/scripts/paint_lobby.etcs
+#     then point a paint page's share menu at http://<this host>:8081/art
+#
+# IT HOLDS NO DOCUMENT. Sessions, rosters, tokens and notebook entries as text
+# -- see PaintNode's header note on why a relay that decoded its payload would
+# need rebuilding every time the payload grew.
+#
+# AddRequestRoute, NOT AddRoute. This node reads the request METHOD (a push is a
+# POST, a read is a GET) and the request BODY, and the older path-string route
+# carries neither. It also answers by reference, which is what lets a read of a
+# session return more than 255 bytes -- see HttpServer::DispatchRoute.
+
+spawn PaintProvider::PaintNode art
+art.Mount(art)
+
+ensure NetworkProvider::HttpServer web
+web.SetPort(8081)
+web.AddRequestRoute(@art Request @art Filter)
+
+# The paint page is served from wherever it is served from, which need not be
+# here -- so a session's viewers are cross-origin by default and the node has to
+# say so. Same line, same reason, as chess_web.etcs.
+web.AddHeader(Access-Control-Allow-Origin *)
+
+# A push is a POST, and a cross-origin POST is preflighted the moment it carries
+# anything but a form content type. The page sends text/plain deliberately to
+# stay a simple request; these two lines are what keep that true if it ever
+# stops being.
+web.AddHeader(Access-Control-Allow-Methods GET, POST, OPTIONS)
+web.AddHeader(Access-Control-Allow-Headers Content-Type)
+
+web.Start()

@@ -529,6 +529,28 @@ gear.AddPoint(4, 4)
 gear.SetFill(0.94, 0.89, 0.78, 0.92)
 gear.SetOrder(21)
 
+# THE WORD, so the dot says what it is. Same fill as the octagon, exactly: the
+# association IS the colour, and a label in the ruler's ordinary ink would read
+# as one more piece of margin furniture next to an unexplained dot.
+#
+# x=18 clears the octagon's 2..14 by four; y=4 centres a scale-1 cell (five
+# columns, seven rows of face -- TextLabel::CELL_W/CELL_H) against its middle.
+# Four glyphs at ADVANCE 6 is 23px, so this ends around x=41, well inside the
+# margin and well above the extent label at y=16.
+#
+# BOUND TO THE SAME POPUP as the octagon, because a word beside a button that
+# does nothing when pressed is worse than no word: the label is a sibling, not a
+# child, so a press on it picks the LABEL and the palette has to know it opens
+# the same thing. paint_menu.etcs does this for every control in the panel and
+# says so on its own top comment; this is that convention, one level out.
+sheet_root.spawn(RenderProvider::TextLabel gear_word)
+gear_word.Create()
+gear_word.SetPosition(18, 4)
+gear_word.SetSize(1)
+gear_word.SetColor(0.94, 0.89, 0.78, 0.92)
+gear_word.SetText(menu)
+gear_word.SetOrder(21)
+
 # The menu's pane: order 29, above everything but the wheel, so the two popups
 # rank as popups against the sheet and the wheel still wins if both were open
 # (the palette closes the wheel when it opens this, so they are not). Hidden
@@ -566,6 +588,41 @@ menu.BindPages(@pages)
 
 palette.BindRouter(@router)
 palette.AddPopup(@gear, @menu_pane, @menu_input)
+palette.AddPopup(@gear_word, @menu_pane, @menu_input)
+
+# ── who is in the session ────────────────────────────────────────────────────
+#
+# A SECOND POPUP, on the same machinery as the settings menu: its own pane, its
+# own input, and the palette answering presses on it. Order 30 -- above the
+# menu, because it is opened FROM a header button rather than from the gear and
+# should not end up behind whatever was last up.
+#
+# Hidden until the page opens it (PaintVisitors.Open), which the page does the
+# moment a session exists. Closing it is what ends the session: the runtime
+# raises the event, the page tells the node, and every other page's next read
+# answers NO SUCH SESSION and falls back to the canvas it already has.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D visitors_pane)
+visitors_pane.Create(300, 300)
+visitors_pane.SetPosition(4, 18)
+visitors_pane.SetOrder(30)
+visitors_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
+visitors_pane.SetHidden(1)
+
+spawn PaintProvider::PaintVisitors visitors
+visitors.Create()
+visitors.BindWindow(@visitors_pane)
+
+spawn PaintProvider::PaintInput visitors_input
+visitors_input.Create(@doc, @brush, @canvas)
+visitors_input.BindRoot(@visitors_pane)
+visitors_input.BindPalette(@palette)
+
+run PaintProvider/scripts/paint_visitors.etcs pane=visitors_pane palette=palette visitors=visitors
+
+# The pane joins the router the same way the wheel and the menu do -- a pane is
+# a root to pick in and an input to hand the pick to. Registered here rather
+# than as an AddPopup because nothing on the sheet OPENS it: the page does.
+router.AddPane(@visitors_pane, @visitors_input)
 
 # ── the import prompt ────────────────────────────────────────────────────────
 #

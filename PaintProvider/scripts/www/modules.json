@@ -45,6 +45,7 @@
     "PaintProvider/scripts/paint_menu.etcs",
     "PaintProvider/scripts/paint_layers.etcs",
     "PaintProvider/scripts/paint_import.etcs",
+    "PaintProvider/scripts/paint_visitors.etcs",
     "RenderProvider/scripts/render_frames.etcs"
   ],
   "boot": "boot_paint_panels.etcs",

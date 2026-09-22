@@ -57,6 +57,7 @@ tree.MountFile(PaintProvider/scripts/paint_wheel.etcs ACE_ROOT/modules/PaintProv
 tree.MountFile(PaintProvider/scripts/paint_menu.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_menu.etcs)
 tree.MountFile(PaintProvider/scripts/paint_layers.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_layers.etcs)
 tree.MountFile(PaintProvider/scripts/paint_import.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_import.etcs)
+tree.MountFile(PaintProvider/scripts/paint_visitors.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_visitors.etcs)
 tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
 
 # The terminal view, from ShellProvider's own page rather than a copy of it.
