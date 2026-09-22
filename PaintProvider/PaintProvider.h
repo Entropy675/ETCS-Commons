@@ -4625,6 +4625,7 @@ public:
     bool Load(int64_t id)
     {
         if (!m_document) return false;
+        Waiting wait(*this);
         struct Row { int64_t ord; std::string name; bool visible; float opacity; bool active; std::vector<uint8_t> pam; };
         std::vector<Row> rows;
         std::string name;
@@ -4740,6 +4741,7 @@ public:
     bool NewAt(uint32_t want_w, uint32_t want_h)
     {
         if (!m_document) return false;
+        Waiting wait(*this);
         flush();
         const uint32_t w = want_w ? want_w : (m_document->width() ? m_document->width() : 1024);
         const uint32_t h = want_h ? want_h : (m_document->height() ? m_document->height() : 768);
@@ -4766,6 +4768,31 @@ public:
     // document does not know who shows it; a load that leaves the old picture
     // on screen until the next stroke is a load that looks like it failed.
     void BindSurface(ETCS::RID surface) { m_surface = surface; }
+
+    /*
+ * THE WAIT INDICATOR, shown for as long as a page operation runs. A new page
+ * encodes and stores every layer of the one it leaves (6 MB of PAM at
+ * 1024x768) and a load decodes as much back, all on the thread the press
+ * arrived on -- a second or more in the browser during which the sheet is
+ * still and the pointer is ignored, which is indistinguishable from a hang.
+ * The frame edge is a different thread (RenderProvider/scripts/
+ * render_frames.etcs), so a node unhidden BEFORE the work is drawn while the
+ * work runs; hidden again after, it costs nothing (Throbber::AnimatingConcrete).
+ *
+ * Bound by RID and driven by verb, like every node this module reaches
+ * (PaintLayerPanel::SetHidden): the type does not know it is a Throbber, only
+ * that it can be hidden. boot_paint_panels.etcs binds the session's
+ * main_throbber. A depth rather than a flag because step() lands in Load()
+ * or NewAt(), and the indicator should leave when the outermost one does.
+ */
+    void BindWait(ETCS::RID node) { m_wait = node; }
+
+    struct Waiting
+    {
+        PaintPages& p;
+        explicit Waiting(PaintPages& pages) : p(pages) { if (p.m_wait_depth++ == 0) p.set_wait(true); }
+        ~Waiting() { if (--p.m_wait_depth == 0) p.set_wait(false); }
+    };
     void repaint()
     {
         if (m_surface == 0) return;
@@ -4819,9 +4846,22 @@ public:
     }
 
 private:
+    void set_wait(bool on)
+    {
+        if (m_wait == 0) return;
+        ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_wait);
+        if (!h) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(h.get());
+        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetHidden").c_str());
+        ETCS::Buffer arg; arg.write(on ? "0" : "1");
+        try { e->call(act, arg); } catch (...) {}
+    }
+
     PaintDocument* m_document = nullptr;
     ETCS::RID      m_db = 0;
     ETCS::RID      m_surface = 0;      // repainted after a load -- see BindSurface
+    ETCS::RID      m_wait = 0;         // unhidden while a page operation runs -- see BindWait
+    int            m_wait_depth = 0;
     int64_t        m_current = 0;       // the slot the present came from or went to; 0 is none
     uint64_t       m_loaded_rev = 0;    // the document's revision at that moment -- see dirty()
 
@@ -4887,6 +4927,7 @@ private:
     bool step(int dir)
     {
         if (!m_document) return false;
+        Waiting wait(*this);
         flush();
         std::vector<int64_t> ids;
         {
@@ -6055,7 +6096,16 @@ public:
             }
         }
 
+        // The stack may have shrunk under the offset (a delete, a page with
+        // fewer layers): clamped here rather than only in Scroll, so a window
+        // scrolled to the bottom of a long stack does not show empty rows over
+        // a short one.
         const size_t total = stack.size();
+        {
+            const int32_t most = (total > m_rows.size())
+                               ? static_cast<int32_t>(total - m_rows.size()) : 0;
+            m_scroll = std::clamp(m_scroll, 0, most);
+        }
         for (size_t i = 0; i < m_rows.size(); ++i)
         {
             Row& row = m_rows[i];
@@ -6298,6 +6348,20 @@ public:
         if (!m_moving) return false;
         m_moving = false;
         return true;
+    }
+
+    // Whether a point in the pane's parent's space is over the window. Asked
+    // for a wheel notch, which carries no point of its own and so cannot be
+    // picked (PaintInput::RouteEvent) -- the last routed position stands in
+    // for it, and the window's bounds are the only thing that has to hold.
+    bool Contains(Point2D at) const
+    {
+        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
+        if (!w) return false;
+        const Rect2D b = w->Bounds();
+        return at.x >= b.x && at.y >= b.y
+            && at.x < b.x + static_cast<int32_t>(b.w)
+            && at.y < b.y + static_cast<int32_t>(b.h);
     }
 
     /*
@@ -7930,7 +7994,26 @@ public:
      * is left is a view change on this pane's surface, and that is not a
      * question about which NODE was hit.
      */
-        if (ev.action == INPUT_SCROLL) { HandleEvent(ev); return; }
+        if (ev.action == INPUT_SCROLL)
+        {
+            // Over the layer window the notch is the window's: it scrolls the
+            // rows, one per notch, up toward the top of the stack. Anywhere
+            // else on the pane it is the zoom (HandleEvent). The position is
+            // the last one routed, translated into the pane's space the same
+            // way a picked event's is below.
+            if (m_panel && m_root != 0)
+            {
+                const Point2D pane_at = paint_root_origin(m_root);
+                const Point2D at{ RoutedCursorX() - pane_at.x, RoutedCursorY() - pane_at.y };
+                if (m_panel->Contains(at))
+                {
+                    m_panel->Scroll(ev.y > 0 ? -1 : +1);
+                    return;
+                }
+            }
+            HandleEvent(ev);
+            return;
+        }
 
         if (m_root == 0) { HandleEvent(ev); return; }   // unrouted: the old path
 
@@ -10434,6 +10517,13 @@ DEFINE_WORK_FUNC_TYPED(PaintPages, BindSurface, (ETCS::RID, surface))
 {
     (void)ctx;
     self.BindSurface(surface);
+}
+
+// BindWait <rid> -- the node unhidden while a page is saved, loaded or made.
+DEFINE_WORK_FUNC_TYPED(PaintPages, BindWait, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindWait(node);
 }
 
 DEFINE_WORK_FUNC(PaintPages, Save)

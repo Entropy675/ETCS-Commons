@@ -377,6 +377,12 @@ row is `[eye][thumb][name .......][x]`, five nodes for five questions.
                page's ground and PaintDocument::RemoveLayer refuses it
                (ClearLayer empties it instead)
 
+Seven rows is the window, not a limit: the **wheel over the window** scrolls
+the stack a row per notch, up toward the top, clamped at both ends
+(`PaintInput::RouteEvent` hands the notch to `PaintLayerPanel::Scroll` instead
+of the zoom when the pointer is over the window). The rows are re-bound to
+different layers rather than moved.
+
 The window re-renders the canvas itself whenever it changes the PICTURE rather
 than the list -- a restack, an eye, a delete, a press that lands a carry
 (`PaintLayerPanel::BindSurface`). A press on a row returns from the input edge
@@ -438,6 +444,13 @@ a two-layer 1024x768 page), so a page comes back as the picture it was rather
 than as its dimensions. Verified end to end in the browser: a mark on page 1,
 `new`, a different mark on page 2, then the page-1 row -- and the first mark is
 back and the second is gone.
+
+Saving and loading those bytes takes a moment -- a second or so in the
+browser -- on the thread the press arrived on, so the pointer is not answered
+until it is done. The session's throbber shows for exactly that interval
+(`PaintPages::BindWait`, bound to `main_throbber` in `boot_paint_panels.etcs`):
+the frame edge is another thread, so the ring turns while the store works, and
+it is hidden again when the page is up.
 
 ## Sizes, and 1920x1080
 

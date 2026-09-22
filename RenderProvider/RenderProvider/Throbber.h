@@ -11,7 +11,7 @@
 /*
  * ── Throbber ───────────────────────────────────────────────────────────────
  *
- * "ETCS" ABOVE A RING OF CYCLING DOTS. One entity, one raster, any size, no
+ * "ETCS" INSIDE A RING OF CYCLING DOTS. One entity, one raster, any size, no
  * asset. The thing you put on screen while something is taking a while.
  *
  * WHY THIS IS NOT PRE-BAKED FRAMES, which is the obvious alternative and very
@@ -61,11 +61,39 @@
  * ONE ENTITY, INCLUDING THE LABEL. The text could have been a sibling the
  * script spawns, which is the convention for a widget's look
  * (paint_wheel.etcs) -- but then a caller has to place two things relative to
- * each other and re-place both to change the size, and "ETCS above a throbber"
+ * each other and re-place both to change the size, and "ETCS in a throbber"
  * is one thing to a caller. So the label is a child of this node, driven from
  * here through the Glyphs family: a child TextLabel rasterises the run into
  * THIS raster (Glyphs_::RasterizeText takes the target by RID), so there is one
  * buffer, one composite, and the font stays in the one type that owns it.
+ *
+ * INSIDE THE RING, NOT ABOVE IT, and the raster is exactly one square. That
+ * is what makes the widget symmetrical about its own centre: a caption above
+ * the ring made the box taller than it was wide and put the ring's centre
+ * below the box's, so a caller who centred the box did not centre the ring.
+ * With the text in the hole, Bounds() is the square, and placing it at
+ * (W-size)/2, (H-size)/2 puts the ring's centre on the canvas's -- no second
+ * number to get right (boot_paint_panels.etcs).
+ *
+ * ON A PLATE, by default. This is shown over whatever is on the sheet, and
+ * on the paint page that is white paper: off-white text and a pale tail on
+ * white are not there at all (measured -- the label vanished). The plate is
+ * the square, filled with the ruler band's colour at 0.85, which is the
+ * colour every other piece of furniture on that page already has
+ * (paint_layers.etcs), so the throbber reads as a panel rather than as a
+ * mark on the picture. A square rather than a disc because a disc on an
+ * even-sized grid has no centre pixel to be symmetric about; the ring is
+ * inset from the plate's edge by a margin so the dots do not touch it.
+ * SetPlate with alpha 0 removes it for a caller with a dark pane of its own.
+ *
+ * ON A DISCRETE GRID, symmetry is a choice of centre: a box of even size has
+ * no centre pixel, so the ring is laid out about (size-1)/2 -- half a pixel
+ * off the middle of the box, and the same half for every dot -- and each dot
+ * position is ROUNDED to it rather than truncated. Truncating from size/2 put
+ * the 12 o'clock dot one pixel further from the top edge than the 6 o'clock
+ * dot from the bottom, and clipped the latter; FillDisc draws a disc symmetric
+ * about its centre pixel, so with the centres placed this way the pairs are
+ * mirror images.
  *
  * VISIBILITY IS THE SWITCH, and it is already the right one. SetHidden is
  * honoured in draw and in pick, skips children with the parent, and marks the
@@ -134,29 +162,32 @@ public:
  *
  * The label's size is derived, not separately settable: a caller asking for a
  * 96px throbber wants a 96px throbber, and a text size that has to be chosen to
- * match is a second number that can disagree with the first. A quarter of the
- * ring, floored to the font's own cell (TextLabel::SetSize rounds anyway), is
- * the proportion that keeps "ETCS" narrower than the ring at every size.
+ * match is a second number that can disagree with the first. It is the largest
+ * whole font scale whose run fits INSIDE the dots: the run's box, at scale 1,
+ * has a half-diagonal, and the scale is the hole's radius (the orbit less a dot
+ * radius, less one pixel of air) over it. At the default 96 that is scale 2 --
+ * a 46x14 "ETCS" in a hole of radius 28 -- which is also why the dots are 8%
+ * of the size rather than 10%: at 10% the hole only fits scale 1, which is
+ * unreadable. A quarter of the ring, which a caption above the ring used,
+ * does not fit in the hole at any size, so the proportion is computed from
+ * the geometry rather than chosen.
  */
     void SetSize(uint32_t size_px)
     {
         m_ring = size_px ? size_px : DEFAULT_SIZE;
-
-        uint32_t text_px = m_ring / 4;
-        if (text_px < TextLabel::CELL_H) text_px = TextLabel::CELL_H;
+        m_w = m_h = m_ring;
 
         ensureLabel();
-        if (m_label) m_label->SetSize(text_px);
-
-        const uint32_t text_h = m_label ? m_label->Scale() * TextLabel::CELL_H : 0;
-        const uint32_t text_w = m_label
-            ? static_cast<uint32_t>(m_label->MeasureTextConcrete(m_text.c_str(), 0, 0).width)
-            : 0;
-
-        m_gap    = m_ring / 8;
-        m_text_h = text_h;
-        m_w = (text_w > m_ring) ? text_w : m_ring;
-        m_h = text_h + m_gap + m_ring;
+        if (m_label)
+        {
+            const TextExtent unit = m_label->MeasureTextConcrete(m_text.c_str(), 0, TextLabel::CELL_H);
+            const float half_w = static_cast<float>(unit.width) * 0.5f;
+            const float half_h = static_cast<float>(unit.baseline) * 0.5f;   // the face, no descender row
+            const float hole   = holeRadius();
+            uint32_t scale = static_cast<uint32_t>(hole / std::sqrt(half_w * half_w + half_h * half_h));
+            if (scale < 1) scale = 1;
+            m_label->SetSize(scale * TextLabel::CELL_H);
+        }
 
         this->Allocate(m_w, m_h);
         repaint();
@@ -165,7 +196,7 @@ public:
     void SetText(const std::string& text)
     {
         m_text = text.empty() ? std::string("ETCS") : text;
-        SetSize(m_ring);          // the run's width is part of the layout
+        SetSize(m_ring);          // the run's width decides the font scale
     }
 
     /*
@@ -208,6 +239,13 @@ public:
     void SetTextColor(float r, float g, float b, float a)
     {
         m_ink[0] = r; m_ink[1] = g; m_ink[2] = b; m_ink[3] = a;
+        repaint();
+    }
+
+    // The square behind the ring -- see the header. Alpha 0 is no plate.
+    void SetPlate(float r, float g, float b, float a)
+    {
+        m_plate[0] = r; m_plate[1] = g; m_plate[2] = b; m_plate[3] = a;
         repaint();
     }
 
@@ -358,15 +396,31 @@ private:
 
     static float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
+    // The ring's geometry, stated once for SetSize and repaint. Dots sit on a
+    // circle inside the box, pulled in by their own radius plus a margin from
+    // the plate's edge; the hole is what is left inside them.
+    uint32_t dotRadius() const
+    {
+        const float r = static_cast<float>(m_ring) * 0.08f;
+        return static_cast<uint32_t>(r < 1.0f ? 1.0f : r);
+    }
+    uint32_t margin() const  { return m_ring / 24; }
+    float centre() const     { return static_cast<float>(m_ring - 1) * 0.5f; }
+    float orbit() const      { return centre() - static_cast<float>(dotRadius() + margin()); }
+    float holeRadius() const
+    {
+        const float h = orbit() - static_cast<float>(dotRadius()) - 1.0f;
+        return h < 1.0f ? 1.0f : h;
+    }
+
     /*
  * ONE PASS, ONE MARK. ClearTo, N discs, one text run, and the Observable mark
  * that FillDisc/FillRect each raise is coalesced by the batch scope -- unbatched,
  * a 40-point stroke cost a compositor 23,746 marks (ontology/ObservableBase.h),
  * and this runs every frame forever.
  *
- * Transparent clear, not a background fill: a throbber goes over whatever is
- * already there, and a caller who wants a plate behind it puts this in a pane
- * that has one.
+ * Transparent clear, then the plate: the plate is drawn rather than cleared
+ * to so that alpha 0 leaves the corners see-through as well as the middle.
  */
     void repaint()
     {
@@ -374,14 +428,12 @@ private:
         etcs_observed_batch _batch(this);
 
         this->ClearTo(0.0f, 0.0f, 0.0f, 0.0f);
+        if (m_plate[3] > 0.0f)
+            this->FillRect(0, 0, m_w, m_h, m_plate[0], m_plate[1], m_plate[2], m_plate[3]);
 
-        // Geometry: the dots sit on a circle inscribed in the ring box, pulled
-        // in by their own radius so none of them is clipped by the edge.
-        const float dot_r_f = static_cast<float>(m_ring) * 0.10f;
-        uint32_t dot_r = static_cast<uint32_t>(dot_r_f < 1.0f ? 1.0f : dot_r_f);
-        const float orbit = static_cast<float>(m_ring) * 0.5f - static_cast<float>(dot_r);
-        const float cx = static_cast<float>(m_w) * 0.5f;
-        const float cy = static_cast<float>(m_text_h + m_gap) + static_cast<float>(m_ring) * 0.5f;
+        const uint32_t dot_r = dotRadius();
+        const float    orbit = this->orbit();
+        const float    c     = centre();       // see the header: (size-1)/2, rounded to
 
         const float TWO_PI = 6.28318530718f;
         for (uint32_t i = 0; i < m_dots; ++i)
@@ -411,20 +463,22 @@ private:
             const float b = lerp(m_tail[2], m_head[2], t);
 
             const float ang = at * TWO_PI - 1.57079632679f;   // 12 o'clock start
-            const int32_t px = static_cast<int32_t>(cx + orbit * std::cos(ang));
-            const int32_t py = static_cast<int32_t>(cy + orbit * std::sin(ang));
+            const int32_t px = static_cast<int32_t>(std::lround(c + orbit * std::cos(ang)));
+            const int32_t py = static_cast<int32_t>(std::lround(c + orbit * std::sin(ang)));
             this->FillDisc(px, py, dot_r, r, g, b, a);
         }
 
-        // The run, centred over the ring. Through the Glyphs family into THIS
-        // raster by RID -- see the header on why the label is a child rather
-        // than a sibling.
+        // The run, centred in the hole about the same centre as the dots: its
+        // face (baseline rows, not the descender row) is what the eye centres.
+        // Through the Glyphs family into THIS raster by RID -- see the header
+        // on why the label is a child rather than a sibling.
         if (m_label)
         {
             const TextExtent e = m_label->MeasureTextConcrete(m_text.c_str(), 0, 0);
-            const int32_t tx = static_cast<int32_t>(m_w) / 2 - e.width / 2;
+            const int32_t tx = static_cast<int32_t>(std::lround(c - static_cast<float>(e.width - 1) * 0.5f));
+            const int32_t ty = static_cast<int32_t>(std::lround(c - static_cast<float>(e.baseline - 1) * 0.5f));
             m_label->RasterizeTextConcrete(this->getRID(), m_text.c_str(), 0, 0,
-                                           tx, 0,
+                                           tx, ty,
                                            m_ink[0], m_ink[1], m_ink[2], m_ink[3]);
         }
     }
@@ -433,10 +487,8 @@ private:
     std::string m_text = "ETCS";
 
     int32_t  m_x = 0, m_y = 0;
-    uint32_t m_w = 0, m_h = 0;
+    uint32_t m_w = 0, m_h = 0;        // always m_ring square -- see the header
     uint32_t m_ring   = DEFAULT_SIZE;
-    uint32_t m_gap    = DEFAULT_SIZE / 8;
-    uint32_t m_text_h = 0;
 
     uint32_t m_dots  = DEFAULT_DOTS;
     float    m_step  = DEFAULT_STEP;   // degrees per FRAME -- AdvanceConcrete
@@ -444,9 +496,10 @@ private:
 
     // The canvas pane's in-band ruler highlight, and a violet shift of it at
     // the same brightness. See the header.
-    float m_head[3] = { 0.35f, 0.55f, 0.95f };
-    float m_tail[3] = { 0.58f, 0.40f, 0.95f };
-    float m_ink[4]  = { 0.94f, 0.89f, 0.78f, 1.0f };
+    float m_head[3]  = { 0.35f, 0.55f, 0.95f };
+    float m_tail[3]  = { 0.58f, 0.40f, 0.95f };
+    float m_ink[4]   = { 0.94f, 0.89f, 0.78f, 1.0f };
+    float m_plate[4] = { 0.106f, 0.110f, 0.078f, 0.85f };   // the ruler band -- see the header
 };
 
 #endif

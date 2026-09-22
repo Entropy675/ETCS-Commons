@@ -101,19 +101,19 @@ sheet_root.SetHidden(1)
 #
 # No SetOrder: the type defaults to the top (Throbber::ORDER_ON_TOP), because
 # for a wait indicator that is not a layout choice but what the thing is.
-# 464,318 centres a 96px ring -- 132px tall with its caption -- in 1024x768,
-# which is arithmetic that only reads as correct next to both numbers.
+# 464,336 is (1024-96)/2, (768-96)/2: the raster is exactly the ring's square
+# (the caption sits inside it), so this is the centre of the sheet.
 stage.spawn(RenderProvider::Throbber main_throbber)
 main_throbber.Create(96)
-main_throbber.SetPosition(464, 318)
+main_throbber.SetPosition(464, 336)
 
 # HIDDEN FROM THE START, because nothing in here CAN draw during boot: the
 # runtime's first presented frame lands seconds after this script starts,
 # whatever the script contains (bootThrobber in www/index.html has the
 # measurement). The page covers that interval with the same twelve dots in the
 # same two colours. THIS one is for the waits that happen afterwards, when the
-# runtime is up and can draw: a new canvas, a page switch, an import. Hidden, it
-# costs one virtual call a frame.
+# runtime is up and can draw: a new page, a page switch, a load (pages.BindWait
+# below). Hidden, it costs one virtual call a frame.
 main_throbber.SetHidden(1)
 
 view.Compose(@stage)
@@ -425,6 +425,10 @@ db.Connect(/persist/pages.db)
 spawn PaintProvider::PaintPages pages
 pages.Create(@doc, @db)
 pages.BindSurface(@canvas)
+# Shown while a page is saved, loaded or made -- the one wait in this session
+# long enough to see (PaintPages::BindWait has the numbers). This is what the
+# throbber above was kept for.
+pages.BindWait(@main_throbber)
 input.BindPages(@pages)
 
 spawn PaintProvider::PaintInput wheel_input

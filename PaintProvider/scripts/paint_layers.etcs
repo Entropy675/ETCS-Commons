@@ -32,8 +32,11 @@
 # WHY THERE IS A ROW COUNT AT ALL. Not a cap on layers: a window shows the ones
 # NEAR the one you are looking at, a neighbourhood in the stack's own order
 # (ontology/Layer.h), and scrolling moves the frame of reference while these
-# same rows are re-bound. The count is the resident set, which is what the
-# window's height divided by the row height already was. The bytes behind the
+# same rows are re-bound: the wheel over the window steps it a row per notch
+# (PaintInput::RouteEvent hands the notch to PaintLayerPanel::Scroll instead of
+# the zoom), up toward the top of the stack, clamped at both ends. The count
+# is the resident set, which is what the window's height divided by the row
+# height already was. The bytes behind the
 # churn are the arena's and are already recycled -- every ArenaAllocator-backed
 # container returns exact-size slots to its scope's free list -- so nothing
 # here pools anything.

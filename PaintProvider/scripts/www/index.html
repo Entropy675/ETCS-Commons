@@ -30,26 +30,28 @@
     body { overflow-y: auto; }
 
     /*
-     * GRID, AND THE TERMINAL HAS A FLOOR.
+     * GRID: THE CANVAS TAKES EVERYTHING THE TERMINAL DOES NOT NEED.
      *
-     * The canvas is 1024x768 and the terminal was whatever was left, which on a
-     * laptop is about three lines -- unusable for the thing you actually type
-     * into. So the canvas is the elastic one now and the terminal has a minimum:
-     * 15rem stacked, which is 8 lines of 13px/1.45 text plus the shell page's own
-     * header and input row. The canvas gives up space first because it can: it
-     * scales, and its framebuffer is set by Create() regardless of display size.
+     * The canvas is a VIEW into a 1024x768 framebuffer, not the framebuffer --
+     * Create() sets that regardless of display size -- so there is no size it
+     * is "meant" to be drawn at, and the right size is the largest that fits.
+     * The terminal is the one thing on the page with a natural size: 15rem is
+     * 8 lines of 13px/1.45 text plus the shell page's own header and input row,
+     * below which it is not a terminal. So the terminal gets a floor and a
+     * modest share, and the canvas gets the rest of the viewport: no page
+     * max-width (a 1600px cap left a wide screen's margins empty), and a gap
+     * and padding of half a rem rather than three quarters.
      */
     #layout {
-      display: grid; gap: 0.75rem; padding: 0.75rem;
-      height: 100%; max-width: 1600px; margin: 0 auto;
+      display: grid; gap: 0.5rem; padding: 0.5rem;
+      height: 100%;
       grid-template-columns: 1fr;
-      /* Stacked: the terminal takes a clamped share (never under 15rem = 8 lines
-         plus the shell page's own chrome, never more than 28rem) and the canvas
-         takes ALL the rest, shrinking to fit rather than pushing the terminal off
-         the bottom of the viewport. height:100% not min-height, so the two of
-         them fit the screen instead of making the page scroll to reach the thing
-         you type into. */
-      grid-template-rows: auto minmax(0, 1fr) clamp(15rem, 40%, 28rem);
+      /* Stacked: the terminal takes a clamped share (never under its 15rem
+         floor, never more than 22rem) and the canvas takes ALL the rest,
+         shrinking to fit rather than pushing the terminal off the bottom of the
+         viewport. height:100% not min-height, so the two of them fit the screen
+         instead of making the page scroll to reach the thing you type into. */
+      grid-template-rows: auto minmax(0, 1fr) clamp(15rem, 30%, 22rem);
       grid-template-areas: "head" "stage" "term";
     }
     header {
@@ -57,7 +59,7 @@
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
       color: var(--muted); font-size: 12px;
       padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
-      margin: -0.75rem -0.75rem 0;
+      margin: -0.5rem -0.5rem 0;
     }
     header .brand {
       color: var(--accent); font-size: 14px; font-weight: bold;
@@ -96,6 +98,7 @@
       grid-area: stage; min-height: 0; min-width: 0;
       display: flex; align-items: center; justify-content: center;
       position: relative;                 /* the boot throbber anchors to this */
+      container-type: size;               /* cqw/cqh below are THIS box's */
     }
     /* The window's framebuffer. Create() resizes the ATTRIBUTES to whatever
        boot.etcs asked for; these rules only decide how big it is drawn, and
@@ -112,7 +115,19 @@
        bottom of the document simply stopped responding at some window sizes
        while the same controls worked at others.
        aspect-ratio pins the shape to the framebuffer's, and min-height:0 lets
-       the box actually shrink to the row instead of overflowing it. */
+       the box actually shrink to the row instead of overflowing it.
+
+       AS LARGE AS FITS, IN BOTH DIRECTIONS. max-width/max-height:100% only
+       ever shrank the box: with width:auto its natural size is the attribute
+       size, so on a screen with room to spare the view stopped at 1024 CSS
+       pixels and left the rest of the stage empty. The width is stated as the
+       smaller of "the stage's width" and "the stage's height, as wide as 4:3
+       makes it" -- container-query units, which is what makes the height
+       reachable from a width rule at all -- and the height follows the aspect
+       ratio. That is the whole of "fit", growing or shrinking, with no
+       breakpoint in it. Upscaled past 1024 the picture is resampled by the
+       browser; the framebuffer is still 1024x768 and the pointer maps to it
+       through the box's own size, so nothing else has to know. */
     canvas#canvas {
       display: block; background: #0a0b08;
       border: 1px solid var(--border); border-radius: 6px;
@@ -130,7 +145,7 @@
          the box while GLFW stays in charge of the FRAMEBUFFER, which is the
          division that should hold: the framebuffer is the drawing surface's
          business, the box is the document's. */
-      width: auto !important; height: auto !important;
+      width: min(100cqw, calc(100cqh * 1024 / 768)) !important; height: auto !important;
       min-height: 0;
       box-shadow: -1px -1px 5px rgba(100, 0, 228, 0.7), 1px 1px 5px rgba(0, 0, 255, 0.7);
     }
@@ -148,11 +163,16 @@
     /* SIDE BY SIDE ONCE THERE IS ROOM. Two columns, one row: the canvas takes
        the space the terminal does not need, and both are full height. Below this
        the grid falls back to the stacked rows above, where the terminal's 15rem
-       floor applies. */
+       floor applies. The terminal's column is a quarter of the page and never
+       under 22rem (308px at the page's 14px): a transcript wraps at any width
+       and reads fine wrapped, so the column's floor is what its header and
+       input row need, and its share is what the canvas does not lose much to.
+       Measured at 1920x1080: the view is 1364x1023 with these rules, against
+       the 1024x768 it stopped at before. */
     @media (min-width: 62rem) {
       #layout {
         height: 100%;
-        grid-template-columns: minmax(0, 1fr) minmax(24rem, 34%);
+        grid-template-columns: minmax(0, 1fr) minmax(22rem, 25%);
         /* THE STRIP IS ITS OWN ROW, and `stage` spans both so the sheet still
            gets the full height of the column beside it. auto rather than a fixed
            height: the strip is a canvas scaled to the column's width, so its
@@ -196,7 +216,7 @@
            See bootThrobber() below: nothing inside the runtime can draw
            during the window this covers, because the runtime is not
            running yet. -->
-      <canvas id="bootthrob" width="240" height="300"></canvas>
+      <canvas id="bootthrob" width="96" height="96"></canvas>
     </div>
     <!-- The ShellProvider page, as the terminal VIEW only. It detects being
          framed and boots no runtime of its own; lines cross by postMessage.
@@ -888,8 +908,11 @@
    * and it is up on the first frame after DOMContentLoaded.
    *
    * THE SAME PICTURE AS THE RUNTIME'S, deliberately: twelve dots, the head
-   * bright blue fading back through violet, "ETCS" over it in off-white. The
-   * blue and the violet are the canvas's own box-shadow (rgba(0,0,255) and
+   * bright blue fading back through violet, "ETCS" inside the ring in
+   * off-white, all on a square plate the ruler band's colour, the element
+   * exactly that square so that centring the element centres the ring
+   * (Throbber.h has the same argument). The blue and
+   * the violet are the canvas's own box-shadow (rgba(0,0,255) and
    * rgba(100,0,228) in the CSS above), so the wait indicator and the frame
    * around the thing being waited for are the same two colours.
    *
@@ -904,22 +927,28 @@
     const g = el.getContext('2d');
     if (!g) { el.remove(); return; }
 
-    const RING = 96, DOTS = 12, TAIL = 0.45, STEP = 5.4 / 360;
+    const RING = el.width, DOTS = 12, TAIL = 0.45, STEP = 5.4 / 360;
     const HEAD = [0.35, 0.55, 0.95], TAILC = [0.58, 0.40, 0.95];
-    const cx = el.width / 2, ringTop = 44, cy = ringTop + RING / 2;
-    const dotR = RING * 0.10, orbit = RING * 0.5 - dotR;
+    const cx = RING / 2, cy = RING / 2;
+    const dotR = RING * 0.08, orbit = RING * 0.5 - dotR - RING / 24;   // Throbber::orbit
     let phase = 0, stopped = false;
 
-    g.font = '600 24px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+    // Sized to the hole the way Throbber::SetSize sizes its label: 16px is
+    // the runtime's scale-2 bitmap face at this ring, and the same run width.
+    g.font = '600 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     g.textAlign = 'center';
-    g.textBaseline = 'top';
+    g.textBaseline = 'middle';
 
     function frame() {
       if (stopped) return;
       g.clearRect(0, 0, el.width, el.height);
+      g.fillStyle = 'rgba(27, 28, 20, 0.85)';       // the plate: the ruler band, as Throbber.h
+      g.fillRect(0, 0, el.width, el.height);
       g.fillStyle = 'rgba(240, 227, 199, 0.95)';    // the off-white the runtime uses
-      g.letterSpacing = '6px';
-      g.fillText('ETCS', cx, 8);
+      g.letterSpacing = '2px';
+      // +1 x: letterSpacing trails the last glyph too; +2 y: 'middle' is the
+      // em box's middle, and capitals sit above it. Both measured, not guessed.
+      g.fillText('ETCS', cx + 1, cy + 2);
       for (let i = 0; i < DOTS; i++) {
         const at = i / DOTS;
         // Short way round, so the tail stays continuous across the wrap --
