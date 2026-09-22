@@ -18,6 +18,7 @@
   "modules": [
     "WindowProvider.wasm",
     "RenderProvider.wasm",
+    "LayoutProvider.wasm",
     "PaintProvider.wasm",
     "DatabaseProvider.wasm",
     "ShellProvider.wasm"

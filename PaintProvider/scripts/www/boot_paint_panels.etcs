@@ -260,6 +260,13 @@ ruler_pane.SetPosition(0, 0)
 ruler_pane.SetOrder(2)
 ruler_pane.SetRetain(1)
 ruler_pane.SetPickable(0)
+# THE ONE PANE THAT IS NOT A LAYOUT BOX. It is the sheet, at the sheet's
+# origin, overlapping the picture -- which is not a row or a column and so is
+# not something a solver has anything to say about. It follows the window
+# straight (CompositeDrawable2D::FollowResize), and the equality the comment
+# above depends on -- the pane's offsets in the sheet's space are the same in
+# this one's -- holds at every size because both are the window's.
+ruler_pane.FollowResize(@main)
 canvas.BindRulerFrame(@ruler_pane)
 canvas.Render()
 
@@ -271,63 +278,84 @@ canvas.Render()
 # the walk draws everything.
 
 # ── the toolbar, ON the sheet ───────────────────────────────────────────────
-sheet_root.spawn(RenderProvider::PolygonDrawable2D bar_bg)
-bar_bg.Create()
-bar_bg.AddPoint(0, 704)
-bar_bg.AddPoint(1024, 704)
-bar_bg.AddPoint(1024, 768)
-bar_bg.AddPoint(0, 768)
-bar_bg.SetFill(0.16, 0.16, 0.19, 1.0)
-bar_bg.SetOrder(19)
-
+#
+# THE BACKING STRIP IS GONE. It was a PolygonDrawable2D with 0/1024/704/768
+# baked into its corners, which is geometry and not a position -- so it could
+# not follow a resize, and at any width but 1024 it stopped painting before the
+# sheet's edge. A compositor's own background is the same picture with nothing
+# to keep in step, and the bar is one.
+#
 # Sixteen 60px slices: six colours, eight tools, radius and alpha
 # (paint_toolbar.etcs) -- rect and oval are one shape slice now, which is what
-# gave the row its margins back.
+# gave the row its margins back. The bar is a layout box from here on (the
+# layout, at the foot of this file); the slices keep their 60px cells, so a
+# wider bar has slack at the right end rather than stretched buttons.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D bar)
 bar.Create(960, 64)
 bar.SetPosition(32, 704)
 bar.SetOrder(20)
+bar.SetBackground(0.16, 0.16, 0.19, 1.0)
 
 spawn PaintProvider::PaintPalette palette
 palette.BindTool(@brush)
 palette.BindSurface(@canvas)
 
-run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette
+# THE SOLVER, SPAWNED HERE rather than at the foot of the file, because the
+# toolbar declares its own cells into it (paint_toolbar.etcs) and a box has to
+# have somewhere to be declared. Only Create is called now; the boxes this file
+# owns, the first Solve and FollowResize are all at the end, once everything
+# they name exists.
+spawn LayoutProvider::Layout layout
+layout.Create(1024, 768)
+
+run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette layout=layout
 
 
-# ── the zoom readout, bottom-left of the drawing pane ────────────────────────
+# ── the zoom readout, in a row of its own under the picture ──────────────────
 #
 # Two steps and a percentage, deliberately faint: it is a thing you reach for
-# occasionally and should not compete with the picture. Children of sheet_root,
-# so they move with the pane and are picked in its space.
+# occasionally and should not compete with the picture.
+#
+# IN A PANE, and the pane is why. These were children of sheet_root at y=668 --
+# four pixels above a toolbar that was at 704 because the sheet was 768. Every
+# one of those numbers is the old height read backwards, so a taller sheet left
+# the row stranded in the middle of the picture. A pane is a layout box (the
+# layout, at the foot of this file), so the row sits under the picture and over
+# the bar at any height, and the coordinates below are its own 26px band rather
+# than a subtraction from a size nothing guarantees.
 #
 # The steps are PaintPalette entries -- a node that means a zoom, mapped by the
 # same type that maps a node meaning a colour (AddZoom says why a view setting
 # lives there). The label is pushed by the surface rather than by whoever zoomed,
 # so the wheel, these buttons and a script all keep it honest.
-sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_out)
+sheet_root.spawn(RenderProvider::CompositeDrawable2D zoom_pane)
+zoom_pane.Create(960, 26)
+zoom_pane.SetPosition(36, 672)
+zoom_pane.SetOrder(21)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_out)
 zoom_out.Create()
-zoom_out.AddPoint(12, 668)
-zoom_out.AddPoint(36, 668)
-zoom_out.AddPoint(36, 692)
-zoom_out.AddPoint(12, 692)
+zoom_out.AddPoint(0, 1)
+zoom_out.AddPoint(24, 1)
+zoom_out.AddPoint(24, 25)
+zoom_out.AddPoint(0, 25)
 zoom_out.SetFill(0.85, 0.85, 0.88, 0.30)
 zoom_out.SetOrder(21)
 palette.AddZoom(@zoom_out, 0.8)
 
-sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_in)
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_in)
 zoom_in.Create()
-zoom_in.AddPoint(44, 668)
-zoom_in.AddPoint(68, 668)
-zoom_in.AddPoint(68, 692)
-zoom_in.AddPoint(44, 692)
+zoom_in.AddPoint(32, 1)
+zoom_in.AddPoint(56, 1)
+zoom_in.AddPoint(56, 25)
+zoom_in.AddPoint(32, 25)
 zoom_in.SetFill(0.85, 0.85, 0.88, 0.30)
 zoom_in.SetOrder(21)
 palette.AddZoom(@zoom_in, 1.25)
 
-sheet_root.spawn(RenderProvider::TextLabel zoom_label)
+zoom_pane.spawn(RenderProvider::TextLabel zoom_label)
 zoom_label.Create()
-zoom_label.SetPosition(78, 672)
+zoom_label.SetPosition(66, 5)
 zoom_label.SetSize(2)
 zoom_label.SetColor(0.80, 0.80, 0.84, 1.0)
 zoom_label.SetText(100%)
@@ -568,6 +596,65 @@ menu.BindImportPrompt(@palette, @import_pane, @import_input, @import_name)
 # between showing half of one. No Compose: stage has been the compose root since
 # the top of this file, and everything above simply filled it in.
 sheet_root.SetHidden(0)
+
+# ── the layout ───────────────────────────────────────────────────────────────
+#
+# WHY THERE IS ONE AT ALL. Every size and position above this line was a number
+# typed against 1024x768, and half of them were that number read backwards --
+# the bar at y=704 because 768-64, the throbber at 464,336 because the centre.
+# A window that is any other size makes every one of them wrong, which is why
+# the canvas was pinned to 4:3 by the page's CSS: the shape could not change
+# because the scene could not follow it.
+#
+# So the boxes that have to follow are declared here and the solver answers,
+# writing back through MoveTo and ResizeTo (Clayout.h). The document is NOT one
+# of them and must not be: a picture is 1024x768 whatever the window is, and
+# PaintSurface already blits it into the pane with a zoom and a pan. Growing
+# the pane gives the picture more room around it; it does not stretch it.
+#
+# kinds: 0 fit, 1 grow, 2 fixed, 3 percent. parent 0 is the root.
+#
+# Declared LAST because a box has to exist to be named, and solved once here so
+# the scene is right at the size we came up at -- FollowResize then hands the
+# window the reins, and re-solves where the size arrives rather than on a tick.
+# The solver itself is spawned further up, where the toolbar can reach it.
+
+# The sheet is the whole window, and the stage is the sheet -- one column each,
+# because the wrapper exists to switch the throbber against the scene and not
+# to arrange anything (see THE STAGE, above).
+layout.AddBox(@stage, 0, 1, 0.0, 1, 0.0)
+layout.SetDirection(@stage, 1)
+layout.AddBox(@sheet_root, @stage, 1, 0.0, 1, 0.0)
+layout.SetDirection(@sheet_root, 1)
+
+# THE MARGIN IS THE PADDING NOW, and it is the same 36px the inset was -- the
+# band the ruler draws in, which is a property of the sheet rather than a
+# subtraction the pane has to remember. The bar is inside it too, which the
+# full-bleed backing strip used to hide; the band now runs round the toolbar as
+# well as the picture.
+layout.SetPadding(@sheet_root, 36.0)
+layout.SetGap(@sheet_root, 8.0)
+
+# The picture takes everything the two fixed rows under it do not.
+layout.AddBox(@paper_pane, @sheet_root, 1, 0.0, 1, 0.0)
+layout.AddBox(@zoom_pane, @sheet_root, 1, 0.0, 2, 26.0)
+layout.AddBox(@bar, @sheet_root, 1, 0.0, 2, 64.0)
+# THE BAR IS A ROW, and this is what makes the toolbar's sixteen cells share the
+# width instead of stopping at 960. AFTER its AddBox and not before: SetDirection
+# finds the box or does nothing, and AddBox defaults a new one to a column -- so
+# stated earlier this line is silently dropped and the bar lays its cells out
+# vertically, sixteen four-pixel strips in a 64px bar.
+layout.SetDirection(@bar, 0)
+
+layout.Solve()
+layout.FollowResize(@main)
+
+# NOTHING RE-RENDERS HERE, and that is deliberate. The solve above resized the
+# pane, but a compositor applies an extent on its next recompose rather than
+# when it is asked (CompositeDrawable2D::ResizeTo) -- so a Render on this line
+# would draw the view, and the ruler's band with it, for the size the pane is
+# about to stop having. The surface watches its own pane for exactly this and
+# redraws a frame later (PaintSurface::AnimatingConcrete).
 
 # ── the pumps ────────────────────────────────────────────────────────────────
 #

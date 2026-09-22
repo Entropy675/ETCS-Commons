@@ -91,6 +91,52 @@ enum class PaintBlendMode : uint8_t
     Erase = 3,
 };
 
+/*
+ * ── the nib ──────────────────────────────────────────────────────────────
+ *
+ * WHAT IS LOADED, not what the gesture is. PaintToolKind is the shape of the
+ * whole interaction and says so; this is the other half that comment names --
+ * the thing a kind is holding. Every marking kind holds one, and they all
+ * reduce to DrawBrush, so a rectangle outlined with the stylus comes out
+ * calligraphic without the shape code hearing about it.
+ *
+ * Two independent facts on one stepped list, because that is the choice a hand
+ * makes: Round and Stylus differ in the stamp's SHAPE, Erase in what the stamp
+ * WRITES (blend, below). One arrow instead of two, at the cost of stepping past
+ * a shape to reach the eraser.
+ */
+enum class PaintTipMode : uint8_t
+{
+    Round = 0,   // the disc paint_stamp_of has always made
+    Stylus = 1,  // a chisel: a straight nib held at an angle
+    Erase = 2,   // the disc again, taking ink off rather than laying it
+};
+
+inline const char* paint_tip_mode_name(PaintTipMode t)
+{
+    switch (t)
+    {
+        case PaintTipMode::Round:  return "round";
+        case PaintTipMode::Stylus: return "stylus";
+        case PaintTipMode::Erase:  return "erase";
+    }
+    return "round";
+}
+
+inline PaintTipMode paint_tip_mode_from(const std::string& s)
+{
+    if (s == "stylus") return PaintTipMode::Stylus;
+    if (s == "erase" || s == "eraser") return PaintTipMode::Erase;
+    return PaintTipMode::Round;
+}
+
+// The angle a chisel is held at, and how thick the nib is across as a fraction
+// of its length. A quarter is what makes a stroke ALONG the nib a hairline and
+// one ACROSS it full width, which is the whole visible difference from a disc.
+static constexpr float PAINT_STYLUS_COS   = 0.70710678f;   // 45 degrees
+static constexpr float PAINT_STYLUS_SIN   = 0.70710678f;
+static constexpr float PAINT_STYLUS_THICK = 0.25f;
+
 struct PaintStrokePoint
 {
     int32_t x = 0;
@@ -110,6 +156,11 @@ struct PaintBrushState
     float hardness = 0.75f;
     PaintColor color{1.0f, 0.0f, 0.0f, 1.0f};
     PaintBlendMode blend = PaintBlendMode::Normal;
+    // The nib. Two fields rather than one because they are two questions --
+    // what shape the stamp is, and what it writes -- and only the toolbar's
+    // arrow ties them together (PaintTipMode). SetBlendMode still sets blend on
+    // its own, for a script that wants Erase under a stylus.
+    PaintTipMode tip = PaintTipMode::Round;
     bool enabled = true;
 };
 
@@ -241,11 +292,21 @@ struct PaintStamp
     int   lo = 0, hi = 0;      // offsets covered on each axis, inclusive
     float c  = 0.0f;           // where the centre sits relative to offset 0
     float r2 = 0.25f;
+    // The nib's shape, and ONE predicate still answers for both -- which is the
+    // same reason `row` walks `has` instead of solving the disc: two shapes
+    // that round apart are a preview that disagrees with its commit.
+    PaintTipMode tip = PaintTipMode::Round;
+    float half = 0.5f;         // stylus: half the nib's length
+    float thick = 0.5f;        // stylus: half its width across
 
     bool has(int dx, int dy) const
     {
         const float fx = static_cast<float>(dx) - c, fy = static_cast<float>(dy) - c;
-        return fx * fx + fy * fy <= r2;
+        if (tip != PaintTipMode::Stylus) return fx * fx + fy * fy <= r2;
+        // Rotated into the nib's own axes: u runs along it, v across.
+        const float u =  fx * PAINT_STYLUS_COS + fy * PAINT_STYLUS_SIN;
+        const float v = -fx * PAINT_STYLUS_SIN + fy * PAINT_STYLUS_COS;
+        return std::fabs(u) <= half && std::fabs(v) <= thick;
     }
 
     // The inclusive x-span of row dy, false when the row is empty. Walked
@@ -261,7 +322,8 @@ struct PaintStamp
     }
 };
 
-static inline PaintStamp paint_stamp_of(float size_px)
+static inline PaintStamp paint_stamp_of(float size_px,
+                                        PaintTipMode tip = PaintTipMode::Round)
 {
     const int w = std::max(1, static_cast<int>(std::lround(size_px)));
     PaintStamp s;
@@ -269,6 +331,11 @@ static inline PaintStamp paint_stamp_of(float size_px)
     else       { s.lo = -w / 2;       s.hi = w / 2 - 1;   s.c = -0.5f; }
     const float rad = static_cast<float>(w) * 0.5f;
     s.r2 = rad * rad;
+    s.tip = tip;
+    // The chisel is inscribed in the SAME lo..hi square, so `size` still means
+    // the extent of the mark and the erase nib stays the disc it replaces.
+    s.half  = rad;
+    s.thick = std::max(0.5f, rad * PAINT_STYLUS_THICK);
     return s;
 }
 
@@ -287,15 +354,27 @@ static inline PaintStamp paint_stamp_of(float size_px)
 static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
                                        const PaintBrushState& brush)
 {
-    const PaintStamp st = paint_stamp_of(brush.size_px);
+    const PaintStamp st = paint_stamp_of(brush.size_px, brush.tip);
     int x0 = 0, x1 = 0;
+
+    /*
+     * AN ERASER HAS NO COLOUR TO PREVIEW WITH. Drawing the dab in the tool's
+     * ink says the mark will be that colour, which is the one thing it will
+     * not be. A neutral translucent nib still says the two things the dab is
+     * for -- where it is and what shape it is -- and claims nothing else.
+     */
+    const bool lifting = (brush.blend == PaintBlendMode::Erase);
+    const float r = lifting ? 0.85f : brush.color.r;
+    const float g = lifting ? 0.85f : brush.color.g;
+    const float b = lifting ? 0.88f : brush.color.b;
+    const float a = lifting ? 0.35f : brush.color.a;
 
     if (Pixels_* px = ETCS::resolve_in_family<Pixels_>("Pixels", target))
     {
         for (int dy = st.lo; dy <= st.hi; ++dy)
             if (st.row(dy, x0, x1))
                 px->FillRect(x + x0, y + dy, static_cast<uint32_t>(x1 - x0 + 1), 1u,
-                             brush.color.r, brush.color.g, brush.color.b, brush.color.a);
+                             r, g, b, a);
         paint_mark_pixel_path(target);
         return;
     }
@@ -305,7 +384,7 @@ static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
     for (int dy = st.lo; dy <= st.hi; ++dy)
         if (st.row(dy, x0, x1))
             surface->DrawRect(x + x0, y + dy, static_cast<uint32_t>(x1 - x0 + 1), 1u,
-                              brush.color.r, brush.color.g, brush.color.b, brush.color.a);
+                              r, g, b, a);
     paint_mark_pixel_path(target);
 }
 
@@ -887,6 +966,20 @@ public:
     void CycleShape() { m_shape = paint_shape_mode_next(m_shape); }
     PaintShapeMode shape() const { return m_shape; }
 
+    /*
+     * WHICH NIB IS LOADED, on the brush rather than beside it, because the two
+     * things a tip decides are already brush state (PaintTipMode). Setting the
+     * tip sets both, so the pair cannot drift; SetBlendMode still reaches blend
+     * alone, for the stylus-that-erases a toolbar arrow has no room to offer.
+     */
+    void SetTip(const std::string& name) { applyTip(paint_tip_mode_from(name)); }
+    void CycleTip()
+    {
+        applyTip(static_cast<PaintTipMode>(
+            (static_cast<uint8_t>(m_brush.tip) + 1) % 3));
+    }
+    PaintTipMode tip() const { return m_brush.tip; }
+
     void SetRadius(float radius)
     {
         m_brush.size_px = std::max(1.0f, radius);
@@ -999,6 +1092,16 @@ public:
     int32_t anchorY() const { return m_points.empty() ? 0 : m_points.front().y; }
 
 private:
+    // The tip's two halves, set together (SetTip). Erase is the disc with the
+    // blend on; every other tip leaves the blend Normal, which is what makes
+    // stepping back out of the eraser put the ink back.
+    void applyTip(PaintTipMode t)
+    {
+        m_brush.tip = t;
+        m_brush.blend = (t == PaintTipMode::Erase) ? PaintBlendMode::Erase
+                                                   : PaintBlendMode::Normal;
+    }
+
     PaintBrushState m_brush;
     PaintToolKind m_kind = PaintToolKind::Brush;
     std::string m_text = "Text";
@@ -1103,7 +1206,63 @@ struct PaintSelection
         x0 = moved.x0; y0 = moved.y0; x1 = moved.x1; y1 = moved.y1;
         count = moved.count;
     }
+
+    /*
+     * ── combining with what was already selected ─────────────────────────
+     *
+     * Set is the incremental path and keeps the box and the count as it goes;
+     * these two rewrite the mask wholesale, so they end by rederiving both.
+     * A gesture is one combine, not one per pixel -- a subtract cannot be
+     * expressed pixel-at-a-time through Set at all, since the box can only
+     * shrink and Set can only grow it.
+     *
+     * `other` is the gesture's own region, in the same extent. A mismatched
+     * one is refused rather than indexed, because the only way to have one is
+     * a resize between the press and the release.
+     */
+    void Union(const PaintSelection& other)
+    {
+        if (other.w != w || other.h != h) return;
+        for (size_t i = 0; i < mask.size(); ++i) if (other.mask[i]) mask[i] = 1;
+        Recount();
+    }
+
+    void Subtract(const PaintSelection& other)
+    {
+        if (other.w != w || other.h != h) return;
+        for (size_t i = 0; i < mask.size(); ++i) if (other.mask[i]) mask[i] = 0;
+        Recount();
+    }
+
+    // The box and the count, from the mask. One walk of the page, per gesture
+    // rather than per motion sample -- see the combine callers.
+    void Recount()
+    {
+        count = 0; x0 = y0 = 0; x1 = y1 = -1;
+        for (uint32_t y = 0; y < h; ++y)
+            for (uint32_t x = 0; x < w; ++x)
+            {
+                if (!mask[static_cast<size_t>(y) * w + x]) continue;
+                ++count;
+                if (x1 < x0) { x0 = x1 = static_cast<int32_t>(x); y0 = y1 = static_cast<int32_t>(y); continue; }
+                x0 = std::min(x0, static_cast<int32_t>(x)); x1 = std::max(x1, static_cast<int32_t>(x));
+                y0 = std::min(y0, static_cast<int32_t>(y)); y1 = std::max(y1, static_cast<int32_t>(y));
+            }
+    }
 };
+
+/*
+ * WHAT A SELECTION GESTURE DOES TO THE ONE ALREADY THERE.
+ *
+ * Replace is a bare drag and the only behaviour there used to be. The other two
+ * are the modifiers, read from the key stream at the press (PaintModifierKeys,
+ * PaintInput::begin_selection) -- ctrl adds the new region, shift takes it away.
+ * Held on the document for the length of the gesture rather than passed to each
+ * Select*, because a drag re-runs the Select* on every motion sample and the
+ * answer has to be base-combined-with-gesture each time, not last-answer-
+ * combined-with-gesture.
+ */
+enum class PaintSelectOp : uint8_t { Replace = 0, Add = 1, Subtract = 2 };
 
 /*
  * A LAYER IS A Layer_, and that is the whole of layer prioritisation.
@@ -1286,6 +1445,30 @@ public:
     // there would leave the old contents showing through at any alpha below 1.
     void Clear(float r, float g, float b, float a) { this->ClearTo(r, g, b, a); }
 
+    /*
+     * ── where a mark may land ────────────────────────────────────────────
+     *
+     * THE SELECTION IS A CLIP, which is the half of it that was missing. A
+     * region used to be a thing you could carry and nothing else, so leaving
+     * the select tool dropped it -- "a region left standing under the brush is
+     * a trap: it looks like it should mask the stroke and it does not"
+     * (PaintPalette::Apply, as it was). It does now, so the trap is gone and
+     * the selection stays.
+     *
+     * Bound rather than owned: the selection is the DOCUMENT's (one per
+     * picture, however many surfaces show it), and a layer is handed a pointer
+     * to it on the way out of PaintDocument::activeLayer. Null, or a selection
+     * with nothing in it, is "anywhere" -- so an unselected document costs one
+     * null test per pixel and clearing the selection is what gives the whole
+     * page back.
+     */
+    void BindClip(const PaintSelection* clip) { m_clip = clip; }
+
+    bool paintable(int32_t x, int32_t y) const
+    {
+        return !m_clip || m_clip->empty() || m_clip->at(x, y);
+    }
+
     void DrawPixel(int32_t x, int32_t y, float r, float g, float b, float a)
     {
         uint8_t* px = this->PixelData();
@@ -1294,6 +1477,9 @@ public:
             static_cast<uint32_t>(x) >= this->PixelWidth() ||
             static_cast<uint32_t>(y) >= this->PixelHeight())
             return;
+        // ONE PLACE FOR THE BRUSH, THE LINE AND EVERY OUTLINE, for the reason
+        // DrawBrush gives: they all reduce to this.
+        if (!paintable(x, y)) return;
 
         size_t i = (static_cast<size_t>(y) * this->PixelWidth() + static_cast<size_t>(x)) * 4;
         // ROUNDED, the same way the ontology converts a float channel
@@ -1308,16 +1494,29 @@ public:
         px[i + 3] = paint_to_byte(a);
     }
 
-    // The mark, exactly as wide as the brush says (PaintStamp).
+    /*
+     * The mark, exactly as wide as the brush says (PaintStamp).
+     *
+     * AND THE ONE PLACE A BLEND MEANS ANYTHING, which is why it is honoured
+     * here and nowhere else: every outline in this type strokes this primitive
+     * along a path (see the shapes' own comment), so an eraser that works for
+     * the freehand stroke works for the line, the rect, the ellipse and the
+     * star without any of them being told. DrawPixel REPLACES rather than
+     * blends, so erasing is writing the transparent pixel -- no read, no
+     * compositing step, nothing the mark path did not already do.
+     */
     void DrawBrush(int32_t cx, int32_t cy, const PaintBrushState& brush)
     {
-        const PaintStamp st = paint_stamp_of(brush.size_px);
+        const PaintStamp st = paint_stamp_of(brush.size_px, brush.tip);
+        const bool lift = (brush.blend == PaintBlendMode::Erase);
         for (int dy = st.lo; dy <= st.hi; ++dy)
             for (int dx = st.lo; dx <= st.hi; ++dx)
             {
                 if (!st.has(dx, dy)) continue;
-                DrawPixel(cx + dx, cy + dy,
-                          brush.color.r, brush.color.g, brush.color.b, brush.color.a);
+                if (lift) DrawPixel(cx + dx, cy + dy, 0.0f, 0.0f, 0.0f, 0.0f);
+                else      DrawPixel(cx + dx, cy + dy,
+                                    brush.color.r, brush.color.g,
+                                    brush.color.b, brush.color.a);
             }
     }
 
@@ -1465,7 +1664,13 @@ public:
         if (same) return 0;
 
         const int tol = static_cast<int>(tolerance);
-        auto matches = [&](size_t i) {
+        // BY POINT, NOT BY INDEX, so the clip can be asked (paintable). The
+        // clip is part of MATCHING and not of writing: a run that stopped at
+        // the selection's edge but kept seeding past it would walk the whole
+        // page to fill a corner of it.
+        auto matches = [&](int32_t x, int32_t y) {
+            if (!paintable(x, y)) return false;
+            const size_t i = (static_cast<size_t>(y) * w + x) * 4;
             for (int k = 0; k < 4; ++k)
                 if (std::abs(static_cast<int>(px[i + k]) - static_cast<int>(seed[k])) > tol)
                     return false;
@@ -1479,13 +1684,12 @@ public:
         {
             auto [x, y] = stack.back();
             stack.pop_back();
-            size_t i = (static_cast<size_t>(y) * w + x) * 4;
-            if (!matches(i)) continue;
+            if (!matches(x, y)) continue;
 
             int32_t left = x;
-            while (left > 0 && matches((static_cast<size_t>(y) * w + (left - 1)) * 4)) --left;
+            while (left > 0 && matches(left - 1, y)) --left;
             int32_t right = x;
-            while (right + 1 < w && matches((static_cast<size_t>(y) * w + (right + 1)) * 4)) ++right;
+            while (right + 1 < w && matches(right + 1, y)) ++right;
 
             for (int32_t rx2 = left; rx2 <= right; ++rx2)
             {
@@ -1501,7 +1705,7 @@ public:
                 bool run = false;
                 for (int32_t rx2 = left; rx2 <= right; ++rx2)
                 {
-                    const bool m = matches((static_cast<size_t>(ny) * w + rx2) * 4);
+                    const bool m = matches(rx2, ny);
                     if (m && !run) { stack.emplace_back(rx2, ny); run = true; }
                     else if (!m)   { run = false; }
                 }
@@ -1534,7 +1738,7 @@ public:
         const int32_t h = static_cast<int32_t>(this->PixelHeight());
         // The same nib every other mark uses, so a smudge covers exactly what a
         // stroke of the same size would have (PaintStamp).
-        const PaintStamp st = paint_stamp_of(brush.size_px);
+        const PaintStamp st = paint_stamp_of(brush.size_px, brush.tip);
         const float k = std::clamp(strength, 0.0f, 1.0f);
         if (k <= 0.0f) return;
 
@@ -1555,6 +1759,11 @@ public:
                 if (!st.has(dx, dy)) continue;
                 const int dxp = tx + dx, dyp = ty + dy;
                 if (dxp < 0 || dyp < 0 || dxp >= w || dyp >= h) continue;
+                // The clip is on the WRITE only: a smudge may read from outside
+                // the region and carry those pixels in, the way a brush picks
+                // up whatever colour is loaded. What it may not do is put any
+                // down outside it.
+                if (!paintable(dxp, dyp)) continue;
                 const uint8_t* sp = &src[((static_cast<size_t>(dy - st.lo) * side) + (dx - st.lo)) * 4];
                 uint8_t* dp = px + (static_cast<size_t>(dyp) * w + dxp) * 4;
                 for (int c2 = 0; c2 < 4; ++c2)
@@ -1883,6 +2092,10 @@ private:
     // View state, not document state -- see SetDim. 1.0 is "not dimmed", which
     // is what every layer is until a row is hovered.
     float m_dim = 1.0f;
+    // NOT OWNED. The document's selection, bound on the way out of
+    // activeLayer() -- see BindClip. Null until a document hands one over,
+    // which is also what a layer spawned by a script has until it is drawn on.
+    const PaintSelection* m_clip = nullptr;
 };
 
 
@@ -2608,6 +2821,7 @@ public:
         for (int32_t y = ty; y <= by2; ++y)
             for (int32_t x = lx; x <= rx; ++x)
                 m_sel.Set(x, y);
+        combine_selection();
         return !m_sel.empty();
     }
 
@@ -2632,6 +2846,7 @@ public:
                 const double u = (x + 0.5 - cx) / rw, v = (y + 0.5 - cy) / rh;
                 if (u * u + v * v <= 1.0) m_sel.Set(x, y);
             }
+        combine_selection();
         return !m_sel.empty();
     }
 
@@ -2648,8 +2863,9 @@ public:
         }
         if (!fresh_selection()) return false;
         const size_t n = m_active_layer->FloodMask(x, y, tolerance, m_sel);
+        combine_selection();
         ETCS_LOG("PaintDocument", "wand at " << x << "," << y << " -> " << n << " px");
-        return n != 0;
+        return !m_sel.empty();
     }
 
     /*
@@ -2690,6 +2906,7 @@ public:
                 for (int32_t x = x0; x <= x1; ++x) m_sel.Set(x, y);
             }
         }
+        combine_selection();
         return !m_sel.empty();
     }
 
@@ -2770,6 +2987,33 @@ public:
 
     const PaintSelection& selection() const { return m_sel; }
     bool hasSelection() const { return !m_sel.empty(); }
+
+    /*
+ * ── one gesture, three meanings ──────────────────────────────────────────
+ *
+ * The press says which (PaintInput::begin_selection reads the modifiers), and
+ * it holds for the whole drag -- letting go of ctrl halfway through a drag
+ * would otherwise turn an add into a replace and lose what was there.
+ *
+ * The base is the selection AT THE PRESS, kept whole because every motion
+ * sample recombines against it. Sized to the page here rather than trusted,
+ * since a document with nothing selected has an empty mask and the combine
+ * indexes both.
+ */
+    void BeginSelectionGesture(PaintSelectOp op)
+    {
+        m_sel_op = op;
+        if (op == PaintSelectOp::Replace) { m_sel_base.clear(); return; }
+        const size_t need = static_cast<size_t>(m_width) * m_height;
+        m_sel_base = m_sel.mask;
+        if (m_sel_base.size() != need) m_sel_base.assign(need, 0);
+    }
+
+    void EndSelectionGesture()
+    {
+        m_sel_op = PaintSelectOp::Replace;
+        m_sel_base.clear();
+    }
 
     /*
  * ── the clipboard ────────────────────────────────────────────────────────
@@ -3520,6 +3764,30 @@ public:
     }
 
     /*
+ * WHAT THE GESTURE JUST DREW, COMBINED WITH WHAT WAS THERE.
+ *
+ * Called at the end of every Select*: they each build their own region into a
+ * mask that fresh_selection wiped, so at this point m_sel holds the GESTURE
+ * and m_sel_base holds the selection the gesture started from. Replace is
+ * leaving it alone, which is why a bare drag pays nothing for this.
+ *
+ * The base is snapshotted at the press rather than accumulated, because a drag
+ * re-runs the Select* on every motion sample -- accumulating would mean the
+ * region grew along the path of the pointer instead of being the rectangle it
+ * currently describes.
+ */
+    void combine_selection()
+    {
+        if (m_sel_op == PaintSelectOp::Replace) return;
+        PaintSelection gesture;
+        gesture.mask = m_sel.mask;                // the gesture's own pixels
+        gesture.w = m_sel.w; gesture.h = m_sel.h;
+        m_sel.mask = m_sel_base;
+        if (m_sel_op == PaintSelectOp::Add) m_sel.Union(gesture);
+        else                                m_sel.Subtract(gesture);
+    }
+
+    /*
  * ── drawing the lifted pixels ────────────────────────────────────────────
  *
  * Through the same projection the layers get, at the layer's own strength, so
@@ -3617,9 +3885,12 @@ public:
     }
 
     // Apply one brush sample to the active layer (document-side commit).
+    // THROUGH activeLayer(), not the member: that is where the selection is
+    // bound as the clip, and this is the freehand path -- the one every stroke
+    // takes and the one that must not be the exception.
     void ApplyBrush(int32_t x, int32_t y, const PaintBrushState& brush)
     {
-        if (m_active_layer) m_active_layer->DrawBrush(x, y, brush);
+        if (PaintLayer* l = activeLayer()) l->DrawBrush(x, y, brush);
     }
 
     uint32_t width() const { return m_width; }
@@ -3634,7 +3905,27 @@ public:
         OrderedLayers(out);
         return out;
     }
-    PaintLayer* activeLayer() const { return m_active_layer; }
+    /*
+     * THE LAYER, CLIPPED BY THIS DOCUMENT'S SELECTION.
+     *
+     * An accessor that writes, deliberately, and this is the argument for it:
+     * the alternative is binding the clip at every site that marks -- five in
+     * PaintInput, more in the shape commits -- and one of them being forgotten
+     * is a tool that ignores the selection while its neighbours honour it,
+     * which is worse than any of them getting it wrong together. Every mark
+     * reaches a layer through here, so here is where the invariant holds:
+     * a layer you got from a document is clipped by that document.
+     *
+     * Layers are spawned by scripts as often as by this type
+     * (boot_paint_panels.etcs), so binding at creation would miss the ones
+     * that matter most. The pointer is a member of this object and outlives
+     * every layer under it.
+     */
+    PaintLayer* activeLayer() const
+    {
+        if (m_active_layer) m_active_layer->BindClip(&m_sel);
+        return m_active_layer;
+    }
 
 private:
     uint32_t m_width = 0;
@@ -3652,6 +3943,10 @@ private:
     // The one selection, and the pixels it is carrying if any. See PaintSelection.
     uint64_t m_revision = 0;     // climbs on every change -- see Touch
     PaintSelection m_sel;
+    // The gesture in progress, and the selection it started from. Both are
+    // per-drag and both are cleared by EndSelectionGesture.
+    PaintSelectOp m_sel_op = PaintSelectOp::Replace;
+    std::vector<uint8_t> m_sel_base;
     PaintSelection m_clip;     // the clipboard: a selection's shape and bytes, kept
 
     struct HistoryEntry { ETCS::RID layer = 0; std::vector<uint8_t> bytes; };
@@ -3756,10 +4051,41 @@ inline void PaintLayer::touch_document()
 }
 
 
-class PaintSurface : public DeletableBase<PaintSurface>
+class PaintSurface : public DeletableBase<PaintSurface>,
+                    public AnimatedBase<PaintSurface>
 {
 public:
     WIRE_TYPE_IDENTITY(PaintSurface);
+
+    /*
+ * ── the view follows the pane ────────────────────────────────────────────
+ *
+ * A compositor's ResizeTo is DEFERRED: it stages the extent and applies it on
+ * its next recompose (CompositeDrawable2D::ResizeTo). So the pane is NOT the
+ * new size at the moment anything asked it to be, and every caller that
+ * resized it and then re-rendered -- the layout's solve, the boot script after
+ * it, the page after a window resize -- drew the view for the extent the pane
+ * was about to stop having. The picture itself survives that, because it is
+ * re-projected from the document on the next render anyway; the ruler does
+ * not. Its band is chrome on a RETAINED raster, so a band drawn against the
+ * old extent simply stays where it was: a strip of wood lying across the
+ * bottom of the page at the height the pane used to end.
+ *
+ * Waiting a frame is not a thing a script can say, and guessing an interval
+ * from the page is not a thing it should have to. So the surface asks instead.
+ * AnimatingConcrete is "the pane is not the size I last drew for"; one step later it
+ * is, and the answer goes back to false. On a settled view that is one size
+ * read per frame, which is the whole bargain the family offers
+ * (ontology/Animated.h).
+ */
+    bool AnimatingConcrete() override
+    {
+        const WindowSize s = targetSize();
+        return s.width != 0 && s.height != 0
+            && (s.width != m_drawn_w || s.height != m_drawn_h);
+    }
+
+    void AdvanceConcrete(double) override { Render(); }
 
     PaintSurface() = default;
     bool DeleteConcrete() override { return true; }
@@ -3958,6 +4284,11 @@ public:
         // does not cover the surface, so without this the area outside the
         // document keeps whatever the last frame left there and panning smears.
         if (view) view->Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        // WHAT THIS FRAME IS FOR, recorded before it is drawn -- see AnimatingConcrete.
+        {
+            const WindowSize ts = targetSize();
+            m_drawn_w = ts.width; m_drawn_h = ts.height;
+        }
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
         // The pane's own edge, marked out. After the document because it is chrome
         // rather than part of the picture -- and, with a frame bound, not on the
@@ -4211,6 +4542,34 @@ private:
         const int32_t br = outside ? std::clamp(dw - (ox + pw), 0, band) : 0;
         const int32_t bb = outside ? std::clamp(dh - (oy + ph), 0, band) : 0;
 
+        /*
+         * AND THE WHOLE FRAME IS WIPED WHEN THE GEOMETRY MOVES, only then.
+         *
+         * The per-side clears below cover the band as it is NOW, which was
+         * enough while the pane only ever changed EXTENT under a fixed margin:
+         * the old marks were inside the new band, so drawing the new one
+         * covered them. Once the pane follows the window (the layout, in
+         * boot_paint_panels.etcs) it can also GROW, and then the previous
+         * band lies inside the new PANE area -- the one region this function
+         * must never paint. Nothing clears it and it is chrome on a retained
+         * raster stacked over the picture, so it stays: a strip of wood lying
+         * across the bottom of the page at the height the pane used to end.
+         *
+         * ClearTo and not FillRect, because FillRect is source-over and
+         * refuses alpha 0 (Pixels_), and transparent is exactly what the
+         * pane's own area has to be on this raster.
+         */
+        if (outside)
+        {
+            const int32_t geo[6] = { ox, oy, pw, ph, dw, dh };
+            if (::std::memcmp(geo, m_ruler_geo, sizeof(geo)) != 0)
+            {
+                if (Pixels_* rp = ETCS::resolve_in_family<Pixels_>("Pixels", dst_rid))
+                    rp->ClearTo(0.0f, 0.0f, 0.0f, 0.0f);
+                ::std::memcpy(m_ruler_geo, geo, sizeof(geo));
+            }
+        }
+
         // THE BAND IS THE RULER'S TO CLEAR. It is chrome on a raster somebody
         // else retains, so without this a resize leaves the previous extent's
         // marks sitting beside the new ones.
@@ -4424,6 +4783,18 @@ private:
     ETCS::RID m_glyphs     = 0;
     // The surface the ruler marks, when the pane is inset in a larger one.
     ETCS::RID m_ruler_frame = 0;
+    // The pane-on-frame geometry the band was last drawn for: ox, oy, pw, ph,
+    // dw, dh. -1 so the first draw always wipes. See draw_edge_ruler.
+    int32_t m_ruler_geo[6] = { -1, -1, -1, -1, -1, -1 };
+    // The pane extent the last frame was drawn for -- see AnimatingConcrete.
+    uint32_t m_drawn_w = 0, m_drawn_h = 0;
+
+    WindowSize targetSize()
+    {
+        if (Resizable_* v = ETCS::resolve_in_family<Resizable_>("Resizable", m_target))
+            return v->GetSize();
+        return WindowSize{ 0, 0 };
+    }
     // THE PAGE'S OWN HEADER COLOUR (#1b1c14, the --panel of index.html), so the
     // margin reads as part of the page's chrome rather than a third surface
     // between it and the paper. Near-black, so the marks are a warm off-white;
@@ -5329,20 +5700,18 @@ public:
         {
             m_tool->SetKind(paint_tool_kind_name(e.tool));
             ETCS_LOG("PaintPalette", "tool -> " << paint_tool_kind_name(e.tool));
+            refreshResting();
             /*
-             * LEAVING THE SELECT TOOL DROPS THE SELECTION. A region left standing
-             * under the brush is a trap: it looks like it should mask the stroke
-             * and it does not, and the next select-tool press inside it would
-             * carry it. A carry in flight lands where it hovers (ClearSelection).
-             * Switching TO select keeps whatever is there.
+             * THE SELECTION SURVIVES THE TOOL, which is a reversal and the
+             * reason for it is the clip. Leaving select used to DROP the
+             * region, because "a region left standing under the brush is a
+             * trap: it looks like it should mask the stroke and it does not."
+             * It does now (PaintLayer::BindClip), so the sentence that argued
+             * for dropping it argues for keeping it: a selection is where you
+             * may draw, which is a fact about the picture and not about which
+             * tool is in hand. The way out of one is a bare click with the
+             * select tool, as it always was (end_selection).
              */
-            if (e.tool != PaintToolKind::Select && m_surface && m_surface->document()
-                && m_surface->document()->hasSelection())
-            {
-                m_surface->document()->ClearSelection();
-                m_surface->Render();
-                ETCS_LOG("PaintPalette", "selection cleared -- tool changed");
-            }
         }
         else
         {
@@ -5392,6 +5761,10 @@ public:
  * page and never came back ends it after the capacity -- the "much higher
  * threshold" a mode wants, against the four a stroke gets.
  */
+    // How far the slice in hand is lifted towards white. Half the hover's 0.60,
+    // for the reason restingColor gives.
+    static constexpr float SELECTED_LIFT = 0.30f;
+
     static constexpr double REPEAT_DELAY_MS = 360.0;  // before the first repeat
     static constexpr double REPEAT_EVERY_MS = 50.0;   // then twenty a second
     // One HeldCharge access per nominal frame, so a capacity set in "frames"
@@ -5500,7 +5873,7 @@ public:
      * would erase a state it did not know was there.
      */
         for (const auto& [rid, e] : m_entries)
-            if (owns_look(e)) set_node_fill(rid, e.idle[0], e.idle[1], e.idle[2], e.idle[3]);
+            if (owns_look(e)) { float c[4]; restingColor(e, c); set_node_fill(rid, c[0], c[1], c[2], c[3]); }
         m_hovering = target;
         // The caption of whatever was hovered goes away with the hover; the new
         // target's, if it has one, appears. See AddHoverLabel.
@@ -5514,13 +5887,18 @@ public:
         {
             if (!owns_look(e)) continue;
             if (rid != node && !same_hover_group(ref, e)) continue;
+            // OVER THE RESTING COLOUR, not over idle: the slice you are holding
+            // is already lit, and hovering it has to read as brighter still
+            // rather than as the same lift arriving twice.
+            float c[4]; restingColor(e, c);
             set_node_fill(rid,
-                          e.idle[0] + (1.0f - e.idle[0]) * t,
-                          e.idle[1] + (1.0f - e.idle[1]) * t,
-                          e.idle[2] + (1.0f - e.idle[2]) * t,
+                          c[0] + (1.0f - c[0]) * t,
+                          c[1] + (1.0f - c[1]) * t,
+                          c[2] + (1.0f - c[2]) * t,
                           1.0f);
         }
     }
+
 
     void SetRadiusReadout(ETCS::RID label) { m_radius_readout = label; }
     void SetAlphaReadout(ETCS::RID label) { m_alpha_readout = label; }
@@ -5549,6 +5927,14 @@ public:
     {
         m_shape_readout = label;
         if (m_tool) set_node_text(label, paint_shape_mode_name(m_tool->shape()));
+    }
+    // The brush slice's, which says which NIB is loaded rather than which
+    // outline (PaintTipMode). Seeded on bind like the shape's, so the caption
+    // is right before the arrow has ever been pressed.
+    void SetTipReadout(ETCS::RID label)
+    {
+        m_tip_readout = label;
+        if (m_tool) set_node_text(label, paint_tip_mode_name(m_tool->tip()));
     }
 
 void Report() const
@@ -5585,10 +5971,22 @@ void Report() const
         if (!node_e) return;
         ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
         if (!e) return;
+        /*
+         * A COMPOSITOR'S BACKGROUND IS ITS FILL, and that is the whole of this
+         * branch. A toolbar slice used to be a polygon with its corners typed
+         * in; it is a compositor now so the layout can size it (the row in
+         * paint_toolbar.etcs), and a compositor answers SetBackground where a
+         * polygon answers SetFill. Same question, two spellings, and this is
+         * the one place that has to know both -- widening it here is what kept
+         * hover and the held-tool highlight working across the change instead
+         * of failing silently on a verb the node does not have.
+         */
         const std::string tag = e->getSourceTag().toString();
-        if (tag.find("PolygonDrawable2D") == std::string::npos) return;
+        const bool poly = tag.find("PolygonDrawable2D")   != std::string::npos;
+        const bool comp = tag.find("CompositeDrawable2D") != std::string::npos;
+        if (!poly && !comp) return;
         ETCS::Buffer action;
-        action.write((tag + ".SetFill").c_str());
+        action.write((tag + (poly ? ".SetFill" : ".SetBackground")).c_str());
         ETCS::Buffer payload;
         payload.write((std::to_string(r) + " " + std::to_string(g) + " "
                      + std::to_string(b) + " " + std::to_string(a)).c_str());
@@ -5678,6 +6076,48 @@ private:
     static Entry entry_of(Kind k) { Entry e; e.kind = k; return e; }
     static Entry entry_of(Kind k, float radius) { Entry e; e.kind = k; e.radius = radius; return e; }
 
+    /*
+ * WHAT A NODE LOOKS LIKE WITH NOTHING HOVERING IT -- its idle colour, except
+ * for the slice whose tool is the one in hand, which stays lit.
+ *
+ * A bar that lights only what is under the pointer answers "what am I about to
+ * press" and never "what am I holding", and between strokes the second is the
+ * question you actually have. The lift is half the hover's: findable at a
+ * glance, and still leaving the hover somewhere to go.
+ */
+    void restingColor(const Entry& e, float out[4]) const
+    {
+        const bool held = (e.kind == Kind::Tool && m_tool && e.tool == m_tool->kind());
+        const float t = held ? SELECTED_LIFT : 0.0f;
+        for (int i = 0; i < 3; ++i) out[i] = e.idle[i] + (1.0f - e.idle[i]) * t;
+        out[3] = e.idle[3];
+    }
+
+    /*
+ * Re-apply the resting colours, for the one thing Hover cannot notice: the tool
+ * changing without the pointer moving. A press is exactly that -- the slice
+ * under the pointer stays under it -- so the highlight would otherwise not
+ * appear until the pointer left and came back.
+ *
+ * The hovered group is left alone: it is already drawn brighter than resting,
+ * and rewriting it here would dim the thing the pointer is on.
+ */
+    void refreshResting()
+    {
+        for (const auto& [rid, e] : m_entries)
+        {
+            if (!owns_look(e)) continue;
+            if (m_hovering != 0)
+            {
+                auto h = m_entries.find(m_hovering);
+                if (h != m_entries.end() && (rid == m_hovering || same_hover_group(h->second, e)))
+                    continue;
+            }
+            float c[4]; restingColor(e, c);
+            set_node_fill(rid, c[0], c[1], c[2], c[3]);
+        }
+    }
+
     // Whether Hover may restyle this entry -- see the note in Hover.
     static bool owns_look(const Entry& e) { return e.kind != Kind::Call && e.kind != Kind::Popup; }
 
@@ -5729,7 +6169,9 @@ private:
     }
 
     /*
- * Step the select tool's mode, for the slice `slot` names.
+ * Step the stepped thing on the slice `slot` names -- the select tool's mode,
+ * the shape tool's outline, or the brush's NIB (PaintTipMode). Three slices
+ * with an arrow, one arrow that knows which by asking what it points at.
  *
  * TAKES THE TOOL UP AS WELL. A wheel pick ends with the picked colour in hand,
  * so the swatch's arrow effectively selects that swatch; an arrow that changed
@@ -5739,32 +6181,40 @@ private:
     void step_mode_for(ETCS::RID arrow, ETCS::RID slot)
     {
         auto sit = m_entries.find(slot);
-        const bool is_select = sit != m_entries.end() && sit->second.kind == Kind::Tool
-                               && sit->second.tool == PaintToolKind::Select;
-        const bool is_shape  = sit != m_entries.end() && sit->second.kind == Kind::Tool
-                               && sit->second.tool == PaintToolKind::Shape;
-        if (!is_select && !is_shape)
+        const bool named = sit != m_entries.end() && sit->second.kind == Kind::Tool;
+        const bool is_select = named && sit->second.tool == PaintToolKind::Select;
+        const bool is_shape  = named && sit->second.tool == PaintToolKind::Shape;
+        const bool is_brush  = named && sit->second.tool == PaintToolKind::Brush;
+        if (!is_select && !is_shape && !is_brush)
         {
             ETCS_LOG("PaintPalette", "mode arrow on RID:" << arrow << " names RID:" << slot
-                     << ", which is neither the select nor the shape slice.");
+                     << ", which is not the select, shape or brush slice.");
             return;
         }
         // Stepping the mode also takes the tool: an arrow pressed is a choice of
         // what to draw next, and asking for a second press to draw it is a
         // choice nobody meant to make.
-        const PaintToolKind want = is_select ? PaintToolKind::Select : PaintToolKind::Shape;
-        if (m_tool->kind() != want) m_tool->SetKind(paint_tool_kind_name(want));
+        const PaintToolKind want = is_select ? PaintToolKind::Select
+                                 : is_shape  ? PaintToolKind::Shape
+                                             : PaintToolKind::Brush;
+        if (m_tool->kind() != want) { m_tool->SetKind(paint_tool_kind_name(want)); refreshResting(); }
         if (is_select)
         {
             m_tool->CycleMode();
             set_node_text(m_mode_readout, paint_select_mode_label(m_tool->mode()));
             ETCS_LOG("PaintPalette", "select mode -> " << paint_select_mode_name(m_tool->mode()));
         }
-        else
+        else if (is_shape)
         {
             m_tool->CycleShape();
             set_node_text(m_shape_readout, paint_shape_mode_name(m_tool->shape()));
             ETCS_LOG("PaintPalette", "shape -> " << paint_shape_mode_name(m_tool->shape()));
+        }
+        else
+        {
+            m_tool->CycleTip();
+            set_node_text(m_tip_readout, paint_tip_mode_name(m_tool->tip()));
+            ETCS_LOG("PaintPalette", "tip -> " << paint_tip_mode_name(m_tool->tip()));
         }
     }
 
@@ -5878,6 +6328,7 @@ private:
     ETCS::RID m_alpha_readout = 0;
     ETCS::RID m_mode_readout = 0;
     ETCS::RID m_shape_readout = 0;
+    ETCS::RID m_tip_readout = 0;
     ETCS::RID m_wheel = 0;
     // The popup that is open, if one is, and the router it is open IN. See
     // AddPopup: one at a time, and open means routed.
@@ -8535,9 +8986,20 @@ public:
          *
          * A press OUTSIDE it falls through and begins a new region, which
          * replaces the old one at the first sample.
+         *
+         * UNLESS A MODIFIER IS HELD, and that exception is what makes add and
+         * subtract usable at all. ctrl and shift say "change this region"
+         * (PaintSelectOp), and the region being changed is the one you are
+         * standing on -- a subtract starts inside what it takes away from
+         * almost by definition. Without this the gesture is swallowed whole:
+         * the press picks the region up, the drag carries it, and the release
+         * drops it somewhere new, which is the one thing that was not asked
+         * for. It is also why a subtract appeared to do nothing rather than to
+         * do something wrong -- a carry logs no selection at all.
          */
             if (m_tool && m_cursor_seen && m_document
              && m_tool->kind() == PaintToolKind::Select
+             && !paint_modifiers().ctrl() && !paint_modifiers().shift()
              && m_document->SelectionContains(m_cursor_x, m_cursor_y)
              && lift_for_carry())
             {
@@ -8562,6 +9024,22 @@ public:
                 m_last_y = m_cursor_y;
 
                 const PaintToolKind k = m_tool->kind();
+                /*
+                 * WHICH KIND OF SELECTION GESTURE THIS IS, decided once, here.
+                 * ctrl adds the region to what is already selected, shift takes
+                 * it away, neither replaces. The modifiers come from the key
+                 * stream because the event carries none (PaintModifierKeys).
+                 * Read at the press and held for the whole drag: letting go of
+                 * ctrl halfway would otherwise turn an add into a replace and
+                 * lose the region it was adding to.
+                 */
+                if (k == PaintToolKind::Select && m_document)
+                {
+                    m_sel_op = paint_modifiers().ctrl()  ? PaintSelectOp::Add
+                             : paint_modifiers().shift() ? PaintSelectOp::Subtract
+                                                         : PaintSelectOp::Replace;
+                    m_document->BeginSelectionGesture(m_sel_op);
+                }
                 // A PLACED tool is finished here: one point is the whole
                 // gesture, so it commits on the press and the release that
                 // follows has nothing left to do.
@@ -8634,9 +9112,28 @@ public:
                     end_selection(m_tool->anchorX(), m_tool->anchorY(),
                                   m_cursor_x, m_cursor_y);
                 m_tool->EndStroke();
-                // The preview lives on the view surface, so whatever the drag
-                // drew there has to go whether or not anything was committed.
-                if (paint_kind_is_anchored(k)) repaint_view();
+                /*
+                 * THE PREVIEW LIVES ON THE VIEW, so whatever the drag drew
+                 * there has to go whether or not anything was committed -- and
+                 * that is now true of every kind, not only the anchored ones.
+                 *
+                 * It was anchored-only while the live dab and the mark were the
+                 * same pixels in the same colour: a freehand trail left behind
+                 * looked exactly like the stroke it was previewing, so nothing
+                 * ever noticed. Two changes made the dab a DIFFERENT picture
+                 * from the mark. A selection clips the mark and not the dab, so
+                 * the trail ran on past the region while the document stopped
+                 * at its edge. And the eraser's dab is a neutral nib over a mark
+                 * that is transparent (paint_stamp_surface), so an erased stroke
+                 * stayed on screen as a grey smear.
+                 *
+                 * Both are one bug -- the view disagreeing with the document --
+                 * and the release is the moment that has to end with them
+                 * agreeing. Once per stroke, against once per motion sample,
+                 * so this is not the path the live dab exists to protect.
+                 */
+                (void)k;
+                repaint_view();
             }
         }
     }
@@ -9131,8 +9628,12 @@ private:
         if (kind == PaintToolKind::Fill)
         {
             if (m_document) m_document->Remember();
-            const size_t n = layer->FloodFill(x, y, m_tool->brush().color,
-                                              m_tool->tolerance());
+            // The eraser is a blend, so it means the same thing on every tool
+            // that marks: fill lays the transparent pixel rather than the ink.
+            const PaintColor ink = (m_tool->brush().blend == PaintBlendMode::Erase)
+                                   ? PaintColor{ 0.0f, 0.0f, 0.0f, 0.0f }
+                                   : m_tool->brush().color;
+            const size_t n = layer->FloodFill(x, y, ink, m_tool->tolerance());
             ETCS_LOG("PaintInput", "fill at " << x << "," << y << " -> " << n << " px");
         }
         else if (kind == PaintToolKind::Eyedrop)
@@ -9269,7 +9770,7 @@ private:
     void end_selection(int32_t ax, int32_t ay, int32_t bx, int32_t by)
     {
         if (!m_document || !m_tool) return;
-        if (m_tool->mode() == PaintSelectMode::Wand) return;   // taken at the press
+        if (m_tool->mode() == PaintSelectMode::Wand) { m_document->EndSelectionGesture(); return; }
 
         int32_t lx = ax, rx = ax, ty = ay, by2 = ay;
         for (const PaintStrokePoint& p : m_tool->points())
@@ -9279,14 +9780,27 @@ private:
         }
         if (rx - lx < 2 && by2 - ty < 2)
         {
-            m_document->ClearSelection();
-            ETCS_LOG("PaintInput", "selection cleared");
+            // A BARE click is the deselect; a MODIFIED one is not. Holding
+            // ctrl or shift says "change this region", and the change a
+            // zero-area drag describes is nothing -- so the region stands.
+            // Without this, a misjudged press while adding would wipe
+            // everything the user had built up, which is the one outcome an
+            // additive mode must not have.
+            if (m_sel_op == PaintSelectOp::Replace)
+            {
+                m_document->ClearSelection();
+                ETCS_LOG("PaintInput", "selection cleared");
+            }
+            m_document->EndSelectionGesture();
             return;
         }
         shape_selection(ax, ay, bx, by);
         const PaintSelection& s = m_document->selection();
         ETCS_LOG("PaintInput", "selected " << s.count << " px ("
-                 << paint_select_mode_name(m_tool->mode()) << ")");
+                 << paint_select_mode_name(m_tool->mode())
+                 << (m_sel_op == PaintSelectOp::Add ? ", added"
+                   : m_sel_op == PaintSelectOp::Subtract ? ", subtracted" : "") << ")");
+        m_document->EndSelectionGesture();
     }
 
 
@@ -9431,6 +9945,9 @@ private:
     // The selection being carried, and where inside it the pointer took hold
     // -- the text box's carry, for a region. See the press branch.
     bool     m_sel_carry  = false;
+    // What the selection drag in progress means -- read from the modifiers at
+    // the press and held until the release (see the press handler).
+    PaintSelectOp m_sel_op = PaintSelectOp::Replace;
     int32_t  m_sel_grab_x = 0;
     int32_t  m_sel_grab_y = 0;
     // Whatever leaf claiming Glyphs the script bound -- RenderProvider's
@@ -9814,6 +10331,31 @@ DEFINE_WORK_FUNC(PaintTool, SetMode)
 {
     (void)ctx;
     self.SetMode(data.restAsString());
+}
+
+// SetTip <round|stylus|erase> -- which nib is loaded, which is the stamp's
+// shape and what it writes at once (PaintTipMode).
+DEFINE_WORK_FUNC(PaintTool, SetTip)
+{
+    (void)ctx;
+    self.SetTip(data.restAsString());
+}
+
+// SetBlendMode <normal|multiply|screen|erase> -- the blend alone, for the
+// combination the tip's stepped list has no room for (a stylus that erases).
+// Only Normal and Erase are read today; see PaintLayer::DrawBrush.
+DEFINE_WORK_FUNC(PaintTool, SetBlendMode)
+{
+    (void)ctx;
+    self.SetBlendMode(data.restAsString());
+}
+
+// SetHardness <0..1>. Held on the brush and not yet read by the stamp -- the
+// nib's shape is PaintTipMode's business (paint_stamp_of).
+DEFINE_WORK_FUNC_TYPED(PaintTool, SetHardness, (float, hardness))
+{
+    (void)ctx;
+    self.SetHardness(hardness);
 }
 
 // SetText <text...> -- what the glyph tool places. The rest of the line, so a
@@ -10605,6 +11147,13 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, SetShapeReadout, (ETCS::RID, label))
 {
     (void)ctx;
     self.SetShapeReadout(label);
+}
+
+// SetTipReadout <label> -- the brush slice's caption, which nib is loaded.
+DEFINE_WORK_FUNC_TYPED(PaintPalette, SetTipReadout, (ETCS::RID, label))
+{
+    (void)ctx;
+    self.SetTipReadout(label);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintPalette, SetModeReadout, (ETCS::RID, label))

@@ -16,9 +16,12 @@ ETCS_MODULE_EXPORT_MAIN(PaintProvider,
 
 // SetKind is what makes one tool eight: radius/colour/hardness vary
 // independently of it, and the kind is the shape of the whole gesture rather
-// than which nib is loaded. See PaintToolKind.
+// than which nib is loaded. SetTip is the OTHER half of that sentence, and it
+// was unreachable along with SetBlendMode and SetHardness until now -- see the
+// note on this file's PaintPalette block for what an unlisted verb costs.
 ETCS_TAG_BLOCK_BASIC(PaintTool,
-    SetRadius, SetColor, SetKind, SetMode, SetShape, SetText, SetTextSize, SetTolerance,
+    SetRadius, SetColor, SetKind, SetMode, SetShape, SetTip, SetBlendMode, SetHardness,
+    SetText, SetTextSize, SetTolerance,
     SetMotionCoalesceMs, SetAlphaPercent,
     BeginStroke, MoveStroke, EndStroke, CancelStroke, Delete)
 
@@ -72,7 +75,8 @@ ETCS_TAG_BLOCK_HYBRID(PaintInput,
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
-    BindWheel, AddWheelArrow, AddModeArrow, SetModeReadout, SetShapeReadout, SetHoldCapacity, AddHoverLabel,
+    BindWheel, AddWheelArrow, AddModeArrow, SetModeReadout, SetShapeReadout, SetTipReadout,
+    SetHoldCapacity, AddHoverLabel,
     AddCall, AddPopup, OpenPopup, ClosePopup, BindRouter,
     SetColorOf, Report, Delete)
 

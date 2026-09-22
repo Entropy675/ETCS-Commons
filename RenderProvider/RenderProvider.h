@@ -547,6 +547,33 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, ResizeTo, (uint32_t, w), (uint32_t, 
         ETCS_LOG("CompositeDrawable2D::ResizeTo", "refused " << w << "x" << h << ".");
 }
 
+/*
+ * FollowResize <rid> -- be whatever size that Resizable is, from now on.
+ *
+ * The ontology verb (Resizable_::FollowResize), exported here because a
+ * full-bleed pane is not a layout question: a box that is simply the window, at
+ * the window's origin, needs no solver and cannot be stated as a row or a
+ * column. A full-sheet overlay is exactly that -- the ruler's own raster is one
+ * -- and before this the only way to have one follow anything was to declare it
+ * in a Layout it does not belong in.
+ *
+ * Pushed, for the reason Layout's is (LayoutProvider.h): a drawable sits in no
+ * loop that would ask on its own, and the wake carries no size, so one that
+ * lands late still reads the current one.
+ */
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, FollowResize, (ETCS::RID, source))
+{
+    (void)ctx;
+    ETCS::Held<Resizable_> src = ETCS::resolve_held<Resizable_>("Resizable", source);
+    if (!src)
+    {
+        ETCS_LOG("CompositeDrawable2D::FollowResize", "RID:" << source
+                 << " is not a live Resizable -- nothing to follow.");
+        return;
+    }
+    self.FollowResize(src.get(), ResizeDelivery::Pushed);
+}
+
 // Recompose if anything beneath changed, then blit once. The same verb
 // PolygonDrawable2D answers, doing the same job -- which is what lets a script
 // swap one for the other without knowing which it has.

@@ -53,7 +53,15 @@
   }
 
   #board-col { grid-area:board; display:flex; flex-direction:column; align-items:center; gap:7px; }
-  #boardwrap { display:flex; flex-direction:column; width:max-content; max-width:100%; }
+  #boardwrap { display:flex; flex-direction:column; width:max-content; max-width:100%;
+               position:relative; }   /* the boot throbber anchors to this */
+  /* THE BOOT THROBBER, over the board, gone the moment there is a position to
+     show. Centred on the SQUARES rather than on this box: the move bar is a row
+     of this flex column and about 20px tall, so half of it is the offset that
+     puts the ring in the middle of the eight ranks. pointer-events:none so it
+     cannot eat a click during the seconds it is up. */
+  #bootthrob { position:absolute; left:50%; top:calc(50% + 10px);
+               transform:translate(-50%,-50%); pointer-events:none; z-index:5; }
   #boardbar { display:flex; align-items:center; gap:2px; flex-wrap:nowrap; padding:1px 3px;
               background:var(--panel); border:3px solid var(--line); border-bottom-width:0; }
   #boardbar button { padding:0 5px; font-size:10px; line-height:1.45; letter-spacing:.02em; }
@@ -201,6 +209,11 @@
         <span id="ply"></span>
       </div>
       <div id="board"></div>
+      <!-- THE BOOT THROBBER, and it is page-side for the same measured reason
+           PaintProvider's page gives: nothing inside the runtime can draw
+           during the window this covers, because the runtime is not running
+           yet. See bootThrobber() below. -->
+      <canvas id="bootthrob" width="96" height="96"></canvas>
     </div>
     <div id="gamestatus">connecting…</div>
     <div id="fen"></div>
@@ -1201,6 +1214,90 @@ async function boot() {
     catch (_) { await loadGlue(joinBase(wasm_base, 'etcs')); }
   }
 }
+/*
+ * ── the boot throbber ─────────────────────────────────────────────────────
+ *
+ * THE SAME PICTURE THE RUNTIME DRAWS (RenderProvider::Throbber) and the same
+ * one PaintProvider's page puts up, ported here unchanged in everything but
+ * how it knows to leave. That page's argument holds here too: the seconds this
+ * covers are the runtime coming up, so nothing inside the runtime can draw
+ * them -- a frame edge cannot draw before it exists. The page's own main
+ * thread is responsive throughout, so the page is the one thing that can paint
+ * the wait. One rAF loop, no Worker, up on the first frame.
+ *
+ * Twelve dots, the head bright blue fading back through violet, "ETCS" inside
+ * the ring in off-white, the element exactly the ring's square so that
+ * centring the element centres the ring. Steps per FRAME rather than per
+ * second, matching Throbber::AdvanceConcrete -- a browser that is struggling
+ * shows a throbber that is visibly struggling, which during a boot is the most
+ * useful thing it could be saying.
+ *
+ * WHAT DIFFERS: how it knows to go. The paint page samples its own canvas for
+ * the runtime's first picture, because a DOM page has no other signal that the
+ * scene arrived. This page has one already -- boardReadyFlag, which does not
+ * go true until a real FEN has come back through the call bridge and been
+ * drawn (onRuntimeInitialized's retry loop). So the throbber leaves when there
+ * is a POSITION, not when there are pixels, which is the same question asked
+ * of the thing that actually answers it. The deadline is the backstop for a
+ * boot that never finishes: the board stays empty, but an overlay that covers
+ * a dead page forever is worse than one that admits it.
+ */
+function bootThrobber() {
+  const el = document.getElementById('bootthrob');
+  if (!el) return;
+  const g = el.getContext('2d');
+  if (!g) { el.remove(); return; }
+
+  const RING = el.width, DOTS = 12, TAIL = 0.45, STEP = 5.4 / 360;
+  const HEAD = [0.35, 0.55, 0.95], TAILC = [0.58, 0.40, 0.95];
+  const cx = RING / 2, cy = RING / 2;
+  const dotR = RING * 0.08, orbit = RING * 0.5 - dotR - RING / 24;   // Throbber::orbit
+  let phase = 0, stopped = false;
+
+  // Sized to the hole the way Throbber::SetSize sizes its label: 16px is the
+  // runtime's scale-2 bitmap face at this ring, and the same run width.
+  g.font = '600 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+
+  function frame() {
+    if (stopped) return;
+    g.clearRect(0, 0, el.width, el.height);
+    g.fillStyle = 'rgba(240, 227, 199, 0.95)';    // the off-white the runtime uses
+    g.letterSpacing = '2px';
+    // +1 x: letterSpacing trails the last glyph too; +2 y: 'middle' is the em
+    // box's middle, and capitals sit above it. Both measured, not guessed.
+    g.fillText('ETCS', cx + 1, cy + 2);
+    for (let i = 0; i < DOTS; i++) {
+      const at = i / DOTS;
+      // Short way round, so the tail stays continuous across the wrap -- the
+      // same arithmetic as Throbber::repaint.
+      let d = phase - at; d = d - Math.floor(d); if (d > 0.5) d = 1 - d;
+      let t = 1 - (d / TAIL); if (t < 0) t = 0; t = t * t;
+      const a = 0.14 + (1 - 0.14) * t;
+      const c = HEAD.map((h, k) => Math.round(255 * (TAILC[k] + (h - TAILC[k]) * t)));
+      const ang = at * Math.PI * 2 - Math.PI / 2;
+      g.beginPath();
+      g.arc(cx + orbit * Math.cos(ang), cy + orbit * Math.sin(ang), dotR, 0, Math.PI * 2);
+      g.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a.toFixed(3) + ')';
+      g.fill();
+    }
+    phase = (phase + STEP) % 1;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  const DEADLINE = Date.now() + 90000;
+  const poll = setInterval(function () {
+    const late = Date.now() > DEADLINE;
+    if (!boardReadyFlag && !late) return;
+    stopped = true; clearInterval(poll); el.remove();
+    log('[etcs] boot throbber done'
+        + (late ? ' (no position after 90s -- leaving anyway)' : '') + '\n');
+  }, 150);
+}
+bootThrobber();
+
 boot().catch(function (e) {
   setStatus('boot failed', 'err');
   log('[etcs] boot: ' + e + '\n', 'err');
