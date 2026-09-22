@@ -248,6 +248,100 @@ static inline ETCS::Entity* paint_resolve_tag(const char* tag, ETCS::RID rid)
     return it->second.invoke_get(rid);
 }
 
+/*
+ * ── ONE VERB, SENT TO SOMEBODY ELSE'S NODE ───────────────────────────────────
+ *
+ * Every window in this module drives drawables it did not create: a panel tints
+ * a plate a script spawned, a menu hides a label, a picker moves its own pane.
+ * The seam for that is `Entity::call("<Tag>.<Work>", args)` -- the same one
+ * loaders/etcs.cc's etcs_web_call uses -- and the TAG IS READ OFF THE ENTITY
+ * rather than assumed, which is the whole point: a row may be built from
+ * whatever leaf the script likes as long as that leaf exports the verb.
+ *
+ * WHY IT IS ONE FUNCTION. It was twelve. Resolve held, cast, compose
+ * "<tag>.<verb>", write the payload, call inside a try -- eight lines, written
+ * out once per verb per class: five hiders, three setters of text, two movers,
+ * two fillers. Twelve places to fix when the seam changes, and it changed twice
+ * already. The SECOND time is what makes this a compression rather than tidying:
+ * a row's plate became a compositor (it is the row's pane now, which is what
+ * lets one script draw every row), compositors answer SetBackground where
+ * polygons answer SetFill, and only ONE of the two fillers learned that. The
+ * other refused every plate it was handed, once per row per refresh, silently,
+ * because a refused verb is a log line and not an error. A rule that lives in
+ * one copy of twelve is not a rule; it is a coincidence that held so far.
+ *
+ * TWO SPELLINGS FOR ONE IDEA is therefore a parameter and not a special case.
+ * `surface_verb`, when given, is what everything that is not a polygon is sent
+ * instead: a SHAPE has a fill and a SURFACE has a background, and they are the
+ * same instruction. Nothing else in the module needs to know that. The split is
+ * on the polygon rather than on the compositor because that is where the tags
+ * actually divide -- PolygonDrawable2D exports SetFill, and CompositeDrawable2D,
+ * TextLabel and Scene3D all export SetBackground (RenderProvider.cc's tag
+ * blocks). Asking "is it a compositor" got a label's plate refused for the same
+ * reason the row's did.
+ *
+ * SILENT ON A MISSING NODE. A row that declared no eye has no eye to colour,
+ * and a node deleted underneath us is the script's business, not an error to
+ * raise once per frame. The answer says whether the call went out, for the few
+ * callers that care.
+ *
+ * ALWAYS MARKS THE CHAIN from the node up. The call crossed a module boundary,
+ * so nothing in the tree saw the change, and a pane whose contents did not
+ * change is not recomposed (ontology/Pixels.h). Half the old copies marked and
+ * half did not; the ones that did not leaned on a repaint() the caller happened
+ * to do next, which is the same seam in a different costume.
+ */
+static inline bool paint_node_verb(ETCS::RID node, const char* verb,
+                                   const std::string& args,
+                                   const char* surface_verb = nullptr)
+{
+    if (node == 0 || verb == nullptr) return false;
+    ETCS::Held<Drawable2D_> held = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+    if (!held) return false;
+    ETCS::Entity* e = static_cast<ETCS::Entity*>(held.get());
+    if (!e) return false;
+    const std::string tag = e->getSourceTag().toString();
+    const char* which = verb;
+    if (surface_verb && tag.find("PolygonDrawable2D") == std::string::npos)
+        which = surface_verb;
+    ETCS::Buffer action;
+    action.write((tag + "." + which).c_str());
+    ETCS::Buffer payload;
+    payload.write(args.c_str());
+    try { e->call(action, payload); } catch (...) { return false; }
+    for (ETCS::Entity* n = e; n; n = n->getParent())
+        etcs_mark_observed(n);
+    return true;
+}
+
+// The four the module actually asks for, so a call site reads as the intent and
+// not as the mechanism. Hidden is neither drawn nor picked (Drawable2D_::
+// PickAt), which is what "this row has no delete" has to mean -- a transparent
+// button still takes the press.
+static inline bool paint_node_hidden(ETCS::RID node, bool hidden)
+{
+    return paint_node_verb(node, "SetHidden", hidden ? "1" : "0");
+}
+
+static inline bool paint_node_text(ETCS::RID node, const std::string& text)
+{
+    return paint_node_verb(node, "SetText", text);
+}
+
+static inline bool paint_node_moved(ETCS::RID node, int32_t x, int32_t y)
+{
+    return paint_node_verb(node, "SetPosition",
+                           std::to_string(x) + ", " + std::to_string(y));
+}
+
+static inline bool paint_node_fill(ETCS::RID node, float r, float g, float b, float a)
+{
+    return paint_node_verb(node, "SetFill",
+                           std::to_string(r) + " " + std::to_string(g) + " "
+                         + std::to_string(b) + " " + std::to_string(a),
+                           "SetBackground");
+}
+
 // Stamp a filled disc of the current brush onto a Surface (live feedback).
 // Approximates the brush with a axis-aligned rect of diameter 2*radius for
 // the smoke path; a later pass can use ImageSurface pixel upload.
@@ -655,6 +749,7 @@ enum class PaintToolKind : uint8_t
     Glyph,      // drag a box; prompt for text; fit the run inside it
     Select,     // drag a region; drag INSIDE it to carry its pixels elsewhere
     Shape,      // the two corners again, as whichever outline PaintShapeMode names
+    Move,       // drag the picture under the pointer; marks nothing
     Eyedrop     // one press: the colour under it becomes the tool's, then the
                 // previous kind comes back (PaintColorWheel::BeginPick)
 };
@@ -751,6 +846,7 @@ inline const char* paint_tool_kind_name(PaintToolKind k)
     case PaintToolKind::Ruler:   return "ruler";
     case PaintToolKind::Glyph:   return "glyph";
     case PaintToolKind::Select:  return "select";
+    case PaintToolKind::Move:    return "move";
     }
     return "brush";
 }
@@ -770,6 +866,7 @@ inline PaintToolKind paint_tool_kind_from(const std::string& name)
     if (name == "select")  return PaintToolKind::Select;
     if (name == "shape")   return PaintToolKind::Shape;
     if (name == "eyedrop") return PaintToolKind::Eyedrop;
+    if (name == "move")    return PaintToolKind::Move;
     if (name != "brush")
         ETCS_LOG("PaintTool", "unknown tool kind '" << name << "' -- using the brush.");
     return PaintToolKind::Brush;
@@ -2534,6 +2631,20 @@ enum class PaintOpKind : uint8_t
     Line, Rect, Ellipse,
     Poly,       // a shape mode's vertex ring, stroked closed
     Fill,
+    /*
+     * THE LAYER SET ITSELF, and adding it is what makes a merge undoable.
+     *
+     * Everything above is a change to PIXELS. A merge, a delete and a new layer
+     * are changes to STRUCTURE, and a notebook that records only the first kind
+     * can put the paint back and not the plane it was on -- which is why a merge
+     * used to be a one-way door with a keyframe in front of it.
+     *
+     * This carries the roster AFTER the change and no rasters: the layers that
+     * are about to be disturbed get ordinary keyframes immediately before it, so
+     * the bytes to bring one back are already on the chain. Metadata only, so a
+     * structural entry costs nothing next to the snapshots around it.
+     */
+    Layers,
 };
 
 static inline const char* paint_op_name(PaintOpKind k)
@@ -2547,6 +2658,7 @@ static inline const char* paint_op_name(PaintOpKind k)
     case PaintOpKind::Ellipse:  return "ellipse";
     case PaintOpKind::Poly:     return "poly";
     case PaintOpKind::Fill:     return "fill";
+    case PaintOpKind::Layers:   return "layers";
     }
     return "snap";
 }
@@ -2559,6 +2671,7 @@ static inline PaintOpKind paint_op_from(const std::string& s)
     if (s == "ellipse") return PaintOpKind::Ellipse;
     if (s == "poly")    return PaintOpKind::Poly;
     if (s == "fill")    return PaintOpKind::Fill;
+    if (s == "layers")  return PaintOpKind::Layers;
     return PaintOpKind::Snapshot;
 }
 
@@ -2699,7 +2812,34 @@ struct PaintOp
     std::vector<uint8_t> bytes;
     uint32_t w = 0, h = 0;
 
-    bool marks() const { return kind != PaintOpKind::Snapshot; }
+    // Layers only: what the stack looks like after this entry. ORDER IS THE
+    // IDENTITY here, not the RID -- a layer brought back by an undo is a new
+    // entity at the same position, and position is what a script names and what
+    // a viewer's own stack can be matched against.
+    struct Face
+    {
+        int32_t     order   = 0;
+        float       opacity = 1.0f;
+        bool        visible = true;
+        std::string name;
+    };
+    std::vector<Face> roster;
+
+    /*
+     * A ROSTER THAT MERELY STATES THE STACK, rather than changing it: the one
+     * taken BEFORE a structural change, so an undo has somewhere to land. It is
+     * a keyframe of structure and is walked over exactly as a pixel keyframe is.
+     *
+     * Without this flag a merge cost TWO presses of ctrl+z, and the second one
+     * did nothing anybody could see -- which reads as a broken key, and is the
+     * same failure stepping over pixel keyframes was added to avoid.
+     */
+    bool keyframe = false;
+
+    // "Did this change the picture." A structural entry that changed the stack
+    // did -- undoing it puts a layer back -- so it steps like a mark.
+    bool marks() const { return kind != PaintOpKind::Snapshot && !keyframe; }
+    bool structural() const { return kind == PaintOpKind::Layers; }
     void addPoint(int32_t x, int32_t y) { pts.push_back(x); pts.push_back(y); }
     size_t points() const { return pts.size() / 2; }
 };
@@ -2847,7 +2987,15 @@ public:
     {
         const PaintOp* best = nullptr;
         for (const PaintOp* o : chain)
-            if (o->kind == PaintOpKind::Snapshot && o->layer == layer) best = o;
+        {
+            // A structural entry that carries bytes IS a keyframe for the layer
+            // it carries them for -- that is how a merge's result reaches the
+            // survivor on the way forward (appendRoster's `carries`).
+            const bool keyframes_it =
+                (o->kind == PaintOpKind::Snapshot || (o->structural() && !o->bytes.empty()))
+                && o->layer == layer;
+            if (keyframes_it) best = o;
+        }
         return best;
     }
 
@@ -2967,6 +3115,26 @@ static inline std::string paint_op_encode(const PaintOp& op)
     out += ' ';
     out += std::to_string(op.order);
 
+    if (op.kind == PaintOpKind::Layers)
+    {
+        out += ' ';
+        out += std::to_string(op.roster.size());
+        for (const PaintOp::Face& f : op.roster)
+        {
+            // comma-separated within a layer, space between layers, so the
+            // NAME is the one field that must carry neither -- both become '_'
+            // on the wire. A collaborator who typed a space sees an underscore,
+            // which is honest and costs a line to say; the alternative is a
+            // quoting rule in a format whose whole virtue is that a node can
+            // copy it through without understanding it.
+            std::string nm = f.name.empty() ? std::string("-") : f.name;
+            for (char& c : nm) if (c == ' ' || c == ',') c = '_';
+            out += ' ' + std::to_string(f.order) + ',' + std::to_string(f.opacity)
+                 + ',' + (f.visible ? "1" : "0") + ',' + nm;
+        }
+        return out;
+    }
+
     if (op.kind == PaintOpKind::Snapshot)
     {
         out += ' '; out += std::to_string(op.w);
@@ -3013,6 +3181,27 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
     if (!(in >> out.seq >> kind >> author >> out.layer >> out.order)) return false;
     out.kind   = paint_op_from(kind);
     out.author = (author == "-") ? std::string() : author;
+
+    if (out.kind == PaintOpKind::Layers)
+    {
+        size_t n = 0;
+        if (!(in >> n)) return false;
+        for (size_t i = 0; i < n; ++i)
+        {
+            std::string field;
+            if (!(in >> field)) return false;
+            PaintOp::Face f;
+            size_t a = field.find(','), b = field.find(',', a + 1), c = field.find(',', b + 1);
+            if (a == std::string::npos || b == std::string::npos || c == std::string::npos) return false;
+            f.order   = std::atoi(field.substr(0, a).c_str());
+            f.opacity = static_cast<float>(std::atof(field.substr(a + 1, b - a - 1).c_str()));
+            f.visible = (field.substr(b + 1, c - b - 1) != "0");
+            f.name    = field.substr(c + 1);
+            if (f.name == "-") f.name.clear();
+            out.roster.push_back(std::move(f));
+        }
+        return true;
+    }
 
     if (out.kind == PaintOpKind::Snapshot)
     {
@@ -3140,6 +3329,118 @@ public:
             stack[i]->SetOrder(static_cast<int32_t>(i));
     }
 
+    /*
+ * ── merging two layers into one ──────────────────────────────────────────
+ *
+ * MERGE DOWN puts this layer's pixels onto the one beneath and drops this one;
+ * MERGE UP is the same act read from the other end, and the two are one
+ * function because the only thing that differs is which of the pair survives.
+ *
+ * WHICH DIRECTION THE PIXELS GO IS NOT THE SAME AS WHICH LAYER SURVIVES, and
+ * that is the whole subtlety. Merging down, the upper layer goes over the lower
+ * and the lower keeps the result -- one composite straight into its bytes.
+ * Merging up, the upper still goes over the lower, but the UPPER is what
+ * survives, so the result has to be built somewhere else and moved in. Getting
+ * this backwards produces a merge that looks right until one of the two has
+ * transparency, which is every interesting case.
+ *
+ * THE SOURCE'S OPACITY IS BAKED IN, because after the merge there is no layer
+ * left to carry it. The survivor keeps its own, unspent: it is still a layer
+ * and still has one.
+ *
+ * A HIDDEN SOURCE IS REFUSED. Merging ink nobody can see into a layer they can
+ * is a change whose whole effect is invisible until it is too late to undo it
+ * cheaply -- and the fix is one click, so saying so beats guessing.
+ *
+ * UNDO RESTORES THE PIXELS, NOT THE LAYER. Remember() takes the survivor's
+ * bytes, so ctrl+z puts the picture back; the layer that was merged away is
+ * detached, not deleted (RemoveLayer's own note), and nothing here re-attaches
+ * it. Same limitation RemoveLayer has carried all along, stated rather than
+ * discovered.
+ */
+    bool MergeLayer(ETCS::RID layer_rid, int direction)
+    {
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
+        if (!raw) return false;
+        auto* self_layer = static_cast<PaintLayer*>(raw->getTrueType());
+        if (!self_layer) return false;
+
+        auto it = std::find(stack.begin(), stack.end(), self_layer);
+        if (it == stack.end()) return false;
+        const size_t idx = static_cast<size_t>(it - stack.begin());
+
+        // direction < 0 is "down", toward the base of the stack.
+        const size_t other = (direction < 0) ? (idx ? idx - 1 : idx) : idx + 1;
+        if ((direction < 0 && idx == 0) || other >= stack.size())
+        {
+            ETCS_LOG("PaintDocument", "'" << self_layer->name() << "' has nothing "
+                     << (direction < 0 ? "below" : "above") << " it to merge with.");
+            return false;
+        }
+
+        PaintLayer* upper = (direction < 0) ? self_layer : stack[other];
+        PaintLayer* lower = (direction < 0) ? stack[other] : self_layer;
+        PaintLayer* keep  = (direction < 0) ? lower : upper;
+        PaintLayer* gone  = (direction < 0) ? upper : lower;
+
+        if (!gone->visible())
+        {
+            ETCS_LOG("PaintDocument", "'" << gone->name() << "' is hidden -- show it "
+                     "before merging, or its ink lands where nobody asked for it.");
+            return false;
+        }
+
+        // BOTH RASTERS, THEN THE ROSTER. A merge is a change to structure as
+        // much as to pixels: keyframing only the survivor put the paint back on
+        // undo and not the plane it came off, which made this a one-way door.
+        // recordStructure keyframes every layer and appendRoster (below, after
+        // the removal) writes down the stack the undo has to walk back over.
+        recordStructure("merge");
+        m_active_layer = keep;
+
+        if (keep == lower)
+        {
+            // Down: the upper goes straight over the survivor's own pixels.
+            paint_composite_raw_scaled_bytes(lower->PixelData(), lower->width(), lower->height(),
+                                             lower->width() * 4,
+                                             upper->PixelData(), upper->width(), upper->height(),
+                                             0, 0, upper->width(), upper->height(),
+                                             upper->opacity());
+        }
+        else
+        {
+            // Up: build lower-then-upper elsewhere, then that IS the survivor.
+            std::vector<uint8_t> merged;
+            if (!lower->SnapshotBytes(merged)) return false;
+            paint_composite_raw_scaled_bytes(merged.data(), lower->width(), lower->height(),
+                                             lower->width() * 4,
+                                             upper->PixelData(), upper->width(), upper->height(),
+                                             0, 0, upper->width(), upper->height(),
+                                             upper->opacity());
+            // The survivor is the upper, and it must be the lower's size for
+            // these bytes to mean anything -- which every layer of one document
+            // is, and which RestoreBytes checks rather than trusts.
+            if (!upper->RestoreBytes(merged))
+            {
+                ETCS_LOG("PaintDocument", "merge up: '" << upper->name() << "' and '"
+                         << lower->name() << "' are different sizes -- refused.");
+                return false;
+            }
+        }
+
+        const std::string went = gone->name();
+        removeLayerQuiet(gone->getRID());
+        // The new stack AND the survivor as it now is, on one entry -- see
+        // appendRoster for why they cannot be two.
+        appendRoster(false, keep);
+        SetActiveLayer(keep->getRID());
+        etcs_mark_observed(keep);
+        ETCS_LOG("PaintDocument", "merged '" << went << "' into '" << keep->name() << "'.");
+        return true;
+    }
+
 /*
  * ── has anything changed, and since when ─────────────────────────────────
  *
@@ -3176,7 +3477,23 @@ public:
  * Deleting it is a different verb with a different meaning, and it is the one
  * Deletable already provides.
  */
+    /*
+ * RECORDED, so it comes back. This used to be the other one-way door: the
+ * layer was detached, nothing in the notebook said the stack had changed, and
+ * undo could restore every raster on a plane that was no longer there. It is
+ * one keyframe pass and one metadata entry, and it buys undo for a delete.
+ */
     void RemoveLayer(ETCS::RID layer_rid)
+    {
+        // The public verb is the recorded one. MergeLayer uses the quiet form
+        // below, because it has already recorded the structure for the pair it
+        // is collapsing and a second pass would write the same keyframes twice.
+        recordStructure("remove layer");
+        removeLayerQuiet(layer_rid);
+        appendRoster();
+    }
+
+    void removeLayerQuiet(ETCS::RID layer_rid)
     {
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
@@ -4089,6 +4406,18 @@ public:
             return true;
         }
 
+        case PaintOpKind::Layers:
+            // The roster half is applied by reconcileLayers, before any raster.
+            // What is left here is the raster half, which only a merge has.
+            if (op.bytes.empty()) return true;
+            if (!layer->RestoreBytes(op.bytes))
+            {
+                ETCS_LOG("PaintDocument", "replay: entry " << op.seq
+                         << " carries bytes for a layer that is not that size -- dropped.");
+                return false;
+            }
+            return true;
+
         case PaintOpKind::Fill:
         {
             if (op.points() < 1) return false;
@@ -4569,6 +4898,7 @@ public:
  */
     ETCS::RID NewLayer()
     {
+        recordStructure("new layer");
         PaintLayer* layer = this->addTag<PaintLayer>();
         if (!layer)
         {
@@ -4603,6 +4933,7 @@ public:
         Touch();
         ETCS_LOG("PaintDocument", "layer '" << name << "' RID:" << layer->getRID()
                  << " added at depth " << depth << ", active");
+        appendRoster();
         return layer->getRID();
     }
 
@@ -4964,6 +5295,64 @@ private:
         m_open = PaintOp{};
     }
 
+    /*
+     * KEYFRAME EVERY LAYER THAT IS ABOUT TO BE DISTURBED, then write down what
+     * the stack will look like. Called BEFORE the structural change, so the
+     * bytes needed to bring a layer back are already on the chain when the
+     * roster that no longer mentions it arrives.
+     *
+     * Every layer, not only the ones this particular act touches: a merge takes
+     * two and a delete takes one, but a reorder moves several and the cost of
+     * being exact about which is a rule that will be wrong the first time
+     * somebody adds a fourth structural verb.
+     */
+    void recordStructure(const char* why)
+    {
+        sealOpenOp();
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        for (PaintLayer* l : stack) appendSnapshot(l);
+        // AND THE ROSTER AS IT STANDS NOW, which is the entry an undo lands on.
+        // Without it, undoing past a NEW layer finds no roster at or before the
+        // target and reconciles to nothing -- the layer stays. The pair is
+        // "here is the stack before" and, after the change, "here is the stack
+        // after"; a walk backwards over the second arrives at the first.
+        appendRoster(true);
+        ETCS_LOG("PaintDocument", why << ": keyframed " << stack.size() << " layer(s) and the roster.");
+    }
+
+    // And the roster AFTER it, which is the entry undo actually walks over.
+    /*
+     * `carries` is a layer whose RASTER changed as part of this structural act,
+     * and a merge is the reason it exists. The merge's pixel effect has to live
+     * on the SAME entry as the roster or the two fall either side of the undo
+     * that walks over them: a separate keyframe before the roster is what an
+     * undo lands on (so the merge appears not to come off), and one after it is
+     * never reached by a redo (so the merge comes back with the paint missing).
+     * One entry, one step, both halves.
+     */
+    void appendRoster(bool keyframe = false, PaintLayer* carries = nullptr)
+    {
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        PaintOp op;
+        op.kind     = PaintOpKind::Layers;
+        op.keyframe = keyframe;
+        op.author   = m_author;
+        if (carries)
+        {
+            op.layer = carries->getRID();
+            op.order = carries->order();
+            op.w     = carries->PixelWidth();
+            op.h     = carries->PixelHeight();
+            carries->SnapshotBytes(op.bytes);
+        }
+        for (PaintLayer* l : stack)
+            op.roster.push_back(PaintOp::Face{ l->order(), l->opacity(), l->visible(), l->name() });
+        m_cursor = m_book.Append(std::move(op), m_cursor);
+        Touch();
+    }
+
     void appendSnapshot(PaintLayer* layer)
     {
         if (!layer) return;
@@ -4986,18 +5375,32 @@ private:
         return nullptr;
     }
 
-    // The RID if this runtime knows it, then the order, then the active layer.
-    // See PaintOp::layer for why an entry names its layer twice; the last
-    // fallback is there because a viewer with ONE layer should show a host's
-    // strokes on it rather than show nothing, which is the common case and the
-    // one where being strict would be indistinguishable from being broken.
+    /*
+     * THE RID, THEN THE ORDER, AND THEN ALMOST NEVER ANYTHING ELSE.
+     *
+     * See PaintOp::layer for why an entry names its layer twice. The last
+     * fallback exists for one case -- a viewer with a single layer should show
+     * a host's strokes on it rather than show nothing -- and it is fenced to
+     * exactly that case, because the general version of it is destructive.
+     *
+     * WHAT IT COST BEFORE THE FENCE: merge a layer away, then undo. The dead
+     * layer's RID stops resolving, its order matches nothing, and its own
+     * KEYFRAME -- an empty raster -- was restored onto whatever happened to be
+     * active. The survivor came back blank, which looks exactly like undo
+     * erasing the picture and is nothing of the kind.
+     *
+     * So a snapshot never falls back: it names one specific raster and putting
+     * it on a different one destroys that one. A mark falls back only where
+     * there is no other layer it could have meant.
+     */
     PaintLayer* layerFor(const PaintOp& op) const
     {
         if (PaintLayer* l = layerByRID(op.layer)) return l;
         std::vector<PaintLayer*> layers;
         OrderedLayers(layers);
         for (PaintLayer* l : layers) if (l->order() == op.order) return l;
-        return m_active_layer;
+        if (op.kind == PaintOpKind::Snapshot) return nullptr;
+        return (layers.size() == 1) ? layers.front() : nullptr;
     }
 
     /*
@@ -5015,6 +5418,59 @@ private:
      * there is nothing this function could restore it to that would be more
      * correct than what is already on it.
      */
+    /*
+     * BE THE STACK THE ROSTER DESCRIBES, before a single raster is restored.
+     *
+     * ORDER IS THE IDENTITY. A layer brought back by an undo is a new entity
+     * with a new RID, because a detached one cannot be re-registered as a typed
+     * child -- and that is the right answer rather than a compromise: a RID is a
+     * causal position in the runtime, so it does not survive moving to a
+     * different position in causal history. Position is what a script names and
+     * what an entry's `order` field already carries, which is why the raster
+     * phase after this resolves by order without anything having to be rewritten.
+     */
+    void reconcileLayers(const PaintOp* roster)
+    {
+        if (!roster) return;
+
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+
+        // Anything at a position the roster does not mention is not in this
+        // picture. Detached rather than deleted, exactly as RemoveLayer does.
+        for (PaintLayer* l : stack)
+        {
+            bool wanted = false;
+            for (const PaintOp::Face& f : roster->roster) if (f.order == l->order()) { wanted = true; break; }
+            if (wanted) continue;
+            if (m_active_layer == l) m_active_layer = nullptr;
+            l->detachFromParent();
+        }
+
+        // And anything the roster names that is not here comes back -- empty,
+        // because the keyframe that fills it is the next phase's job.
+        for (const PaintOp::Face& f : roster->roster)
+        {
+            OrderedLayers(stack);
+            PaintLayer* at = nullptr;
+            for (PaintLayer* l : stack) if (l->order() == f.order) { at = l; break; }
+            if (!at)
+            {
+                at = this->addTag<PaintLayer>();
+                if (!at) continue;
+                at->Create(m_width, m_height);
+                at->Clear(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            at->SetOrder(f.order);
+            at->SetName(f.name);
+            at->SetOpacity(f.opacity);
+            at->SetVisible(f.visible);
+        }
+
+        OrderedLayers(stack);
+        if (!m_active_layer && !stack.empty()) m_active_layer = stack.back();
+    }
+
     bool replayTo(uint64_t seq, const char* what)
     {
         if (m_sel.lifted()) DropSelection();
@@ -5026,9 +5482,18 @@ private:
         std::vector<const PaintOp*> chain;
         m_book.ChainTo(seq, chain);
 
+        // STRUCTURE FIRST. The rasters below are restored onto the layers this
+        // puts back; doing it the other way round restores pixels onto planes
+        // that are about to be replaced.
+        const PaintOp* roster = nullptr;
+        for (const PaintOp* o : chain) if (o->structural()) roster = o;
+        reconcileLayers(roster);
+
         std::vector<ETCS::RID> touched;
         for (const PaintOp* o : chain)
         {
+            // A structural entry names no layer UNLESS it carries one's bytes.
+            if (o->structural() && o->bytes.empty()) continue;
             bool seen = false;
             for (ETCS::RID r : touched) if (r == o->layer) { seen = true; break; }
             if (!seen) touched.push_back(o->layer);
@@ -5369,6 +5834,7 @@ public:
             m_drawn_w = ts.width; m_drawn_h = ts.height;
         }
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
+        draw_peer_views(view);
         // The pane's own edge, marked out. After the document because it is chrome
         // rather than part of the picture -- and, with a frame bound, not on the
         // picture's raster at all.
@@ -5384,6 +5850,108 @@ public:
             paint_mark_pixel_path(m_ruler_frame);
     }
 
+    /*
+ * ── WHERE EVERYONE ELSE IS LOOKING ───────────────────────────────────────
+ *
+ * PRESENCE, NOT HISTORY, and that distinction is the whole reason this is a
+ * list on the surface rather than an entry in the notebook. A camera position
+ * changes on every pan and is worthless a second later: it has no causal
+ * successor, so recording it would fill the one structure whose value is that
+ * everything in it caused something. It is stored once, overwritten in place,
+ * and never replayed.
+ *
+ * THE RECT IS DERIVED, NOT SENT. What crosses the wire is a document-space
+ * rectangle; each page draws it through its OWN projection, so two people at
+ * different zooms still see each other's frame in the right place on the
+ * picture. Sending view-space pixels would mean a frame that is only correct
+ * for the sender, which is the opposite of the point.
+ *
+ * ONE CALL PER PEER (SetPeer), because a roster of eight at forty bytes each
+ * is over the 256-byte call buffer and a file for something this small would
+ * be a bridge built for one crossing.
+ */
+    struct PeerView
+    {
+        std::string name;
+        int32_t x = 0, y = 0, w = 0, h = 0;
+        float   rgb[3] = { 0.8f, 0.8f, 0.8f };
+    };
+
+    void ClearPeers() { m_peers.clear(); }
+
+    // Upsert by name: a peer that pans twice between two reads should move, not
+    // appear twice.
+    void SetPeer(const std::string& name, int32_t x, int32_t y, int32_t w, int32_t h,
+                 float r, float g, float b)
+    {
+        if (name.empty()) return;
+        for (PeerView& p : m_peers)
+            if (p.name == name)
+            {
+                p.x = x; p.y = y; p.w = w; p.h = h;
+                p.rgb[0] = r; p.rgb[1] = g; p.rgb[2] = b;
+                return;
+            }
+        PeerView p;
+        p.name = name; p.x = x; p.y = y; p.w = w; p.h = h;
+        p.rgb[0] = r; p.rgb[1] = g; p.rgb[2] = b;
+        m_peers.push_back(std::move(p));
+    }
+
+    size_t peerCount() const { return m_peers.size(); }
+
+    // This pane's own visible rectangle IN DOCUMENT SPACE -- what a page sends
+    // so everyone else can draw it. Derived from the projection rather than
+    // remembered, so it cannot go stale behind a pan.
+    void ViewRect(int32_t& x, int32_t& y, int32_t& w, int32_t& h)
+    {
+        const WindowSize ts = targetSize();
+        x = ViewToDocX(0);
+        y = ViewToDocY(0);
+        w = ViewToDocX(static_cast<int32_t>(ts.width))  - x;
+        h = ViewToDocY(static_cast<int32_t>(ts.height)) - y;
+    }
+
+private:
+    /*
+     * AN OUTLINE AND A NAME, not a filled rectangle. A translucent fill over
+     * somebody else's frame tints the PICTURE inside it, and the picture is the
+     * thing both of you are looking at -- so the one place a presence marker
+     * must not be is on top of the work. Four edges and a label at the corner
+     * says the same thing and costs the artwork nothing.
+     */
+    void draw_peer_views(Surface_* view)
+    {
+        if (!view || m_peers.empty()) return;
+        for (const PeerView& p : m_peers)
+        {
+            const int32_t x0 = DocToViewX(p.x), y0 = DocToViewY(p.y);
+            const int32_t x1 = DocToViewX(p.x + p.w), y1 = DocToViewY(p.y + p.h);
+            const int32_t vx = std::min(x0, x1), vy = std::min(y0, y1);
+            const int32_t vw = std::abs(x1 - x0), vh = std::abs(y1 - y0);
+            if (vw <= 1 || vh <= 1) continue;
+
+            const uint32_t uw = static_cast<uint32_t>(vw), uh = static_cast<uint32_t>(vh);
+            const float r = p.rgb[0], g = p.rgb[1], b = p.rgb[2];
+            view->DrawRect(vx, vy, uw, 2u, r, g, b, 0.85f);
+            view->DrawRect(vx, vy + vh - 2, uw, 2u, r, g, b, 0.85f);
+            view->DrawRect(vx, vy, 2u, uh, r, g, b, 0.85f);
+            view->DrawRect(vx + vw - 2, vy, 2u, uh, r, g, b, 0.85f);
+
+            // The name inside the top-left corner, so it stays with the frame
+            // when the frame is half off the pane. Through the same provider the
+            // ruler labels use -- a surface has one, and text landing IN the
+            // raster rather than beside it as a node is what Glyphs_ is for.
+            if (m_glyphs != 0)
+                if (ETCS::Held<Glyphs_> gl = ETCS::resolve_held<Glyphs_>("Glyphs", m_glyphs))
+                    gl->RasterizeText(m_target, p.name.c_str(), 0, 12,
+                                      vx + 4, vy + 4, r, g, b, 0.95f);
+        }
+    }
+
+    std::vector<PeerView> m_peers;
+
+public:
     // WHAT THE SURFACE'S OWN LAYER LOOKS LIKE -- not a "background", which would
     // imply the page is the only real thing and the rest is absence. It is the
     // layer the page sits on, it is always there, and panning onto it is a
@@ -5835,15 +6403,7 @@ private:
         if (pct == m_zoom_label_pushed) return;
         m_zoom_label_pushed = pct;
 
-        ETCS::Held<Drawable2D_> node = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_zoom_label);
-        if (!node) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node.get());
-        if (!e) return;
-        ETCS::Buffer action;
-        action.write((e->getSourceTag().toString() + ".SetText").c_str());
-        ETCS::Buffer payload;
-        payload.write((std::to_string(pct) + "%").c_str());
-        try { e->call(action, payload); } catch (...) {}
+        paint_node_text(m_zoom_label, std::to_string(pct) + "%");
     }
 
     PaintDocument* m_document = nullptr;
@@ -6304,13 +6864,7 @@ public:
 private:
     void set_wait(bool on)
     {
-        if (m_wait == 0) return;
-        ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_wait);
-        if (!h) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(h.get());
-        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetHidden").c_str());
-        ETCS::Buffer arg; arg.write(on ? "0" : "1");
-        try { e->call(act, arg); } catch (...) {}
+        paint_node_hidden(m_wait, !on);
     }
 
     PaintDocument* m_document = nullptr;
@@ -6509,11 +7063,95 @@ public:
  * `slot` is a colour entry's node; anything else is refused at press time rather
  * than here, because the script is free to declare the arrow before the swatch.
  */
+    /*
+ * ── AN ARROW IS AS WIDE AS ITS CELL ──────────────────────────────────────
+ *
+ * The arrows are authored as three fixed points, and the toolbar's slices are
+ * layout boxes that grow. So on a wide window every arrow stayed its authored
+ * width and sat against the left edge of a cell several times that size --
+ * which reads as a broken layout, and is one: the cell is being driven and the
+ * thing inside it is not.
+ *
+ * REBUILT RATHER THAN SCALED, because a polygon has no transform -- ClearPoints
+ * and three AddPoints is the whole of it, and it is exactly the geometry the
+ * script would have written if it had known the width.
+ *
+ * Full width of the cell, shallow: the apex at the middle of the top edge and
+ * the base at ARROW_DROP down, which is the shape the toolbar already asks for.
+ */
+    static constexpr int32_t ARROW_DROP = 12;
+
+    // The cell an arrow lives in is its PARENT -- the script spawns it there
+    // (`swatch_ink.spawn(... wheel_arrow_ink)`), so nothing has to be registered
+    // for this and a re-laid-out toolbar needs no second binding kept in step.
+    static int32_t cell_width_of(ETCS::RID node)
+    {
+        ETCS::Held<Drawable2D_> held = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+        if (!held) return 0;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(held.get());
+        if (!e) return 0;
+        ETCS::Entity* parent = e->getParent();
+        if (!parent) return 0;
+        void* raw = parent->getInterfacePointer(ETCS::Buffer("Drawable2D"));
+        if (!raw) return 0;
+        const Rect2D r = static_cast<Drawable2D_*>(raw)->Bounds();
+        return r.w;
+    }
+
+    bool arrowsNeedStretch() const
+    {
+        for (const auto& [rid, e] : m_entries)
+        {
+            if (e.kind != Kind::WheelArrow && e.kind != Kind::ModeArrow) continue;
+            const int32_t w = cell_width_of(rid);
+            if (w > 0 && w != e.drawn_w) return true;
+        }
+        return false;
+    }
+
+    void stretchArrows()
+    {
+        for (auto& [rid, e] : m_entries)
+        {
+            if (e.kind != Kind::WheelArrow && e.kind != Kind::ModeArrow) continue;
+            const int32_t w = cell_width_of(rid);
+            if (w <= 0 || w == e.drawn_w) continue;
+
+            ETCS::Held<Drawable2D_> held = ETCS::resolve_held<Drawable2D_>("Drawable2D", rid);
+            if (!held) continue;
+            ETCS::Entity* node = static_cast<ETCS::Entity*>(held.get());
+            if (!node) continue;
+
+            const std::string tag = node->getSourceTag().toString();
+            ETCS::Buffer none;
+            try
+            {
+                node->call(ETCS::Buffer((tag + ".ClearPoints").c_str()), none,
+                           ETCS::RootSignalContext());
+                auto pt = [&](int32_t x, int32_t y)
+                {
+                    ETCS::Buffer p;
+                    p.write((std::to_string(x) + ", " + std::to_string(y)).c_str());
+                    node->call(ETCS::Buffer((tag + ".AddPoint").c_str()), p,
+                               ETCS::RootSignalContext());
+                };
+                pt(w / 2, 0);
+                pt(w, ARROW_DROP);
+                pt(0, ARROW_DROP);
+            }
+            catch (...) { continue; }
+
+            e.drawn_w = w;
+            etcs_mark_observed(node);
+        }
+    }
+
     void AddWheelArrow(ETCS::RID node, ETCS::RID slot)
     {
         if (node == 0) return;
         Entry e = entry_of(Kind::WheelArrow);
         e.slot = slot;
+        e.drawn_w = 0;      // built on the first Advance, at whatever width it has
         m_entries[node] = e;
     }
 
@@ -6538,7 +7176,42 @@ public:
         if (node == 0) return;
         Entry e = entry_of(Kind::ModeArrow);
         e.slot = slot;
+        e.drawn_w = 0;
         m_entries[node] = e;
+    }
+
+    /*
+ * THE SAME ARROW, ASKED WHAT IT IS ON.
+ *
+ * Both of the above are "an arrow drawn across the top of a cell, belonging to
+ * that cell". Which of the two it is was stated by the caller picking a verb,
+ * and the caller was stating something the palette already knew: a cell that is
+ * a COLOUR wants a picker, a cell that is a TOOL wants the next mode. So the
+ * slot answers it, and the arrow becomes one thing with one declaration.
+ *
+ * WHY THAT MATTERS MORE THAN THE TWO LINES IT SAVES. The triangle itself was
+ * written out nine times in paint_toolbar.etcs -- three points and a fill, per
+ * cell -- and since the arrows learned to STRETCH (stretchArrows) those nine
+ * authored copies have to agree with a rule that lives in this file. Nine
+ * copies of a shape that something else now rebuilds is the eye's problem
+ * again: the drawing is a thing, not a paragraph repeated. One verb that needs
+ * no literal is what lets the triangle move into a script of its own
+ * (paint_cell_arrow.etcs) and be `run` once per cell, because `run` carries
+ * RIDs and not words (resolve_run_bindings).
+ *
+ * THE ORDER IS NOW LOAD-BEARING, which the two-verb form did not require: the
+ * cell must be declared (AddColor or AddTool) before its arrow, because the
+ * cell is what the arrow is asking. Every caller already did that -- an arrow
+ * is spawned as a child of the cell -- and a cell that has not been declared
+ * gets no arrow rather than a guessed one.
+ */
+    void AddArrow(ETCS::RID node, ETCS::RID slot)
+    {
+        if (node == 0) return;
+        auto it = m_entries.find(slot);
+        if (it == m_entries.end()) return;
+        if (it->second.kind == Kind::Color) { AddWheelArrow(node, slot); return; }
+        if (it->second.kind == Kind::Tool)  { AddModeArrow(node, slot);  return; }
     }
 
     // A third thing a node can mean, alongside a colour and a size: which TOOL
@@ -6557,7 +7230,7 @@ public:
         // first crosses the bar -- which reads as "the highlight only appears
         // once you touch something", not as a starting state.
         float c[4]; restingColor(e, c);
-        set_node_fill(node, c[0], c[1], c[2], c[3]);
+        paint_node_fill(node, c[0], c[1], c[2], c[3]);
     }
 
     /*
@@ -6683,7 +7356,7 @@ public:
         Entry& e = it->second;
         e.rgba[0] = r; e.rgba[1] = g; e.rgba[2] = b; e.rgba[3] = a;
         e.idle[0] = r; e.idle[1] = g; e.idle[2] = b; e.idle[3] = a;
-        if (m_hovering != node) set_node_fill(node, r, g, b, a);
+        if (m_hovering != node) paint_node_fill(node, r, g, b, a);
         return true;
     }
 
@@ -6765,7 +7438,7 @@ public:
         {
             const float next = std::max(1.0f, m_tool->brush().size_px + e.radius);
             m_tool->SetRadius(next);
-            set_node_text(m_radius_readout, std::to_string(static_cast<int>(next + 0.5f)));
+            paint_node_text(m_radius_readout, std::to_string(static_cast<int>(next + 0.5f)));
             ETCS_LOG("PaintPalette", "radius delta " << e.radius << " -> " << next);
         }
         else if (e.kind == Kind::WheelArrow)
@@ -6779,7 +7452,7 @@ public:
         else if (e.kind == Kind::AlphaDelta)
         {
             m_tool->AdjustAlphaPercent(static_cast<int32_t>(e.radius));
-            set_node_text(m_alpha_readout, std::to_string(m_tool->alphaPercent()));
+            paint_node_text(m_alpha_readout, std::to_string(m_tool->alphaPercent()));
             ETCS_LOG("PaintPalette", "alpha -> " << m_tool->alphaPercent() << "%");
         }
         else if (e.kind == Kind::Tool)
@@ -6875,7 +7548,20 @@ public:
 
     // Nothing held is the settled state, and it is what this costs then: one
     // call. See ontology/Animated.h on why the question is asked every visit.
-    bool AnimatingConcrete() override { return m_held != 0; }
+    /*
+ * TWO REASONS TO TICK. The held repeat is the old one. The new one is that an
+ * arrow's CELL may have changed width: the toolbar's slices are Clay boxes that
+ * grow with the window, and an arrow is a polygon with three fixed points, so a
+ * wide window left every arrow drawn at the width it was authored for and
+ * hugging the left edge of a cell three times that size.
+ *
+ * ASKED ON A TICK RATHER THAN DRIVEN BY THE SOLVE, because the solver writes
+ * MoveTo/ResizeTo straight onto the nodes and nothing downstream of it is told.
+ * This is the same shape PaintSurface uses for the same class of problem -- "the
+ * pane is not the size I last drew for" -- and it costs one bounds read per
+ * arrow per frame, only while a mismatch exists.
+ */
+    bool AnimatingConcrete() override { return m_held != 0 || arrowsNeedStretch(); }
 
     /*
  * ONE INTERVAL OF HOLDING.
@@ -6893,6 +7579,7 @@ public:
  */
     void AdvanceConcrete(double dt_ms) override
     {
+        stretchArrows();                 // cheap, and a no-op once they agree
         m_access_ms += dt_ms;
         while (m_access_ms >= HOLD_ACCESS_MS)
         {
@@ -6974,7 +7661,7 @@ public:
     {
         if (entry == 0 || label == 0) return;
         m_hover_labels[entry] = label;
-        set_node_hidden(label, true);
+        paint_node_hidden(label, true);
     }
     // The label that shows the select tool's mode -- written by the arrow, as
     // the radius readout is written by its +/- (see AddModeArrow).
@@ -6984,7 +7671,7 @@ public:
     void SetShapeReadout(ETCS::RID label)
     {
         m_shape_readout = label;
-        if (m_tool) set_node_text(label, paint_shape_mode_name(m_tool->shape()));
+        if (m_tool) paint_node_text(label, paint_shape_mode_name(m_tool->shape()));
     }
     // The brush slice's, which says which NIB is loaded rather than which
     // outline (PaintTipMode). Seeded on bind like the shape's, so the caption
@@ -6992,7 +7679,7 @@ public:
     void SetTipReadout(ETCS::RID label)
     {
         m_tip_readout = label;
-        if (m_tool) set_node_text(label, paint_tip_mode_name(m_tool->tip()));
+        if (m_tool) paint_node_text(label, paint_tip_mode_name(m_tool->tip()));
     }
 
 void Report() const
@@ -7010,6 +7697,18 @@ void Report() const
             else if (e.kind == Kind::Popup)
                 ETCS_LOG("PaintPalette", "  RID:" << rid << "  opens pane RID:" << e.slot
                          << (e.slot == m_popup_open ? " (open)" : ""));
+            // An arrow said "radius 0" here, which is what the fallthrough
+            // prints for anything it has no line for -- and an arrow is now
+            // declared by a script that was never told which kind it is
+            // (AddArrow), so "which kind did it become" is exactly the
+            // question this report has to be able to answer.
+            else if (e.kind == Kind::WheelArrow)
+                ETCS_LOG("PaintPalette", "  RID:" << rid << "  wheel arrow for RID:" << e.slot);
+            else if (e.kind == Kind::ModeArrow)
+                ETCS_LOG("PaintPalette", "  RID:" << rid << "  mode arrow for RID:" << e.slot);
+            else if (e.kind == Kind::Tool)
+                ETCS_LOG("PaintPalette", "  RID:" << rid << "  tool "
+                         << paint_tool_kind_name(e.tool));
             else
                 ETCS_LOG("PaintPalette", "  RID:" << rid << "  radius " << e.radius);
         }
@@ -7018,75 +7717,11 @@ void Report() const
     /*
  * HOW THIS TYPE REACHES A NODE IT DOES NOT OWN: by verb name over Entity::call,
  * since the node is another module's drawable (the header note says why there
- * is no other way). Public and static because they are the one seam for that,
- * and the canvas menu drives its readouts and its anchor cells through the same
- * three calls rather than a second copy of them.
+ * is no other way). That seam is one free function now (paint_node_verb, near
+ * the top of this file) rather than three statics here and nine more copies
+ * elsewhere; the canvas menu, which used to call these by name, calls the same
+ * free ones.
  */
-    static void set_node_fill(ETCS::RID node, float r, float g, float b, float a)
-    {
-        if (node == 0) return;
-        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-        if (!node_e) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
-        if (!e) return;
-        /*
-         * A COMPOSITOR'S BACKGROUND IS ITS FILL, and that is the whole of this
-         * branch. A toolbar slice used to be a polygon with its corners typed
-         * in; it is a compositor now so the layout can size it (the row in
-         * paint_toolbar.etcs), and a compositor answers SetBackground where a
-         * polygon answers SetFill. Same question, two spellings, and this is
-         * the one place that has to know both -- widening it here is what kept
-         * hover and the held-tool highlight working across the change instead
-         * of failing silently on a verb the node does not have.
-         */
-        const std::string tag = e->getSourceTag().toString();
-        const bool poly = tag.find("PolygonDrawable2D")   != std::string::npos;
-        const bool comp = tag.find("CompositeDrawable2D") != std::string::npos;
-        if (!poly && !comp) return;
-        ETCS::Buffer action;
-        action.write((tag + (poly ? ".SetFill" : ".SetBackground")).c_str());
-        ETCS::Buffer payload;
-        payload.write((std::to_string(r) + " " + std::to_string(g) + " "
-                     + std::to_string(b) + " " + std::to_string(a)).c_str());
-        try { e->call(action, payload); } catch (...) {}
-        // The fill went in by verb, across a module boundary; mark the chain
-        // from here so the bar's compositor re-blits whatever the leaf's own
-        // mark did or did not reach.
-        for (ETCS::Entity* n = e; n; n = n->getParent())
-            etcs_mark_observed(n);
-    }
-
-    static void set_node_hidden(ETCS::RID node, bool hidden)
-    {
-        if (node == 0) return;
-        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-        if (!node_e) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
-        if (!e) return;
-        ETCS::Buffer action;
-        action.write((e->getSourceTag().toString() + ".SetHidden").c_str());
-        ETCS::Buffer payload;
-        payload.write(hidden ? "1" : "0");
-        try { e->call(action, payload); } catch (...) {}
-        for (ETCS::Entity* n = e; n; n = n->getParent())
-            etcs_mark_observed(n);
-    }
-
-    static void set_node_text(ETCS::RID node, const std::string& text)
-    {
-        if (node == 0) return;
-        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-        if (!node_e) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
-        if (!e) return;
-        ETCS::Buffer action;
-        action.write((e->getSourceTag().toString() + ".SetText").c_str());
-        ETCS::Buffer payload;
-        payload.write(text.c_str());
-        try { e->call(action, payload); } catch (...) {}
-        for (ETCS::Entity* n = e; n; n = n->getParent())
-            etcs_mark_observed(n);
-    }
 
     // Whether `node` is `pane` or sits anywhere inside it -- the walk
     // resolve_entry makes, asked a different question.
@@ -7127,6 +7762,10 @@ private:
         ETCS::RID   target = 0;
         std::string action;
         std::string args;
+        // The cell width this node's geometry was last built for -- see
+        // stretchArrows. Zero means never, which is also what forces the
+        // first build.
+        int32_t drawn_w = 0;
     };
 
     // The two makers every call site goes through, so that adding a member to
@@ -7199,7 +7838,7 @@ private:
                 for (int i = 0; i < 3; ++i) c[i] = c[i] + (1.0f - c[i]) * t;
                 c[3] = 1.0f;
             }
-            set_node_fill(rid, c[0], c[1], c[2], c[3]);
+            paint_node_fill(rid, c[0], c[1], c[2], c[3]);
         }
     }
 
@@ -7301,19 +7940,19 @@ private:
         if (is_select)
         {
             m_tool->CycleMode();
-            set_node_text(m_mode_readout, paint_select_mode_label(m_tool->mode()));
+            paint_node_text(m_mode_readout, paint_select_mode_label(m_tool->mode()));
             ETCS_LOG("PaintPalette", "select mode -> " << paint_select_mode_name(m_tool->mode()));
         }
         else if (is_shape)
         {
             m_tool->CycleShape();
-            set_node_text(m_shape_readout, paint_shape_mode_name(m_tool->shape()));
+            paint_node_text(m_shape_readout, paint_shape_mode_name(m_tool->shape()));
             ETCS_LOG("PaintPalette", "shape -> " << paint_shape_mode_name(m_tool->shape()));
         }
         else
         {
             m_tool->CycleTip();
-            set_node_text(m_tip_readout, paint_tip_mode_name(m_tool->tip()));
+            paint_node_text(m_tip_readout, paint_tip_mode_name(m_tool->tip()));
             ETCS_LOG("PaintPalette", "tip -> " << paint_tip_mode_name(m_tool->tip()));
         }
     }
@@ -7369,7 +8008,7 @@ private:
             ETCS::Buffer arg; arg.write((std::to_string(pane) + " " + std::to_string(input)).c_str());
             try { r->call(act, arg); } catch (...) {}
         }
-        set_node_hidden(pane, false);
+        paint_node_hidden(pane, false);
         m_popup_open = pane;
         ETCS_LOG("PaintPalette", "popup pane RID:" << pane << " opened.");
     }
@@ -7383,7 +8022,7 @@ private:
             ETCS::Buffer arg; arg.write(std::to_string(m_popup_open).c_str());
             try { r->call(act, arg); } catch (...) {}
         }
-        set_node_hidden(m_popup_open, true);
+        paint_node_hidden(m_popup_open, true);
         ETCS_LOG("PaintPalette", "popup pane RID:" << m_popup_open << " closed.");
         m_popup_open = 0;
     }
@@ -7405,8 +8044,8 @@ private:
             }
         }
         if (want == m_hover_label_shown) return;
-        if (m_hover_label_shown != 0) set_node_hidden(m_hover_label_shown, true);
-        if (want != 0) set_node_hidden(want, false);
+        if (m_hover_label_shown != 0) paint_node_hidden(m_hover_label_shown, true);
+        if (want != 0) paint_node_hidden(want, false);
         m_hover_label_shown = want;
     }
 
@@ -7481,7 +8120,16 @@ public:
     PaintLayerPanel() = default;
     bool DeleteConcrete() override { return true; }
 
-    enum class Region : uint8_t { Body, Eye, Label, Delete, Title, Add };
+    /*
+     * Drag is its own region and that is the point of it. A press on the row
+     * BODY used to start a restack, and the body is also the second half of the
+     * double-click that opens the name -- so on a wide window, where the body is
+     * most of the row, a drag and a rename were the same gesture and the text
+     * field won. A dotted strip says "hold here", takes the drag, and leaves the
+     * body to mean only what it always meant.
+     */
+    enum class Region : uint8_t
+    { Body, Eye, Label, Delete, Title, Add, Drag, MergeUp, MergeDown, View };
 
     bool Create()
     {
@@ -7513,15 +8161,60 @@ public:
  * well. Picking it means the same as picking the row body -- it is the layer,
  * so it selects the layer.
  */
-    void AddRow(ETCS::RID bg, ETCS::RID eye, ETCS::RID thumb, ETCS::RID label, ETCS::RID del)
+    /*
+ * ── A ROW IS ASSEMBLED, NOT DECLARED ─────────────────────────────────────
+ *
+ * BeginRow opens one and RowNode attaches a part to it by name. This replaced
+ * AddRow's five positional RIDs plus AddRowExtras' four, and the reason is not
+ * tidiness: a script CANNOT hand another script a node it spawned, because
+ * `run` carries RIDs in and no names out (resolve_run_bindings). So a row whose
+ * parts all had to arrive in one call could only ever be written in one file,
+ * which is why the eye's fourteen points were copied once per row -- seven
+ * places to change a glyph and six to forget.
+ *
+ * With a row open, any script holding this panel can contribute a part. The eye
+ * is its own file now (paint_eye.etcs) and draws itself into the row's pane;
+ * the row script does not need to know what an eye is made of, and nothing
+ * needs to know both.
+ *
+ * AN UNKNOWN PART NAME IS REFUSED LOUDLY. It is the one mistake this shape
+ * makes possible that the positional form did not, and a part silently not
+ * attached is a control that does nothing for a reason nobody can see.
+ */
+    void BeginRow()
     {
-        const size_t idx = m_rows.size();
-        m_rows.push_back(Row{ bg, eye, thumb, label, del, 0 });
-        if (bg)    m_regions[bg]    = Hit{ idx, Region::Body };
-        if (eye)   m_regions[eye]   = Hit{ idx, Region::Eye };
-        if (thumb) m_regions[thumb] = Hit{ idx, Region::Body };
-        if (label) m_regions[label] = Hit{ idx, Region::Label };
-        if (del)   m_regions[del]   = Hit{ idx, Region::Delete };
+        m_rows.push_back(Row{});
+    }
+
+    void RowNode(const std::string& what, ETCS::RID node)
+    {
+        if (m_rows.empty()) { ETCS_LOG("PaintLayerPanel", "RowNode before BeginRow -- ignored."); return; }
+        if (node == 0) return;
+        const size_t idx = m_rows.size() - 1;
+        Row& row = m_rows[idx];
+
+        // The parts that are picked, and what a press on each one means.
+        if      (what == "bg")    { row.bg    = node; m_regions[node] = Hit{ idx, Region::Body }; }
+        else if (what == "eye")   { row.eye   = node; m_regions[node] = Hit{ idx, Region::Eye }; }
+        else if (what == "thumb") { row.thumb = node; m_regions[node] = Hit{ idx, Region::Body }; }
+        else if (what == "label") { row.label = node; m_regions[node] = Hit{ idx, Region::Label }; }
+        else if (what == "del")   { row.del   = node; m_regions[node] = Hit{ idx, Region::Delete }; }
+        else if (what == "grip")  { row.grip  = node; m_regions[node] = Hit{ idx, Region::Drag }; }
+        else if (what == "up")    { row.mup   = node; m_regions[node] = Hit{ idx, Region::MergeUp }; }
+        else if (what == "down")  { row.mdn   = node; m_regions[node] = Hit{ idx, Region::MergeDown }; }
+        // DECORATION, by any of the names a row script has for it. Not a
+        // control: it is listed so that hiding the row hides it too, which a
+        // polygon cannot inherit from a parent it does not have. Any number of
+        // them, because a row keeps growing ornaments and each one that has no
+        // slot is one that stays on screen over an empty panel.
+        else if (what == "pupil" || what == "dots" || what == "trim")
+            row.trim.push_back(node);
+        else
+        {
+            ETCS_LOG("PaintLayerPanel", "RowNode: '" << what << "' is not a part of a row "
+                     "(bg eye thumb label del grip up down, or pupil/dots/trim) -- RID:" << node
+                     << " is attached to nothing.");
+        }
     }
 
     // The + on the title bar. A control of the WINDOW rather than of a row, so
@@ -7530,6 +8223,22 @@ public:
     {
         if (node) m_regions[node] = Hit{ SIZE_MAX, Region::Add };
     }
+
+    /*
+ * THE VIEW TOGGLE, beside the +. Collapsed, the window is its title bar and
+ * nothing else -- every row, and the rows' own controls, are hidden.
+ *
+ * NOT A CLOSE, and the distinction is the same one the title comment already
+ * makes: a layer window with a cross on it is a window somebody closes by
+ * accident and then cannot reopen. This leaves the bar on screen, which is both
+ * the thing you press to get the list back and the reminder that there is one.
+ */
+    void BindView(ETCS::RID node)
+    {
+        if (node) m_regions[node] = Hit{ SIZE_MAX, Region::View };
+    }
+
+    bool collapsed() const { return m_collapsed; }
 
     /*
  * THE TITLE BAR IS THE HANDLE: a press on it and the window follows the
@@ -7631,6 +8340,26 @@ public:
         m_document->OrderedLayers(stack);
 
         /*
+     * COLLAPSED IS A ROW STATE, not a second drawing path. Every row and every
+     * control on it goes hidden and the title bar is left; the bar is what
+     * re-expands it, so the window can never be lost. Done here rather than in
+     * the press because a Refresh from anywhere else -- a page switch, a
+     * delete -- must not quietly bring the rows back.
+     */
+        if (m_collapsed)
+        {
+            for (Row& row : m_rows)
+            {
+                row.layer = 0;
+                for (ETCS::RID n : { row.bg, row.eye, row.thumb, row.label,
+                                     row.del, row.grip, row.mup, row.mdn })
+                    if (n) paint_node_hidden(n, true);
+                for (ETCS::RID n : row.trim) paint_node_hidden(n, true);
+            }
+            return;
+        }
+
+        /*
      * THE HOVER DIM CANNOT OUTLIVE THE ROW IT CAME FROM. Hovering a row dims
      * every other layer (IsolateLayer) and only another hover undoes it -- so
      * a row deleted under the pointer, or a scroll that re-binds the rows, or
@@ -7675,44 +8404,56 @@ public:
             {
                 // An empty slot is drawn as nothing rather than hidden: the
                 // window is a fixed frame and a gap in it is honest.
-                SetFill(row.bg,    m_row_idle[0], m_row_idle[1], m_row_idle[2], 0.0f);
-                SetFill(row.eye,   0.0f, 0.0f, 0.0f, 0.0f);
-                SetHidden(row.eye, true);
-                SetHidden(row.thumb, true);
-                SetHidden(row.del, true);
-                SetFill(row.del,   0.0f, 0.0f, 0.0f, 0.0f);
-                SetText(row.label, "");
+                paint_node_fill(row.bg,    m_row_idle[0], m_row_idle[1], m_row_idle[2], 0.0f);
+                paint_node_fill(row.eye,   0.0f, 0.0f, 0.0f, 0.0f);
+                paint_node_hidden(row.eye, true);
+                paint_node_hidden(row.thumb, true);
+                paint_node_hidden(row.del, true);
+                paint_node_fill(row.del,   0.0f, 0.0f, 0.0f, 0.0f);
+                paint_node_hidden(row.grip,  true);
+                paint_node_hidden(row.mup,   true);
+                paint_node_hidden(row.mdn,   true);
+                for (ETCS::RID n : row.trim) paint_node_hidden(n, true);
+                paint_node_text(row.label, "");
                 continue;
             }
 
             const bool selected = (m_document->activeLayer() == layer);
-            SetFill(row.bg,
+            paint_node_fill(row.bg,
                     selected ? m_row_sel[0] : m_row_idle[0],
                     selected ? m_row_sel[1] : m_row_idle[1],
                     selected ? m_row_sel[2] : m_row_idle[2], 1.0f);
             // EVERY layer has an eye, including the base one: hiding the paper
             // to see what is under it is exactly what the control is for, and
             // it is the delete that the base refuses, not the eye.
-            SetHidden(row.eye, false);
-            SetFill(row.eye,
+            paint_node_hidden(row.eye, false);
+            paint_node_fill(row.eye,
                     layer->visible() ? m_eye_shown[0] : m_eye_hidden[0],
                     layer->visible() ? m_eye_shown[1] : m_eye_hidden[1],
                     layer->visible() ? m_eye_shown[2] : m_eye_hidden[2], 1.0f);
-            SetHidden(row.thumb, false);
+            paint_node_hidden(row.thumb, false);
             paint_thumb(row.thumb, layer);
             // The base layer has no delete: it is the page's ground and the
             // document refuses to remove it (PaintDocument::RemoveLayer), so a
             // button that would only ever be refused is not drawn or picked.
             const bool base = (from_top == total - 1);
-            SetHidden(row.del, base);
-            SetFill(row.del, 0.75f, 0.28f, 0.30f, base ? 0.0f : 1.0f);
+            paint_node_hidden(row.del, base);
+            paint_node_fill(row.del, 0.75f, 0.28f, 0.30f, base ? 0.0f : 1.0f);
+            // The grip is always there -- even the base row can be dragged, it
+            // simply has nowhere below to land. The merge arrows are hidden at
+            // the ends of the stack for the reason the delete is: an arrow that
+            // can only ever be refused is a control that teaches nothing.
+            paint_node_hidden(row.grip,  false);
+            for (ETCS::RID n : row.trim) paint_node_hidden(n, false);
+            paint_node_hidden(row.mup,   from_top == 0);
+            paint_node_hidden(row.mdn,   base);
             // The row being typed into shows the BUFFER and a caret, not the
             // name it still has -- otherwise the keys go somewhere invisible
             // and the rename reads as the window ignoring you.
             if (m_editing && m_renaming == row.layer)
-                SetText(row.label, (m_edit + "_").c_str());
+                paint_node_text(row.label, (m_edit + "_").c_str());
             else
-                SetText(row.label, layer->name().c_str());
+                paint_node_text(row.label, layer->name().c_str());
         }
     }
 
@@ -7758,6 +8499,14 @@ public:
             repaint();                 // a carry may have landed on the way in
             return true;
         }
+        if (hit.region == Region::View)
+        {
+            end_edit(false);
+            m_collapsed = !m_collapsed;
+            Refresh();                 // which is where hidden actually happens
+            repaint();
+            return true;
+        }
         Row& row = m_rows[hit.row];
         if (row.layer == 0) return true;           // an empty slot is still ours
 
@@ -7782,11 +8531,33 @@ public:
             }
             end_edit(false);
             m_document->SetActiveLayer(row.layer);
-            // A press on a row body is also where a drag begins -- Drop below
-            // is what ends it. Held as a RID so a restack between the two
-            // cannot leave this pointing at a row that now means another layer.
-            m_dragging = row.layer;
+            // A press on the body chooses, and does NOT begin a restack any
+            // more: the grip does that (Region::Drag). The two shared this
+            // gesture and the rename always won it.
             repaint();                 // SetActiveLayer lands a carry in flight
+            break;
+
+        /*
+     * THE GRIP. Held as a RID so a restack between the press and the drop
+     * cannot leave this pointing at a row that now means another layer.
+     * Choosing the row too, because reaching for a row's handle and finding
+     * you have moved a different layer than the one you then look at is the
+     * kind of surprise that makes people stop using a control.
+     */
+        case Region::Drag:
+            end_edit(false);
+            m_document->SetActiveLayer(row.layer);
+            m_dragging = row.layer;
+            repaint();
+            break;
+
+        case Region::MergeUp:
+        case Region::MergeDown:
+            end_edit(false);
+            m_document->MergeLayer(row.layer, hit.region == Region::MergeDown ? -1 : 1);
+            if (m_dragging == row.layer) m_dragging = 0;
+            Refresh();
+            repaint();
             break;
 
         case Region::Eye:
@@ -7822,7 +8593,8 @@ public:
 
         case Region::Title:
         case Region::Add:
-            // Both answered above, before the row lookup -- they are the
+        case Region::View:
+            // All answered above, before the row lookup -- they are the
             // window's controls, not a row's. Named here so the switch stays
             // total and a new region cannot be added without deciding what it
             // means.
@@ -7889,14 +8661,10 @@ public:
     bool DragWindow(Point2D at)
     {
         if (!m_moving) return false;
-        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
-        if (!w) { m_moving = false; return false; }
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(w.get());
-        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetPosition").c_str());
-        ETCS::Buffer arg;
-        arg.write((std::to_string(m_origin.x + (at.x - m_grab.x)) + ", "
-                 + std::to_string(m_origin.y + (at.y - m_grab.y))).c_str());
-        try { e->call(act, arg); } catch (...) {}
+        if (!paint_node_moved(m_window,
+                              m_origin.x + (at.x - m_grab.x),
+                              m_origin.y + (at.y - m_grab.y)))
+        { m_moving = false; return false; }
         return true;
     }
 
@@ -8201,40 +8969,23 @@ public:
     void CloseEdit() { end_edit(true); }
 
 private:
-    struct Row { ETCS::RID bg, eye, thumb, label, del; ETCS::RID layer; };
-    struct Hit { size_t row; Region region; };
-
     /*
- * DRIVING SOMEBODY ELSE'S NODE, by the verb name the type exports.
- *
- * Entity::call with "<Tag>.<Work>" is the cross-module seam -- the same one
- * loaders/etcs.cc's etcs_web_call uses -- and it is what lets a panel restyle a
- * polygon it did not create and could not create (see this class's header
- * note). The tag is read off the entity rather than assumed, so a script may
- * build a row out of whatever drawable leaf it likes as long as that leaf
- * exports SetFill.
- *
- * Silent when the node is 0 or gone: a row that declared no eye has no eye to
- * colour, and a node deleted underneath us is the script's business, not an
- * error to raise once per frame.
- */
-    static void SetFill(ETCS::RID node, float r, float g, float b, float a)
-    {
-        if (node == 0) return;
-        // By FAMILY, because the concrete type is the script's choice: a row may
-        // be built from any Drawable2D leaf that exports SetFill. Held for the
-        // call, since it is somebody else's entity (core/Entity.h).
-        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-        if (!node_e) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
-        if (!e) return;
-        ETCS::Buffer action;
-        action.write((e->getSourceTag().toString() + ".SetFill").c_str());
-        ETCS::Buffer payload;
-        payload.write((std::to_string(r) + " " + std::to_string(g) + " "
-                     + std::to_string(b) + " " + std::to_string(a)).c_str());
-        try { e->call(action, payload); } catch (...) {}
-    }
+     * TRIM IS A LIST, and it is a list because there turned out to be more than
+     * one of them and no way to tell in advance how many. A row's parts divide
+     * into CONTROLS (a press on them means something, so each needs its own
+     * name and its own Region) and DECORATION that has no meaning of its own
+     * and must simply appear and disappear with the row: the eye's pupil, the
+     * grip's dots. `pupil` was a named slot for the first of those, which made
+     * the second one -- added in the same patch, four lines away in the row
+     * script -- have nowhere to go, so it was never registered, never hidden,
+     * and six sets of dots floated over an empty panel. A slot per decoration
+     * is a bug waiting for the next decoration; a list is not.
+     */
+    struct Row { ETCS::RID bg, eye, thumb, label, del; ETCS::RID layer;
+                 ETCS::RID grip = 0, mup = 0, mdn = 0;
+                 std::vector<ETCS::RID> trim; };
+    struct Hit { size_t row; Region region; };
+    bool m_collapsed = false;
 
     /*
  * Closing the field, keeping the name or not. Rename goes through the document
@@ -8373,37 +9124,6 @@ private:
     // What the window changed, shown. Silent with nothing bound: a panel driven
     // from a test or a script has no view to put back.
     void repaint() { if (m_surface) m_surface->Render(); }
-
-    static void SetText(ETCS::RID node, const char* text)
-    {
-        if (node == 0) return;
-        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-        if (!node_e) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
-        if (!e) return;
-        ETCS::Buffer action;
-        action.write((e->getSourceTag().toString() + ".SetText").c_str());
-        ETCS::Buffer payload;
-        payload.write(text);
-        try { e->call(action, payload); } catch (...) {}
-    }
-
-    // Hidden is neither drawn nor picked (Drawable2D_::PickAt), which is what
-    // "this row has no delete" has to mean -- a transparent button still takes
-    // the press. By verb, as SetFill is, since the leaf is the script's choice.
-    static void SetHidden(ETCS::RID node, bool hidden)
-    {
-        if (node == 0) return;
-        ETCS::Held<Drawable2D_> node_e = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-        if (!node_e) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(node_e.get());
-        if (!e) return;
-        ETCS::Buffer action;
-        action.write((e->getSourceTag().toString() + ".SetHidden").c_str());
-        ETCS::Buffer payload;
-        payload.write(hidden ? "1" : "0");
-        try { e->call(action, payload); } catch (...) {}
-    }
 
     PaintDocument* m_document = nullptr;
     PaintSurface*  m_surface  = nullptr;
@@ -8827,24 +9547,14 @@ private:
 
     void set_pane_hidden(bool hidden)
     {
-        ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_root);
-        if (!h) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(h.get());
-        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetHidden").c_str());
-        ETCS::Buffer arg; arg.write(hidden ? "1" : "0");
-        try { e->call(act, arg); } catch (...) {}
+        paint_node_hidden(m_root, hidden);
     }
 
     // The pane is somebody else's drawable, so it moves by verb name like
     // everything else this type reaches across.
     void move_pane(int32_t x, int32_t y)
     {
-        ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_root);
-        if (!h) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(h.get());
-        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetPosition").c_str());
-        ETCS::Buffer arg; arg.write((std::to_string(x) + ", " + std::to_string(y)).c_str());
-        try { e->call(act, arg); } catch (...) {}
+        paint_node_moved(m_root, x, y);
     }
 
     void route_remove(ETCS::Entity* router)
@@ -9148,21 +9858,21 @@ public:
             m_page_id[i] = info ? info->id : 0;
             if (!info)
             {
-                PaintPalette::set_node_text(m_page_label[i], "");
-                PaintPalette::set_node_fill(m_page_row[i], 0.106f, 0.110f, 0.078f, 1.0f);
+                paint_node_text(m_page_label[i], "");
+                paint_node_fill(m_page_row[i], 0.106f, 0.110f, 0.078f, 1.0f);
                 continue;
             }
             const std::string name = info->name.empty()
                 ? ("page " + std::to_string(info->id)) : info->name;
-            PaintPalette::set_node_text(m_page_label[i],
+            paint_node_text(m_page_label[i],
                 name + "  " + std::to_string(info->w) + "x" + std::to_string(info->h));
             const bool current = (info->id == here && here != 0);
             // The same two the layer rows use, and for the same reason: this is
             // furniture in the same window, so an empty slot is the ruler's band,
             // an idle row is one step up from it, and the current page is the
             // ruler's in-band highlight. See paint_layers.etcs.
-            if (current) PaintPalette::set_node_fill(m_page_row[i], 0.35f, 0.55f, 0.95f, 1.0f);
-            else         PaintPalette::set_node_fill(m_page_row[i], 0.15f, 0.16f, 0.11f, 1.0f);
+            if (current) paint_node_fill(m_page_row[i], 0.35f, 0.55f, 0.95f, 1.0f);
+            else         paint_node_fill(m_page_row[i], 0.15f, 0.16f, 0.11f, 1.0f);
         }
     }
 
@@ -9213,7 +9923,7 @@ public:
             ImportAsLayer();
             return;
         }
-        PaintPalette::set_node_text(m_prompt_caption, paint_path_stem(path));
+        paint_node_text(m_prompt_caption, paint_path_stem(path));
         if (ETCS::Entity* p = paint_resolve_tag("PaintPalette", m_prompt_palette))
             static_cast<PaintPalette*>(p->getTrueType())->OpenPopup(m_prompt_pane, m_prompt_input);
     }
@@ -9296,12 +10006,11 @@ private:
             static_cast<PaintPalette*>(p->getTrueType())->ClosePopup();
     }
 
-    // Through the palette's seam, since these are its nodes' verbs -- see
-    // PaintPalette::set_node_text.
+    // By verb, since these are somebody else's nodes -- see paint_node_verb.
     void push_readouts()
     {
-        PaintPalette::set_node_text(m_w_label, std::to_string(m_width));
-        PaintPalette::set_node_text(m_h_label, std::to_string(m_height));
+        paint_node_text(m_w_label, std::to_string(m_width));
+        paint_node_text(m_h_label, std::to_string(m_height));
     }
 
     /*
@@ -9318,8 +10027,8 @@ private:
         {
             if (m_cells[i] != 0)
             {
-                if (i == m_anchor) PaintPalette::set_node_fill(m_cells[i], 0.79f, 0.71f, 0.35f, 1.0f);
-                else               PaintPalette::set_node_fill(m_cells[i], 0.22f, 0.22f, 0.27f, 1.0f);
+                if (i == m_anchor) paint_node_fill(m_cells[i], 0.79f, 0.71f, 0.35f, 1.0f);
+                else               paint_node_fill(m_cells[i], 0.22f, 0.22f, 0.27f, 1.0f);
             }
             if (m_arrows[i] == 0) continue;
             // Away from the anchor, by the sign of the difference in grid
@@ -9332,7 +10041,7 @@ private:
             else if (dx == 0)            mark = (dy < 0) ? "^" : "v";
             else if (dy == 0)            mark = (dx < 0) ? "<" : ">";
             else                         mark = ((dx < 0) == (dy < 0)) ? "\\" : "/";
-            PaintPalette::set_node_text(m_arrows[i], mark);
+            paint_node_text(m_arrows[i], mark);
         }
     }
 
@@ -10097,6 +10806,32 @@ public:
          * for. It is also why a subtract appeared to do nothing rather than to
          * do something wrong -- a carry logs no selection at all.
          */
+            /*
+         * THE MOVE TOOL IS THE PAN, REACHED BY THE LEFT BUTTON. Nothing new
+         * under it: it enters the same m_panning state a right or middle drag
+         * does and the same motion handler moves the picture.
+         *
+         * IT EXISTS FOR TOUCH. Pan has always been the right or middle button
+         * (paint_is_pan_button), and a phone has neither -- so on a tablet the
+         * picture could not be moved at all. A tool that pans on an ordinary
+         * drag is the one shape that works with a single contact point.
+         *
+         * The raw event position, not m_cursor_*: a pan is measured in VIEW
+         * pixels, and the cursor has already been projected into the document.
+         * Panning by a document delta would move the picture by more or less
+         * than the finger, depending on the zoom.
+         */
+            if (m_tool && m_tool->kind() == PaintToolKind::Move)
+            {
+                m_panning    = true;
+                m_pan_button = 0;               // the left button has no pan id
+                m_pan_hold.Press();
+                m_pan_from_x = ev.x;
+                m_pan_from_y = ev.y;
+                m_last_motion_ms = 0;           // allow an immediate first sample
+                return;
+            }
+
             if (m_tool && m_cursor_seen && m_document
              && m_tool->kind() == PaintToolKind::Select
              && !paint_modifiers().ctrl() && !paint_modifiers().shift()
@@ -10169,6 +10904,16 @@ public:
         else if (ev.action == INPUT_UP || ev.action == INPUT_BUTTON_UP)
         {
             if (ev.action == INPUT_BUTTON_UP) m_stroke_hold.Release();
+            // Letting go of the move tool ends the pan the press began. Before
+            // everything else, because a pan started no stroke and has nothing
+            // below here to commit.
+            if (m_panning && m_tool && m_tool->kind() == PaintToolKind::Move)
+            {
+                flush_coalesced_motion();       // apply the last pending delta
+                m_panning = false;
+                m_pan_hold.Release();
+                return;
+            }
             // Letting go of a carried box. Checked before the commit below,
             // because a carry never began a stroke and there is nothing to commit.
             if (m_text_drag != 0)
@@ -11568,12 +12313,38 @@ public:
         return true;
     }
 
-    // bg is the row's plate, name/role the two labels this fills in. The
-    // buttons are not listed: they are palette calls naming a verb below, so
-    // this type never has to resolve them.
-    void AddRow(ETCS::RID bg, ETCS::RID name, ETCS::RID role)
+    /*
+ * ── A ROW IS ASSEMBLED, AND ITS BUTTONS NAME THEMSELVES ──────────────────
+ *
+ * Same shape as PaintLayerPanel's, and the second half is the part that makes
+ * one row script serve eight rows: the press verbs take the NODE that was
+ * pressed rather than a row index, so a palette call is written once with no
+ * number in it. An index would have had to be a literal in the script, which
+ * means a file per row, which is the duplication this replaced.
+ */
+    void BeginRow() { m_rows.push_back(Row{}); }
+
+    void RowNode(const std::string& what, ETCS::RID node)
     {
-        m_rows.push_back(Row{ bg, name, role });
+        if (m_rows.empty()) { ETCS_LOG("PaintVisitors", "RowNode before BeginRow -- ignored."); return; }
+        if (node == 0) return;
+        Row& row = m_rows.back();
+        if      (what == "bg")   row.bg   = node;
+        else if (what == "name") row.name = node;
+        else if (what == "role") row.role = node;
+        // The three controls are remembered so a press can say WHICH row it
+        // came from without the script having had to number them.
+        else if (what == "up" || what == "down" || what == "out")
+            m_buttons[node] = m_rows.size() - 1;
+        else
+            ETCS_LOG("PaintVisitors", "RowNode: '" << what << "' is not a part of a row "
+                     "(bg name role up down out) -- RID:" << node << " is attached to nothing.");
+    }
+
+    size_t rowOf(ETCS::RID node) const
+    {
+        auto it = m_buttons.find(node);
+        return (it == m_buttons.end()) ? SIZE_MAX : it->second;
     }
 
     void BindWindow(ETCS::RID pane) { m_window = pane; }
@@ -11632,9 +12403,9 @@ public:
  * nothing by itself, because the roster it is drawing is the node's and the
  * next refresh would overwrite any guess it made.
  */
-    void Promote(size_t row) { act(row, "writer"); }
-    void Demote(size_t row)  { act(row, "reader"); }
-    void Remove(size_t row)  { act(row, "out");    }
+    void Promote(ETCS::RID node) { act(rowOf(node), "writer"); }
+    void Demote(ETCS::RID node)  { act(rowOf(node), "reader"); }
+    void Remove(ETCS::RID node)  { act(rowOf(node), "out");    }
 
 private:
     struct Row    { ETCS::RID bg = 0, name = 0, role = 0; };
@@ -11642,7 +12413,7 @@ private:
 
     void act(size_t row, const char* verb)
     {
-        if (row >= m_who.size()) return;
+        if (row == SIZE_MAX || row >= m_who.size()) return;
         if (m_who[row].role == "owner") return;      // the host is not theirs to change
         page_event((std::string(verb) + ":" + m_who[row].name).c_str());
     }
@@ -11650,7 +12421,7 @@ private:
     void show(bool up)
     {
         m_shown = up;
-        set_hidden(m_window, !up);
+        paint_node_hidden(m_window, !up);
     }
 
     static void set_text(ETCS::RID rid, const std::string& text)
@@ -11671,22 +12442,6 @@ private:
         raw->call(ETCS::Buffer("TextLabel.SetColor"), b, ETCS::RootSignalContext());
     }
 
-    // Through the node's OWN SetHidden verb, not a family method: hiding is a
-    // concrete type's action here (PaintLayerPanel's own hider says the same),
-    // and the tag is what names it.
-    static void set_hidden(ETCS::RID rid, bool hide)
-    {
-        if (rid == 0) return;
-        ETCS::Held<Drawable2D_> held = ETCS::resolve_held<Drawable2D_>("Drawable2D", rid);
-        if (!held) return;
-        ETCS::Entity* e = static_cast<ETCS::Entity*>(held.get());
-        if (!e) return;
-        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetHidden").c_str());
-        ETCS::Buffer payload; payload.write(hide ? "1" : "0");
-        try { e->call(act, payload); } catch (...) {}
-        for (ETCS::Entity* n = e; n; n = n->getParent()) etcs_mark_observed(n);
-    }
-
     // Rows beyond the roster are HIDDEN rather than blanked: an empty plate
     // still reads as a person who has not loaded yet.
     void Refresh()
@@ -11694,9 +12449,9 @@ private:
         for (size_t i = 0; i < m_rows.size(); ++i)
         {
             const bool live = (i < m_who.size());
-            set_hidden(m_rows[i].bg,   !live);
-            set_hidden(m_rows[i].name, !live);
-            set_hidden(m_rows[i].role, !live);
+            paint_node_hidden(m_rows[i].bg,   !live);
+            paint_node_hidden(m_rows[i].name, !live);
+            paint_node_hidden(m_rows[i].role, !live);
             if (!live) continue;
             set_text(m_rows[i].name, m_who[i].name);
             set_text(m_rows[i].role, m_who[i].role);
@@ -11725,6 +12480,7 @@ private:
     }
 
     std::vector<Row>    m_rows;
+    std::unordered_map<ETCS::RID, size_t> m_buttons;   // control -> its row
     std::vector<Person> m_who;
     ETCS::RID m_window = 0;
     bool  m_shown = false;
@@ -11802,6 +12558,18 @@ private:
     struct Member
     {
         std::string token;
+        /*
+         * WHERE THIS MEMBER IS LOOKING, and the colour they chose to be seen
+         * in -- "x y w h rrggbb", opaque to this node exactly as an entry's
+         * body is.
+         *
+         * PRESENCE, NOT HISTORY. It is overwritten in place and never appended
+         * to anything: a camera position changes on every pan and is worthless
+         * a second later, so putting it in the session's entries would fill the
+         * one structure whose value is that everything in it caused something.
+         * It costs one string per member and nothing per pan.
+         */
+        std::string view;
         Role        role = Role::Reader;
         // Last time this member was heard from, so a roster does not fill with
         // names that walked away. Refreshed by every verb they reach.
@@ -12060,6 +12828,41 @@ private:
         if (!s) return "NO SUCH SESSION";
         Member* me = member(*s, self, token);
         if (!me) return "FORBIDDEN";
+
+        /*
+     * WHERE I AM LOOKING, in one call, carrying the colour with it -- which is
+     * why it is one call: the rectangle and the colour are a single statement
+     * about how this person should appear, and splitting them would let a page
+     * be drawn in last week's colour for one poll.
+     *
+     * ANY MEMBER, INCLUDING A READER. Saying where you are looking is not
+     * writing to the picture; a viewer who could not be seen would be the one
+     * participant nobody could follow, which is the opposite of the point.
+     */
+        if (verb == "view")
+        {
+            std::string payload = req.from(5);
+            for (char& c : payload) if (c == '/') c = ' ';
+            me->view = payload;
+            return "ok";
+        }
+
+        // Everyone's, readable by everyone -- unlike `who`, which is the roster
+        // with ROLES on it and stays the host's. Presence is public within a
+        // session by nature: it exists to be looked at.
+        if (verb == "views")
+        {
+            std::string out;
+            for (const auto& [name, m] : s->roster)
+            {
+                if (m.view.empty() || name == self) continue;   // not my own frame
+                out += name;
+                out += " ";
+                out += m.view;
+                out += "\n";
+            }
+            return out;
+        }
 
         if (verb == "head") return std::to_string(s->seq);
         if (verb == "role" && arg.empty())
@@ -12348,6 +13151,22 @@ DEFINE_WORK_FUNC_TYPED(PaintDocument, Create, (uint32_t, w), (uint32_t, h), (std
 {
     (void)ctx;
     self.Create(w, h, name);
+}
+
+// MergeDown / MergeUp <layer> -- two verbs, one act, named by direction because
+// that is how a person means it; the sign is an implementation detail. No answer
+// written back: a TYPED work function's arguments come out of the buffer and it
+// has none to write into, and the refusals all log their own reason.
+DEFINE_WORK_FUNC_TYPED(PaintDocument, MergeDown, (ETCS::RID, layer))
+{
+    (void)ctx;
+    self.MergeLayer(layer, -1);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintDocument, MergeUp, (ETCS::RID, layer))
+{
+    (void)ctx;
+    self.MergeLayer(layer, 1);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintDocument, SetActiveLayer, (ETCS::RID, layer))
@@ -12723,6 +13542,46 @@ DEFINE_WORK_FUNC_TYPED(PaintSurface, SetTarget, (ETCS::RID, target))
 // from outside -- a wheel handler in the page, a +/- button in a toolbar, a
 // script restoring a saved view.
 
+/*
+ * ── the peers' frames ───────────────────────────────────────────────────────
+ *
+ * ClearPeers then one SetPeer per participant, which is the shape the 256-byte
+ * call buffer wants and the reason no file bridge is involved: a peer line is
+ * about forty bytes, a roster of eight is over the ceiling, and one call each
+ * is under it with room to spare.
+ *
+ * The rectangle is in DOCUMENT space. Each page draws it through its own
+ * projection, so two people at different zooms see each other's frame in the
+ * right place on the picture -- view-space pixels would only be correct for
+ * whoever sent them.
+ */
+DEFINE_WORK_FUNC(PaintSurface, ClearPeers)
+{
+    (void)ctx; (void)data;
+    self.ClearPeers();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintSurface, SetPeer,
+                       (std::string, name),
+                       (int32_t, x), (int32_t, y), (int32_t, w), (int32_t, h),
+                       (float, r), (float, g), (float, b))
+{
+    (void)ctx;
+    self.SetPeer(name, x, y, w, h, r, g, b);
+}
+
+// This pane's own visible rectangle, in document space -- what the page sends
+// to the node so everyone else can draw it. Derived from the projection on
+// every call rather than remembered, so it cannot go stale behind a pan.
+DEFINE_WORK_FUNC(PaintSurface, ViewRect)
+{
+    (void)ctx;
+    int32_t x = 0, y = 0, w = 0, h = 0;
+    self.ViewRect(x, y, w, h);
+    data.writeString((std::to_string(x) + " " + std::to_string(y) + " "
+                    + std::to_string(w) + " " + std::to_string(h)).c_str());
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintSurface, SetPan, (int32_t, x), (int32_t, y))
 {
     (void)ctx;
@@ -13037,6 +13896,15 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddModeArrow, (ETCS::RID, node), (ETCS::RID
     self.AddModeArrow(node, slot);
 }
 
+// AddArrow <arrow node> <the cell it belongs to> -- wheel or mode, decided by
+// what the cell already is. What paint_cell_arrow.etcs calls, since a script
+// cannot be handed the word "wheel" (run carries RIDs only).
+DEFINE_WORK_FUNC_TYPED(PaintPalette, AddArrow, (ETCS::RID, node), (ETCS::RID, slot))
+{
+    (void)ctx;
+    self.AddArrow(node, slot);
+}
+
 // SetShapeReadout <label> -- the shape slice's current outline, by name.
 DEFINE_WORK_FUNC_TYPED(PaintPalette, SetShapeReadout, (ETCS::RID, label))
 {
@@ -13193,12 +14061,26 @@ DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindDocument, (ETCS::RID, document))
 // AddRow <bg> <eye> <thumb> <label> <delete> -- top of the window first,
 // matching the order a script lays them out in. Any of the five may be 0; the
 // thumbnail is a raster the panel paints the layer into (see paint_thumb).
-DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, AddRow,
-    (ETCS::RID, bg), (ETCS::RID, eye), (ETCS::RID, thumb),
-    (ETCS::RID, label), (ETCS::RID, del))
+DEFINE_WORK_FUNC(PaintLayerPanel, BeginRow)
+{
+    (void)ctx; (void)data;
+    self.BeginRow();
+}
+
+// RowNode <what> <rid> -- attaches one part to the row BeginRow opened. See the
+// header note for why a row is assembled rather than declared: a script cannot
+// hand another script a node it spawned, so a row that needed all its parts in
+// one call could only ever live in one file.
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, RowNode, (std::string, what), (ETCS::RID, node))
 {
     (void)ctx;
-    self.AddRow(bg, eye, thumb, label, del);
+    self.RowNode(what, node);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindView, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindView(node);
 }
 
 // BindAdd <node> -- pressing it adds a layer above the active one
@@ -14030,10 +14912,16 @@ DEFINE_WORK_FUNC(PaintVisitors, Create)
     self.Create();
 }
 
-DEFINE_WORK_FUNC_TYPED(PaintVisitors, AddRow, (ETCS::RID, bg), (ETCS::RID, name), (ETCS::RID, role))
+DEFINE_WORK_FUNC(PaintVisitors, BeginRow)
+{
+    (void)ctx; (void)data;
+    self.BeginRow();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, RowNode, (std::string, what), (ETCS::RID, node))
 {
     (void)ctx;
-    self.AddRow(bg, name, role);
+    self.RowNode(what, node);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintVisitors, BindWindow, (ETCS::RID, pane))
@@ -14082,22 +14970,22 @@ DEFINE_WORK_FUNC(PaintVisitors, Close)
     self.Close();
 }
 
-DEFINE_WORK_FUNC_TYPED(PaintVisitors, Promote, (uint32_t, row))
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, Promote, (ETCS::RID, node))
 {
     (void)ctx;
-    self.Promote(row);
+    self.Promote(node);
 }
 
-DEFINE_WORK_FUNC_TYPED(PaintVisitors, Demote, (uint32_t, row))
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, Demote, (ETCS::RID, node))
 {
     (void)ctx;
-    self.Demote(row);
+    self.Demote(node);
 }
 
-DEFINE_WORK_FUNC_TYPED(PaintVisitors, Remove, (uint32_t, row))
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, Remove, (ETCS::RID, node))
 {
     (void)ctx;
-    self.Remove(row);
+    self.Remove(node);
 }
 
 DEFINE_WORK_FUNC(PaintVisitors, Delete)

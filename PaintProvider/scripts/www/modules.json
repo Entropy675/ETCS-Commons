@@ -46,6 +46,10 @@
     "PaintProvider/scripts/paint_layers.etcs",
     "PaintProvider/scripts/paint_import.etcs",
     "PaintProvider/scripts/paint_visitors.etcs",
+    "PaintProvider/scripts/paint_eye.etcs",
+    "PaintProvider/scripts/paint_cell_arrow.etcs",
+    "PaintProvider/scripts/paint_layer_row.etcs",
+    "PaintProvider/scripts/paint_visitor_row.etcs",
     "RenderProvider/scripts/render_frames.etcs"
   ],
   "boot": "boot_paint_panels.etcs",

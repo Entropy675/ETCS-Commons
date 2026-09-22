@@ -130,6 +130,29 @@ layers_title_word.SetColor(0.94, 0.89, 0.78, 1.0)
 layers_title_word.SetText(layers)
 layers_title_word.SetOrder(2)
 
+# ── the view toggle, beside the + ────────────────────────────────────────────
+#
+# COLLAPSES EVERYTHING BUT THE BAR, and pressing it again brings the list back.
+# Not a close: a window with a cross on it is one somebody shuts by accident and
+# then cannot reopen, and the bar left on screen is both the way back and the
+# reminder that there is one (PaintLayerPanel::BindView says the same).
+panel.spawn(RenderProvider::PolygonDrawable2D layers_view)
+layers_view.Create()
+layers_view.AddPoint(190, 3)
+layers_view.AddPoint(210, 3)
+layers_view.AddPoint(210, 19)
+layers_view.AddPoint(190, 19)
+layers_view.SetFill(0.19, 0.20, 0.14, 1.0)
+layers_view.SetOrder(2)
+
+panel.spawn(RenderProvider::TextLabel layers_view_word)
+layers_view_word.Create()
+layers_view_word.SetPosition(196, 7)
+layers_view_word.SetSize(1)
+layers_view_word.SetColor(0.94, 0.89, 0.78, 1.0)
+layers_view_word.SetText(-)
+layers_view_word.SetOrder(3)
+
 panel.spawn(RenderProvider::PolygonDrawable2D layers_add)
 layers_add.Create()
 layers_add.AddPoint(214, 3)
@@ -154,316 +177,86 @@ list.BindTitle(@layers_title_word)
 list.BindWindow(@panel)
 list.BindAdd(@layers_add)
 list.BindAdd(@layers_add_word)
+list.BindView(@layers_view)
+list.BindView(@layers_view_word)
 
 # ── the rows ─────────────────────────────────────────────────────────────
 #
-# Seven rows of 28 under the bar, top of the window first -- the order AddRow
-# wants and the order somebody reading this file sees them on screen.
+# Seven rows of 28 under the bar, top of the window first -- the order BeginRow
+# opens them in, and the order somebody reading this file sees them on screen.
 #
-# The body rectangle is ordered below the other four so a press on the eye hits
-# the eye rather than the body -- PickAt walks the ordered list backwards, so
-# higher wins.
+#
+#
+# SEVEN PANES, ONE SCRIPT. Each row is a pane this file positions and
+# paint_layer_row.etcs fills in -- which is why that file can exist at all: a
+# script cannot be told a number (`run` carries RIDs), but it can be handed a
+# pane, and a pane is a coordinate origin. What used to be ninety-six lines
+# seven times is now four lines seven times.
+#
+# THE PANE IS THE ROW'S PLATE. It is a compositor with a colour, and the
+# panel's fill helper already knows a composite takes SetBackground where a
+# polygon takes SetFill -- so the background and the row are one node.
 
-panel.spawn(RenderProvider::PolygonDrawable2D row0_bg)
-row0_bg.Create()
-row0_bg.AddPoint(4, 26)
-row0_bg.AddPoint(236, 26)
-row0_bg.AddPoint(236, 52)
-row0_bg.AddPoint(4, 52)
-row0_bg.SetFill(0.15, 0.16, 0.11, 1.0)
-row0_bg.SetOrder(1)
+panel.spawn(RenderProvider::CompositeDrawable2D row0)
+row0.Create(232, 26)
+row0.SetPosition(4, 26)
+row0.SetOrder(1)
+row0.SetBackground(0.15, 0.16, 0.11, 1.0)
+#
+# NAMED AS A SIBLING, not by its path from the module root, and that is not a
+# style choice. resolve_script_path tries the caller's OWN directory first and
+# falls back to the caller's #IMPORT target; a nested run spelled
+# "PaintProvider/scripts/x.etcs" from inside PaintProvider/scripts/ asks for
+# PaintProvider/scripts/PaintProvider/scripts/x.etcs, misses, and is saved only
+# by the #IMPORT fallback -- which exists natively and does NOT in the browser,
+# where the scripts are staged into MEMFS at their relative paths and ACE_ROOT
+# means nothing. Spelled as a sibling it resolves on the FIRST candidate in both
+# places. A top-level run from the boot script still names the full path,
+# because from there it is not a sibling.
+run paint_layer_row.etcs pane=row0 list=list
 
-panel.spawn(RenderProvider::PolygonDrawable2D row0_eye)
-row0_eye.Create()
-row0_eye.AddPoint(8, 33)
-row0_eye.AddPoint(22, 33)
-row0_eye.AddPoint(22, 45)
-row0_eye.AddPoint(8, 45)
-row0_eye.SetFill(0.94, 0.89, 0.78, 1.0)
-row0_eye.SetOrder(2)
+panel.spawn(RenderProvider::CompositeDrawable2D row1)
+row1.Create(232, 26)
+row1.SetPosition(4, 54)
+row1.SetOrder(1)
+row1.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_layer_row.etcs pane=row1 list=list
 
-panel.spawn(RenderProvider::CompositeDrawable2D row0_thumb)
-row0_thumb.Create(24, 24)
-row0_thumb.SetPosition(28, 27)
-row0_thumb.SetOrder(2)
-row0_thumb.SetRetain(1)
+panel.spawn(RenderProvider::CompositeDrawable2D row2)
+row2.Create(232, 26)
+row2.SetPosition(4, 82)
+row2.SetOrder(1)
+row2.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_layer_row.etcs pane=row2 list=list
 
-panel.spawn(RenderProvider::TextLabel row0_name)
-row0_name.Create()
-row0_name.SetPosition(58, 33)
-row0_name.SetSize(2)
-row0_name.SetColor(0.90, 0.90, 0.94, 1.0)
-row0_name.SetText(-)
-row0_name.SetOrder(2)
+panel.spawn(RenderProvider::CompositeDrawable2D row3)
+row3.Create(232, 26)
+row3.SetPosition(4, 110)
+row3.SetOrder(1)
+row3.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_layer_row.etcs pane=row3 list=list
 
-panel.spawn(RenderProvider::PolygonDrawable2D row0_del)
-row0_del.Create()
-row0_del.AddPoint(216, 31)
-row0_del.AddPoint(232, 31)
-row0_del.AddPoint(232, 47)
-row0_del.AddPoint(216, 47)
-row0_del.SetFill(0.72, 0.31, 0.23, 1.0)
-row0_del.SetOrder(2)
+panel.spawn(RenderProvider::CompositeDrawable2D row4)
+row4.Create(232, 26)
+row4.SetPosition(4, 138)
+row4.SetOrder(1)
+row4.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_layer_row.etcs pane=row4 list=list
 
-list.AddRow(@row0_bg, @row0_eye, @row0_thumb, @row0_name, @row0_del)
+panel.spawn(RenderProvider::CompositeDrawable2D row5)
+row5.Create(232, 26)
+row5.SetPosition(4, 166)
+row5.SetOrder(1)
+row5.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_layer_row.etcs pane=row5 list=list
 
-panel.spawn(RenderProvider::PolygonDrawable2D row1_bg)
-row1_bg.Create()
-row1_bg.AddPoint(4, 54)
-row1_bg.AddPoint(236, 54)
-row1_bg.AddPoint(236, 80)
-row1_bg.AddPoint(4, 80)
-row1_bg.SetFill(0.15, 0.16, 0.11, 1.0)
-row1_bg.SetOrder(1)
+panel.spawn(RenderProvider::CompositeDrawable2D row6)
+row6.Create(232, 26)
+row6.SetPosition(4, 194)
+row6.SetOrder(1)
+row6.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_layer_row.etcs pane=row6 list=list
 
-panel.spawn(RenderProvider::PolygonDrawable2D row1_eye)
-row1_eye.Create()
-row1_eye.AddPoint(8, 61)
-row1_eye.AddPoint(22, 61)
-row1_eye.AddPoint(22, 73)
-row1_eye.AddPoint(8, 73)
-row1_eye.SetFill(0.94, 0.89, 0.78, 1.0)
-row1_eye.SetOrder(2)
-
-panel.spawn(RenderProvider::CompositeDrawable2D row1_thumb)
-row1_thumb.Create(24, 24)
-row1_thumb.SetPosition(28, 55)
-row1_thumb.SetOrder(2)
-row1_thumb.SetRetain(1)
-
-panel.spawn(RenderProvider::TextLabel row1_name)
-row1_name.Create()
-row1_name.SetPosition(58, 61)
-row1_name.SetSize(2)
-row1_name.SetColor(0.90, 0.90, 0.94, 1.0)
-row1_name.SetText(-)
-row1_name.SetOrder(2)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row1_del)
-row1_del.Create()
-row1_del.AddPoint(216, 59)
-row1_del.AddPoint(232, 59)
-row1_del.AddPoint(232, 75)
-row1_del.AddPoint(216, 75)
-row1_del.SetFill(0.72, 0.31, 0.23, 1.0)
-row1_del.SetOrder(2)
-
-list.AddRow(@row1_bg, @row1_eye, @row1_thumb, @row1_name, @row1_del)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row2_bg)
-row2_bg.Create()
-row2_bg.AddPoint(4, 82)
-row2_bg.AddPoint(236, 82)
-row2_bg.AddPoint(236, 108)
-row2_bg.AddPoint(4, 108)
-row2_bg.SetFill(0.15, 0.16, 0.11, 1.0)
-row2_bg.SetOrder(1)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row2_eye)
-row2_eye.Create()
-row2_eye.AddPoint(8, 89)
-row2_eye.AddPoint(22, 89)
-row2_eye.AddPoint(22, 101)
-row2_eye.AddPoint(8, 101)
-row2_eye.SetFill(0.94, 0.89, 0.78, 1.0)
-row2_eye.SetOrder(2)
-
-panel.spawn(RenderProvider::CompositeDrawable2D row2_thumb)
-row2_thumb.Create(24, 24)
-row2_thumb.SetPosition(28, 83)
-row2_thumb.SetOrder(2)
-row2_thumb.SetRetain(1)
-
-panel.spawn(RenderProvider::TextLabel row2_name)
-row2_name.Create()
-row2_name.SetPosition(58, 89)
-row2_name.SetSize(2)
-row2_name.SetColor(0.90, 0.90, 0.94, 1.0)
-row2_name.SetText(-)
-row2_name.SetOrder(2)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row2_del)
-row2_del.Create()
-row2_del.AddPoint(216, 87)
-row2_del.AddPoint(232, 87)
-row2_del.AddPoint(232, 103)
-row2_del.AddPoint(216, 103)
-row2_del.SetFill(0.72, 0.31, 0.23, 1.0)
-row2_del.SetOrder(2)
-
-list.AddRow(@row2_bg, @row2_eye, @row2_thumb, @row2_name, @row2_del)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row3_bg)
-row3_bg.Create()
-row3_bg.AddPoint(4, 110)
-row3_bg.AddPoint(236, 110)
-row3_bg.AddPoint(236, 136)
-row3_bg.AddPoint(4, 136)
-row3_bg.SetFill(0.15, 0.16, 0.11, 1.0)
-row3_bg.SetOrder(1)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row3_eye)
-row3_eye.Create()
-row3_eye.AddPoint(8, 117)
-row3_eye.AddPoint(22, 117)
-row3_eye.AddPoint(22, 129)
-row3_eye.AddPoint(8, 129)
-row3_eye.SetFill(0.94, 0.89, 0.78, 1.0)
-row3_eye.SetOrder(2)
-
-panel.spawn(RenderProvider::CompositeDrawable2D row3_thumb)
-row3_thumb.Create(24, 24)
-row3_thumb.SetPosition(28, 111)
-row3_thumb.SetOrder(2)
-row3_thumb.SetRetain(1)
-
-panel.spawn(RenderProvider::TextLabel row3_name)
-row3_name.Create()
-row3_name.SetPosition(58, 117)
-row3_name.SetSize(2)
-row3_name.SetColor(0.90, 0.90, 0.94, 1.0)
-row3_name.SetText(-)
-row3_name.SetOrder(2)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row3_del)
-row3_del.Create()
-row3_del.AddPoint(216, 115)
-row3_del.AddPoint(232, 115)
-row3_del.AddPoint(232, 131)
-row3_del.AddPoint(216, 131)
-row3_del.SetFill(0.72, 0.31, 0.23, 1.0)
-row3_del.SetOrder(2)
-
-list.AddRow(@row3_bg, @row3_eye, @row3_thumb, @row3_name, @row3_del)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row4_bg)
-row4_bg.Create()
-row4_bg.AddPoint(4, 138)
-row4_bg.AddPoint(236, 138)
-row4_bg.AddPoint(236, 164)
-row4_bg.AddPoint(4, 164)
-row4_bg.SetFill(0.15, 0.16, 0.11, 1.0)
-row4_bg.SetOrder(1)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row4_eye)
-row4_eye.Create()
-row4_eye.AddPoint(8, 145)
-row4_eye.AddPoint(22, 145)
-row4_eye.AddPoint(22, 157)
-row4_eye.AddPoint(8, 157)
-row4_eye.SetFill(0.94, 0.89, 0.78, 1.0)
-row4_eye.SetOrder(2)
-
-panel.spawn(RenderProvider::CompositeDrawable2D row4_thumb)
-row4_thumb.Create(24, 24)
-row4_thumb.SetPosition(28, 139)
-row4_thumb.SetOrder(2)
-row4_thumb.SetRetain(1)
-
-panel.spawn(RenderProvider::TextLabel row4_name)
-row4_name.Create()
-row4_name.SetPosition(58, 145)
-row4_name.SetSize(2)
-row4_name.SetColor(0.90, 0.90, 0.94, 1.0)
-row4_name.SetText(-)
-row4_name.SetOrder(2)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row4_del)
-row4_del.Create()
-row4_del.AddPoint(216, 143)
-row4_del.AddPoint(232, 143)
-row4_del.AddPoint(232, 159)
-row4_del.AddPoint(216, 159)
-row4_del.SetFill(0.72, 0.31, 0.23, 1.0)
-row4_del.SetOrder(2)
-
-list.AddRow(@row4_bg, @row4_eye, @row4_thumb, @row4_name, @row4_del)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row5_bg)
-row5_bg.Create()
-row5_bg.AddPoint(4, 166)
-row5_bg.AddPoint(236, 166)
-row5_bg.AddPoint(236, 192)
-row5_bg.AddPoint(4, 192)
-row5_bg.SetFill(0.15, 0.16, 0.11, 1.0)
-row5_bg.SetOrder(1)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row5_eye)
-row5_eye.Create()
-row5_eye.AddPoint(8, 173)
-row5_eye.AddPoint(22, 173)
-row5_eye.AddPoint(22, 185)
-row5_eye.AddPoint(8, 185)
-row5_eye.SetFill(0.94, 0.89, 0.78, 1.0)
-row5_eye.SetOrder(2)
-
-panel.spawn(RenderProvider::CompositeDrawable2D row5_thumb)
-row5_thumb.Create(24, 24)
-row5_thumb.SetPosition(28, 167)
-row5_thumb.SetOrder(2)
-row5_thumb.SetRetain(1)
-
-panel.spawn(RenderProvider::TextLabel row5_name)
-row5_name.Create()
-row5_name.SetPosition(58, 173)
-row5_name.SetSize(2)
-row5_name.SetColor(0.90, 0.90, 0.94, 1.0)
-row5_name.SetText(-)
-row5_name.SetOrder(2)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row5_del)
-row5_del.Create()
-row5_del.AddPoint(216, 171)
-row5_del.AddPoint(232, 171)
-row5_del.AddPoint(232, 187)
-row5_del.AddPoint(216, 187)
-row5_del.SetFill(0.72, 0.31, 0.23, 1.0)
-row5_del.SetOrder(2)
-
-list.AddRow(@row5_bg, @row5_eye, @row5_thumb, @row5_name, @row5_del)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row6_bg)
-row6_bg.Create()
-row6_bg.AddPoint(4, 194)
-row6_bg.AddPoint(236, 194)
-row6_bg.AddPoint(236, 220)
-row6_bg.AddPoint(4, 220)
-row6_bg.SetFill(0.15, 0.16, 0.11, 1.0)
-row6_bg.SetOrder(1)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row6_eye)
-row6_eye.Create()
-row6_eye.AddPoint(8, 201)
-row6_eye.AddPoint(22, 201)
-row6_eye.AddPoint(22, 213)
-row6_eye.AddPoint(8, 213)
-row6_eye.SetFill(0.94, 0.89, 0.78, 1.0)
-row6_eye.SetOrder(2)
-
-panel.spawn(RenderProvider::CompositeDrawable2D row6_thumb)
-row6_thumb.Create(24, 24)
-row6_thumb.SetPosition(28, 195)
-row6_thumb.SetOrder(2)
-row6_thumb.SetRetain(1)
-
-panel.spawn(RenderProvider::TextLabel row6_name)
-row6_name.Create()
-row6_name.SetPosition(58, 201)
-row6_name.SetSize(2)
-row6_name.SetColor(0.90, 0.90, 0.94, 1.0)
-row6_name.SetText(-)
-row6_name.SetOrder(2)
-
-panel.spawn(RenderProvider::PolygonDrawable2D row6_del)
-row6_del.Create()
-row6_del.AddPoint(216, 199)
-row6_del.AddPoint(232, 199)
-row6_del.AddPoint(232, 215)
-row6_del.AddPoint(216, 215)
-row6_del.SetFill(0.72, 0.31, 0.23, 1.0)
-row6_del.SetOrder(2)
-
-list.AddRow(@row6_bg, @row6_eye, @row6_thumb, @row6_name, @row6_del)
 
 # Bind the stack to the rows now that all of them exist. Called again by the
 # panel itself after anything that changes what the window should say, so a

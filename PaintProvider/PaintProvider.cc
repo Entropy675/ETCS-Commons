@@ -47,6 +47,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
     CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo,
     ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
     ExportOps, ImportOps, NotebookHead, SetAuthor,
+    MergeDown, MergeUp,
     Report, Delete)
 
 // The projection verbs sit beside Render because every one of them ends in a
@@ -54,6 +55,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
 ETCS_TAG_BLOCK_BASIC(PaintSurface,
     Create, AttachDocument, SetTarget, Render,
     SetPan, PanBy, SetZoom, ZoomAt, ZoomBy, SetBackground,
+    ClearPeers, SetPeer, ViewRect,
     ZoomPercent, BindZoomLabel, BindGlyphs, ShowEdgeRuler, BindRulerFrame, Delete)
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
@@ -76,7 +78,7 @@ ETCS_TAG_BLOCK_HYBRID(PaintInput,
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
-    BindWheel, AddWheelArrow, AddModeArrow, SetModeReadout, SetShapeReadout, SetTipReadout,
+    BindWheel, AddWheelArrow, AddModeArrow, AddArrow, SetModeReadout, SetShapeReadout, SetTipReadout,
     SetHoldCapacity, AddHoverLabel,
     AddCall, AddPopup, OpenPopup, ClosePopup, BindRouter,
     SetColorOf, Report, Delete)
@@ -88,7 +90,7 @@ ETCS_TAG_BLOCK_BASIC(PaintPages,
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
 ETCS_TAG_BLOCK_BASIC(PaintLayerPanel,
-    Create, BindDocument, AddRow, BindAdd, BindTitle, BindWindow, BindSurface,
+    Create, BindDocument, BeginRow, RowNode, BindView, BindAdd, BindTitle, BindWindow, BindSurface,
     SetHoverDim, SetEyeColors, SetRowColors,
     Scroll, Refresh, CommitRename,
     SelectRow, ToggleRow, RemoveRow, MoveRow, ArmRename, HoverRow,
@@ -136,5 +138,5 @@ ETCS_TAG_BLOCK_BASIC(PaintNode,
 // window touches the input path. It never reaches the node: a press raises an
 // event and the PAGE performs the verb, because a fetch is the page's.
 ETCS_TAG_BLOCK_BASIC(PaintVisitors,
-    Create, AddRow, BindWindow, SetRowColors, SetInk,
+    Create, BeginRow, RowNode, BindWindow, SetRowColors, SetInk,
     SetRoster, Open, Close, Promote, Demote, Remove, Delete)

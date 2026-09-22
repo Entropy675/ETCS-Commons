@@ -1,0 +1,66 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── AN EYE ───────────────────────────────────────────────────────────────────
+#
+#     run PaintProvider/scripts/paint_eye.etcs pane=<Drawable2D> list=<PaintLayerPanel>
+#
+# A flat oblong with a pupil centred in it, the pupil's top and bottom touching
+# the oblong's. Drawn at LOCAL coordinates inside whatever pane it is handed,
+# which is the only reason one file can serve every row: `run` carries RIDs and
+# not numbers (resolve_run_bindings), so a script cannot be told "draw at y=54"
+# -- but it can be handed a pane that is already there, and a pane is a
+# coordinate origin.
+#
+# WHY IT IS ITS OWN FILE. The same fourteen points were written out once per
+# row, seven times in paint_layers.etcs, which is seven places to change the
+# glyph and six of them to forget. A shape is a thing, not a paragraph repeated.
+#
+# IT REGISTERS ITSELF, into whichever row is currently open (PaintLayerPanel::
+# BeginRow). It has to: a script cannot hand its spawned nodes back to its
+# caller, so if the caller had to name them this file could not exist.
+#
+# THE PANEL TINTS THE OBLONG, not the pupil: shown and hidden are its two
+# colours (SetEyeColors), and the pupil rides along on the row so the state
+# still reads at a glance. That is why the oblong is `eye` and the pupil is an
+# separate part -- see PaintLayerPanel::RowNode.
+
+requires pane [Drawable2D]
+requires list [PaintLayerPanel]
+
+# The oblong: 22 across, 12 tall, centred at (19, 13) in the row's own space.
+# Six points rather than a rectangle so the ends read as rounded at this size
+# without costing a circle's worth of vertices.
+pane.spawn(RenderProvider::PolygonDrawable2D eye)
+eye.Create()
+eye.AddPoint(8, 13)
+eye.AddPoint(11, 8)
+eye.AddPoint(27, 8)
+eye.AddPoint(30, 13)
+eye.AddPoint(27, 18)
+eye.AddPoint(11, 18)
+eye.SetFill(0.94, 0.89, 0.78, 1.0)
+eye.SetOrder(2)
+
+# The pupil: radius 5, which is half the oblong's height, so its top and bottom
+# touch. Ten points is enough of a circle at this diameter and cheap enough to
+# draw once per row.
+pane.spawn(RenderProvider::PolygonDrawable2D pupil)
+pupil.Create()
+pupil.AddPoint(24, 13)
+pupil.AddPoint(23, 16)
+pupil.AddPoint(21, 18)
+pupil.AddPoint(17, 18)
+pupil.AddPoint(15, 16)
+pupil.AddPoint(14, 13)
+pupil.AddPoint(15, 10)
+pupil.AddPoint(17, 8)
+pupil.AddPoint(21, 8)
+pupil.AddPoint(23, 10)
+pupil.SetFill(0.106, 0.110, 0.078, 1.0)
+pupil.SetOrder(3)
+
+# Into the open row. The oblong is the part the panel tints for shown/hidden;
+# the pupil is listed so that hiding one hides both.
+list.RowNode(eye, @eye)
+list.RowNode(pupil, @pupil)

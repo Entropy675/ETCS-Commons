@@ -1,0 +1,43 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── A CELL'S ARROW ───────────────────────────────────────────────────────────
+#
+#     run PaintProvider/scripts/paint_cell_arrow.etcs cell=<Drawable2D> palette=<PaintPalette>
+#
+# The triangle across the top of a toolbar cell. A swatch's opens the colour
+# wheel for that swatch; a tool's steps that tool's mode. WHICH ONE IS NOT SAID
+# HERE -- PaintPalette::AddArrow asks the cell, which was declared a colour or a
+# tool a line before this ran, and that is the whole reason one file can serve
+# both. A script cannot be handed the word "wheel" (resolve_run_bindings carries
+# RIDs, not literals), so a parameter would have meant two files, which is two
+# copies of the shape, which is the thing being fixed.
+#
+# WHY IT IS ITS OWN FILE. These three points were written out NINE times in
+# paint_toolbar.etcs -- six swatches and three mode slices -- and they stopped
+# being decoration the moment the arrows learned to stretch: PaintPalette::
+# stretchArrows rebuilds this triangle at the cell's real width on every layout
+# change, from a rule in PaintProvider.h. Nine authored copies that a tenth
+# place now overwrites is the eye's problem again, one dimension over.
+#
+# AUTHORED AT 60 WIDE because that is the cell's declared width and the first
+# frame draws before any stretch. Apex at the middle of the top edge, dropping
+# ARROW_DROP (12) -- the same two facts stretchArrows rebuilds from, so the
+# authored shape and the rebuilt one are the same shape at two widths rather
+# than two shapes that happen to look alike.
+#
+# ORDER 2 so it sits above the cell's own background at order 1.
+
+requires cell    [Drawable2D]
+requires palette [PaintPalette]
+
+cell.spawn(RenderProvider::PolygonDrawable2D arrow)
+arrow.Create()
+arrow.AddPoint(30, 0)
+arrow.AddPoint(60, 12)
+arrow.AddPoint(0, 12)
+arrow.SetFill(0.92, 0.92, 0.90, 0.85)
+arrow.SetOrder(2)
+
+# Into the palette, which reads the cell to learn what pressing this should do.
+palette.AddArrow(@arrow, @cell)

@@ -1,0 +1,81 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── ONE ROW OF THE VISITOR LIST ──────────────────────────────────────────────
+#
+#     run PaintProvider/scripts/paint_visitor_row.etcs pane=<Drawable2D> palette=<PaintPalette> visitors=<PaintVisitors>
+#
+# ONE FILE, RUN ONCE PER ROW. The pane is the row -- the caller positions it and
+# everything here is drawn in its own space, which is what lets one file serve
+# every row: `run` carries RIDs and not numbers, so a script can never be told
+# where to draw, but a pane is a coordinate origin.
+#
+# AND THE BUTTONS CARRY NO ROW NUMBER. Each one passes its OWN RID to the verb
+# it calls, and PaintVisitors looks up which row that node belongs to. An index
+# would have had to be a literal here, which means a file per row -- the exact
+# duplication this replaced.
+#
+# THREE CONTROLS ON EVERY ROW, always. The runtime decides nothing about which
+# to show: a roster that changed a button's presence under the pointer would
+# move the other two out from under it mid-click.
+
+requires pane     [Drawable2D]
+requires palette  [PaintPalette]
+requires visitors [PaintVisitors]
+
+visitors.BeginRow()
+visitors.RowNode(bg, @pane)
+
+pane.spawn(RenderProvider::TextLabel who)
+who.Create()
+who.SetPosition(6, 9)
+who.SetSize(1)
+who.SetColor(0.94, 0.89, 0.78, 1.0)
+who.SetText(-)
+who.SetOrder(2)
+visitors.RowNode(name, @who)
+
+pane.spawn(RenderProvider::TextLabel role)
+role.Create()
+role.SetPosition(114, 9)
+role.SetSize(1)
+role.SetColor(0.55, 0.57, 0.50, 1.0)
+role.SetText(-)
+role.SetOrder(2)
+visitors.RowNode(role, @role)
+
+# let write
+pane.spawn(RenderProvider::PolygonDrawable2D to_writer)
+to_writer.Create()
+to_writer.AddPoint(180, 4)
+to_writer.AddPoint(204, 4)
+to_writer.AddPoint(204, 22)
+to_writer.AddPoint(180, 22)
+to_writer.SetFill(0.17, 0.26, 0.15, 1.0)
+to_writer.SetOrder(2)
+visitors.RowNode(up, @to_writer)
+palette.AddCall(@to_writer, @visitors, PaintVisitors.Promote, @to_writer)
+
+# read only
+pane.spawn(RenderProvider::PolygonDrawable2D to_reader)
+to_reader.Create()
+to_reader.AddPoint(210, 4)
+to_reader.AddPoint(234, 4)
+to_reader.AddPoint(234, 22)
+to_reader.AddPoint(210, 22)
+to_reader.SetFill(0.17, 0.18, 0.13, 1.0)
+to_reader.SetOrder(2)
+visitors.RowNode(down, @to_reader)
+palette.AddCall(@to_reader, @visitors, PaintVisitors.Demote, @to_reader)
+
+# remove
+pane.spawn(RenderProvider::PolygonDrawable2D drop)
+drop.Create()
+drop.AddPoint(240, 4)
+drop.AddPoint(264, 4)
+drop.AddPoint(264, 22)
+drop.AddPoint(240, 22)
+drop.SetFill(0.26, 0.15, 0.14, 1.0)
+drop.SetOrder(2)
+visitors.RowNode(out, @drop)
+palette.AddCall(@drop, @visitors, PaintVisitors.Remove, @drop)

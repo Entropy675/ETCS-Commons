@@ -195,6 +195,11 @@
     }
     #sharelink:hover { background: rgba(201, 180, 88, 0.12); }
     #sharelink.copied { color: var(--ok); border-color: var(--ok); }
+    #sharehue[hidden] { display: none; }
+    #sharehue {
+      width: 26px; height: 22px; padding: 0; cursor: pointer;
+      background: transparent; border: 1px solid var(--line); border-radius: 4px;
+    }
   </style>
 </head>
 <body>
@@ -216,6 +221,10 @@
              and closing that list is what ends the session. -->
         <button id="sharebtn" class="btn" type="button" title="share this canvas -- anyone with the link can watch">share</button>
         <span id="sharelink" hidden title="click to copy"></span>
+        <!-- THE COLOUR YOU ARE SEEN IN. Picked here because it belongs to the
+             CLIENT: it is submitted with your viewport in the same call, so
+             everyone watching draws your frame in the colour you chose. -->
+        <input id="sharehue" type="color" hidden title="the colour your frame is drawn in"/>
       </span>
       <span id="status">loading…</span>
     </header>
@@ -418,6 +427,49 @@
   }
 
   /*
+   * ── a call that answers ───────────────────────────────────────────────────
+   *
+   * etcs_web_call reports whether the NAME was live and nothing about what the
+   * verb decided, which is right for a click and useless for a question. The
+   * async form runs the call on a pool worker and reaches back through
+   * window.__etcs_call_done, and this turns that into an ordinary awaitable --
+   * the same wrapper the chess page already carries, for the same reason.
+   *
+   * ON A WORKER, deliberately: a verb that blocks (and some do) must not block
+   * the page's event loop, which is also the thread GLFW delivers every stroke
+   * on.
+   */
+  let __etcsCallSeq = 1;
+  const __etcsPending = new Map();
+  window.__etcs_call_done = function (handle, ok, text) {
+    const p = __etcsPending.get(handle);
+    if (!p) return;                 // stale or duplicate; nothing waiting on it
+    __etcsPending.delete(handle);
+    p.resolve(ok ? text : null);
+  };
+  function callResult(name, work, args) {
+    if (!runtimeUp()) return Promise.resolve(null);
+    const handle = __etcsCallSeq++;
+    return new Promise(function (resolve) {
+      __etcsPending.set(handle, { resolve: resolve });
+      window.Module.ccall('etcs_web_call_async', null,
+                          ['number', 'string', 'string', 'string'],
+                          [handle, name, work, args == null ? '' : args]);
+    });
+  }
+
+  // IS THAT NAME UP YET, without making a call and without the runtime logging
+  // a complaint about it. A boot script's `spawn` is on no clock this side can
+  // see, so anything the page wants to state as early as possible has to poll --
+  // and polling with a real call printed "is not a live global name" once per
+  // attempt, which is a normal wait dressed as an error. See etcs_web_has in
+  // loaders/etcs.cc for why the complaint stays loud in the call itself.
+  function nameLive(name) {
+    try { return !!window.Module.ccall('etcs_web_has', 'number', ['string'], [name]); }
+    catch (e) { return false; }     // an older runtime without the probe
+  }
+
+  /*
    * ── the window is told how big it is ──────────────────────────────────────
    *
    * A browser has no window manager to drag the frame, so the runtime's window
@@ -458,6 +510,9 @@
    */
   function stageResize() {
     if (!runtimeUp()) return false;
+    // The window is the boot script's, and this runs before that script has
+    // reached its first line. Asking first is what keeps the wait quiet.
+    if (!nameLive('main')) return false;
     const box = stageEl.getBoundingClientRect();
     const w = Math.max(64, Math.round(box.width));
     const h = Math.max(64, Math.round(box.height));
@@ -602,16 +657,46 @@
   const SHARE_READ_MS = 900;    // how soon somebody else's stroke arrives
   const SHARE_WHO_MS  = 3000;   // the roster is people, and people are slow
   const SHARE_ROLE_MS = 4000;   // how soon a viewer notices it may now write
+  const SHARE_VIEW_MS = 1200;   // how soon a pan of yours shows up on their canvas
 
   const share = {
     base: null, self: null, id: null, token: null, role: null,
     head: 0, sent: 0,
-    push: 0, read: 0, who: 0, role_t: 0,
+    push: 0, read: 0, who: 0, role_t: 0, view_t: 0,
+    sent_view: '',
     busy: false
   };
 
   const shareBtnEl  = document.getElementById('sharebtn');
   const shareLinkEl = document.getElementById('sharelink');
+  const shareHueEl  = document.getElementById('sharehue');
+
+  /*
+   * A COLOUR THAT ALWAYS WORKS AND CAN STILL BE CHOSEN. Derived from the name
+   * so a client that never opens the picker is still distinct from the others,
+   * and overridden the moment one is picked -- which persists beside the name,
+   * because both are this client's identity in a session rather than the
+   * session's property.
+   */
+  function hueFor(name) {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+    const rgb = [(h * 53) & 255, (h * 97) & 255, (h * 149) & 255];
+    // Lifted away from the sheet's own dark so a frame never reads as chrome.
+    return '#' + rgb.map(function (v) {
+      return (128 + (v >> 1)).toString(16).padStart(2, '0');
+    }).join('');
+  }
+  function myHue() {
+    try {
+      const kept = window.localStorage.getItem('etcs-paint-hue');
+      if (kept) return kept;
+    } catch (e) {}
+    return hueFor(myName());
+  }
+  function keepHue(h) {
+    try { window.localStorage.setItem('etcs-paint-hue', h); } catch (e) {}
+  }
 
   /*
    * THE NODE THAT SERVED THIS PAGE. A page opened from a laptop, from staging,
@@ -792,11 +877,70 @@
     else if (r === 'FORBIDDEN' || r === 'NO SUCH SESSION') leaveSession();
   }
 
+  /*
+   * ── where I am looking, and where everyone else is ────────────────────────
+   *
+   * ONE CALL, CARRYING BOTH. The rectangle and the colour are a single
+   * statement about how this client should appear; splitting them would let a
+   * page be drawn in a stale colour for a poll.
+   *
+   * SENT ONLY WHEN IT CHANGED. A pan that settles is one request; a pan that is
+   * still happening is none, because the rect is read from the runtime each
+   * tick and compared to the last one sent. Presence is cheap or it is noise.
+   */
+  async function pushMyView() {
+    if (!share.token || !runtimeUp()) return;
+    const rect = await callResult('canvas', 'ViewRect', '');
+    if (!rect) return;
+    const hue = (shareHueEl.value || myHue()).replace('#', '');
+    const line = rect.trim().replace(/\s+/g, '/') + '/' + hue;
+    if (line === share.sent_view) return;          // nothing moved
+    share.sent_view = line;
+    await nodeGet(tokenPath('view') + '/' + line);
+  }
+
+  /*
+   * AND THEIRS ONTO THIS CANVAS. ClearPeers then one SetPeer each -- which is
+   * the shape the 256-byte call buffer wants, and why no file is involved: a
+   * peer line is about forty bytes and one call each stays well under it.
+   *
+   * The rect arrives in DOCUMENT space and PaintSurface draws it through this
+   * pane's own projection, so somebody at a different zoom still has their
+   * frame in the right place on the picture.
+   */
+  async function readViews() {
+    if (!share.token || !runtimeUp()) return;
+    const body = await nodeGet(tokenPath('views'));
+    if (body === null || body === 'FORBIDDEN' || body === 'NO SUCH SESSION') return;
+    const lines = body.split('\n').filter(function (l) { return l.trim().length > 0; });
+    callVerb('canvas', 'ClearPeers', '');
+    for (const line of lines) {
+      const f = line.trim().split(/\s+/);
+      if (f.length < 6) continue;
+      const hex = f[5].replace('#', '');
+      if (hex.length < 6) continue;
+      const r = parseInt(hex.slice(0, 2), 16) / 255;
+      const g = parseInt(hex.slice(2, 4), 16) / 255;
+      const b = parseInt(hex.slice(4, 6), 16) / 255;
+      callVerb('canvas', 'SetPeer',
+               f[0] + ', ' + f[1] + ', ' + f[2] + ', ' + f[3] + ', ' + f[4]
+               + ', ' + r.toFixed(3) + ', ' + g.toFixed(3) + ', ' + b.toFixed(3));
+    }
+    callVerb('canvas', 'Render', '');
+  }
+
+  async function tickPresence() {
+    await pushMyView();
+    await readViews();
+  }
+
   function shareTimers(on) {
     clearInterval(share.push); clearInterval(share.read);
     clearInterval(share.who);  clearInterval(share.role_t);
-    share.push = share.read = share.who = share.role_t = 0;
+    clearInterval(share.view_t);
+    share.push = share.read = share.who = share.role_t = share.view_t = 0;
     if (!on) return;
+    share.view_t = setInterval(tickPresence, SHARE_VIEW_MS);
     share.read = setInterval(readTheirs, SHARE_READ_MS);
     if (share.role === 'owner' || share.role === 'writer')
       share.push = setInterval(pushMine, SHARE_PUSH_MS);
@@ -813,13 +957,17 @@
       callVerb('visitors', 'Close', '');          // idempotent; already shut is fine
     }
     shareLinkEl.hidden = true;
+    shareHueEl.hidden = true;
     shareBtnEl.hidden = false;
     shareBtnEl.textContent = 'share';
+    share.sent_view = '';
+    if (runtimeUp()) { callVerb('canvas', 'ClearPeers', ''); callVerb('canvas', 'Render', ''); }
   }
 
   function showLink() {
     shareLinkEl.textContent = shareLinkFor(share.id);
     shareLinkEl.hidden = false;
+    shareHueEl.hidden = false;
     shareBtnEl.hidden = true;
   }
 
@@ -881,12 +1029,19 @@
     // row of buttons that answer FORBIDDEN tells them something false.
     shareLinkEl.textContent = 'in a shared canvas';
     shareLinkEl.hidden = false;
+    shareHueEl.hidden = false;        // a viewer picks their colour too
     shareBtnEl.hidden = true;
 
     await readTheirs();
     shareTimers(true);
     log('[etcs] joined a shared canvas as a ' + share.role + '\n', 'ok');
   }
+
+  shareHueEl.value = myHue();
+  shareHueEl.addEventListener('change', function () {
+    keepHue(shareHueEl.value);
+    share.sent_view = '';          // force the next tick to state the new colour
+  });
 
   shareBtnEl.addEventListener('click', function () {
     if (!share.token) startHosting();
