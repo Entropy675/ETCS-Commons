@@ -412,7 +412,22 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
              << " keep=" << keep);
 
         int send_len = 0;
-        if (asset.matched)
+        if (asset.matched && !asset.redirect.empty())
+        {
+            // A directory asked for without its slash (FileHtmlPage,
+            // ResolveConcrete). 301 rather than 302 because the slashed
+            // spelling IS the page's address: browsers cache it and stop
+            // asking. No body -- there is nothing to say that the Location
+            // does not. The redirect is a path FileHtmlPage built from the
+            // request, and CR/LF cannot reach it: picohttpparser rejects a
+            // target containing either before this closure runs.
+            const int n = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
+                "HTTP/1.1 301 Moved Permanently\r\nLocation: %s\r\n"
+                "Content-Length: 0\r\nConnection: %s\r\n%s\r\n",
+                asset.redirect.c_str(), conn_hdr, custom_headers_str.c_str());
+            send_len = (n < 0) ? 0 : (int)std::min((size_t)n, c->SendBuffer().size() - 1);
+        }
+        else if (asset.matched)
         {
             // Only the true fallback -- an extension MimeForExtension has
             // no explicit case for -- downloads instead of opening in-tab.
@@ -516,7 +531,9 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
 
         ETCS_LOG("HttpServer::Serve", "Serving: "
                  << std::string(c->GetParser().GetMethod(), c->GetParser().GetMethodLen())
-                 << " " << path << " (" << (asset.matched ? "200" : "404") << ")");
+                 << " " << path << " ("
+                 << (!asset.matched ? "404" : asset.redirect.empty() ? "200" : "301 -> " + asset.redirect)
+                 << ")");
 
         // SEND UNTIL IT IS ALL GONE. A TCP send returns how many bytes the
         // socket ACCEPTED, not how many were asked for -- for a large
@@ -1263,11 +1280,13 @@ DEFINE_WORK_FUNC(FileHtmlPage, Resolve)
     std::string path = data.toString();
     HtmlPage_::ResolvedAsset asset = self.Resolve(path);
     data.reset();
-    if (asset.matched)
+    if (!asset.matched)
+        data.writeString("NOT FOUND");
+    else if (!asset.redirect.empty())
+        data.writeString(("REDIRECT " + asset.redirect).c_str());
+    else
         data.writeString(("MATCH " + asset.mime_type + " "
                           + std::to_string(asset.length) + " bytes").c_str());
-    else
-        data.writeString("NOT FOUND");
 }
 
 DEFINE_WORK_FUNC(FileHtmlPage, Delete)

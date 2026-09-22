@@ -308,10 +308,10 @@ public:
     // run_website.etcs's header has to explain about "/".
     //
     // So: one named child, LoadFromDisk'd into. Resolution needs nothing new --
-    // a Directory child already answers its own index.html for a bare path
-    // (see ResolveConcrete's Directory branch), so /paint and /paint/ both
-    // work, and every relative url inside that page resolves under the prefix
-    // without the page knowing it was mounted.
+    // a Directory child answers its own index.html at /paint/ and redirects
+    // /paint there (ResolveConcrete's Directory branch), so every relative url
+    // inside that page resolves under the prefix without the page knowing it
+    // was mounted.
     //
     // WHY NOT MountFile PER ASSET. The paint page is ~9 MB across ~20 files in
     // four directories, and its own modules.json is the source of truth for
@@ -532,14 +532,34 @@ public:
             return result;
         }
 
-        // Directory: try a real index child first (index.html by default,
-        // or "index" + default_extension_ when one is set), then a local
+        // Directory: a real index child first (index.html by default, or
+        // "index" + default_extension_ when one is set), then a local
         // synthesized fallback, else genuinely not found.
         const std::string index_name = default_extension_.empty()
             ? std::string(kIndexFile)
             : ("index" + default_extension_);
         auto idx_it = node->children_by_name_.find(index_name);
-        if (idx_it != node->children_by_name_.end() && idx_it->second->kind_ == Kind::File)
+        const bool has_index = idx_it != node->children_by_name_.end()
+                            && idx_it->second->kind_ == Kind::File;
+        if (!has_index && !node->fallback_page_) return result;   // not found
+
+        // ASKED FOR WITHOUT ITS TRAILING SLASH: send the client to the slashed
+        // spelling rather than answer with the index. The page's relative URLs
+        // ("modules.json", "shell") resolve against the request URL in the
+        // browser, so the bytes at "/paint" are a page whose every fetch goes
+        // to "/" -- see ResolvedAsset in ontology/HtmlPage.h. Only for a
+        // directory that would answer, so a miss stays one 404 rather than a
+        // redirect to one. The root never gets here without a slash (no
+        // segments), and a segment that resolved through the default
+        // extension is a File, not a Directory.
+        if (!segments.empty() && !request_path.empty() && request_path.back() != '/')
+        {
+            result.matched  = true;
+            result.redirect = request_path + "/";
+            return result;
+        }
+
+        if (has_index)
         {
             result.matched   = true;
             result.data      = idx_it->second->content_.data();
@@ -547,16 +567,12 @@ public:
             result.mime_type = idx_it->second->mime_type_;
             return result;
         }
-        if (node->fallback_page_)
-        {
-            const ETCS::NBuffer& nb = node->fallback_page_->GetHtmlContent();
-            result.matched   = true;
-            result.data      = nb.buf;
-            result.length    = nb.written;
-            result.mime_type = "text/html";
-            return result;
-        }
-        return result; // not found
+        const ETCS::NBuffer& nb = node->fallback_page_->GetHtmlContent();
+        result.matched   = true;
+        result.data      = nb.buf;
+        result.length    = nb.written;
+        result.mime_type = "text/html";
+        return result;
     }
 
     // --- Enumerate every resolvable path beneath this node ---
