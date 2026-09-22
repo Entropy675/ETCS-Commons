@@ -1,15 +1,44 @@
-#ifndef LINUXSHELL_H__
-#define LINUXSHELL_H__
+#ifndef SHELL_H__
+#define SHELL_H__
 
-#include "../../../core_defs.h"
-#include "../../../ontology.h"
+#include "../../core_defs.h"
+#include "../../ontology.h"
 
 #include <string>
 
-#include "LinuxTerminal.h"
+/*
+ * THE FORK IS THE TERMINAL, AND NOTHING ELSE IS FORKED.
+ *
+ * There were two of this file -- WebShell.h and LinuxShell.h -- byte-identical
+ * apart from the class name, the include guard, and which terminal header they
+ * pulled in. Two copies of 240 lines, kept in step by hand, existing only so
+ * that a typedef in the contract had two names to choose between. (The web copy
+ * had already drifted: its header comment still told you the terminal was
+ * LinuxTerminal.h.)
+ *
+ * What genuinely differs between a browser and a tty is raw mode, line editing,
+ * history and completion -- all of which live in the Terminal headers, which
+ * really are different (176 lines against 441). Both publish the same `lsh::`
+ * surface, so the Shell above them never needed to know which it got. So the
+ * platform selection happens HERE, on the one thing that has platform content,
+ * and the type a script names is one class with one definition.
+ *
+ * This is the same shape Contract_ShellProvider.h already describes -- "the
+ * concrete type is one of several possible backends and the contract name is
+ * what survives the fork" -- applied to the thing that actually has backends.
+ */
+#if defined(_WIN32) || defined(WIN32)
+    // A WinTerminal would land here. Its absence is declared rather than
+    // implied, so adding one is a file.
+    #error "ShellProvider has no Windows terminal yet; see Shell.h"
+#elif defined(__EMSCRIPTEN__)
+#include "Web/WebTerminal.h"
+#else
+#include "Linux/LinuxTerminal.h"
+#endif
 
 // ---------------------------------------------------------------------------
-// LinuxShell — an ETCS control thread you can hand scripts to.
+// Shell — an ETCS control thread you can hand scripts to.
 //
 // [Thread + Deletable + Lifecycle]. Thread is the whole point: a shell IS an
 // actor, not a thing that owns one. It holds signal authority, carries a
@@ -25,7 +54,7 @@
 // behind an ETCS_LOADER guard. Here it is an ordinary provider type with an OS
 // fork behind a contract name, exactly like GLFWWindow -> Window.
 //
-// The terminal itself is LinuxTerminal.h beside this file, and is deliberately
+// The terminal itself is the platform header selected above, and is deliberately
 // NOT a member of this type. A Shell's actions are the run layer -- give it a
 // script, ask it to detach one -- while reading a keystroke is not a causal
 // claim about anything and has no receiver worth naming. So the terminal is
@@ -42,19 +71,19 @@
 // off it -- so the script history of a session is a SUBTREE rather than a list,
 // which is what makes it reachable by a merkle walk later.
 // ---------------------------------------------------------------------------
-class LinuxShell : public ThreadBase<LinuxShell>,
-                   public DeletableBase<LinuxShell>,
-                   public LifecycleBase<LinuxShell>
+class Shell : public ThreadBase<Shell>,
+                   public DeletableBase<Shell>,
+                   public LifecycleBase<Shell>
 {
 public:
-    WIRE_TYPE_IDENTITY(LinuxShell);
+    WIRE_TYPE_IDENTITY(Shell);
 
-    LinuxShell()  = default;
-    ~LinuxShell() = default;
+    Shell()  = default;
+    ~Shell() = default;
 
     // ── Thread_ dispatch ──────────────────────────────────────────────────
 
-    ETCS::Buffer ScriptConcrete() { return m_script; }
+    ETCS::Buffer ScriptConcrete() override { return m_script; }
 
     /*
      * A detached script is a child SHELL, because a detached script is a
@@ -72,7 +101,7 @@ public:
      */
     uint64_t DetachConcrete(const ETCS::Buffer& script)
     {
-        LinuxShell* child = this->addTag<LinuxShell>();
+        Shell* child = this->addTag<Shell>();
         if (!child) return 0;
         child->m_script = script;
         this->InheritClosureTo(*child);
@@ -237,4 +266,4 @@ private:
     uint64_t     m_last_spawn  = 0;
 };
 
-#endif // LINUXSHELL_H__
+#endif // SHELL_H__

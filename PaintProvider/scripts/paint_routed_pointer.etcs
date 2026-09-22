@@ -1,19 +1,24 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# The pointer channel for a ROUTED paint session, on its own thread.
+# The pointer channel for a session with MORE THAN ONE PANE, on its own thread.
 #
-#     detach paint_routed_pointer.etcs window=<Window> input=<PaintInput>
+#     detach paint_routed_pointer.etcs window=<Window> router=<PaintRouter>
 #
-# The routed twin of paint_pointer.etcs. Same split and the same reason for it
-# -- an edge blocks the thread that states it, and keys must never queue behind
-# a burst of positions -- but the consumer translates window coordinates into
-# whichever node's frame they landed in before the brush sees them.
+# Identical in shape to paint_pointer.etcs -- same producer, same channel, one
+# `->` statement -- and differing only in what is on the far end. There the
+# consumer is a PaintInput, which draws wherever the pointer is; here it is a
+# PaintRouter, which decides WHICH pane the pointer is over before anything
+# interprets it (PaintRouter's own header note on why two PaintInputs on one
+# producer is not a division of labour).
 #
-# It is also what keeps the press channel honest: a key event carries no
-# position, so the press edge routes on the last position THIS edge delivered.
+# Two files rather than a parameter, because the two are not variants of one
+# thing: `requires` states which family the far end must be, and a script that
+# accepted either would be claiming the choice does not matter. It does -- the
+# unrouted form is the right one for a single-pane session and is what
+# paint_surface.etcs still uses.
 
 requires window [Window]
-requires input  [PaintInput]
+requires router [PaintRouter]
 
-window.ProducePointer() -> input.ConsumeRoutedPointer()
+window.ProducePointer() -> router.ConsumePointer()

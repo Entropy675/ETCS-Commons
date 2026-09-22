@@ -31,10 +31,10 @@
 //
 // Deliberately absent, all flagged rather than forgotten:
 //   - validation layers (VulkanInstance::Create's own comment)
-//   - a script-driven frame loop: .etcs has no loop construct today, so
-//     Surface.RunDemo drives frames internally the way Window.Run already
-//     does. The real fix is a ProduceFrames/ConsumeFrames stream pair, at
-//     which point this tag becomes HYBRID -- see RenderProvider.cc.
+//   - a script-driven frame loop: .etcs has no loop construct, so the frame
+//     edge is Surface.RunFrames, a work function a script detaches (the
+//     frame-edge note below), and Surface.RunDemo drives frames internally
+//     the way Window.Run does.
 //   - resampling on blit (Pixels_::Composite's own comment)
 
 // Source resolution for Blit: a RID in, a Surface_* out, through the
@@ -45,10 +45,6 @@
 // the correctly-adjusted Surface_* interface pointer. So a script can blit
 // from ANY module's surface, not just one RenderProvider spawned, and this
 // module needs no compile-time knowledge of what the source concretely is.
-//
-// It replaces a module-local row scan that existed only because the family
-// aggregates were published but never populated -- fixed in core by
-// etcs_supertype_fanout, whose own comment carries the history.
 
 // rp_resolve_tag now lives in Contract_RenderProvider.h -- see its comment
 // there for why it had to move up.
@@ -131,6 +127,35 @@ DEFINE_WORK_FUNC(Surface, Create)
         ETCS_LOG("Surface::Create", "surface bring-up failed.");
 }
 
+/*
+ * WHICH OUTPUT THIS SURFACE PRESENTS TO, by name.
+ *
+ * One session, several surfaces, several destinations: in the browser the name is
+ * a canvas element's id and a page may hold as many as it likes, which is what
+ * makes a toolbar strip beside the main view possible at all
+ * (CanvasSurface::SetTarget explains why this belongs to the surface and not to
+ * the window). The device backend has one target per swapchain and says so
+ * (VulkanSurface::SetTarget) rather than storing a name nothing reads.
+ */
+DEFINE_WORK_FUNC_TYPED(Surface, SetTarget, (std::string, element_id))
+{
+    (void)ctx;
+    self.SetTarget(element_id);
+}
+
+/*
+ * An explicit size, which a surface following its window does not have. Stating
+ * one makes this surface a REGION of the page rather than the whole frame, and on
+ * the browser backend it also stops the follow -- being told and following cannot
+ * both be live (CanvasSurface::ResizeTo).
+ */
+DEFINE_WORK_FUNC_TYPED(Surface, ResizeTo, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    if (!self.ResizeTo(WindowSize{ w, h }))
+        ETCS_LOG("Surface::ResizeTo", "the surface declined " << w << "x" << h << ".");
+}
+
 DEFINE_WORK_FUNC_TYPED(Surface, Clear, (float, r), (float, g), (float, b), (float, a))
 {
     (void)ctx;
@@ -192,51 +217,38 @@ DEFINE_WORK_FUNC(Surface, Delete)
 
 // ── Surface frame edge ───────────────────────────────────────────────────
 //
-// The frame pump, as a produce/consume pair -- the same shape
-// Window.ProduceEvents/ConsumeEvents already uses for input, applied to
-// output. This is what lets a renderer run somewhere other than the thread
-// that owns the window's poll loop (scripts/render_frames.etcs).
+// ONE TICK, NOT A PAIR. The pacing is a number on the Presentable family and
+// the recording is a step on it (ontology/PresentableBase.h, which has the
+// argument: a standing produce body never returns its pool worker, so a pair
+// gives the pool a minimum size). Every queue-touching call happens on one
+// thread, which is the real invariant; it is whichever thread drives the
+// family. Splitting the Vulkan work instead -- acquire on one thread, submit
+// on another -- puts two threads on one VkQueue and one VkSwapchainKHR, both
+// of which the application must externally synchronise, and buys nothing.
 //
-// THE SPLIT, and why it is this way round: ProduceFrames is a CLOCK and
-// nothing else, ConsumeFrames does every Vulkan call.
-//
-// The tempting split -- acquire on the produce side, record/submit/present
-// on the consume side -- puts two threads on the same VkQueue and
-// VkSwapchainKHR, both of which Vulkan requires the application to
-// externally synchronise. That buys nothing: the goal is only to get frames
-// OFF the poll thread, not to parallelise a single surface's submission. So
-// every queue-touching call stays on the consume thread, which makes this
-// surface single-threaded from Vulkan's point of view, and the edge carries
-// a tick rather than a half-built frame.
-//
-// Where the thread ledger lands (see render_script_streamed.etcs):
-//   produce -> a ThreadPool worker, held for the surface's lifetime
-//   consume -> the detached script thread, blocked on the stream
-//
-// Draws still arrive from whatever thread calls Clear/DrawRect/Blit -- the
-// script's -- so the surface's own state is mutex-guarded and Present works
-// off a snapshot. See VulkanSurface::PresentConcrete.
-struct RenderFrameTick { uint64_t index; };
-
+// Draws arrive from whatever thread calls Clear/DrawRect/Blit -- the script's
+// -- so the surface's own state is mutex-guarded and Present works off a
+// snapshot. See VulkanSurface::PresentConcrete.
 // Default pacing, in milliseconds, when the stream config says nothing.
 // ~60Hz, a placeholder for asking the swapchain about its present mode,
 // which is where real pacing belongs.
 static constexpr uint32_t RENDER_FRAME_INTERVAL_MS = 16;
 
-// ProduceFrames [<interval_ms>] -- the stream's config buffer carries the
-// pacing, and ZERO means unpaced: emit as fast as the edge accepts, and let
-// the consumer's back-pressure set the rate.
-//
-// That mode is the honest way to ask "how fast can this pipeline actually
-// go", because the answer is then measured BY the pipeline rather than by a
-// clock on one of its calls -- writeRaw blocks exactly when the consumer is
-// behind, so ticks completed over an interval IS throughput, with acquire,
-// submit and present all inside it. A fixed sleep here would silently cap
-// any such measurement at its own frequency, which is what 16ms did.
-//
-// Paced stays the default because a normal frame loop should not spin a
-// pool worker at 100% to draw a canvas nobody is editing.
-DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
+/*
+ * RunFrames [<interval_ms>] -- THE SESSION'S TICK, and the only standing loop
+ * on this path. Somebody has to call the Animated family's driver and a
+ * session needs exactly one caller: this is it, on a detached script thread
+ * the script asked for explicitly rather than a pool worker taken silently
+ * (the frame-edge note above on why not a stream pair). It advances EVERY
+ * Animated leaf, not just this surface -- the palette's click-and-hold and the
+ * layer window's fade ride the same tick -- and a session with no surface at
+ * all can drive the family from its own loop instead (ontology/Animated.h).
+ *
+ * ENDS ON THE SURFACE'S OWN ANSWER: a surface goes retired for reasons this
+ * loop knows nothing about, and in the moments between that and the closure
+ * ending this is the thing still walking a tree being torn down.
+ */
+DEFINE_WORK_FUNC(Surface, RunFrames)
 {
     uint32_t interval_ms = RENDER_FRAME_INTERVAL_MS;
     {
@@ -246,147 +258,51 @@ DEFINE_STREAM_FUNC_PRODUCE(Surface, ProduceFrames)
             try { interval_ms = static_cast<uint32_t>(std::stoul(cfg)); }
             catch (const std::exception&)
             {
-                ETCS_LOG("Surface::ProduceFrames", "unreadable interval '" << cfg
+                ETCS_LOG("Surface::RunFrames", "unreadable interval '" << cfg
                          << "' -- using the " << RENDER_FRAME_INTERVAL_MS << "ms default.");
             }
         }
     }
-    ETCS_LOG("Surface::ProduceFrames", "clock started at "
-             << (interval_ms == 0 ? std::string("max speed (back-pressure paced)")
-                                   : std::to_string(interval_ms) + "ms"));
-
-    // Same wait ProduceEvents does: the surface is spawned and Create()d by
-    // the script, and detaching the pump before that has finished would
-    // start ticking at a swapchain that does not exist yet.
-    while (!self.IsActive())
-    {
-        if (ctx.isInterrupted() || ctx.isTerminated()) return;
-        // Retired BEFORE active is a real order: a script that deletes the
-        // surface while this edge is still waiting for it to come up would
-        // otherwise spin here forever on an object being reclaimed.
-        if (self.Retired()) return;
-        std::this_thread::yield();
-    }
-
-    uint64_t index = 0;
-    bool stream_alive = true;
+    self.SetFrameInterval(static_cast<double>(interval_ms));
+    ETCS_LOG("Surface::RunFrames", "tick started at "
+             << (interval_ms == 0 ? std::string("max speed (unpaced)")
+                                  : std::to_string(interval_ms) + "ms")
+             << " -- one driver for the whole Animated family.");
 
     /*
- * RETIRED IS THE FIRST QUESTION, ahead of IsActive.
- *
- * VulkanSurface publishes Retired() for this edge specifically -- its own
- * comment says it is "the question the frame edge asks BEFORE the walk" --
- * and this loop was not asking it. Release sets it while the surface is
- * still whole, so a clock that checks it stops one tick after the release
- * rather than on the tick that faults.
- *
- * AND Retired() NOW INCLUDES Halted(), which is what makes this loop
- * stoppable rather than merely well-informed. VulkanSurface claims Threaded,
- * so etcs_retire_entity asks the bodies to stop BEFORE it releases anything
- * -- the flag is set while everything this loop is about to touch is still
- * valid, instead of after.
- *
- * STILL COOPERATIVE, so the honest limit stands: this stops at the next
- * iteration, not instantly, and a tick already inside the body runs to its
- * end. What changed is that the window is now bounded by one iteration
- * rather than by whenever the object happens to be reclaimed.
+ * THE WAIT IS GONE, and that is a consequence rather than an omission. Both old
+ * bodies opened with a cooperative-pause loop spinning until IsActive(), which
+ * could never terminate on the browser's main thread and needed a log line
+ * saying so. A step answers "not ready" in one virtual call and costs nothing,
+ * so the readiness question is asked by the family every visit instead of being
+ * waited out once by a parked thread.
  */
-    while (!self.Retired() && self.IsActive() && stream_alive)
+    uint64_t ticks = 0;
+    while (!ctx.isInterrupted() && !ctx.isTerminated())
     {
-        if (ctx.isInterrupted() || ctx.isTerminated()) break;
-
-        RenderFrameTick tick{ index++ };
-        ETCS::Buffer slot;
-        slot.writeRaw(&tick, sizeof(tick));
-
-        if (!stream.writeRaw(slot))
-        {
-            ETCS_LOG("Surface::ProduceFrames", "writeRaw failed -- stream closed at frame " << tick.index);
-            stream_alive = false;
-            break;
-        }
-        if (interval_ms != 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
-    }
-
-    if (stream.isOpen())
-        stream.closeWrite();
-
-    // THIS BODY HAS LEFT, and says so rather than leaving the entity reading
-    // as mid-wind-down forever (ontology/Threaded.h). The first of the two
-    // frame-edge bodies to get here makes the transition; the other's call is
-    // the no-op the exchange is there to make it.
-    self.Stop();
-    ETCS_LOG("Surface::ProduceFrames", "clock stopped after " << index << " ticks.");
-}
-
-DEFINE_STREAM_FUNC_CONSUME(Surface, ConsumeFrames)
-{
-    (void)data;
-
-    uint64_t presented = 0;
-    // Timed from the FIRST tick, not from entry: the producer waits for the
-    // surface to go active, so entry-to-first-tick is setup latency, not
-    // frame time, and folding it in would drag the rate down by however
-    // long the script took to get here.
-    std::chrono::steady_clock::time_point first{};
-
-    while (stream.isOpen())
-    {
-        if (ctx.isInterrupted() || ctx.isTerminated()) break;
-
-        ETCS::Buffer slot;
-        if (!stream.readRaw(slot)) break;
-
-        RenderFrameTick tick{};
-        slot.readRaw(&tick, sizeof(tick));
-        if (presented == 0) first = std::chrono::steady_clock::now();
-
-        // THE EDGE ENDS WHEN THE SURFACE DOES, and it has to be asked here
-        // rather than left to the stream closing. A surface goes retired for
-        // reasons the stream knows nothing about -- its window's connection
-        // dropped, or the arena released it -- and in the moments between that
-        // and the closure ending, this loop is the thing still walking a tree
-        // that is being torn down. Ending on the surface's own answer makes
-        // the frame edge outlive nothing it draws through.
         if (self.Retired())
         {
-            ETCS_LOG("Surface::ConsumeFrames", "surface retired after " << presented
-                     << " frames -- ending the frame edge rather than drawing "
-                     "through a torn-down graph.");
+            ETCS_LOG("Surface::RunFrames", "surface retired after " << ticks
+                     << " ticks -- ending the tick rather than driving a "
+                     "torn-down graph.");
             break;
         }
-
-        // Everything Vulkan happens here, on this one thread. Present pulls
-        // the current composition itself -- retained, so a script that drew
-        // once keeps being shown rather than blinking out on frame two.
-        //
-        // Unless a root is bound (Surface.Compose), in which case the tree is
-        // re-walked first and the retained list is what that walk produces.
-        // The walk is on THIS thread rather than the producer's for the same
-        // reason every other Vulkan call is: Blit uploads into mapped staging
-        // memory, and that is frame state.
-        self.RecomposeBound();
-        self.Present();
-        ++presented;
+        etcs_advance_animated();
+        ++ticks;
+        // A floor, not the pacing: the frame interval lives on the family now
+        // (PresentableBase). This only stops an unpaced surface from turning the
+        // driver into a spin -- and at zero it deliberately does not, which is
+        // what "unpaced" has always meant here.
+        if (interval_ms != 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+        else
+            std::this_thread::yield();
     }
 
-    // The throughput number, reported by the side that actually knows it.
-    // With an unpaced producer this IS the pipeline's rate and needs no
-    // external clock on any single call: writeRaw blocks exactly when this
-    // loop falls behind, so frames completed over the interval is what the
-    // whole edge -- acquire, record, submit, present -- sustained. Under a
-    // paced producer it just reports the pacing back, which is the correct
-    // answer to a different question.
-    const double secs = (presented > 1)
-        ? std::chrono::duration<double>(std::chrono::steady_clock::now() - first).count()
-        : 0.0;
-    self.Stop();   // this body has left -- see ProduceFrames above
-    ETCS_LOG("Surface::ConsumeFrames", "stream closed after presenting " << presented
-             << " frames" << (secs > 0.0
-                 ? " in " + std::to_string(secs) + "s = "
-                   + std::to_string(static_cast<double>(presented) / secs) + " fps"
-                 : "") << ".");
+    // This body has left -- see Threaded. The old pair said this twice, once per
+    // half; there is one half now.
+    self.Stop();
+    ETCS_LOG("Surface::RunFrames", "tick stopped after " << ticks << " ticks.");
 }
 
 // Manual-verification convenience -- see this file's own header comment.
@@ -555,6 +471,19 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, Create, (uint32_t, w), (uint32_t, h)
 // Where this buffer sits in its parent's space. Its CONTENTS do not move with
 // it -- children are stated in this node's own space, so moving the compositor
 // moves the whole merged result and nothing inside it is recomputed.
+/*
+ * SetHidden <0|1> -- present in the tree, not drawn. The family's own flag
+ * (ontology/DrawableBase.h says why it lives there and what it does not mean);
+ * this is only the script's way to reach it, and a popup is the caller that needs
+ * it: a panel with no way to be hidden is either always on screen or has to be
+ * unparented, and both make "is it showing" a second fact.
+ */
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetHidden, (int32_t, hidden))
+{
+    (void)ctx;
+    self.SetHidden(hidden != 0);
+}
+
 DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPosition, (int32_t, x), (int32_t, y))
 {
     (void)ctx;
@@ -582,6 +511,14 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetRetain, (int32_t, on))
     self.SetRetain(on != 0);
     ETCS_LOG("CompositeDrawable2D", "retain " << (on ? "ON -- the buffer is the picture"
                                                     : "OFF -- the buffer is derived from the tree"));
+}
+
+// SetPickable <0|1> -- 0 makes the node scenery: drawn, and no pick lands on
+// it or on anything inside it. See SetPickable itself.
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPickable, (int32_t, on))
+{
+    (void)ctx;
+    self.SetPickable(on != 0);
 }
 
 /*
@@ -1183,6 +1120,21 @@ DEFINE_WORK_FUNC_TYPED(TextLabel, SetBackground,
     self.SetBackground(r, g, b, a);
 }
 
+// SetHidden <0|1> -- the same verb the compositor answers, for the same reason:
+// a caption that is only shown on hover is a label somebody else hides and
+// shows, and Drawable_::Hidden is where every drawable keeps that.
+DEFINE_WORK_FUNC_TYPED(TextLabel, SetHidden, (int32_t, hidden))
+{
+    (void)ctx;
+    self.SetHidden(hidden != 0);
+}
+
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, SetHidden, (int32_t, hidden))
+{
+    (void)ctx;
+    self.SetHidden(hidden != 0);
+}
+
 DEFINE_WORK_FUNC_TYPED(TextLabel, SetPadding, (uint32_t, px))
 {
     (void)ctx;
@@ -1241,6 +1193,107 @@ DEFINE_WORK_FUNC_TYPED(TextLabel, Draw, (ETCS::RID, target))
 }
 
 DEFINE_WORK_FUNC(TextLabel, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}
+
+/*
+ * ── Throbber ───────────────────────────────────────────────────────────────
+ *
+ * Two lines gets you one: spawn it into a pane and Create it at a size. The
+ * rest are for a caller who wants a different rate, a different accent, or a
+ * different word -- each of them a value the type already holds, so none of
+ * them is a second fact that can disagree with the first.
+ *
+ * NO Start/Stop. SetHidden is the switch, for the reason the type's own header
+ * gives: a drawable already has exactly one answer to "is it showing", and a
+ * running flag beside it would be a second one to keep in step. A throbber
+ * hidden is a throbber not advancing, in one verb, and the scripts that hide a
+ * pane already spell it this way (boot_paint_panels.etcs).
+ */
+DEFINE_WORK_FUNC_TYPED(Throbber, Create, (uint32_t, size_px))
+{
+    (void)ctx;
+    self.Create(size_px);
+    ETCS_LOG("Throbber::Create", "ring " << self.RingPx() << "px, " << self.Dots()
+             << " dots, " << self.Step() << " deg/frame on RID:" << self.getRID());
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetSize, (uint32_t, size_px))
+{
+    (void)ctx;
+    self.SetSize(size_px);
+}
+
+/*
+ * SetStep <degrees per FRAME>, not per second: the throbber's speed is the frame
+ * edge's speed, on purpose (Throbber::AdvanceConcrete). A caller wanting
+ * revolutions a second multiplies by the interval they set on RunFrames.
+ *
+ * Clamped by the setter; the log reports what it settled on rather than what was
+ * asked for, because a clamped value that echoes the request is a value you
+ * cannot debug.
+ */
+DEFINE_WORK_FUNC_TYPED(Throbber, SetStep, (float, degrees_per_frame))
+{
+    (void)ctx;
+    self.SetStep(degrees_per_frame);
+    ETCS_LOG("Throbber::SetStep", self.Step() << " deg/frame on RID:" << self.getRID());
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetDots, (uint32_t, count))
+{
+    (void)ctx;
+    self.SetDots(count);
+    ETCS_LOG("Throbber::SetDots", self.Dots() << " on RID:" << self.getRID());
+}
+
+// SetColors <head r g b> <tail r g b> -- the two shades the sweep lerps
+// between. Six floats and not two named colours, because a colour is not an
+// entity here and inventing one for this would be the only place it existed.
+DEFINE_WORK_FUNC_TYPED(Throbber, SetColors,
+                       (float, ar), (float, ag), (float, ab),
+                       (float, br), (float, bg), (float, bb))
+{
+    (void)ctx;
+    self.SetColors(ar, ag, ab, br, bg, bb);
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetTextColor,
+                       (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetTextColor(r, g, b, a);
+}
+
+// SetText <rest of line> -- "ETCS" by default, and an empty argument puts it
+// back rather than leaving a throbber with no caption at all.
+DEFINE_WORK_FUNC(Throbber, SetText)
+{
+    (void)ctx;
+    self.SetText(data.restAsString());
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetPosition, (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.SetPosition(x, y);
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetOrder, (int32_t, z))
+{
+    (void)ctx;
+    self.SetOrder(z);
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetHidden, (int32_t, hidden))
+{
+    (void)ctx;
+    self.SetHidden(hidden != 0);
+}
+
+DEFINE_WORK_FUNC(Throbber, Delete)
 {
     (void)data; (void)ctx;
     self.DeleteConcrete();

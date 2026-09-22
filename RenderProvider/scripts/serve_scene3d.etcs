@@ -1,0 +1,65 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# SERVE THE 3D PAGE -- a projected scene and a terminal -- over TLS.
+#
+#     cd modules/RenderProvider/scripts && etcs serve_scene3d.etcs
+#     then open https://localhost:8443/
+#
+# RUN IT FROM THIS DIRECTORY. Every path below is relative to it. Same shape as
+# PaintProvider's serve_paint.etcs, and for the same reasons: one FileHtmlPage
+# child (two StaticHtmlPage siblings under one server is a coin flip the hash
+# re-tosses), the two isolation headers without which a -pthread build's Workers
+# die on `wasmMemory is undefined`, and every script MOUNTED at the path it is
+# fetched from rather than copied into www/.
+#
+# ONE SERVER AT A TIME on 8443. This page and the paint page are two views of
+# the same runtime, not two services.
+
+spawn NetworkProvider::HttpServer web
+web.SetPort(8443)
+web.EnableTLS(/tmp/etcs-cert.pem /tmp/etcs-key.pem)
+
+# Cross-origin isolation, which is what makes SharedArrayBuffer -- and therefore
+# threads -- available at all. Confirm from the page's console with
+# `crossOriginIsolated, typeof SharedArrayBuffer`: true / "function".
+web.AddHeader(Cross-Origin-Opener-Policy same-origin)
+web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
+
+web.spawn(NetworkProvider::FileHtmlPage tree)
+tree.LoadFromDisk(./www)
+tree.SetDefaultExtension(.html)
+
+# The runtime binaries, from bin/wasm/ -- the one copy `ace wasm make` writes,
+# mounted rather than copied beside the page (Makefile, WASM_DIR, on why). The
+# page tries /wasm/ first (resolveWasmBase, www/index.html).
+tree.MountTree(wasm ACE_ROOT/bin/wasm)
+
+# ── the mounts ───────────────────────────────────────────────────────────────
+#
+# Each at the path the page stages it under (www/modules.json), which is the path
+# the OS side reads it from -- so the boot script's `detach` and `run` lines are
+# spelled once for both substrates instead of twice.
+#
+# THE GEOMETRY IS MOUNTED, NOT COPIED. www/scene3d.etcs is the session; this one
+# is the reusable scene the session runs against an anchor, and it is the same
+# file the native script uses. Two names, one file, no drift.
+tree.MountFile(RenderProvider/scripts/scene3d.etcs ./scene3d.etcs)
+tree.MountFile(RenderProvider/scripts/render_frames.etcs ./render_frames.etcs)
+
+# The pointer half of the look control, from the repo's own scripts rather than
+# a copy of it -- the key half is stated inline by the boot script, because the
+# last edge is the one that blocks.
+tree.MountFile(scene3d_look.etcs ../../../scripts/scene3d_look.etcs)
+
+# The terminal view, from ShellProvider's own page rather than a copy of it.
+# Mounted at "shell", which is what index.html's iframe points at; the MIME comes
+# from the disk name.
+tree.MountFile(shell ../../ShellProvider/scripts/www/index.html)
+
+# The whole served surface, which is the fastest way to catch a staging mistake:
+# a name the page asks for and this does not list is a 404 waiting to happen.
+tree.ListPaths()
+
+web.Start()
+web.IsStarted()

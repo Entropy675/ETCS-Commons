@@ -1,0 +1,95 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE IMPORT PROMPT: what the page asks when a picture file arrives.
+#
+#     run PaintProvider/scripts/paint_import.etcs pane=<Drawable2D> palette=<PaintPalette> menu=<PaintCanvasMenu>
+#
+# A popup on the sheet, like the settings menu and on the same bargain: the
+# look is here, the meaning is PaintCanvasMenu's. The file's name is written
+# onto the caption bound below (BindImportPrompt), and the three buttons are
+# rectangles bound to the three answers with AddCall -- the image becomes a
+# layer of this picture (ImportAsLayer), a new picture of its own size
+# (ImportAsCanvas), or nothing (ImportCancel). Opened by OfferImport, which
+# the page's upload calls instead of importing outright, and dismissed by a
+# press anywhere else as every popup is (PaintPalette::Apply).
+#
+# Coordinates are the pane's own (300x90), so moving the pane moves the prompt.
+
+requires pane    [Drawable2D]
+requires palette [PaintPalette]
+requires menu    [PaintCanvasMenu]
+
+pane.spawn(RenderProvider::TextLabel import_title)
+import_title.Create()
+import_title.SetPosition(10, 8)
+import_title.SetSize(1)
+import_title.SetColor(0.79, 0.71, 0.35, 1.0)
+import_title.SetText(bring in)
+import_title.SetOrder(2)
+
+# The file's name, written by OfferImport.
+pane.spawn(RenderProvider::TextLabel import_name)
+import_name.Create()
+import_name.SetPosition(10, 26)
+import_name.SetSize(1)
+import_name.SetColor(0.90, 0.90, 0.88, 1.0)
+import_name.SetText(-)
+import_name.SetOrder(2)
+
+# ── as a new layer ───────────────────────────────────────────────────────────
+pane.spawn(RenderProvider::PolygonDrawable2D import_layer)
+import_layer.Create()
+import_layer.AddPoint(10, 54)
+import_layer.AddPoint(100, 54)
+import_layer.AddPoint(100, 78)
+import_layer.AddPoint(10, 78)
+import_layer.SetFill(0.17, 0.18, 0.13, 1.0)
+import_layer.SetOrder(1)
+palette.AddCall(@import_layer, @menu, PaintCanvasMenu.ImportAsLayer)
+pane.spawn(RenderProvider::TextLabel import_layer_word)
+import_layer_word.Create()
+import_layer_word.SetPosition(18, 62)
+import_layer_word.SetSize(1)
+import_layer_word.SetColor(0.90, 0.90, 0.88, 1.0)
+import_layer_word.SetText(new layer)
+import_layer_word.SetOrder(2)
+palette.AddCall(@import_layer_word, @menu, PaintCanvasMenu.ImportAsLayer)
+
+# ── as a new canvas ──────────────────────────────────────────────────────────
+pane.spawn(RenderProvider::PolygonDrawable2D import_canvas)
+import_canvas.Create()
+import_canvas.AddPoint(110, 54)
+import_canvas.AddPoint(206, 54)
+import_canvas.AddPoint(206, 78)
+import_canvas.AddPoint(110, 78)
+import_canvas.SetFill(0.17, 0.18, 0.13, 1.0)
+import_canvas.SetOrder(1)
+palette.AddCall(@import_canvas, @menu, PaintCanvasMenu.ImportAsCanvas)
+pane.spawn(RenderProvider::TextLabel import_canvas_word)
+import_canvas_word.Create()
+import_canvas_word.SetPosition(118, 62)
+import_canvas_word.SetSize(1)
+import_canvas_word.SetColor(0.90, 0.90, 0.88, 1.0)
+import_canvas_word.SetText(new canvas)
+import_canvas_word.SetOrder(2)
+palette.AddCall(@import_canvas_word, @menu, PaintCanvasMenu.ImportAsCanvas)
+
+# ── neither ──────────────────────────────────────────────────────────────────
+pane.spawn(RenderProvider::PolygonDrawable2D import_cancel)
+import_cancel.Create()
+import_cancel.AddPoint(216, 54)
+import_cancel.AddPoint(290, 54)
+import_cancel.AddPoint(290, 78)
+import_cancel.AddPoint(216, 78)
+import_cancel.SetFill(0.17, 0.18, 0.13, 1.0)
+import_cancel.SetOrder(1)
+palette.AddCall(@import_cancel, @menu, PaintCanvasMenu.ImportCancel)
+pane.spawn(RenderProvider::TextLabel import_cancel_word)
+import_cancel_word.Create()
+import_cancel_word.SetPosition(230, 62)
+import_cancel_word.SetSize(1)
+import_cancel_word.SetColor(0.90, 0.90, 0.88, 1.0)
+import_cancel_word.SetText(cancel)
+import_cancel_word.SetOrder(2)
+palette.AddCall(@import_cancel_word, @menu, PaintCanvasMenu.ImportCancel)

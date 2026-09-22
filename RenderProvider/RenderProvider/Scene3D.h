@@ -398,21 +398,26 @@ public:
         for (Scene3D* kid : ownChildren()) kid->Interact();
     }
 
+    /*
+ * NOT Animated_, AND THAT IS A CLAIM RATHER THAN AN OVERSIGHT. The family
+ * (ontology/Animated.h) is for a thing a driver advances; these two steps are
+ * charged for by being LOOKED AT -- see Interact above -- so a frame edge
+ * stepping this node whether or not a camera is on it would be a different
+ * model, not the same one wired up more neatly. What the family and this node
+ * genuinely share is the MEASUREMENT, and that is StepClock
+ * (ontology/StepClock.h), which both hold one of.
+ *
+ * TWO CLOCKS, TWO CEILINGS, and they no longer pretend otherwise. Motion
+ * refuses to believe in more than a tenth of a second of unobserved movement;
+ * the entropy ledger will credit a whole second of unobserved cooling, because
+ * a box does not stop being warm while nobody is looking at it and a scene
+ * does stop being thrown across the map. Both numbers are now where the
+ * difference is visible, instead of in a comment claiming they matched.
+ */
     void AdvanceForObserver()
     {
-        const auto now = std::chrono::steady_clock::now();
-        if (m_stepped)
-        {
-            float dt = std::chrono::duration<float>(now - m_last_step).count();
-            // Capped for the same reason any measured timestep is: a stall --
-            // a swapped-out thread, a lid closing, a breakpoint -- would
-            // otherwise arrive as one enormous step and throw the scene across
-            // the map. A capped dt loses time rather than sanity.
-            if (dt > 0.1f) dt = 0.1f;
-            StepFromHeld(dt);
-        }
-        m_last_step = now;
-        m_stepped   = true;
+        const float dt = static_cast<float>(m_motion_clock.Take()) * 0.001f;
+        if (dt > 0.0f) StepFromHeld(dt);   // the first observation has nothing behind it
     }
 
     /*
@@ -772,7 +777,7 @@ public:
     // The same answer a camera gives, from the node the motion is actually on
     // -- so a scene reached through any path reports honestly, not only
     // through the camera that happens to be watching it.
-    bool Animating() override { return InMotion(); }
+    bool NeedsFrame() override { return InMotion(); }
 
     /*
  * Lifecycle_: stop being a thing other entities are still pointing at.
@@ -1306,12 +1311,11 @@ private:
  */
     void commitEntropy()
     {
-        const auto now = std::chrono::steady_clock::now();
-        if (!m_interacted) { m_last_interaction = now; m_interacted = true; return; }
-
-        float dt = std::chrono::duration<float>(now - m_last_interaction).count();
-        m_last_interaction = now;
-        if (dt > 1.0f) dt = 1.0f;   // same cap, same reason, as the motion step
+        // A whole second of unobserved cooling is credible where a whole second
+        // of unobserved motion is not -- see AdvanceForObserver on why these two
+        // ceilings differ, and ontology/StepClock.h on why a ceiling at all.
+        const float dt = static_cast<float>(m_entropy_clock.Take()) * 0.001f;
+        if (!(dt > 0.0f)) return;   // the first interaction has nothing behind it
 
         // The EVENT, and it is an OrderVector like any other: where it left,
         // whose boundary it crossed, how much energy, all of it unordered
@@ -1778,13 +1782,14 @@ private:
     // seeding -- see applyLookTo's seeding block for what it is for.
     float              m_ref_elev   = 0.0f;
 
-    std::chrono::steady_clock::time_point m_last_step{};
-    bool                                  m_stepped = false;
+    // Motion: a tenth of a second is the most unobserved movement this will
+    // believe in. See AdvanceForObserver.
+    StepClock                             m_motion_clock{ 100.0 };
 
-    // The entropy ledger: when this node last interacted, how fast it sheds
-    // heat, and what has left the model entirely through the root.
-    std::chrono::steady_clock::time_point m_last_interaction{};
-    bool                                  m_interacted  = false;
+    // The entropy ledger: the interval this node was last charged for, how fast
+    // it sheds heat, and what has left the model entirely through the root. A
+    // full second, deliberately unequal to the motion ceiling above it.
+    StepClock                             m_entropy_clock{ 1000.0 };
     float                                 m_emissivity  = 0.5f;
     float                                 m_emitted_out = 0.0f;
     uint64_t                              m_ticks       = 0;

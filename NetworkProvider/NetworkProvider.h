@@ -58,6 +58,17 @@ DEFINE_WORK_FUNC(HttpServer, SetPort)
     data << ok;
 }
 
+DEFINE_WORK_FUNC(HttpServer, AddHeader)
+{
+    (void)ctx;
+
+    // Expected buffer layout: [String: Key][sep][String: Value]
+    std::string key;
+    std::string value;
+    data >> key >> value;
+    self.AddHeader(key, value);
+}
+
 // AddHandler <rid> <Action> — registers an out-of-tree recipient for
 // connections. This is the ONE place a RID crosses into this structure from
 // outside, and it is explicit for exactly that reason: everything downstream
@@ -379,6 +390,13 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             asset = self.ResolvePath(path);
         }
 
+        // Build custom headers string from connection/state object
+        std::string custom_headers_str;
+        for (const auto& header : self.GetCustomHeaders())
+        {
+            custom_headers_str += header.first + ": " + header.second + "\r\n";
+        }
+
         // HTTP/1.1 is persistent by default; only close when the client
         // asked, or when this connection has served its budget. Closing
         // per request is what filled the client's ephemeral port range
@@ -394,20 +412,23 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
              << " keep=" << keep);
 
         int send_len = 0;
-        if (asset.matched)
+        if (asset.matched && !asset.redirect.empty())
         {
-            // SendBuffer() is fixed (ETCS_NETWORK_MAX_HEADER_SIZE * 4).
-            // Anything larger is clipped by snprintf's own bound rather
-            // than corrupting memory, but is still a broken response.
-            // Flagged loudly; the real fix is a chunked send loop feeding
-            // several IOSubmission::Send calls, not yet wired here.
-            if (asset.length + 256 > c->SendBuffer().size())
-            {
-                ETCS_LOG("HttpServer::Serve", "WARNING: asset '" << path << "' ("
-                         << asset.length << " bytes) exceeds SendBuffer capacity ("
-                         << c->SendBuffer().size() << ") -- response TRUNCATED.");
-            }
-
+            // A directory asked for without its slash (FileHtmlPage,
+            // ResolveConcrete). 301 rather than 302 because the slashed
+            // spelling IS the page's address: browsers cache it and stop
+            // asking. No body -- there is nothing to say that the Location
+            // does not. The redirect is a path FileHtmlPage built from the
+            // request, and CR/LF cannot reach it: picohttpparser rejects a
+            // target containing either before this closure runs.
+            const int n = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
+                "HTTP/1.1 301 Moved Permanently\r\nLocation: %s\r\n"
+                "Content-Length: 0\r\nConnection: %s\r\n%s\r\n",
+                asset.redirect.c_str(), conn_hdr, custom_headers_str.c_str());
+            send_len = (n < 0) ? 0 : (int)std::min((size_t)n, c->SendBuffer().size() - 1);
+        }
+        else if (asset.matched)
+        {
             // Only the true fallback -- an extension MimeForExtension has
             // no explicit case for -- downloads instead of opening in-tab.
             // Every filtered type (html, css, js, images, fonts, wasm,
@@ -434,32 +455,85 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
                 disposition_hdr = "Content-Disposition: attachment; filename=\"" + filename + "\"\r\n";
             }
 
-            send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
+            // HEADERS ONLY through snprintf; the body is memcpy'd after.
+            // %.*s stops at the first NUL, and a wasm module STARTS with
+            // one -- the magic is literally '\0' 'a' 's' 'm' -- so a
+            // single format call wrote Content-Length: N with a body of
+            // zero bytes for every wasm file, whatever the buffer sizes.
+            // The bytes were dropped at FORMAT time, not storage time,
+            // which is why enlarging NBuffer could not touch this.
+            // memcpy is NUL-safe; this is the binary-body path.
+            //
+            // snprintf's return is the length it WANTED to write, not
+            // what fit -- passing it straight to SetSendLen meant an
+            // oversized response had do_send reading PAST the buffer.
+            // Everything below is clamped to what SendBuffer holds.
+            //
+            // SendBuffer() is ETCS_NETWORK_MAX_ASSET_SIZE (8 MiB): THAT macro
+            // is the knob for large assets -- not NBuffer, and not
+            // ETCS_NETWORK_MAX_HEADER_SIZE, which is 32x smaller and governs
+            // the request side only. The real fix for UNBOUNDED assets is a
+            // chunked send loop feeding several IOSubmission::Send calls, not
+            // yet wired here; until then the macro is a preallocation as well
+            // as a ceiling, which is why it is not simply enormous.
+            const size_t cap = c->SendBuffer().size();
+            const int hdr_fmt = snprintf(c->SendBuffer().data(), cap,
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: %s\r\n"
                 "Content-Length: %zu\r\n"
                 "Connection: %s\r\n"
                 "Keep-Alive: timeout=%d\r\n"
-                "%s"
-                "\r\n%.*s",
+                "%s%s\r\n",
                 asset.mime_type.c_str(), asset.length, conn_hdr,
                 SocketConnectionState::TIMEOUT_SECONDS,
-                disposition_hdr.c_str(),
-                static_cast<int>(asset.length), asset.data);
+                disposition_hdr.c_str(), custom_headers_str.c_str());
+
+            const size_t hdr_len =
+                (hdr_fmt < 0) ? 0 : std::min((size_t)hdr_fmt, cap - 1);
+
+            if (hdr_fmt < 0 || asset.length > cap - hdr_len)
+            {
+                // Refuse honestly rather than emit Content-Length: N and
+                // deliver fewer bytes -- that lie IS the client's
+                // partial-transfer / connection-reset symptom. Same
+                // refuse-rather-than-misreport contract as Start
+                // refusing to come up in plaintext.
+                ETCS_LOG("HttpServer::Serve", "REFUSING '" << path << "' ("
+                         << asset.length << " bytes): SendBuffer holds " << cap
+                         << " (" << (cap - hdr_len) << " free after headers)"
+                         << " -- raise ETCS_NETWORK_MAX_ASSET_SIZE.");
+                const char* err = "asset exceeds send buffer";
+                const int e = snprintf(c->SendBuffer().data(), cap,
+                    "HTTP/1.1 500 Internal Server Error\r\nConnection: %s\r\n"
+                    "Content-Length: %zu\r\n%s\r\n%s",
+                    conn_hdr, std::strlen(err), custom_headers_str.c_str(), err);
+                send_len = (e < 0) ? 0 : (int)std::min((size_t)e, cap - 1);
+            }
+            else
+            {
+                // Deliberately overwrites snprintf's NUL terminator: the
+                // header block ends with its own CRLF, and the body is
+                // raw bytes, not a C string.
+                std::memcpy(c->SendBuffer().data() + hdr_len, asset.data, asset.length);
+                send_len = (int)(hdr_len + asset.length);
+            }
         }
         else
         {
             const char* err = "404 Not Found";
-            send_len = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
+            const int n = snprintf(c->SendBuffer().data(), c->SendBuffer().size(),
                 "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n"
-                "Content-Length: %zu\r\n\r\n%s",
-                conn_hdr, std::strlen(err), err);
+                "Content-Length: %zu\r\n%s\r\n%s",
+                conn_hdr, std::strlen(err), custom_headers_str.c_str(), err);
+            send_len = (n < 0) ? 0 : (int)std::min((size_t)n, c->SendBuffer().size() - 1);
         }
         c->SetSendLen(send_len);
 
         ETCS_LOG("HttpServer::Serve", "Serving: "
                  << std::string(c->GetParser().GetMethod(), c->GetParser().GetMethodLen())
-                 << " " << path << " (" << (asset.matched ? "200" : "404") << ")");
+                 << " " << path << " ("
+                 << (!asset.matched ? "404" : asset.redirect.empty() ? "200" : "301 -> " + asset.redirect)
+                 << ")");
 
         // SEND UNTIL IT IS ALL GONE. A TCP send returns how many bytes the
         // socket ACCEPTED, not how many were asked for -- for a large
@@ -845,15 +919,40 @@ DEFINE_STREAM_FUNC_PRODUCE(HTTPParser, ProduceResponse)
     const char* body     = data.buf;
     size_t      body_len = data.written;
 
+    /*
+ * HEADERS WITH snprintf, BODY WITH memcpy -- the same split the 200 path in
+ * ServeAsset already makes, and for the same reason: %.*s stops at the first
+ * NUL, and a .wasm module's FIRST BYTE is one ("\0asm"). A binary body went out
+ * with a correct Content-Length and zero bytes after the blank line, so the
+ * client blocked forever waiting for a body that was never sent. Fixed there
+ * and left live here; a streamed response with a NUL anywhere in it hit the
+ * identical stall.
+ *
+ * snprintf returns what it WANTED to write, not what it wrote, so the header
+ * length is clamped before it is used as an offset.
+ */
     char response[ETCS::Buffer::bufsize * 4];
-    int response_len = snprintf(response, sizeof(response),
+    int hdr = snprintf(response, sizeof(response),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html\r\n"
         "Content-Length: %zu\r\n"
         "Connection: close\r\n"
-        "\r\n"
-        "%.*s",
-        body_len, static_cast<int>(body_len), body);
+        "\r\n",
+        body_len);
+    if (hdr < 0) return;
+    size_t hdr_len = static_cast<size_t>(hdr);
+    if (hdr_len >= sizeof(response)) hdr_len = sizeof(response) - 1;
+
+    if (body_len > sizeof(response) - hdr_len)
+    {
+        ETCS_LOG("HTTPParser::ProduceResponse", "body of " << body_len
+                 << " bytes does not fit one response buffer (" << sizeof(response)
+                 << " total, " << hdr_len << " of headers) -- refused rather than "
+                 "truncated. This is the case chunking exists for.");
+        return;
+    }
+    if (body_len && body) ::std::memcpy(response + hdr_len, body, body_len);
+    const int response_len = static_cast<int>(hdr_len + body_len);
 
     size_t offset = 0;
     while (offset < static_cast<size_t>(response_len))
@@ -1092,11 +1191,17 @@ DEFINE_WORK_FUNC(StaticHtmlPage, Delete)
 // FileHtmlPage
 // ===========================================================================
 
+// Reports WHAT IT TOOK rather than that it ran. "Loaded 'x'" is true of a path
+// that does not exist, and that sentence is the reason a served tree with
+// nothing in it looked like a working one -- see FileHtmlPage::LoadFromDisk on
+// why the failure was silent. A count can be compared against what the caller
+// expected; a verb in the past tense cannot.
 DEFINE_WORK_FUNC(FileHtmlPage, LoadFromDisk)
 {
     (void)ctx;
-    self.LoadFromDisk(data.toString());
-    ETCS_LOG("FileHtmlPage::LoadFromDisk", "Loaded '" << data.toString()
+    const size_t taken = self.LoadFromDisk(data.toString());
+    ETCS_LOG("FileHtmlPage::LoadFromDisk", "Loaded " << taken << " entr"
+             << (taken == 1 ? "y" : "ies") << " from '" << data.toString()
              << "' into RID:" << self.getRID());
 }
 
@@ -1125,6 +1230,34 @@ DEFINE_WORK_FUNC(FileHtmlPage, MountExternal)
              << " at '" << segment << "' under RID:" << self.getRID());
 }
 
+DEFINE_WORK_FUNC(FileHtmlPage, MountFile)
+{
+    (void)ctx;
+    std::string url_path;
+    std::string disk_path;
+    data >> url_path;
+    data >> disk_path;
+    // No log here: MountFile logs the mount it made, or the exact reason it made
+    // none. A second line saying it was asked for would only ever agree.
+    self.MountFile(url_path, disk_path);
+}
+
+// Reports the count because 0 is the one answer a script can act on, and it is
+// the same reason LoadFromDisk's own work function reports one: an unreadable
+// path loads nothing and then 404s every request under the prefix, with the
+// tree still insisting it mounted.
+DEFINE_WORK_FUNC(FileHtmlPage, MountTree)
+{
+    (void)ctx;
+    std::string url_segment;
+    std::string disk_path;
+    data >> url_segment;
+    data >> disk_path;
+    const size_t taken = self.MountTree(url_segment, disk_path);
+    data.reset();
+    data << taken;
+}
+
 DEFINE_WORK_FUNC(FileHtmlPage, EnsureFallback)
 {
     (void)ctx;
@@ -1147,11 +1280,13 @@ DEFINE_WORK_FUNC(FileHtmlPage, Resolve)
     std::string path = data.toString();
     HtmlPage_::ResolvedAsset asset = self.Resolve(path);
     data.reset();
-    if (asset.matched)
+    if (!asset.matched)
+        data.writeString("NOT FOUND");
+    else if (!asset.redirect.empty())
+        data.writeString(("REDIRECT " + asset.redirect).c_str());
+    else
         data.writeString(("MATCH " + asset.mime_type + " "
                           + std::to_string(asset.length) + " bytes").c_str());
-    else
-        data.writeString("NOT FOUND");
 }
 
 DEFINE_WORK_FUNC(FileHtmlPage, Delete)

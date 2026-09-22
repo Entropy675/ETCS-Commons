@@ -38,6 +38,7 @@
 // ---------------------------------------------------------------------------
 class TextLabel : public Drawable2DBase<TextLabel>,
                   public GlyphsBase<TextLabel>,
+                  public AnimatedBase<TextLabel>,
                   public DeletableBase<TextLabel>
 {
 public:
@@ -127,16 +128,39 @@ public:
                                      int32_t x, int32_t y,
                                      float r, float g, float b, float a) override
     {
-        Surface_* dst = ETCS::resolve_in_family<Surface_>("Surface", target);
-        if (!dst)
-        {
-            ETCS_LOG("TextLabel", "RasterizeText target RID:" << target
-                     << " does not resolve as a Surface -- nothing drawn.");
-            return TextExtent{0, 0, 0};
-        }
+        /*
+     * PIXELS FIRST, SURFACE SECOND, and the order is the family's contract
+     * rather than a preference. Glyphs_ says in as many words that a run is
+     * rasterised INTO something that owns pixels -- that is what lets text
+     * reach a screen through the Blit that already exists, with no font stack
+     * added to any Surface implementation.
+     *
+     * Resolving only Surface silently excluded every Pixels leaf that is not
+     * also a Surface. PaintProvider's PaintLayer is exactly that -- a raster
+     * that is composited BY a surface rather than being one -- so placing text
+     * into a paint layer logged a miss and drew nothing, which is the bug this
+     * ordering fixes.
+     *
+     * The Surface path stays as the fallback because it is not redundant: a
+     * window's swapchain surface owns no host-addressable bytes at all
+     * (Renderable, not Pixels), and drawing a label onto one is an ordinary
+     * thing to want.
+     */
         const uint32_t scale = size_px ? (size_px / CELL_H ? size_px / CELL_H : 1) : m_scale;
-        drawRun(dst, text, x, y, scale, r, g, b, a);
-        return MeasureTextConcrete(text, font, size_px);
+
+        if (Pixels_* px = ETCS::resolve_in_family<Pixels_>("Pixels", target))
+        {
+            drawRunPixels(px, text, x, y, scale, r, g, b, a);
+            return MeasureTextConcrete(text, font, size_px);
+        }
+        if (Surface_* dst = ETCS::resolve_in_family<Surface_>("Surface", target))
+        {
+            drawRun(dst, text, x, y, scale, r, g, b, a);
+            return MeasureTextConcrete(text, font, size_px);
+        }
+        ETCS_LOG("TextLabel", "RasterizeText target RID:" << target
+                 << " owns neither Pixels nor a Surface -- nothing drawn.");
+        return TextExtent{0, 0, 0};
     }
 
     // ── Drawable2D_ dispatch ─────────────────────────────────────────────
@@ -184,15 +208,39 @@ public:
         const int32_t ox = base.x + m_x;
         const int32_t oy = base.y + m_y;
 
+        /*
+     * ONE STATEMENT, AND THE SHORT PATH WHERE THERE IS ONE.
+     *
+     * A run is emitted as one fill per vertical run of lit pixels per column,
+     * which is already far fewer than one per pixel -- but it is still tens of
+     * fills per character, every one of them a dispatched call that marks the
+     * destination when it lands. A bar of readouts and captions came to ~1,300
+     * per redraw, so a compositor above it heard about one unchanged label 1,300
+     * times and anything derived from a mark ran that often.
+     *
+     * Batched, the whole run is one change (ObservableBase::BeginBatch). And when
+     * the destination owns host bytes -- which every offscreen compositor does --
+     * the fills go straight to Pixels_ rather than back out through the Surface
+     * verb and its clip, which is the same short path RasterizeText already took
+     * for the same reason. A device-backed destination keeps the verb, because
+     * there are no bytes to write.
+     */
+        etcs_observed_batch run(static_cast<ETCS::Entity*>(dst));
+        Pixels_* dpx = static_cast<Pixels_*>(
+            dst->getInterfacePointer(ETCS::Buffer("Pixels")));
+
         if (m_bg[3] > 0.0f)
         {
             const Rect2D b = BoundsConcrete();
-            dst->DrawRect(ox, oy, b.w, b.h, m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            if (dpx) dpx->FillRect(ox, oy, b.w, b.h, m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+            else     dst->DrawRect(ox, oy, b.w, b.h, m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         }
-        drawRun(dst, shown.c_str(),
-                ox + static_cast<int32_t>(m_pad),
-                oy + static_cast<int32_t>(m_pad),
-                m_scale, m_color[0], m_color[1], m_color[2], m_color[3]);
+        const int32_t tx = ox + static_cast<int32_t>(m_pad);
+        const int32_t ty = oy + static_cast<int32_t>(m_pad);
+        if (dpx) drawRunPixels(dpx, shown.c_str(), tx, ty, m_scale,
+                               m_color[0], m_color[1], m_color[2], m_color[3]);
+        else     drawRun(dst, shown.c_str(), tx, ty, m_scale,
+                         m_color[0], m_color[1], m_color[2], m_color[3]);
 
         drawChildren(dst);
     }
@@ -205,12 +253,36 @@ public:
         return ETCS::DestroyEvent{conjugate_key.c_str(), this}();
     }
 
-    // A label bound to a frame rate is never settled -- the number it shows
-    // changes without anyone marking it. That is exactly the question the
-    // family added for self-animating nodes (ontology/Drawable.h), and
-    // answering it is what keeps the compositors above this label recomposing
-    // while the counter is live.
-    bool Animating() override { return m_fps_src != 0; }
+    // ── Animated_ ────────────────────────────────────────────────────────
+    //
+    // A label bound to a frame rate is never settled: the number it shows
+    // changes without anyone marking it, which is the relation Animated names
+    // (ontology/Animated.h). It was answered through Drawable_::Animating
+    // before, i.e. by being in a tree somebody walks -- true of this label and
+    // not of the relation, and the reason a label under a camera once stayed
+    // frozen while the same label under a compositor did not.
+    bool AnimatingConcrete() override { return m_fps_src != 0; }
+
+    /*
+ * ONE STEP IS ONE RE-READ, AND IT MARKS ONLY IF THE TEXT MOVED.
+ *
+ * The interval is unused on purpose -- this does not integrate anything, it
+ * SAMPLES, and the sample is whatever the surface's rate is at the moment the
+ * driver comes by. What the step is for is the mark: the old arrangement
+ * answered "still animating" forever and made every compositor above this
+ * label recompose sixty times a second whether or not the displayed number had
+ * changed, because a standing yes is the only thing a tree walk can carry. One
+ * decimal place of a frame rate changes a few times a second at most, so
+ * comparing the rendered string and marking only on a difference settles the
+ * whole path above a live counter between changes.
+ */
+    void AdvanceConcrete(double) override
+    {
+        std::string now = liveText();
+        if (now == m_shown) return;
+        m_shown.swap(now);
+        etcs_mark_observed(this);
+    }
 
 private:
     /*
@@ -219,10 +291,15 @@ private:
  *
  * The marker rather than replacing the whole string, so a caption keeps its
  * label -- "FPS %f" reads as "FPS 53.0" and the script still owns the wording.
- * Resolved by TAG, not by casting a family pointer: Fps is a property of this
- * module's own surface and not of the Surface family, and reading another
- * module's fields off a family pointer is the mistake the interface-pointer
- * discipline exists to prevent.
+ *
+ * RESOLVED AS Presentable_, WHICH IS NOW A REAL FAMILY ROUTE. This used to
+ * resolve the Surface family, compare the source tag against the string
+ * "Surface" and cast to this module's concrete platform type, because the rate
+ * lived on the backend rather than on a family -- three couplings (to one
+ * module, to one tag name, and to this header being included after the
+ * backends) standing in for one method. Presentable_::Fps is that method, so a
+ * caption can now show the rate of ANY module's presenting surface and this
+ * file names no backend at all.
  */
     std::string liveText() const
     {
@@ -231,10 +308,10 @@ private:
         const size_t at = m_text.find(marker);
         if (at == std::string::npos) return m_text;
 
-        Surface_* s = ETCS::resolve_in_family<Surface_>("Surface", m_fps_src);
-        if (!s || s->getSourceTag() != ETCS::Buffer("Surface")) return m_text;
+        Presentable_* s = ETCS::resolve_in_family<Presentable_>("Presentable", m_fps_src);
+        if (!s) return m_text;
 
-        const float fps = static_cast<Surface*>(s->getTrueType())->Fps();
+        const float fps = s->Fps();
         // One decimal, formatted by hand: this runs every frame and a
         // stringstream here would allocate three times per draw for a number
         // with four significant figures in it.
@@ -257,6 +334,50 @@ private:
  * instead of hundreds. That matters because these land in a retained
  * composition (VulkanSurface) where every rect is a draw command.
  */
+    /*
+ * THE SAME RUN, WRITTEN STRAIGHT INTO A BUFFER.
+ *
+ * Identical walk to drawRun below -- same glyph, same column-major bits, same
+ * vertical run-collapsing -- differing only in what it calls to put the span
+ * down. Pixels_::FillRect is source-over and clipped, which is exactly what
+ * Surface_::DrawRect promised, so the two produce the same marks.
+ *
+ * Written twice rather than templated on the primitive: the two families share
+ * no base and a template over "something with a rect-filling method" would name
+ * neither of them, which is a worse statement of the relationship than a
+ * duplicated ten-line loop that says plainly there are two backends.
+ */
+    void drawRunPixels(Pixels_* dst, const char* text, int32_t x, int32_t y,
+                       uint32_t scale, float r, float g, float b, float a)
+    {
+        if (!dst || !text) return;
+        const int32_t s = static_cast<int32_t>(scale);
+        int32_t pen = x;
+
+        for (const char* p = text; *p; ++p, pen += static_cast<int32_t>(ADVANCE) * s)
+        {
+            const uint8_t* col = glyph(*p);
+            if (!col) continue;
+            for (uint32_t c = 0; c < CELL_W; ++c)
+            {
+                uint8_t bits = col[c];
+                uint32_t row = 0;
+                while (row < CELL_H)
+                {
+                    if (!(bits & (1u << row))) { ++row; continue; }
+                    uint32_t run = 0;
+                    while (row + run < CELL_H && (bits & (1u << (row + run)))) ++run;
+                    dst->FillRect(pen + static_cast<int32_t>(c) * s,
+                                  y + static_cast<int32_t>(row) * s,
+                                  static_cast<uint32_t>(s),
+                                  static_cast<uint32_t>(run) * scale,
+                                  r, g, b, a);
+                    row += run;
+                }
+            }
+        }
+    }
+
     void drawRun(Surface_* dst, const char* text, int32_t x, int32_t y,
                  uint32_t scale, float r, float g, float b, float a)
     {
@@ -286,25 +407,6 @@ private:
                 }
             }
         }
-    }
-
-    // Where this node's PARENT sits, stopping at the first ancestor that is a
-    // raster. Identical to PolygonDrawable2D's and Camera3D's -- the four
-    // 2D leaves are interchangeable as children, so they must agree on what a
-    // position means.
-    Point2D parentAbsoluteOrigin()
-    {
-        Point2D acc{0, 0};
-        for (ETCS::Entity* node = getParent(); node; node = node->getParent())
-        {
-            void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
-            if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
-            const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
-            acc.x += pb.x;
-            acc.y += pb.y;
-        }
-        return acc;
     }
 
     // Changing a label changes the image, so every pixel owner above it holds
@@ -438,6 +540,9 @@ private:
     float       m_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float       m_bg[4]    = {0.0f, 0.0f, 0.0f, 0.0f};
     ETCS::RID   m_fps_src  = 0;
+    // What the last step rendered, kept only so the next one can tell whether
+    // the number actually moved. See AdvanceConcrete.
+    std::string m_shown;
 };
 
 #endif

@@ -47,7 +47,7 @@ class VulkanSurface : public SurfaceBase<VulkanSurface>,
                        public PresentableBase<VulkanSurface>,
                        public DeletableBase<VulkanSurface>,
                        public LifecycleBase<VulkanSurface>,
-                       // Owns a held body: Surface::ProduceFrames loops for the
+                       // Owns a held body: Surface::RunFrames loops for the
                        // window's lifetime. Claiming Threaded is what lets the
                        // arena ASK that loop to stop rather than only setting
                        // flags it has to dereference this object to read.
@@ -157,10 +157,20 @@ public:
 
     // Mirrors GLFWWindow::IsActive and VulkanInstance::IsActive -- the
     // "active" tag is added at the end of Create and removed in teardown,
-    // so this is the one predicate the frame clock (ProduceFrames,
+    // so this is the one predicate the frame clock (RunFrames,
     // RenderProvider.h) can wait on before ticking at a swapchain that may
     // not exist yet, and stop on when the surface goes away.
     bool IsActive() const { return this->hasTag("active"); }
+
+    /*
+     * Presentable_'s readiness question -- see PresentableBase::CanPresentConcrete.
+     * BOTH halves, in this order: Retired is the authoritative "do not touch
+     * this", and IsActive alone answers true on a retired Vulkan surface, whose
+     * "active" tag is only dropped in teardown. Asking both is what makes the
+     * two backends agree on one word.
+     */
+    bool CanPresentConcrete() override { return !Retired() && IsActive(); }
+
 
     // Every Surface_ entry point goes through this before touching a Vulkan
     // handle. Create() can fail HALFWAY -- it assigns m_instance early, then
@@ -244,7 +254,7 @@ public:
  * of past calls will ask it to.
  *
  * So a surface may instead be handed the RID of a Drawable root, and the
- * frame edge re-walks it per frame (ConsumeFrames, RenderProvider.h). That is
+ * frame edge re-walks it per frame (RunFrames, RenderProvider.h). That is
  * not the expensive option it sounds like: the walk is exactly where every
  * dirty flag in this system finally pays off. A settled tree costs one
  * DrawInto per node, no recomposition, no projection, and BlitConcrete's own
@@ -264,19 +274,13 @@ public:
     ETCS::RID ComposeRoot() const { return m_composeRoot; }
 
     /*
- * The frame rate this surface is actually sustaining, as a rolling average.
- *
- * Sampled at PRESENT, which is the only instant that means anything: it is
- * the point the frame reached the screen, so the interval between two of them
- * is a frame, with acquire, record, submit and the walk all inside it. A rate
- * computed anywhere else is a rate for part of the pipeline.
- *
- * Exponential rather than a window, because a window needs a buffer and a
- * decision about how long it is, and the only consumer is a human reading a
- * number off the screen. The smoothing constant is what stops it flickering
- * between two integers while saying nothing about the actual variance.
+ * THE RATE IS THE FAMILY'S NOW -- Presentable_::Fps, counted by PresentableBase
+ * on the way out of every Present. Sampled there rather than here because
+ * Present is the only instant that means anything: it is the point the frame
+ * reached the screen, so the interval between two of them is a whole frame,
+ * with acquire, record, submit and the walk all inside it. That was true of
+ * both backends, which is why both had written it.
  */
-    float Fps() const { return m_fps; }
 
     // Re-walk the bound root into a fresh composition. Returns false when
     // nothing is bound -- the retained path -- or when the root has stopped
@@ -424,7 +428,7 @@ public:
         if (!source) { ETCS_LOG("VulkanSurface", "Blit called with no source."); return; }
         // Whole body under the lock, not just the push_back: this mutates
         // m_textures and writes into mapped staging memory, both of which
-        // the frame consumer reads (ConsumeFrames, RenderProvider.h).
+        // the frame edge reads (RunFrames, RenderProvider.h).
         std::lock_guard<std::mutex> lock(m_stateMutex);
         m_composed = false;          // appends only -- see ClearConcrete
 
@@ -518,7 +522,7 @@ public:
     // --- Presentable_ dispatch (PresentableBase.h) ---
 
     // Present is the ONLY call here that touches the queue, and with the
-    // frame edge (RenderProvider.h's ProduceFrames/ConsumeFrames) it runs
+    // frame edge (RenderProvider.h's RunFrames) it runs
     // on a different thread from the Clear/DrawRect/Blit calls feeding it.
     // So it takes a SNAPSHOT of everything it needs under the state lock and
     // then does all the Vulkan work without holding it -- vkQueuePresentKHR
@@ -650,7 +654,6 @@ public:
             recreateSwapchain({ m_extent.width, m_extent.height });
 
         m_currentFrame = (m_currentFrame + 1) % SURFACE_FRAMES_IN_FLIGHT;
-        notePresent();
     }
 
     // --- Resizable_ dispatch (ResizableBase, composed into SurfaceBase) ---
@@ -795,29 +798,6 @@ private:
     bool                      m_composed   = false;
     // Zero means the retained model. See SetComposeRoot.
     ETCS::RID                 m_composeRoot = 0;
-    float                     m_fps = 0.0f;
-    bool                      m_fpsPrimed = false;
-    std::chrono::steady_clock::time_point m_lastPresent{};
-
-    // Called at the end of every present. Not under the state lock: it is
-    // touched by the frame thread only, and a reader getting a stale float is
-    // reading a frame rate.
-    void notePresent()
-    {
-        const auto now = std::chrono::steady_clock::now();
-        if (m_fpsPrimed)
-        {
-            const float dt = std::chrono::duration<float>(now - m_lastPresent).count();
-            if (dt > 0.0f)
-            {
-                const float inst = 1.0f / dt;
-                m_fps = (m_fps <= 0.0f) ? inst : (m_fps * 0.9f + inst * 0.1f);
-            }
-        }
-        m_lastPresent = now;
-        m_fpsPrimed = true;
-    }
-
 
     // --- setup helpers ---
 
@@ -1093,7 +1073,7 @@ private:
     // present is what starts that new one.
     //
     // This is the rule the frame edge needs to exist at all: with
-    // ProduceFrames/ConsumeFrames the surface presents on its own clock,
+    // RunFrames the surface presents on its own clock,
     // and .etcs has no loop construct, so a script issues its draws ONCE and
     // then blocks in Window.Run. Under immediate-mode semantics every frame
     // after the first would present an empty screen. It is also just what a
@@ -1389,12 +1369,43 @@ private:
  * pull is worth having: the one call that must not happen on the poll thread
  * is now structurally unable to.
  */
+    /*
+ * PUBLIC, and the pair below is why. Resizable_ dispatches ResizeTo through the
+ * base, so a private override served it for as long as nothing else called it --
+ * but the family's work functions call the CONCRETE type (`self.ResizeTo(...)`,
+ * RenderProvider.h), which is the point of the work-func trampolines. Both verbs
+ * are now part of the surface's own surface.
+ */
+public:
     bool ResizeTo(WindowSize sz) override
     {
         recreateSwapchain(sz);
         return true;
     }
 
+    /*
+     * NAMES THE PRESENTATION TARGET, of which a swapchain has exactly one: the
+     * surface handed to it by the window it was made from (VkSurfaceKHR, taken in
+     * Create). There is no second one to select and no way to retarget this
+     * swapchain at another, so a name other than the window's own is refused
+     * rather than remembered -- a stored value nothing reads is worse than a
+     * complaint, because it reads as configured.
+     *
+     * The verb is here because the browser backend genuinely has several targets
+     * (CanvasSurface::SetTarget: a page can hold any number of canvases) and a
+     * work function exists on the family, not on a backend. Answering honestly
+     * from this side is the point of having it on both.
+     */
+    bool SetTarget(const std::string& element_id)
+    {
+        if (element_id.empty() || element_id == "window") return true;
+        ETCS_LOG("VulkanSurface", "SetTarget('" << element_id << "'): a swapchain "
+                 "presents to the one VkSurfaceKHR its window gave it. Ignoring -- "
+                 "named targets are the browser backend's (CanvasSurface).");
+        return false;
+    }
+
+private:
     void recreateSwapchain(WindowSize sz)
     {
         if (!m_instance || m_surface == VK_NULL_HANDLE) return;

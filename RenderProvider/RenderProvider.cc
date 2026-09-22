@@ -1,12 +1,9 @@
 #include "RenderProvider.h"
 
-// Surface is HYBRID: its frame pump is a produce/consume pair, which is
-// what lets a renderer run on its own thread while the window keeps the
-// poll loop (scripts/render_frames.etcs, and RenderProvider.h's own comment
-// on why the clock and the Vulkan work sit on the sides they do).
-// Instance and ImageSurface stay BASIC -- neither has anything continuous
-// to carry.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel")
+// Every tag here is BASIC except Scene3D, whose input edge is a stream
+// consumer (see its block). Surface included: its frame pump is a work function
+// a script detaches, not a stream pair -- see the Surface block below.
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel Throbber")
 
 // The Vulkan instance/device/queue/command pool. Spawn one, Create it,
 // hand its RID to every Surface.
@@ -23,11 +20,14 @@ ETCS_TAG_BLOCK_BASIC(Device,
 // The window-bound presentable surface: spawn it as a Window's child.
 // Clear/DrawRect/Blit accumulate in call order and are RETAINED until
 // something composes a new frame; Present is the only call that touches the
-// GPU queue, and ProduceFrames/ConsumeFrames is that same Present driven by
-// a clock on another thread.
-ETCS_TAG_BLOCK_HYBRID(Surface,
-    (Create, Clear, DrawRect, Blit, Compose, Present, Delete, RunDemo),
-    (ProduceFrames, ConsumeFrames))
+// GPU queue, and RunFrames is that same Present driven by a clock.
+//
+// BASIC: presenting is a step on the Presentable family
+// (ontology/PresentableBase.h) and RunFrames is an ordinary work function a
+// script detaches, so this tag has no stream, no ring and no pool occupant.
+ETCS_TAG_BLOCK_BASIC(Surface,
+    Create, SetTarget, ResizeTo, Clear, DrawRect, Blit, Compose, Present,
+    Delete, RunDemo, RunFrames)
 
 // An offscreen CPU-backed surface -- a layer. Same drawing verbs, no
 // Present (it has nowhere to present to, see ontology/Presentable.h), and
@@ -41,7 +41,7 @@ ETCS_TAG_BLOCK_BASIC(ImageSurface,
 // Draw is the whole subtree in one call, which is what a scene living in the
 // entity tree buys over one living in a script.
 ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
-    Create, AddPoint, ClearPoints, SetFill, SetOrder, Draw, Clear, DrawRect, Blit, Delete)
+    Create, AddPoint, ClearPoints, SetFill, SetOrder, SetHidden, Draw, Clear, DrawRect, Blit, Delete)
 
 // The merge point: a Drawable2D that owns pixels, so everything nested under
 // it renders into its buffer and reaches the destination as one Blit. Drawing
@@ -49,7 +49,7 @@ ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
 // at all -- see CompositeDrawable2D.h on how Pixels_'s own dirty flag ends up
 // serving both this and the device upload, in sequence.
 ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
-    Create, SetPosition, SetOrder, SetBackground, SetRetain, MoveTo, ResizeTo,
+    Create, SetPosition, SetOrder, SetBackground, SetRetain, SetPickable, SetHidden, MoveTo, ResizeTo,
     Draw, Clear, DrawRect, Blit, Delete)
 
 // The 3D scene node: a box, self-similar with its children, which projects its
@@ -78,4 +78,16 @@ ETCS_TAG_BLOCK_BASIC(Camera3D,
 // compositor, a camera, an offscreen layer or the device surface identically.
 ETCS_TAG_BLOCK_BASIC(TextLabel,
     Create, SetText, SetSize, SetPosition, SetOrder, SetColor, SetBackground,
-    SetPadding, BindFps, Measure, Rasterize, Draw, Delete)
+    SetPadding, SetHidden, BindFps, Measure, Rasterize, Draw, Delete)
+
+// "ETCS" over a ring of cycling dots -- the wait indicator, as one entity at any
+// size. A Drawable2D that owns pixels and claims Animated, so it rides the frame
+// edge that is already running and SetHidden is both the switch and the whole of
+// its state (Throbber.h on why there is no Start/Stop beside it).
+//
+// EVERY VERB HERE IS NAMED, which is not a formality: a DEFINE_WORK_FUNC missing
+// from its tag block compiles, links, and fails silently at call time -- ten
+// PaintProvider controls shipped dead exactly that way (PaintProvider.cc).
+ETCS_TAG_BLOCK_BASIC(Throbber,
+    Create, SetSize, SetStep, SetDots, SetColors, SetTextColor, SetText,
+    SetPosition, SetOrder, SetHidden, Delete)

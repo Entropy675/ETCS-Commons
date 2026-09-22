@@ -1,0 +1,40 @@
+#!/usr/bin/env etcs
+
+# AN EMPTY CANVAS, AND THE NAMES TO FILL IT FROM THE SHELL.
+#
+# The counterpart to boot_paint.etcs: that one brings up a whole paint session,
+# this one brings up only the substrate -- a device, a window, a surface, a 2D
+# anchor and a frame pump -- and then stops. Everything after that is a script
+# run from the navigator, against the names this one leaves behind:
+#
+#     run RenderProvider/scripts/scene_bars.etcs   anchor=scene
+#     run RenderProvider/scripts/polygon_draw.etcs scene=scene view=view
+#     run RenderProvider/scripts/scene_reset.etcs  view=view backdrop=<Pixels>
+#
+# which is the same way the OS side drives these scripts, and the reason they
+# are mounted rather than copied (serve_web.etcs): one scene script, read from
+# where RenderProvider keeps it, run on either substrate.
+#
+# No input edges here. Nothing on an empty canvas is waiting to be clicked, and
+# a session that wants them states them itself -- boot_paint.etcs is the worked
+# example.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS Canvas)
+
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+view.Clear(0.03, 0.03, 0.05, 1.0)
+
+# The 2D anchor every scene script asks for as `requires anchor [Drawable2D]`.
+# A composite holds children and draws them in order; the scene scripts spawn
+# their polygons under it.
+spawn RenderProvider::CompositeDrawable2D scene
+scene.Create()
+
+# Nothing appears without this -- a Surface is retained, and this is what
+# presents it. See boot_paint.etcs for the longer version of that note.
+detach RenderProvider/scripts/render_frames.etcs view=view

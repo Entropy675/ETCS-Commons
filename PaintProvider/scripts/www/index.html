@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ETCS Paint -- two canvases</title>
+  <!-- Empty data: icon so the browser stops asking for /favicon.ico. The server
+       holds exactly www/ plus three named mounts, so that request was always a
+       404 -- and a permanent 404 in the console is noise a real one hides behind. -->
+  <link rel="icon" href="data:,"/>
+  <style>
+    :root {
+      /* Palette from chess.html (ACE Chess) so shell / window share the same surface. */
+      --light: #e8e2d5; --dark: #7a8a6f; --sel: #c9b458; --ink: #1c1c1a;
+      --bg: #14150f; --panel: #1b1c14; --line: #3b3d31; --dim: #8d907c;
+      /* Aliases used by the existing rules */
+      --border: var(--line);
+      --fg: var(--light);
+      --muted: var(--dim);
+      --accent: var(--sel);
+      --ok: #7a9a5a;
+      --err: #c45c4a;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: var(--bg); color: var(--fg);
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    body { overflow-y: auto; }
+
+    /*
+     * GRID: THE CANVAS TAKES EVERYTHING THE TERMINAL DOES NOT NEED.
+     *
+     * The canvas is a VIEW into a 1024x768 framebuffer, not the framebuffer --
+     * Create() sets that regardless of display size -- so there is no size it
+     * is "meant" to be drawn at, and the right size is the largest that fits.
+     * The terminal is the one thing on the page with a natural size: 15rem is
+     * 8 lines of 13px/1.45 text plus the shell page's own header and input row,
+     * below which it is not a terminal. So the terminal gets a floor and a
+     * modest share, and the canvas gets the rest of the viewport: no page
+     * max-width (a 1600px cap left a wide screen's margins empty), and a gap
+     * and padding of half a rem rather than three quarters.
+     */
+    #layout {
+      display: grid; gap: 0.5rem; padding: 0.5rem;
+      height: 100%;
+      grid-template-columns: 1fr;
+      /* Stacked: the terminal takes a clamped share (never under its 15rem
+         floor, never more than 22rem) and the canvas takes ALL the rest,
+         shrinking to fit rather than pushing the terminal off the bottom of the
+         viewport. height:100% not min-height, so the two of them fit the screen
+         instead of making the page scroll to reach the thing you type into. */
+      grid-template-rows: auto minmax(0, 1fr) clamp(15rem, 30%, 22rem);
+      grid-template-areas: "head" "stage" "term";
+    }
+    header {
+      grid-area: head;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      color: var(--muted); font-size: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+      margin: -0.5rem -0.5rem 0;
+    }
+    header .brand {
+      color: var(--accent); font-size: 14px; font-weight: bold;
+      letter-spacing: .12em; text-decoration: none;
+    }
+    header .brand:hover { text-decoration: underline; }
+    /* The two file controls, in the header because that is the one strip of
+       the page that is not a canvas: the sheet is GLFW's and the toolbar is a
+       node inside it, so a DOM control anywhere else would sit on something
+       that is drawn. Styled as the terminal's chrome, not as the toolbar's
+       slices -- they are the page's, and the page is monospace on --panel. */
+    /* Beside the brand, not in the middle: the header is space-between with
+       the status on the right, and margin-right:auto is what keeps the controls
+       on the left instead of splitting the difference. */
+    header .files { display: flex; align-items: center; gap: 8px; margin-right: auto; }
+    header .files input[type=file] { display: none; }
+    header .btn {
+      color: var(--fg); background: transparent; border: 1px solid var(--line);
+      border-radius: 4px; padding: 1px 10px; font: inherit; font-size: 12px;
+      line-height: 1.5; cursor: pointer;
+    }
+    header .btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Centres the canvas in whatever box the grid gave it, and min-height:0 is
+       what lets that box actually shrink -- a grid item defaults to min-content,
+       which for a 768px-tall canvas means it never yields. */
+    /* The boot throbber sits over the canvas, centred, and is removed the
+       moment the runtime's own picture arrives. pointer-events:none so it
+       cannot eat a click during the seconds it is up. */
+    #bootthrob {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none; z-index: 5;
+    }
+    #stage {
+      grid-area: stage; min-height: 0; min-width: 0;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;                 /* the boot throbber anchors to this */
+      container-type: size;               /* cqw/cqh below are THIS box's */
+    }
+    /* The window's framebuffer. Create() resizes the ATTRIBUTES to whatever
+       boot.etcs asked for; these rules only decide how big it is drawn, and
+       width/height:auto against both maxima keeps the aspect ratio while
+       fitting the box. */
+    /* ASPECT IS STATED, not left to the intrinsic size.
+       max-width/max-height with width/height:auto looks like it preserves the
+       framebuffer's shape and does not: measured across the breakpoint this box
+       came out 959x420 at one width and 632x768 at the next -- squashed one way,
+       then the other, with the scale differing per axis by up to 1.8x.
+       Two things went wrong with that. A point converted with one scale factor
+       lands in the wrong place, and worse, a box taller than the row it sits in
+       is CLIPPED -- and clipped content is not hit-testable, so controls near the
+       bottom of the document simply stopped responding at some window sizes
+       while the same controls worked at others.
+       aspect-ratio pins the shape to the framebuffer's, and min-height:0 lets
+       the box actually shrink to the row instead of overflowing it.
+
+       AS LARGE AS FITS, IN BOTH DIRECTIONS. max-width/max-height:100% only
+       ever shrank the box: with width:auto its natural size is the attribute
+       size, so on a screen with room to spare the view stopped at 1024 CSS
+       pixels and left the rest of the stage empty. The width is stated as the
+       smaller of "the stage's width" and "the stage's height, as wide as 4:3
+       makes it" -- container-query units, which is what makes the height
+       reachable from a width rule at all -- and the height follows the aspect
+       ratio. That is the whole of "fit", growing or shrinking, with no
+       breakpoint in it. Upscaled past 1024 the picture is resampled by the
+       browser; the framebuffer is still 1024x768 and the pointer maps to it
+       through the box's own size, so nothing else has to know. */
+    canvas#canvas {
+      display: block; background: #0a0b08;
+      border: 1px solid var(--border); border-radius: 6px;
+      aspect-ratio: 1024 / 768;
+      max-width: 100%; max-height: 100%;
+      /* !important IS LOAD-BEARING HERE, and it is not a shortcut.
+         emscripten's GLFW writes an INLINE style on the canvas it owns --
+         style="width: 1024px; height: 768px" -- from adjustCanvasDimensions,
+         and re-writes it on resize and on a device-pixel-ratio change. An
+         inline declaration outranks a stylesheet one, so `width: auto` was
+         being ignored: the measured box stayed 768 CSS tall whatever the row
+         could give it, which is what clipped the bottom of the document and
+         made controls there unreachable.
+         Overriding it is the only way to keep the page's layout in charge of
+         the box while GLFW stays in charge of the FRAMEBUFFER, which is the
+         division that should hold: the framebuffer is the drawing surface's
+         business, the box is the document's. */
+      width: min(100cqw, calc(100cqh * 1024 / 768)) !important; height: auto !important;
+      min-height: 0;
+      box-shadow: -1px -1px 5px rgba(100, 0, 228, 0.7), 1px 1px 5px rgba(0, 0, 255, 0.7);
+    }
+
+    /* THE STRIP'S WRAPPER IS GONE, and so is the rule that placed it.
+       The toolbar stopped being a second canvas -- it is a CompositeDrawable2D
+       inside the sheet now (boot_paint_panels.etcs) -- but `#barwrap` kept
+       `grid-area: bar` after `bar` was removed from both grid-template-areas.
+       A named area that does not resolve is not ignored: the item is
+       auto-placed instead, which ADDS implicit tracks. Measured, the grid
+       reported five rows where three are declared
+       (31.5px 0px 805.5px 0px 0px), so an empty div was costing two extra
+       `gap`s of vertical space in a container that is height:100%. */
+
+    /* SIDE BY SIDE ONCE THERE IS ROOM. Two columns, one row: the canvas takes
+       the space the terminal does not need, and both are full height. Below this
+       the grid falls back to the stacked rows above, where the terminal's 15rem
+       floor applies. The terminal's column is a quarter of the page and never
+       under 22rem (308px at the page's 14px): a transcript wraps at any width
+       and reads fine wrapped, so the column's floor is what its header and
+       input row need, and its share is what the canvas does not lose much to.
+       Measured at 1920x1080: the view is 1364x1023 with these rules, against
+       the 1024x768 it stopped at before. */
+    @media (min-width: 62rem) {
+      #layout {
+        height: 100%;
+        grid-template-columns: minmax(0, 1fr) minmax(22rem, 35%);
+        /* THE STRIP IS ITS OWN ROW, and `stage` spans both so the sheet still
+           gets the full height of the column beside it. auto rather than a fixed
+           height: the strip is a canvas scaled to the column's width, so its
+           drawn height follows its aspect ratio and the row follows the canvas
+           instead of the other way round. */
+        grid-template-rows: auto auto minmax(0, 1fr);
+        grid-template-areas: "head head" "stage term" "stage term";
+      }
+      #shell { min-height: 0; }
+    }
+    #status.err { color: var(--err); }
+    #status.ok  { color: var(--ok); }
+    /* The shell page, embedded as the terminal -- the thing you interact with
+       for the whole session, so it gets a guaranteed size rather than leftovers. */
+    #shell {
+      grid-area: term; min-height: 15rem; width: 100%; height: 100%;
+      border: 1px solid var(--border); border-radius: 6px;
+      background: var(--panel);
+    }
+  </style>
+</head>
+<body>
+  <div id="layout">
+    <header>
+      <a class="brand" href="/" target="_top">ETCS Paint</a>
+      <!-- Images in and out: a PNG/JPEG/BMP/GIF/TGA/PAM file becomes a layer
+           or a new canvas (the canvas asks which), and the composite comes back
+           as a PNG. The page only moves bytes between the browser and the
+           runtime's filesystem; the verbs do the work (see the script below,
+           and README.md). -->
+      <span class="files">
+        <label class="btn" for="upload" title="PNG, JPEG, BMP, GIF, TGA, PAM or PPM -- a new layer or a new canvas">upload</label>
+        <input id="upload" type="file" accept=".png,.jpg,.jpeg,.bmp,.gif,.tga,.pam,.ppm,image/png,image/jpeg"/>
+        <button id="download" class="btn" type="button" title="the visible layers, composited, as PNG">download</button>
+      </span>
+      <span id="status">loading…</span>
+    </header>
+    <div id="stage">
+      <canvas id="canvas" width="1024" height="768"></canvas>
+      <!-- THE BOOT THROBBER, and it is page-side for a measured reason.
+           See bootThrobber() below: nothing inside the runtime can draw
+           during the window this covers, because the runtime is not
+           running yet. -->
+      <canvas id="bootthrob" width="96" height="96"></canvas>
+    </div>
+    <!-- The ShellProvider page, as the terminal VIEW only. It detects being
+         framed and boots no runtime of its own; lines cross by postMessage.
+         See README.md for why the runtime is here and the terminal is there.
+
+         THE ONLY TEXT PANE ON THIS PAGE. Boot progress goes here too, through
+         the same replay buffer every other line uses -- an ETCS session has one
+         log, and splitting the first six lines of it into a second box above the
+         terminal meant reading two places to follow one sequence. -->
+    <iframe id="shell" src="shell" title="ETCS shell"></iframe>
+  </div>
+  <script>
+(function () {
+  const statusEl = document.getElementById('status');
+  const canvas = document.getElementById('canvas');
+  const shellFrame = document.getElementById('shell');
+
+  const ORIGIN = window.location.origin;
+
+  // ── the log ────────────────────────────────────────────────────────────
+  //
+  // ONE PANE. Boot lines and runtime lines are one sequence, so they go to one
+  // place: the terminal. The reason that works even before the iframe can be
+  // talked to is the replay buffer below -- `pending` already existed to hold
+  // runtime output produced during iframe load, and boot output is the same
+  // problem, so it is the same answer rather than a second widget.
+  //
+  // The header keeps a one-LINE status (the current step, red if it failed), so
+  // a page that dies before the terminal can render still says so somewhere
+  // that needs no scrolling.
+  /*
+   * The transcript gets the text AS IT CAME, escapes included -- the terminal
+   * view is what renders SGR into colour (ShellProvider's page), and stripping
+   * here would throw away the only thing carrying which span means what.
+   *
+   * The status line is a different medium: it is textContent on one element, so
+   * an escape there is bytes on screen rather than a colour. Stripped for that
+   * use and only that use.
+   */
+  const ANSI_STRIP = /\x1b\[[0-9;?]*[A-Za-z]/g;
+  function log(text, cls) {
+    termWrite(text);
+    if (cls === 'err')
+      setStatus(String(text).replace(ANSI_STRIP, '').trim().split('\n')[0], 'err');
+  }
+  function setStatus(s, cls) {
+    statusEl.textContent = s;
+    statusEl.className = cls || '';
+  }
+
+  // ── the bridge ─────────────────────────────────────────────────────────
+  //
+  // TEXT OUT, LINES IN, and nothing else crosses. The embedded page is a view:
+  // it renders what the runtime printed and hands back what was typed. It holds
+  // no runtime state, so there is nothing to keep in sync and no ordering to get
+  // wrong -- which is what makes a frame boundary an acceptable place to put it.
+  let shellReady = false;
+  const pending = [];              // output produced before the view was ready
+
+  function toShell(msg) {
+    if (!shellFrame.contentWindow) return;
+    shellFrame.contentWindow.postMessage(msg, ORIGIN);
+  }
+
+  // Every line the runtime prints. Named on window because that is the hook
+  // etcs_web_shell_write already reaches for (loaders/etcs.cc) -- the C++ side
+  // calls window.etcsTermWrite when it exists, so wiring it here is what makes
+  // the runtime's own writes land in the embedded terminal rather than only in
+  // Module.print.
+  function termWrite(text) {
+    if (!shellReady) { pending.push(text); if (pending.length > 2000) pending.shift(); return; }
+    toShell({ etcs: 'out', text: text });
+  }
+
+  window.etcsTermWrite = function (t) {
+    if (t == null) return;
+    termWrite(String(t));
+  };
+
+
+  /*
+   * PULLING THE TERMINAL'S OUTPUT, on this page's clock rather than the
+   * runtime's.
+   *
+   * The C++ side accumulates what it writes and hands over whatever has piled
+   * up when asked (etcs_web_shell_drain in loaders/etcs.cc). Every line used to
+   * cost a cross-thread proxy from whichever thread logged it, a postMessage,
+   * and a forced layout in the terminal frame -- several thousand times over a
+   * boot. Draining on an interval turns all of that into one call, one message
+   * and one reflow per tick.
+   *
+   * setInterval, not requestAnimationFrame: a hidden tab stops painting frames
+   * but the runtime keeps logging, and rAF would leave the buffer to grow until
+   * the tab came back. The interval is throttled when hidden, which is the
+   * right behaviour -- slower, not stopped.
+   *
+   * A QUARTER SECOND, not a frame. The tick's cost is per CALL and not per
+   * line -- one ccall, one postMessage, one fragment, one reflow -- so a longer
+   * window is strictly less work for the same text, and at 60ms a busy boot was
+   * still paying that sixteen times a second. 250ms reads as live for a
+   * transcript (nobody is timing a log line to the frame) and quarters the
+   * number of times the terminal is touched. The runtime's own fallback fires
+   * if nothing drains for 750ms, which leaves room for this to be throttled by
+   * a background tab without tripping it.
+   */
+  const SHELL_DRAIN_MS = 250;
+  let shellDrainTimer = 0;
+  function drainShellOutput() {
+    const mod = window.Module;
+    if (!mod || !mod.ccall) return;
+    let text = '';
+    try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
+    catch (e) { return; }                 // runtime gone or not exporting it
+    if (text) termWrite(text);
+  }
+  function startShellDrain() {
+    if (shellDrainTimer) return;
+    shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
+  }
+
+  function pushLine(line) {
+    const mod = window.Module;
+    if (!mod) { log('[etcs] line dropped, runtime not up: ' + line + '\n', 'err'); return; }
+    try {
+      // ccall only. The raw export is reached through several names depending on
+      // how the build exported it, and trying them in turn is what the shell
+      // page used to do -- but ccall does not need the raw symbol at all, so
+      // gating on finding one was the bug, not the fallback.
+      mod.ccall('etcs_web_shell_push_line', null, ['string'], [line]);
+    } catch (e) {
+      log('[etcs] push_line failed: ' + e + '\n', 'err');
+    }
+  }
+
+  /*
+   * ── the one thing about the sheet the page still owns ──────────────────
+   *
+   * THE CONTEXT MENU, and nothing else.
+   *
+   * It used to be this plus a wheel handler that converted client coordinates
+   * into framebuffer pixels and called ZoomBy. That handler is gone, and the
+   * reason it could go is worth recording: the wheel was not missing a channel,
+   * it was missing an IMPLEMENTOR. ontology/Pointer.h already carried scroll
+   * deltas and said in as many words that a device converts to the surface's
+   * space once, at its own edge -- so the right fix was for the window to claim
+   * Pointer_ and register a GLFW scroll callback, not for the page to do
+   * arithmetic GLFW was already doing correctly next door.
+   *
+   * What is left here genuinely cannot be a verb: the browser opens its own
+   * menu on a right press, before anything in the runtime can have an opinion,
+   * and right-drag is how the sheet pans.
+   */
+  canvas.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+  function blockMiddleDefault(ev) {
+    if (ev.button === 1) ev.preventDefault();
+  }
+  canvas.addEventListener('mousedown', blockMiddleDefault, { capture: true });
+  canvas.addEventListener('mouseup', blockMiddleDefault, { capture: true });
+  canvas.addEventListener('auxclick', blockMiddleDefault, { capture: true });
+  canvas.addEventListener('pointerdown', blockMiddleDefault, { capture: true });
+  canvas.addEventListener('pointerup', blockMiddleDefault, { capture: true });
+
+  /*
+   * ── raw images in and out ──────────────────────────────────────────────
+   *
+   * THE PAGE IS A FILE PROXY HERE, and nothing more. The verbs take a PATH
+   * (PaintDocument::ImportImage / ExportImage), so what the page does is what
+   * preRun already does for the scripts it boots: put bytes at a name in the
+   * runtime's own filesystem, then say the name. Decoding, the new layer and
+   * the composite are the document's -- the same lines work from the terminal,
+   * and on the desktop the path is a real one. That is why there is no image
+   * code on this side and no second copy of anything.
+   *
+   * Under /uploads and /exports rather than beside the staged scripts, so a
+   * file that happens to share a script's name cannot replace it.
+   */
+  function etcsFS() { return (typeof FS !== 'undefined') ? FS : (window.Module && window.Module.FS); }
+  // Set from onRuntimeInitialized below, which is the one signal this page
+  // already trusts for "runtime ready". Module.calledRun is not it: with the
+  // REPL detached to a worker the main module's run() is not what says the
+  // session is up, and reading it here refused every click with the runtime
+  // plainly live behind it.
+  let runtimeIsUp = false;
+  function runtimeUp() { return runtimeIsUp && !!(window.Module && window.Module.ccall); }
+  function callVerb(name, work, args) {
+    return window.Module.ccall('etcs_web_call', 'number',
+                               ['string', 'string', 'string'], [name, work, args]);
+  }
+
+  /*
+   * WRITING /persist BACK. IDBFS does not write through: a change to a file in
+   * it reaches IndexedDB only when syncfs(false) is called. The C++ side says
+   * when (PaintPages after every Save, via an `etcs-persist` event), and the
+   * page also flushes on pagehide, which is the last moment a closing tab gives
+   * it. navigator.storage.persist() is the "may this survive storage pressure"
+   * request -- the browser's own file-storage grant -- asked once; a refusal
+   * changes nothing here but how long the browser promises to keep it.
+   */
+  let persistTimer = 0;
+  function persistNow(why) {
+    const fs = etcsFS();
+    if (!fs || !fs.syncfs) return;
+    fs.syncfs(false, function (err) {
+      if (err) log('[etcs] /persist: write to IndexedDB failed (' + why + '): ' + err + '\n', 'err');
+    });
+  }
+  window.etcsPersist = function (why) {          // reachable from C++ through EM_ASM
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(function () { persistNow(why || 'requested'); }, 250);
+  };
+  window.addEventListener('etcs-persist', function (e) { window.etcsPersist(e.detail); });
+  window.addEventListener('pagehide', function () { persistNow('pagehide'); });
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().then(function (granted) {
+      log('[etcs] persistent storage ' + (granted ? 'granted' : 'not granted') + '\n');
+    }).catch(function () {});
+  }
+
+  const uploadEl = document.getElementById('upload');
+  const downloadEl = document.getElementById('download');
+
+  uploadEl.addEventListener('change', async function () {
+    const file = uploadEl.files && uploadEl.files[0];
+    uploadEl.value = '';                       // so the same file can be chosen twice
+    if (!file) return;
+    if (!runtimeUp()) { log('[etcs] upload: runtime is not up yet\n', 'err'); return; }
+    try {
+      const fs = etcsFS();
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      // The file's name is the layer's (ImportImage takes its stem), kept as
+      // given except for what a path cannot carry.
+      const path = '/uploads/' + file.name.replace(/[\/\\]/g, '_');
+      try { fs.mkdirTree('/uploads'); } catch (e) {}
+      fs.writeFile(path, bytes);
+      // Offered, not imported: the canvas asks whether the picture is a new
+      // layer or a new canvas (PaintCanvasMenu::OfferImport opens the prompt
+      // from paint_import.etcs), and acts on the answer -- the render and the
+      // layer window's refresh follow from that press, not from here.
+      callVerb('menu', 'OfferImport', path);
+    } catch (e) {
+      log('[etcs] upload failed: ' + e + '\n', 'err');
+    }
+  });
+
+  // One function, two callers: the header button and the sheet's own menu
+  // (below). The export is the same export whichever asked for it.
+  function downloadComposite() {
+    if (!runtimeUp()) { log('[etcs] download: runtime is not up yet\n', 'err'); return; }
+    try {
+      const fs = etcsFS();
+      const path = '/exports/paint.png';
+      try { fs.mkdirTree('/exports'); } catch (e) {}
+      try { fs.unlink(path); } catch (e) {}     // a stale file must not pass for this export
+      callVerb('doc', 'ExportImage', path);     // says in the terminal if it refused
+      const bytes = fs.readFile(path);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'paint.png';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (e) {
+      log('[etcs] download failed: ' + e + '\n', 'err');
+    }
+  }
+  downloadEl.addEventListener('click', downloadComposite);
+
+  /*
+   * ── the sheet's menu, reaching the page's file controls ────────────────
+   *
+   * The gear's menu has "save" and "load", and a save or a load is a thing
+   * only the PAGE can finish: the verbs take a path, and turning a path into a
+   * file the user can see is the download above and the upload's file dialog.
+   * So the runtime raises an event naming which (PaintCanvasMenu::Save, a
+   * MAIN_THREAD_EM_ASM dispatch) and this answers with the same code the
+   * header buttons run -- there is one download and one upload on this page.
+   *
+   * "load" is the one to watch. A file dialog opens only on transient user
+   * activation, and the press that reached the menu was a mousedown on the
+   * canvas, handled by GLFW, routed on a Worker and proxied back here -- the
+   * activation is a few milliseconds old by then and should still stand
+   * (browsers grant several seconds), but whether it does is the browser's
+   * decision and has not been tested from this path. If a click on "load"
+   * does nothing, that is why; the header's upload button is the same upload
+   * from a real click and always works.
+   */
+  window.addEventListener('etcs-menu', function (ev) {
+    const what = ev && ev.detail;
+    if (what === 'save') { downloadComposite(); return; }
+    if (what === 'load') { uploadEl.click(); return; }
+    log('[etcs] menu: unknown request "' + what + '"\n', 'err');
+  });
+
+  window.addEventListener('message', function (ev) {
+    if (ev.origin !== ORIGIN) return;
+    if (ev.source !== shellFrame.contentWindow) return;
+    const m = ev.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.etcs === 'view-ready') {
+      shellReady = true;
+      // Replay what the runtime said while the view was still loading, so a
+      // session started before the iframe settled is not missing its head.
+      for (const t of pending) toShell({ etcs: 'out', text: t });
+      pending.length = 0;
+      toShell({ etcs: 'enable', enabled: !!(window.Module && window.Module.calledRun) });
+      return;
+    }
+    if (m.etcs === 'line') { pushLine(String(m.line == null ? '' : m.line)); return; }
+  });
+
+  // ── the include list ───────────────────────────────────────────────────
+  //
+  // modules.json is the source of truth and the only thing fetched blind: what
+  // providers load, which .etcs files to stage, and which one is argv[1].
+  function normalizeWasmList(raw) {
+    let arr = [];
+    if (Array.isArray(raw)) arr = raw;
+    else if (raw && Array.isArray(raw.modules)) arr = raw.modules;
+    else if (raw && Array.isArray(raw.wasm)) arr = raw.wasm;
+    return arr.map(function (x) {
+      x = String(x).trim();
+      if (!x) return null;
+      if (!/\.wasm$/i.test(x)) x += '.wasm';
+      x = x.replace(/^\.\//, '');
+      // etcs.wasm is the MAIN module -- the glue loads it, staging it as a side
+      // module would load the runtime twice.
+      if (/^etcs(\.wasm)?$/i.test(x) || /worker/i.test(x)) return null;
+      return x;
+    }).filter(Boolean);
+  }
+
+  async function fetchManifest() {
+    const r = await fetch('modules.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('modules.json HTTP ' + r.status + ' -- required (no fallback list)');
+    const j = await r.json();
+    const wasm = normalizeWasmList(j);
+    if (!wasm.length) throw new Error('modules.json names no modules');
+    const scripts = (j && Array.isArray(j.scripts) ? j.scripts : [])
+      .map(function (s) { return String(s).trim().replace(/^\.\//, ''); })
+      .filter(Boolean);
+    const boot = (j && j.boot) ? String(j.boot).trim().replace(/^\.\//, '') : '';
+    const glue = (j && j.glue) ? String(j.glue).trim().replace(/^\.\//, '') : '';
+    // Optional. Naming it skips the candidate walk in resolveWasmBase, for a
+    // deployment that knows where its artifacts are and would rather not have
+    // the page guess -- a CDN, or a second origin.
+    const base = (j && j.base) ? String(j.base).trim() : '';
+    log('[etcs] modules.json -> ' + wasm.join(', ') + '\n');
+    if (scripts.length) log('[etcs] scripts -> ' + scripts.join(', ') + '\n');
+    // Kept for explainWorkerDeath: the per-Worker cost is proportional to it.
+    man_module_count = wasm.length;
+    return { wasm: wasm, scripts: scripts, boot: boot, glue: glue, base: base };
+  }
+
+  /*
+   * WHAT ARRIVED HAS TO BE WHAT WAS ASKED FOR, and a 200 does not say that.
+   *
+   * Only boot_paint_panels.etcs is actually a file under www/; every other
+   * script here exists on the served surface because serve_paint.etcs MOUNTS
+   * it, from a RELATIVE path that resolves against the server's working
+   * directory. Get that wrong, or leave a stale copy in www/ for LoadFromDisk
+   * to find first, and the fetch still succeeds -- with an error page, a
+   * directory listing, or last week's file.
+   *
+   * WHICH IS SILENT UNTIL IT IS BAFFLING. A staged non-script is written into
+   * the filesystem, `detach` launches it, and the script thread dies on the
+   * first line. The one that matters is render_frames.etcs: nothing else in
+   * this page calls Present, so its thread dying leaves a BLACK CANVAS and a
+   * runtime that is otherwise working perfectly. That failure has nothing in
+   * it pointing back here, which is the whole reason for the two checks below.
+   *
+   * CHEAP AND STRUCTURAL, not a parse. A module must open with the WebAssembly
+   * magic; a script must not open with '<', because no .etcs line does and
+   * every wrong answer a web server gives is markup. Neither check can reject
+   * a file that is genuinely what it claims to be, which is the only property
+   * worth having here -- a stricter test would start failing on valid input
+   * the first time the language grows.
+   */
+  const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
+
+  function checkStaged(name, kind, buf) {
+    if (kind === 'module') {
+      const ok = buf.byteLength >= 4 && WASM_MAGIC.every((b, i) => buf[i] === b);
+      if (!ok) throw new Error(name + ' is not a WebAssembly module -- it starts '
+        + '0x' + Array.from(buf.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join('')
+        + '. The server answered 200 with something else; check what it is serving '
+        + 'at that path.');
+      return;
+    }
+    let i = 0;
+    while (i < buf.byteLength && (buf[i] === 32 || buf[i] === 9 || buf[i] === 10 || buf[i] === 13)) i++;
+    if (i < buf.byteLength && buf[i] === 0x3c /* '<' */)
+      throw new Error(name + ' is markup, not an .etcs script. It is mounted by '
+        + 'serve_paint.etcs from a path relative to the server\'s working directory; '
+        + 'check FileHtmlPage::ListPaths in the server log for what is actually '
+        + 'mounted there, and check www/ for a stale copy shadowing the mount.');
+  }
+
+  /*
+   * WHAT `worker sent an error!` MEANS, said once, where it can be said at all.
+   *
+   * A Worker that dies cannot be reached from C++: emscripten re-instantiates
+   * every open dynamic library inside each new Worker, and when that fails the
+   * Worker is gone before any ETCS frame runs in it. The runtime's own guards
+   * (ThreadPool::start_workers, the detach in CommandExecutor.h) only catch the
+   * SYNCHRONOUS refusal -- pthread_create saying no. This one surfaces as three
+   * lines of emscripten internals and nothing else, so the page is the only
+   * controlled point left, and this is it.
+   *
+   * THE THREE LINES ARE ONE EVENT, in this order, and reading them as three
+   * problems is the trap: the Worker reports out-of-memory, `_dlopen_js failed`
+   * names the library it could not bring up, and then something proceeds on the
+   * failure and faults -- `ASM_CONSTS is undefined` is an EM_ASM block running
+   * in a Worker whose glue never finished, and `index out of bounds` is the
+   * result. Only the FIRST is a cause.
+   *
+   * ONCE PER PAGE. There are dozens of Workers and they fail together; the
+   * explanation does not get truer for being printed forty times, and the
+   * repetition is what buries the first line that mattered.
+   */
+  let workerDeathExplained = false;
+  function explainWorkerDeath(t) {
+    if (workerDeathExplained) return;
+    if (!/worker sent an error|could not load dynamic lib|ASM_CONSTS is undefined/.test(t)) return;
+    workerDeathExplained = true;
+    log('[etcs] A Worker died. This is browser memory, NOT the wasm heap -- '
+      + 'raising INITIAL_MEMORY will not change it.\n'
+      + '[etcs]   Each Worker re-instantiates every open module for itself, so the '
+      + 'cost is workers x modules. This page loads ' + (man_module_count || '?')
+      + ' side modules and the runtime creates one thread pool PER IMAGE '
+      + '(DEFAULT_THREAD_POOL_THREADS, core/ETCS_API.h).\n'
+      + '[etcs]   Lower that, or load fewer providers, or give the machine more RAM. '
+      + 'Any "index out of bounds" or "ASM_CONSTS is undefined" after this line is '
+      + 'the consequence, not a second fault.\n', 'err');
+  }
+  let man_module_count = 0;
+
+  /*
+   * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES. The runtime
+   * binaries are shared and move in epochs, so they live in one place --
+   * bin/wasm/, mounted at /wasm/ by the serve scripts (Makefile, WASM_DIR, for
+   * the argument) -- and every page fetches them from there. The base affects
+   * only the FETCH; what is written into MEMFS stays the bare name, because
+   * preload_web_modules dlopens by name. Scripts are not in here: they are
+   * mounted beside the page at the paths the OS side reads them from.
+   *
+   * Resolved by trying: same-origin /wasm/ first, because a local server must
+   * not need a setting; then beside the page, which is what a deployment made
+   * before the shared directory looks like; then the known-good remote.
+   * modules.json may name a "base" to skip the walk. The first candidate whose
+   * bytes carry the WebAssembly magic wins -- a 200 is not evidence, and every
+   * wrong answer a web server gives is markup. Identical across every page in
+   * this tree on purpose: one shared artifact directory is the point, and two
+   * pages disagreeing about where it is would undo it.
+   *
+   * The probe's bytes are kept: the first module has to be fetched anyway.
+   */
+  const WASM_BASE_CANDIDATES = ['/wasm/', './', 'https://anticurrententropy.com/wasm/'];
+  let wasm_base = null;
+  let wasm_probe = null;   // {name, buf} -- the module the probe already pulled
+
+  function joinBase(base, name) {
+    return (base === './') ? name : base.replace(/\/*$/, '/') + name;
+  }
+
+  async function resolveWasmBase(declared, firstModule) {
+    const candidates = declared ? [declared] : WASM_BASE_CANDIDATES;
+    const tried = [];
+    for (const base of candidates) {
+      const url = joinBase(base, firstModule);
+      try {
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) { tried.push(base + ' HTTP ' + r.status); continue; }
+        const buf = new Uint8Array(await r.arrayBuffer());
+        checkStaged(firstModule, 'module', buf);   // throws on markup / wrong magic
+        wasm_base  = base;
+        wasm_probe = { name: firstModule, buf: buf };
+        log('[etcs] wasm base -> ' + base + '\n', 'ok');
+        return base;
+      } catch (e) {
+        tried.push(base + ' ' + (e && e.message ? e.message : e));
+      }
+    }
+    // Named, not summarised: which candidates were tried and what each said is
+    // the whole diagnosis, and there is no fallback left to hide behind.
+    throw new Error('no wasm base serves ' + firstModule + ' -- tried '
+      + tried.join('; ') + '. `ace wasm make loader etcs` writes bin/wasm/, and a '
+      + 'serve script mounts it at /wasm/ (see run_tls_website.etcs).');
+  }
+
+  // base null means "beside the page" -- what scripts always want.
+  async function fetchAll(names, kind, base) {
+    const out = {};
+    for (const name of names) {
+      if (wasm_probe && wasm_probe.name === name) {
+        out[name] = wasm_probe.buf;
+        log('[etcs] staged ' + name + ' (' + wasm_probe.buf.byteLength
+            + ' bytes, from the base probe)\n', 'ok');
+        continue;
+      }
+      setStatus('fetch ' + name);
+      const url = base ? joinBase(base, name) : name;
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('fetch ' + url + ' failed HTTP ' + r.status);
+      const buf = new Uint8Array(await r.arrayBuffer());
+      if (!buf.byteLength) throw new Error(url + ' is empty');
+      checkStaged(name, kind, buf);
+      out[name] = buf;
+      log('[etcs] staged ' + name + ' (' + buf.byteLength + ' bytes)\n', 'ok');
+    }
+    return out;
+  }
+
+  function loadGlue(src) {
+    return new Promise(function (resolve, reject) {
+      const s = document.createElement('script');
+      s.src = src; s.async = true;
+      s.onload = resolve; s.onerror = reject;
+      document.body.appendChild(s);
+    });
+  }
+
+  async function boot() {
+    setStatus('fetching…');
+    const man = await fetchManifest();
+    // Base first: it is decided by fetching man.wasm[0], and fetchAll below
+    // reuses those bytes rather than asking for them again.
+    setStatus('locating runtime…');
+    await resolveWasmBase(man.base, man.wasm[0]);
+    const blobs = Object.assign({}, await fetchAll(man.wasm, 'module', wasm_base),
+                                    await fetchAll(man.scripts, 'script', null));
+
+    if (man.boot && !blobs[man.boot])
+      throw new Error('modules.json boot="' + man.boot + '" is not in its scripts list');
+
+    var Module = {
+      canvas: canvas,
+      /*
+       * ARGV, AND THIS IS THE WHOLE OF "THE PUMP ALREADY EXISTS ON LOAD".
+       *
+       * argv[1] is the boot script, so main() takes the script path, runs it,
+       * and then falls through to the navigator -- script mode and REPL mode are
+       * not alternatives in this binary (drive_main_loop_then_exit, after the
+       * run_script call in loaders/etcs.cc). So the window and its input pump
+       * are up before the first prompt is drawn, with no new C++ entry point and
+       * no page-driven menu typing.
+       */
+      arguments: man.boot ? [man.boot] : [],
+      print: function (t) {
+        window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n'));
+      },
+      printErr: function (t) {
+        // log() writes to the terminal itself now, so this is ONE write, not
+        // two -- it also lifts the first line into the status.
+        log(t + (String(t).endsWith('\n') ? '' : '\n'), 'err');
+        explainWorkerDeath(String(t));
+      },
+      dynamicLibraries: [],
+      /*
+       * THE MAIN MODULE IS FETCHED BY THE GLUE, NOT BY THIS PAGE, so it is the
+       * one artifact the base has to reach through emscripten rather than
+       * through fetchAll. etcs.wasm never appears in the include list --
+       * normalizeWasmList drops it on purpose, because staging the main module
+       * as a side module loads the runtime twice.
+       *
+       * Left as `return path` this resolved against the PAGE, which was fine
+       * only while the artifacts sat beside it. With them at /wasm/ and the page
+       * possibly at /paint/, that asks for /paint/etcs.wasm and gets the site's
+       * 404 -- and the failure arrives from inside the glue, where nothing
+       * points back here.
+       */
+      locateFile: function (path) { return joinBase(wasm_base, path); },
+      preRun: [function () {
+        // Into MEMFS before main(): preload_web_modules dlopens the .wasm files
+        // by name and run_script opens the boot script by name, so both have to
+        // be on the filesystem the runtime sees, not just in a JS variable.
+        try {
+          for (const name of Object.keys(blobs)) {
+            // A NAME MAY BE A PATH, and the directories have to exist first.
+            // The point of allowing one is that a script can then be staged at
+            // the SAME relative path the OS side reads it from, so a `detach`
+            // line does not have to be spelled differently for the browser.
+            const slash = name.lastIndexOf('/');
+            if (slash > 0) { try { FS.mkdirTree(name.slice(0, slash)); } catch (e) {} }
+            try { FS.writeFile(name, blobs[name]); }
+            catch (e) {
+              FS.createDataFile('/', name.replace(/^\.\//, ''), blobs[name], true, true, true);
+            }
+          }
+          log('[etcs] MEMFS preload complete (' + Object.keys(blobs).length + ' files)\n');
+        } catch (e) {
+          // NOT swallowed per-file: if FS itself is unavailable every later name
+          // is missing too, and reporting the first one is what tells you which.
+          log('[etcs] preRun FS error: ' + e + '\n', 'err');
+        }
+        /*
+         * /persist OUTLIVES THE TAB. Everything else on this filesystem is
+         * MEMFS and gone on reload; this one directory is IDBFS, a MEMFS view
+         * of an IndexedDB store, and what the page store keeps its sqlite file
+         * in (boot_paint_panels.etcs: db.Connect(/persist/pages.db)). The
+         * database is just a file at a path -- the same file the desktop
+         * writes -- which is why nothing on the C++ side knows the browser is
+         * involved. syncfs(true) pulls last time's bytes in before main() runs;
+         * addRunDependency holds the runtime until it has, because a database
+         * opened before its file arrives would be a fresh one written over it.
+         */
+        try {
+          FS.mkdir('/persist');
+          FS.mount(IDBFS, {}, '/persist');
+          Module.addRunDependency('etcs-persist');
+          FS.syncfs(true, function (err) {
+            if (err) log('[etcs] /persist: could not read IndexedDB: ' + err + '\n', 'err');
+            else     log('[etcs] /persist mounted from IndexedDB\n');
+            Module.removeRunDependency('etcs-persist');
+          });
+        } catch (e) {
+          log('[etcs] /persist: IDBFS unavailable (' + e + ') -- pages will not outlive this tab\n', 'err');
+        }
+      }],
+      onRuntimeInitialized: function () {
+        setStatus('runtime ready', 'ok');
+        runtimeIsUp = true;
+        startShellDrain();
+        log('[etcs] runtime initialized; boot script: '
+            + (man.boot || '(none)') + '\n', 'ok');
+        if (shellReady) toShell({ etcs: 'enable', enabled: true });
+      },
+      onAbort: function (r) {
+        setStatus('aborted', 'err');
+        log('[abort] ' + r + '\n', 'err');
+        if (shellReady) toShell({ etcs: 'enable', enabled: false });
+      }
+    };
+    window.Module = Module;
+
+    /*
+     * THE GLUE IS NAMED, NOT PROBED.
+     *
+     * Trying 'etcs.js' and falling back to 'etcs' meant every load logged a
+     * failed script fetch in the console -- a real error for an expected
+     * condition, which is the kind that trains you to ignore the console. The
+     * manifest already says what to load; this is one more thing it says.
+     *
+     * The probe stays as the no-manifest-entry path so an older deployment that
+     * has not added "glue" keeps working, with the reason logged rather than the
+     * browser's bare failure.
+     */
+    // FROM THE SAME BASE AS THE MODULES, because it is the same artifact set:
+    // the glue and etcs.wasm are one link's output and a mismatched pair is the
+    // one combination that fails before any ETCS code runs. Already resolved
+    // above, so this cannot pick a different origin than the modules did.
+    if (man.glue) {
+      setStatus('loading ' + man.glue + '…');
+      await loadGlue(joinBase(wasm_base, man.glue));
+    } else {
+      setStatus('loading glue…');
+      log('[etcs] modules.json names no "glue" -- probing etcs.js then etcs\n');
+      try { await loadGlue(joinBase(wasm_base, 'etcs.js')); }
+      catch (_) { await loadGlue(joinBase(wasm_base, 'etcs')); }
+    }
+  }
+
+  /*
+   * ── the boot throbber ──────────────────────────────────────────────────────
+   *
+   * PAGE-SIDE, AND THAT IS A MEASURED DECISION RATHER THAN A SHORTCUT.
+   *
+   * RenderProvider has a Throbber leaf that rides the frame edge, and the
+   * obvious thing is to put one up on the first lines of boot_paint_panels.etcs
+   * and let the runtime draw it. It cannot work, and the timeline is why.
+   * Measured in a headless Chromium against this page:
+   *
+   *     0.45s   modules loaded, boot script handed to a Worker
+   *     0-0.5s  nearly every Worker the session will have, created in one
+   *             burst -- every pthread is a Worker and every Worker
+   *             re-instantiates every open side module
+   *     8.8s    the first frame the runtime presents (16 Workers, one shared
+   *             pool; 10.5s with a pool per image)
+   *
+   * A boot script a quarter the length of this one moves none of those numbers:
+   * the delay is the runtime coming up, not the scene being built, and the
+   * script's own Worker is competing for cores with every other one while they
+   * all instantiate the same modules. A frame edge cannot draw before it
+   * exists, and it does not exist until the interval it would be drawing for
+   * has mostly passed.
+   *
+   * THE MAIN THREAD IS FINE THROUGHOUT, which is what makes this work: a rAF
+   * heartbeat records ~850 frames over 20 seconds with no gap above 250ms. The
+   * page is responsive the whole time the runtime is not, so the one thing that
+   * can paint those seconds is the page. This costs one rAF loop and no Worker,
+   * and it is up on the first frame after DOMContentLoaded.
+   *
+   * THE SAME PICTURE AS THE RUNTIME'S, deliberately: twelve dots, the head
+   * bright blue fading back through violet, "ETCS" inside the ring in
+   * off-white, straight over the sheet with no plate, the element exactly
+   * the ring's square so that centring the element centres the ring
+   * (Throbber.h has the same argument). The blue and
+   * the violet are the canvas's own box-shadow (rgba(0,0,255) and
+   * rgba(100,0,228) in the CSS above), so the wait indicator and the frame
+   * around the thing being waited for are the same two colours.
+   *
+   * STEPS PER FRAME, not per second, matching Throbber::AdvanceConcrete -- so a
+   * browser that is struggling shows a throbber that is visibly struggling,
+   * which during a boot is the single most useful thing it could be saying.
+   */
+  function bootThrobber() {
+    const el = document.getElementById('bootthrob');
+    const sheet = document.getElementById('canvas');
+    if (!el || !sheet) return;
+    const g = el.getContext('2d');
+    if (!g) { el.remove(); return; }
+
+    const RING = el.width, DOTS = 12, TAIL = 0.45, STEP = 5.4 / 360;
+    const HEAD = [0.35, 0.55, 0.95], TAILC = [0.58, 0.40, 0.95];
+    const cx = RING / 2, cy = RING / 2;
+    const dotR = RING * 0.08, orbit = RING * 0.5 - dotR - RING / 24;   // Throbber::orbit
+    let phase = 0, stopped = false;
+
+    // Sized to the hole the way Throbber::SetSize sizes its label: 16px is
+    // the runtime's scale-2 bitmap face at this ring, and the same run width.
+    g.font = '600 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+
+    function frame() {
+      if (stopped) return;
+      g.clearRect(0, 0, el.width, el.height);
+      g.fillStyle = 'rgba(240, 227, 199, 0.95)';    // the off-white the runtime uses
+      g.letterSpacing = '2px';
+      // +1 x: letterSpacing trails the last glyph too; +2 y: 'middle' is the
+      // em box's middle, and capitals sit above it. Both measured, not guessed.
+      g.fillText('ETCS', cx + 1, cy + 2);
+      for (let i = 0; i < DOTS; i++) {
+        const at = i / DOTS;
+        // Short way round, so the tail stays continuous across the wrap --
+        // the same arithmetic as Throbber::repaint.
+        let d = phase - at; d = d - Math.floor(d); if (d > 0.5) d = 1 - d;
+        let t = 1 - (d / TAIL); if (t < 0) t = 0; t = t * t;
+        const a = 0.14 + (1 - 0.14) * t;
+        const c = HEAD.map((h, k) => Math.round(255 * (TAILC[k] + (h - TAILC[k]) * t)));
+        const ang = at * Math.PI * 2 - Math.PI / 2;
+        g.beginPath();
+        g.arc(cx + orbit * Math.cos(ang), cy + orbit * Math.sin(ang), dotR, 0, Math.PI * 2);
+        g.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a.toFixed(3) + ')';
+        g.fill();
+      }
+      phase = (phase + STEP) % 1;
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    /*
+     * IT LEAVES WHEN THERE IS SOMETHING TO LEAVE FOR, and the runtime's own
+     * picture is the only honest signal -- there is no channel from a script
+     * back to this page, and a timeout would be a guess that is wrong on both
+     * a fast machine and a slow one.
+     *
+     * The sheet stays at its background colour until boot_paint_panels.etcs
+     * unhides the scene on its last lines, so "the centre has something in it"
+     * means the scene arrived. Sampled every 200ms over a small centre block,
+     * which is cheap enough to be uninteresting next to a wasm boot.
+     *
+     * Read failures are counted, not swallowed: if the canvas is ever
+     * cross-origin or context-less this cannot work at all, and after a few
+     * seconds of that the overlay leaves anyway rather than covering the
+     * application forever.
+     */
+    let bad = 0;
+    const poll = setInterval(function () {
+      let done = false;
+      try {
+        const sg = sheet.getContext('2d', { willReadFrequently: true });
+        if (!sg) { bad++; }
+        else {
+          const w = 160, h = 160;
+          const d = sg.getImageData((sheet.width - w) / 2, (sheet.height - h) / 2, w, h).data;
+          let lit = 0;
+          for (let k = 0; k < d.length; k += 16)
+            if (d[k] > 45 || d[k + 1] > 45 || d[k + 2] > 70) lit++;
+          if (lit > 40) done = true;
+        }
+      } catch (e) { bad++; }
+      if (done || bad > 25) {
+        stopped = true; clearInterval(poll); el.remove();
+        log('[etcs] boot throbber done'
+            + (bad > 25 ? ' (could not read the sheet -- leaving anyway)' : '') + '\n');
+      }
+    }, 200);
+  }
+  bootThrobber();
+
+  boot().catch(function (e) {
+    setStatus('boot failed', 'err');
+    log('[etcs] boot: ' + e + '\n', 'err');
+  });
+})();
+  </script>
+</body>
+</html>

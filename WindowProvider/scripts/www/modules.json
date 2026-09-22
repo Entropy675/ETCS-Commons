@@ -1,0 +1,58 @@
+{
+  "_comment": [
+    "THE INCLUDE LIST, and the source of truth for what this page loads.",
+    "The page fetches exactly this -- no candidate list, no directory scan -- so",
+    "adding a provider to the browser runtime is an edit here and nothing else.",
+    "WindowProvider first: it is the one this page exists for, and load order is",
+    "the order these appear in.",
+    "ShellProvider second so the navigator still comes up in the embedded",
+    "terminal -- drop it and the canvas still works, with nothing to type at.",
+    "NAMES, NOT PATHS. These are fetched from the SHARED artifact directory --",
+    "/wasm/, which is bin/wasm/ mounted by serve_web.etcs -- and staged into",
+    "MEMFS under the bare name, because preload_web_modules dlopens by name and",
+    "run_script opens by name. The url and the staged name are different things.",
+    "Optional \"base\": pin that directory and the page skips its own",
+    "same-origin-then-beside-then-remote walk. See resolveWasmBase in index.html."
+  ],
+  "modules": [
+    "WindowProvider.wasm",
+    "RenderProvider.wasm",
+    "PaintProvider.wasm",
+    "ShellProvider.wasm"
+  ],
+  "_scripts": [
+    "Staged into the browser's MEMFS by the page, by these names, before main()",
+    "runs -- so each name here must answer over HTTP. boot.etcs is in www/;",
+    "every pump script is MOUNTED at its name from its real location elsewhere",
+    "in the tree (../serve_web.etcs), so nothing is duplicated to be servable",
+    "and no directory above the served tree is exposed.",
+    "A NAME MAY BE A PATH. render_frames.etcs is staged at the same relative",
+    "path paint_surface.etcs reads it from on the OS side, so the `detach` line",
+    "in boot_paint.etcs is spelled once for both substrates rather than twice."
+  ],
+  "scripts": [
+    "boot.etcs",
+    "boot_paint.etcs",
+    "window_events.etcs",
+    "window_pointer.etcs",
+    "boot_canvas.etcs",
+    "paint_pointer.etcs",
+    "RenderProvider/scripts/render_frames.etcs",
+    "RenderProvider/scripts/scene_bars.etcs",
+    "RenderProvider/scripts/scene_emblem.etcs",
+    "RenderProvider/scripts/scene_layer.etcs",
+    "RenderProvider/scripts/scene_reset.etcs",
+    "RenderProvider/scripts/polygon_add.etcs",
+    "RenderProvider/scripts/polygon_draw.etcs",
+    "RenderProvider/scripts/scene3d.etcs",
+    "PaintProvider/scripts/paint_toolbar.etcs"
+  ],
+  "boot": "boot_paint.etcs",
+  "_glue": [
+    "The emscripten loader output, STAGED AS .js: served extensionless it arrives",
+    "as application/octet-stream, which the browser warns is not a valid",
+    "JavaScript MIME type. Naming it here rather than probing removes a guaranteed",
+    "failed fetch on every load."
+  ],
+  "glue": "etcs.js"
+}

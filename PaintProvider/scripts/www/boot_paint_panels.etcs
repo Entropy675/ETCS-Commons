@@ -1,0 +1,578 @@
+#!/usr/bin/env etcs
+
+# ONE CANVAS: the sheet, with the toolbar drawn on top at the bottom edge.
+#
+# The toolbar is a CompositeDrawable2D child of sheet_root (order 20), not a
+# second Surface / DOM element. Every pointer event comes through the window's
+# GLFW stream; a press on a swatch is a pick inside the same tree as the picture.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS Paint)
+
+# ── the sheet ────────────────────────────────────────────────────────────────
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+view.Clear(0.13, 0.13, 0.15, 1.0)
+
+# ── the root, the throbber and the edge go up FIRST ──────────────────────────
+#
+# What a frame edge presents is whatever is bound at the time, and the root it
+# presents is the same sheet_root the rest of this file fills in -- so all three
+# go up here and the scene appears inside a picture that is already being drawn.
+# Detaching the edge on the last line instead leaves the canvas blank for the
+# whole boot, which is the one interval a wait indicator is for.
+#
+# ONE ROOT, NOT A SEPARATE BOOT ROOT: a boot root has to be swapped out, which
+# leaves the throbber in a tree nothing presents afterwards, and a wait
+# indicator that cannot be shown again is one every later caller rebuilds. In
+# the real root it stays available for the whole session.
+#
+# Building a tree while the edge walks it is ordinary here, not a liberty: the
+# layer panel spawns and deletes its rows on every Refresh with this same edge
+# running, and the panes below are shown and hidden the same way.
+
+# THE STAGE: what the frame edge presents, and the only reason it exists is that
+# "the scene" and "the throbber" have to be hidden and shown independently.
+#
+# A node has one parent, so the throbber cannot be inside the scene it covers
+# AND survive the scene being hidden. One level of wrapper solves it and nothing
+# else does: stage holds exactly two children, and each is switched on its own.
+#
+# sheet_root keeps its identity, its size, its position and every reference to
+# it (BindRoot, AddPane below) -- it is one level deeper and still at 0,0, so
+# no coordinate anywhere moves.
+spawn RenderProvider::CompositeDrawable2D stage
+stage.Create(1024, 768)
+stage.SetPosition(0, 0)
+stage.SetOrder(0)
+stage.SetBackground(0.13, 0.13, 0.15, 1.0)
+
+stage.spawn(RenderProvider::CompositeDrawable2D sheet_root)
+sheet_root.Create(1024, 768)
+sheet_root.SetPosition(0, 0)
+sheet_root.SetOrder(0)
+
+# HIDDEN UNTIL IT IS FINISHED, which is the whole point of the wrapper.
+# Composing the scene from the top and letting it fill in shows: panes appearing
+# one at a time, a canvas half built, a toolbar arriving after the picture. A
+# wait indicator exists to say "not yet", and a scene assembling itself
+# underneath one says the opposite.
+#
+# Hidden is also not picked (ontology/DrawableBase.h), so a click during boot
+# cannot land on a control that is not ready to answer it.
+sheet_root.SetHidden(1)
+
+# THE SESSION'S THROBBER, and the name is the point.
+#
+# A sibling of the scene rather than a child of it, so hiding one does not hide
+# the other -- which is the reason `stage` exists at all.
+#
+# Spawned once, here, because this is the first thing that needs one, and kept
+# afterwards rather than deleted, so anything else with a wait in it (a new
+# canvas, a page switch, an import) shows THIS one instead of building another.
+# Two lines, from any subscript:
+#
+#     ensure RenderProvider::Throbber main_throbber
+#     main_throbber.SetHidden(0)
+#
+# ENSURE, NOT SPAWN, and the difference is the whole point of the name. The
+# three acquire verbs differ only in what happens when the word is already
+# answered (core/CommandExecutor.h, CmdAcquire):
+#
+#     spawn    always makes a new one, and REFUSES if the name already
+#              resolves -- "clobbering ... did you mean attach/ensure?"
+#     attach   takes the existing one, and fails if there is not one
+#     ensure   takes the existing one if there is one, makes one if not
+#
+# So a subscript that says `spawn` is the failure this arrangement exists to
+# avoid: it errors out in exactly the session where the throbber is already
+# there. `ensure` reuses it here and still works standalone. Same shape
+# NetworkProvider/scripts/chess_web.etcs already uses for the shared server
+# (`ensure NetworkProvider::HttpServer web`).
+#
+# WHAT ENSURE GUARANTEES IS AN ENTITY, NOT A PICTURE. It resolves through the
+# closure, so this binding is reachable because it is made by the session's root
+# script; one made by `ensure` in a standalone subscript is parented wherever
+# that script's root is, which may be nothing the compose root walks. A
+# subscript that has to work either way places what it gets.
+#
+# No SetOrder: the type defaults to the top (Throbber::ORDER_ON_TOP), because
+# for a wait indicator that is not a layout choice but what the thing is.
+# 464,336 is (1024-96)/2, (768-96)/2: the raster is exactly the ring's square
+# (the caption sits inside it), so this is the centre of the sheet.
+stage.spawn(RenderProvider::Throbber main_throbber)
+main_throbber.Create(96)
+main_throbber.SetPosition(464, 336)
+
+# HIDDEN FROM THE START, because nothing in here CAN draw during boot: the
+# runtime's first presented frame lands seconds after this script starts,
+# whatever the script contains (bootThrobber in www/index.html has the
+# measurement). The page covers that interval with the same twelve dots in the
+# same two colours. THIS one is for the waits that happen afterwards, when the
+# runtime is up and can draw: a new page, a page switch, a load (pages.BindWait
+# below). Hidden, it costs one virtual call a frame.
+main_throbber.SetHidden(1)
+
+view.Compose(@stage)
+
+# THE EDGE, and there is exactly one of it.
+detach RenderProvider/scripts/render_frames.etcs view=view
+
+
+# ── the document: paper under ink ────────────────────────────────────────────
+#
+# The layers are the document's CHILDREN, which is what makes them its layers --
+# membership is parenthood, so the stack is read out of the typed-children list
+# that already holds them rather than out of a second list saying the same thing.
+spawn PaintProvider::PaintDocument doc
+doc.Create(1024, 768, browser)
+
+doc.spawn(PaintProvider::PaintLayer paper)
+paper.Create(1024, 768)
+paper.Clear(1.0, 1.0, 1.0, 1.0)
+paper.SetName(Paper)
+paper.SetOrder(0)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(1024, 768)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(1)
+
+doc.SetActiveLayer(@ink)
+
+# The document draws its own text boxes, so it needs a glyph provider of its own
+# -- see PaintTextBox. A label spawned for nothing but its Glyphs half: it is
+# never positioned or drawn, it is asked to rasterise into somebody else's pixels.
+spawn RenderProvider::TextLabel glyph_src
+glyph_src.Create()
+doc.BindGlyphs(@glyph_src)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(6.0)
+brush.SetColor(0.10, 0.10, 0.12, 1.0)
+
+
+# ── the sheet's own pane ─────────────────────────────────────────────────────
+#
+# A popup over the canvas needs a 2D tree: a pane has to exist for the wheel to
+# be ON TOP of, and the wheel has to be a pane for opening it to mean anything
+# (PaintColorWheel: open is membership of the routing set, because a drawable
+# that is merely invisible still swallows clicks).
+#
+# So the sheet gets a root at order 0, the same size as the document, and
+# BindCanvas names it as the thing that IS the picture -- anything else picked
+# inside it is scenery and does not draw. It is made at the TOP of this file
+# now, with the throbber in it, because the frame edge presents it from there
+# on; only its contents are filled in from here down.
+
+# ── the drawable pane, INSET, so the ruler has somewhere to be ───────────────
+#
+# THE MARGIN IS THE POINT, and it is 36 px on three sides. A ruler drawn along
+# the inside of the drawing area is on the picture: over the paper near the
+# edges, and paintable, so a stroke near a corner goes through the scale you are
+# checking it against. Inset, the band between this pane and sheet_root belongs
+# to nobody who draws -- so the marks go there (canvas.BindRulerFrame) and cannot
+# be drawn on.
+#
+# AND NOTHING HAS TO ENFORCE THAT, which is why it is a pane rather than a rule.
+# The router hit-tests panes and PaintInput only treats a hit on the CANVAS node
+# as the picture (BindCanvas, below): a point in the margin is inside sheet_root
+# and outside this, so it reaches the toolbar's pick and never reaches a tool. The
+# document cannot spill into the band either -- this pane is its own raster, so
+# the blit is clipped by the buffer's extent rather than by a check.
+#
+# 704 rather than 768 on the bottom because the toolbar has that strip; the
+# ruler's own band sizes itself per side and simply draws nothing where a page
+# left no room (draw_edge_ruler).
+sheet_root.spawn(RenderProvider::CompositeDrawable2D paper_pane)
+paper_pane.Create(952, 632)
+paper_pane.SetPosition(36, 36)
+paper_pane.SetOrder(1)
+# RETAINED: PaintSurface::Render is the one writer of this buffer and clears it
+# itself before blitting the document in. A composite normally clears to its
+# background before drawing its children, because normally the buffer is
+# derived from the tree; here the buffer IS the picture, and a recompose that
+# cleared it would wipe the document -- the sheet going blank whenever anything
+# is composed over it.
+paper_pane.SetRetain(1)
+
+# ── the document draws INTO the pane, not beside it ──────────────────────────
+#
+# This is the one ordering that works, and the alternative is worth stating
+# because it looks right and is not. Leaving the document pointed at `view` and
+# composing the tree into the same surface gives two writers: the frame pump
+# rebuilds `view` from the tree every frame, which wipes whatever Render blitted.
+#
+# So the pane is the TARGET. canvas clears and blits the document into
+# paper_pane's own raster (a CompositeDrawable2D is a Surface and owns Pixels),
+# the compose walk then draws the sheet's other children -- the ruler, the
+# window, the bar -- over it in order, and `view` presents the one composed
+# result. ONE WRITER PER BUFFER: the surface writes the pane and the ruler's
+# raster, the walk writes everything else, and a widget is over the picture
+# because the tree says so rather than because of which call ran last.
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@paper_pane)
+canvas.AttachDocument(@doc)
+canvas.SetBackground(0.13, 0.13, 0.15, 1.0)
+# For the edge ruler's numbers -- a second consumer of the same provider the
+# document uses, because the ruler describes the PANE and the boxes the page.
+canvas.BindGlyphs(@glyph_src)
+# ── the ruler, ON ITS OWN RASTER ─────────────────────────────────────────────
+#
+# The margin around the pane is where the ruler goes (the inset above), and
+# it is drawn by PaintSurface::Render -- on the INPUT thread, whenever the
+# view changes, which during a drag or a stroke is per motion. It used to be
+# drawn straight into sheet_root's buffer, which the frame edge composes and
+# presents on ITS thread. Two writers, no order between them: the band's clear
+# landed over the toolbar's rows (the band runs to the sheet's edge, under the
+# bar) and over anything dragged across the margin, and whether the presented
+# frame showed the band or the bar depended on which thread got there last.
+# Measured: a third of the frames during a drag showed the band over the bar.
+#
+# So the ruler has a raster of its own, a sibling of the pane at the sheet's
+# origin and the sheet's size, and the surface writes THAT. The sheet is then
+# what a compositor is meant to be -- derived from its children, in order:
+# pane (1), ruler (2), the layer window (15), the bar (19..21), popups (29..30)
+# -- and the bar is over the band because the tree says so, every frame, with
+# nobody's write racing it. What can still tear is the ruler's own raster, a
+# band half-updated between two presents, which is the same band in the same
+# colour and does not show.
+#
+# Retained: nothing in the tree draws it, so nothing may clear it either; the
+# surface's band rects cover the margin and the area under the pane is never
+# touched, so it stays transparent from Allocate. Order 2, just over the pane:
+# the ruler is chrome, and everything else is over chrome.
+#
+# NOT PICKABLE, and this is the line that makes a full-sheet sibling possible:
+# the pick walks children top down and a compositor answers for its whole
+# rectangle, so without it every press on the paper would have landed on the
+# ruler and no stroke would ever have started (CompositeDrawable2D::SetPickable).
+# It is at the sheet's origin so the pane's Bounds() -- in the sheet's space --
+# are the same offsets in the ruler's space, which is what draw_edge_ruler
+# reads (PaintSurface::BindRulerFrame).
+sheet_root.spawn(RenderProvider::CompositeDrawable2D ruler_pane)
+ruler_pane.Create(1024, 768)
+ruler_pane.SetPosition(0, 0)
+ruler_pane.SetOrder(2)
+ruler_pane.SetRetain(1)
+ruler_pane.SetPickable(0)
+canvas.BindRulerFrame(@ruler_pane)
+canvas.Render()
+
+# NOT RETAINED, and the sheet needs no line to say so: with the ruler on its
+# own raster nothing but the compose walk writes this buffer, so it is cleared
+# and rebuilt from the tree like any other compositor. That is also what ends
+# the re-Render a popup's close, a window drag and the wheel's move used to
+# ask for: whatever a moved thing was covering is redrawn by the walk, because
+# the walk draws everything.
+
+# ── the toolbar, ON the sheet ───────────────────────────────────────────────
+sheet_root.spawn(RenderProvider::PolygonDrawable2D bar_bg)
+bar_bg.Create()
+bar_bg.AddPoint(0, 704)
+bar_bg.AddPoint(1024, 704)
+bar_bg.AddPoint(1024, 768)
+bar_bg.AddPoint(0, 768)
+bar_bg.SetFill(0.16, 0.16, 0.19, 1.0)
+bar_bg.SetOrder(19)
+
+# Sixteen 60px slices: six colours, eight tools, radius and alpha
+# (paint_toolbar.etcs) -- rect and oval are one shape slice now, which is what
+# gave the row its margins back.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D bar)
+bar.Create(960, 64)
+bar.SetPosition(32, 704)
+bar.SetOrder(20)
+
+spawn PaintProvider::PaintPalette palette
+palette.BindTool(@brush)
+palette.BindSurface(@canvas)
+
+run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette
+
+
+# ── the zoom readout, bottom-left of the drawing pane ────────────────────────
+#
+# Two steps and a percentage, deliberately faint: it is a thing you reach for
+# occasionally and should not compete with the picture. Children of sheet_root,
+# so they move with the pane and are picked in its space.
+#
+# The steps are PaintPalette entries -- a node that means a zoom, mapped by the
+# same type that maps a node meaning a colour (AddZoom says why a view setting
+# lives there). The label is pushed by the surface rather than by whoever zoomed,
+# so the wheel, these buttons and a script all keep it honest.
+sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_out)
+zoom_out.Create()
+zoom_out.AddPoint(12, 668)
+zoom_out.AddPoint(36, 668)
+zoom_out.AddPoint(36, 692)
+zoom_out.AddPoint(12, 692)
+zoom_out.SetFill(0.85, 0.85, 0.88, 0.30)
+zoom_out.SetOrder(21)
+palette.AddZoom(@zoom_out, 0.8)
+
+sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_in)
+zoom_in.Create()
+zoom_in.AddPoint(44, 668)
+zoom_in.AddPoint(68, 668)
+zoom_in.AddPoint(68, 692)
+zoom_in.AddPoint(44, 692)
+zoom_in.SetFill(0.85, 0.85, 0.88, 0.30)
+zoom_in.SetOrder(21)
+palette.AddZoom(@zoom_in, 1.25)
+
+sheet_root.spawn(RenderProvider::TextLabel zoom_label)
+zoom_label.Create()
+zoom_label.SetPosition(78, 672)
+zoom_label.SetSize(2)
+zoom_label.SetColor(0.80, 0.80, 0.84, 1.0)
+zoom_label.SetText(100%)
+zoom_label.SetOrder(21)
+
+canvas.BindZoomLabel(@zoom_label)
+
+# ── the layer window, top-right of the paper ─────────────────────────────────
+#
+# A pane on the sheet like the toolbar, five rows of eye / name / delete built
+# by paint_layers.etcs (the same bargain: PaintProvider maps nodes to layer
+# actions and owns none of the drawing). Over the paper's corner rather than in
+# the margin, because the margin is the ruler's and 36px is not a list. Picked
+# through the sheet's own input: a press on a row reaches the panel before the
+# canvas check (PaintInput::RouteEvent), so nothing is routed separately and no
+# stroke starts under it. The active layer's row is the highlighted one, and a
+# press on another row makes THAT the drawing layer.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D layers_pane)
+layers_pane.Create(240, 224)
+layers_pane.SetPosition(740, 44)
+
+# UNDER THE TOOLBAR, and that is the one ordering rule this window has that is
+# not about z at all -- it is about what is furniture and what is a document
+# view. The toolbar is fixed to the sheet; the layers panel is a window the user
+# drags around. A dragged window passing over a fixed control and covering it
+# reads as the control having gone away, which for a palette you are mid-stroke
+# with is the wrong answer. 15 puts it above the picture (paper_pane is 1) and
+# below the bar and everything mounted on it (bar_bg 19, bar 20, the zoom
+# controls and the gear at 21).
+#
+# The popups stay ABOVE the toolbar (wheel 30, menu and import 29) on purpose:
+# those are opened deliberately, are modal in intent, and close on a press
+# elsewhere -- a thing you summoned should be on top of what you summoned it
+# from. This panel is not summoned; it is simply there.
+layers_pane.SetOrder(15)
+
+spawn PaintProvider::PaintLayerPanel layers
+run PaintProvider/scripts/paint_layers.etcs panel=layers_pane doc=doc list=layers
+# What to put back when the window changes the picture rather than the list --
+# a restack, an eye, a delete (PaintLayerPanel::BindSurface).
+layers.BindSurface(@canvas)
+layers.Refresh()
+
+# THE CLOCK THE FADE RIDES IS NOT SPAWNED HERE ANY MORE. The isolation fade used
+# to need a node in the tree -- a drawable that drew nothing, present only so the
+# compose walk would reach it -- because the walk was the only per-frame edge in
+# this module. The panel claims Animated now (ontology/Animated.h), so it is
+# stepped by whatever drives that family and the window needs nothing beside it.
+
+# ── the colour wheel's pane ──────────────────────────────────────────────────
+#
+# Order 30, above everything, because a popup that is not on top is not a popup.
+# NOT added to the router here: the wheel does that when it opens, which is what
+# makes "is it open" and "does it receive clicks" one fact instead of two that
+# can disagree.
+# A CHILD OF THE SHEET, which it was not, and that was the whole of why nobody
+# had seen this wheel. Spawned at top level it had no drawable parent, so no
+# compose walk ever reached it: order 30 ranks it against siblings it did not
+# have. It was still ROUTED when open, so clicks over it were swallowed by an
+# invisible panel -- the worst of both.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D wheel_pane)
+# 240 wide, not 220: the disc is 192 across and the brightness strip lives to the
+# right of it (PaintColorWheel::in_value_strip derives its x from the radius).
+wheel_pane.Create(240, 220)
+wheel_pane.SetPosition(340, 260)
+wheel_pane.SetOrder(30)
+# Hidden until opened. It is a child of the sheet now, so without this it would
+# be drawn over the picture from boot -- see PaintColorWheel::Open, which treats
+# open as one fact covering both routing and appearance.
+wheel_pane.SetHidden(1)
+
+# RETAINED, and it has no children at all -- because the PICKER IS THE RASTER.
+#
+# Not twelve polygons drawn by a script over a backing rectangle -- the number
+# twelve is the bug: the pick was continuous while the picture was
+# not, so the colour you got was almost never the colour you clicked. Now
+# PaintColorWheel paints the pane's own pixels -- hue around, saturation outward,
+# a brightness strip down the right edge -- from exactly the conversion the pick
+# runs. Retain is what stops the compose walk clearing it, and having no children
+# is what stops anything drawing over it: one writer per buffer.
+wheel_pane.SetRetain(1)
+
+spawn PaintProvider::PaintColorWheel wheel
+wheel.Create(110, 110, 96)
+wheel.BindTool(@brush)
+wheel.BindPalette(@palette)
+wheel.BindSurface(@canvas)
+wheel.SetValue(1.0)
+# And the palette reaches back, so a swatch's own arrow can open the wheel above
+# it and aim the pick at that swatch (PaintPalette::AddWheelArrow).
+palette.BindWheel(@wheel)
+
+# ── one input machine for the sheet (toolbar is scenery inside it) ──────────
+spawn PaintProvider::PaintInput input
+input.Create(@doc, @brush, @canvas)
+input.SetBrush(6.0, 0.10, 0.10, 0.12, 1.0)
+input.BindRoot(@sheet_root)
+# THE PANE, NOT THE SHEET. This one line is what makes the ruler's margin
+# unpaintable: a press in the band picks sheet_root, which is not the canvas, so
+# it is scenery and no tool sees it (PaintInput::RouteEvent). The root stays the
+# sheet so the toolbar and the zoom steps are still reachable by the same pick.
+input.BindCanvas(@paper_pane)
+input.BindPalette(@palette)
+input.BindPanel(@layers)
+input.BindWheel(@wheel)
+input.SetWheelPane(0)
+
+# ── the pages: this session's history of canvases, kept in a database ────────
+#
+# ONE FILE, ONE PATH, TWO SUBSTRATES. The database is sqlite at a path, here as
+# on the desktop; in the browser the path is under /persist, which index.html
+# mounts on IDBFS and syncs to IndexedDB, so it outlives the tab. Nothing about
+# the store is web-specific, and nothing about it is paint-specific either: the
+# pages type talks to it through the Database family (Prepare/Bind/Step), and
+# any other module with bytes to keep can do the same.
+#
+# ctrl+PageDown / ctrl+PageUp switch pages: the present page is saved first if
+# it changed since it was loaded (PaintDocument::revision), then the neighbour
+# is loaded. `pages.New()` opens a fresh page; `pages.List()` says what is kept.
+spawn DatabaseProvider::LocalDatabase db
+db.Connect(/persist/pages.db)
+spawn PaintProvider::PaintPages pages
+pages.Create(@doc, @db)
+pages.BindSurface(@canvas)
+# Shown while a page is saved, loaded or made -- the one wait in this session
+# long enough to see (PaintPages::BindWait has the numbers). This is what the
+# throbber above was kept for.
+pages.BindWait(@main_throbber)
+input.BindPages(@pages)
+
+spawn PaintProvider::PaintInput wheel_input
+wheel_input.Create(@doc, @brush, @canvas)
+wheel_input.BindRoot(@wheel_pane)
+wheel_input.BindWheel(@wheel)
+wheel_input.SetWheelPane(1)
+
+# ── the arbiter ──────────────────────────────────────────────────────────────
+#
+# Budget 1: the topmost pane containing the point, and nobody below it. That is
+# what stops a press on the wheel from also landing on the picture underneath.
+spawn PaintProvider::PaintRouter router
+router.Create(1)
+router.AddPane(@sheet_root, @input)
+
+wheel.BindRouter(@router)
+wheel.BindPane(@wheel_pane, @wheel_input)
+
+# ── the gear, and the settings menu it opens ─────────────────────────────────
+#
+# IN THE RULER'S CORNER, above the extent label. The corner of the margin is the
+# one place on the sheet that is neither picture nor toolbar nor scale: the band
+# is 36px, its label sits at y=16 (draw_edge_ruler puts the extent at
+# oy - band_h + 2), so an octagon in the 2..14 square above it overlaps nothing.
+# A child of sheet_root like the zoom steps, ordered over the ruler's raster,
+# so the band's clear never takes the gear with it.
+#
+# A press on it is scenery routed to `input` -- inside sheet_root, outside the
+# canvas -- and PaintInput::RouteEvent asks the palette first, which is where
+# AddPopup answers (PaintPalette::Apply). The palette needs the router to open
+# anything, since open means routed (PaintColorWheel::Open).
+sheet_root.spawn(RenderProvider::PolygonDrawable2D gear)
+gear.Create()
+gear.AddPoint(8, 2)
+gear.AddPoint(12, 4)
+gear.AddPoint(14, 8)
+gear.AddPoint(12, 12)
+gear.AddPoint(8, 14)
+gear.AddPoint(4, 12)
+gear.AddPoint(2, 8)
+gear.AddPoint(4, 4)
+gear.SetFill(0.94, 0.89, 0.78, 0.92)
+gear.SetOrder(21)
+
+# The menu's pane: order 29, above everything but the wheel, so the two popups
+# rank as popups against the sheet and the wheel still wins if both were open
+# (the palette closes the wheel when it opens this, so they are not). Hidden
+# until opened, for the reason wheel_pane is. Not retained: its contents are
+# nodes (paint_menu.etcs) and the compositor draws them from the tree.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D menu_pane)
+menu_pane.Create(200, 372)
+menu_pane.SetPosition(4, 18)
+menu_pane.SetOrder(29)
+menu_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
+menu_pane.SetHidden(1)
+
+# The pending extent and anchor the menu edits, seeded from the document, and
+# the surface it re-renders once a resize or a new canvas has landed.
+spawn PaintProvider::PaintCanvasMenu menu
+menu.Create(@doc)
+menu.BindSurface(@canvas)
+
+# Its own input, exactly as the wheel has one: a pane is a root to pick in and
+# an input to hand the pick to (PaintRouter::AddPane), and this pane is not the
+# sheet. The palette is bound because every control in the menu is a palette
+# entry (AddCall) -- and because, with a popup open, the palette is what says a
+# press on the pane's backing is the popup's and not a stroke (PaintPalette::
+# Apply), so no BindCanvas is needed here.
+spawn PaintProvider::PaintInput menu_input
+menu_input.Create(@doc, @brush, @canvas)
+menu_input.BindRoot(@menu_pane)
+menu_input.BindPalette(@palette)
+
+run PaintProvider/scripts/paint_menu.etcs pane=menu_pane palette=palette menu=menu
+
+# The store the menu lists and that `new` adds to. Bound after the script has
+# declared the rows, so the first RefreshPages has somewhere to write.
+menu.BindPages(@pages)
+
+palette.BindRouter(@router)
+palette.AddPopup(@gear, @menu_pane, @menu_input)
+
+# ── the import prompt ────────────────────────────────────────────────────────
+#
+# A popup with no node to press for it: the page's upload hands the file's
+# path to menu.OfferImport, which opens this pane and asks whether the picture
+# is another layer or a new canvas (paint_import.etcs). Over the middle of the
+# paper, order 29 like the menu, its own input for the reason menu_input is.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D import_pane)
+import_pane.Create(300, 90)
+import_pane.SetPosition(398, 300)
+import_pane.SetOrder(29)
+import_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
+import_pane.SetHidden(1)
+
+spawn PaintProvider::PaintInput import_input
+import_input.Create(@doc, @brush, @canvas)
+import_input.BindRoot(@import_pane)
+import_input.BindPalette(@palette)
+
+run PaintProvider/scripts/paint_import.etcs pane=import_pane palette=palette menu=menu
+menu.BindTool(@brush)
+menu.BindImportPrompt(@palette, @import_pane, @import_input, @import_name)
+
+# ── the scene, all at once, finished ────────────────────────────────────────
+#
+# One line, and it is the line the stage wrapper exists for: before it there is
+# a throbber on a dark page, after it there is a paint program, and no frame in
+# between showing half of one. No Compose: stage has been the compose root since
+# the top of this file, and everything above simply filled it in.
+sheet_root.SetHidden(0)
+
+# ── the pumps ────────────────────────────────────────────────────────────────
+#
+# The frame edge is not here: it is detached at the top of this file, and there
+# is one per surface.
+detach paint_routed_pointer.etcs window=main router=router
+
+main.ProduceEvents() -> router.ConsumeInput()

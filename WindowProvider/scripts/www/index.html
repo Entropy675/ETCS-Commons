@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ETCS Web Window</title>
+  <!-- Empty data: icon so the browser stops asking for /favicon.ico. The server
+       holds exactly www/ plus three named mounts, so that request was always a
+       404 -- and a permanent 404 in the console is noise a real one hides behind. -->
+  <link rel="icon" href="data:,"/>
+  <style>
+    :root {
+      /* Palette from chess.html (ACE Chess) so shell / window share the same surface. */
+      --light: #e8e2d5; --dark: #7a8a6f; --sel: #c9b458; --ink: #1c1c1a;
+      --bg: #14150f; --panel: #1b1c14; --line: #3b3d31; --dim: #8d907c;
+      /* Aliases used by the existing rules */
+      --border: var(--line);
+      --fg: var(--light);
+      --muted: var(--dim);
+      --accent: var(--sel);
+      --ok: #7a9a5a;
+      --err: #c45c4a;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: var(--bg); color: var(--fg);
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    body { overflow-y: auto; }
+
+    /*
+     * GRID, AND THE TERMINAL HAS A FLOOR.
+     *
+     * The canvas is 1024x768 and the terminal was whatever was left, which on a
+     * laptop is about three lines -- unusable for the thing you actually type
+     * into. So the canvas is the elastic one now and the terminal has a minimum:
+     * 15rem stacked, which is 8 lines of 13px/1.45 text plus the shell page's own
+     * header and input row. The canvas gives up space first because it can: it
+     * scales, and its framebuffer is set by Create() regardless of display size.
+     */
+    #layout {
+      display: grid; gap: 0.75rem; padding: 0.75rem;
+      height: 100%; max-width: 1600px; margin: 0 auto;
+      grid-template-columns: 1fr;
+      /* Stacked: the terminal takes a clamped share (never under 15rem = 8 lines
+         plus the shell page's own chrome, never more than 28rem) and the canvas
+         takes ALL the rest, shrinking to fit rather than pushing the terminal off
+         the bottom of the viewport. height:100% not min-height, so the two of
+         them fit the screen instead of making the page scroll to reach the thing
+         you type into. */
+      grid-template-rows: auto minmax(0, 1fr) clamp(15rem, 40%, 28rem);
+      grid-template-areas: "head" "stage" "term";
+    }
+    header {
+      grid-area: head;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      color: var(--muted); font-size: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+      margin: -0.75rem -0.75rem 0;
+    }
+    header .brand {
+      color: var(--accent); font-size: 14px; font-weight: bold;
+      letter-spacing: .12em; text-decoration: none;
+    }
+    header .brand:hover { text-decoration: underline; }
+
+    /* Centres the canvas in whatever box the grid gave it, and min-height:0 is
+       what lets that box actually shrink -- a grid item defaults to min-content,
+       which for a 768px-tall canvas means it never yields. */
+    #stage {
+      grid-area: stage; min-height: 0; min-width: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    /* The window's framebuffer. Create() resizes the ATTRIBUTES to whatever
+       boot.etcs asked for; these rules only decide how big it is drawn, and
+       width/height:auto against both maxima keeps the aspect ratio while
+       fitting the box. */
+    canvas#canvas {
+      display: block; background: #0a0b08;
+      border: 1px solid var(--border); border-radius: 6px;
+      max-width: 100%; max-height: 100%; width: auto; height: auto;
+      box-shadow: -1px -1px 5px rgba(100, 0, 228, 0.7), 1px 1px 5px rgba(0, 0, 255, 0.7);
+    }
+
+    /* SIDE BY SIDE ONCE THERE IS ROOM. Two columns, one row: the canvas takes
+       the space the terminal does not need, and both are full height. Below this
+       the grid falls back to the stacked rows above, where the terminal's 15rem
+       floor applies. */
+    @media (min-width: 62rem) {
+      #layout {
+        height: 100%;
+        grid-template-columns: minmax(0, 1fr) minmax(24rem, 34%);
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-areas: "head head" "stage term";
+      }
+      #shell { min-height: 0; }
+    }
+    #status.err { color: var(--err); }
+    #status.ok  { color: var(--ok); }
+    /* The shell page, embedded as the terminal -- the thing you interact with
+       for the whole session, so it gets a guaranteed size rather than leftovers. */
+    #shell {
+      grid-area: term; min-height: 15rem; width: 100%; height: 100%;
+      border: 1px solid var(--border); border-radius: 6px;
+      background: var(--panel);
+    }
+  </style>
+</head>
+<body>
+  <div id="layout">
+    <header>
+      <a class="brand" href="/" target="_top">ETCS Window</a>
+      <span id="status">loading…</span>
+    </header>
+    <div id="stage">
+      <canvas id="canvas" width="1024" height="768"></canvas>
+    </div>
+    <!-- The ShellProvider page, as the terminal VIEW only. It detects being
+         framed and boots no runtime of its own; lines cross by postMessage.
+         See README.md for why the runtime is here and the terminal is there.
+
+         THE ONLY TEXT PANE ON THIS PAGE. Boot progress goes here too, through
+         the same replay buffer every other line uses -- an ETCS session has one
+         log, and splitting the first six lines of it into a second box above the
+         terminal meant reading two places to follow one sequence. -->
+    <iframe id="shell" src="shell" title="ETCS shell"></iframe>
+  </div>
+  <script>
+(function () {
+  const statusEl = document.getElementById('status');
+  const canvas = document.getElementById('canvas');
+  const shellFrame = document.getElementById('shell');
+
+  const ORIGIN = window.location.origin;
+
+  // ── the log ────────────────────────────────────────────────────────────
+  //
+  // ONE PANE. Boot lines and runtime lines are one sequence, so they go to one
+  // place: the terminal. The reason that works even before the iframe can be
+  // talked to is the replay buffer below -- `pending` already existed to hold
+  // runtime output produced during iframe load, and boot output is the same
+  // problem, so it is the same answer rather than a second widget.
+  //
+  // The header keeps a one-LINE status (the current step, red if it failed), so
+  // a page that dies before the terminal can render still says so somewhere
+  // that needs no scrolling.
+  /*
+   * The transcript gets the text AS IT CAME, escapes included -- the terminal
+   * view is what renders SGR into colour (ShellProvider's page), and stripping
+   * here would throw away the only thing carrying which span means what.
+   *
+   * The status line is a different medium: it is textContent on one element, so
+   * an escape there is bytes on screen rather than a colour. Stripped for that
+   * use and only that use.
+   */
+  const ANSI_STRIP = /\x1b\[[0-9;?]*[A-Za-z]/g;
+  function log(text, cls) {
+    termWrite(text);
+    if (cls === 'err')
+      setStatus(String(text).replace(ANSI_STRIP, '').trim().split('\n')[0], 'err');
+  }
+  function setStatus(s, cls) {
+    statusEl.textContent = s;
+    statusEl.className = cls || '';
+  }
+
+  // ── the bridge ─────────────────────────────────────────────────────────
+  //
+  // TEXT OUT, LINES IN, and nothing else crosses. The embedded page is a view:
+  // it renders what the runtime printed and hands back what was typed. It holds
+  // no runtime state, so there is nothing to keep in sync and no ordering to get
+  // wrong -- which is what makes a frame boundary an acceptable place to put it.
+  let shellReady = false;
+  const pending = [];              // output produced before the view was ready
+
+  function toShell(msg) {
+    if (!shellFrame.contentWindow) return;
+    shellFrame.contentWindow.postMessage(msg, ORIGIN);
+  }
+
+  // Every line the runtime prints. Named on window because that is the hook
+  // etcs_web_shell_write already reaches for (loaders/etcs.cc) -- the C++ side
+  // calls window.etcsTermWrite when it exists, so wiring it here is what makes
+  // the runtime's own writes land in the embedded terminal rather than only in
+  // Module.print.
+  function termWrite(text) {
+    if (!shellReady) { pending.push(text); if (pending.length > 2000) pending.shift(); return; }
+    toShell({ etcs: 'out', text: text });
+  }
+
+
+  /*
+   * PULLING THE TERMINAL'S OUTPUT, on this page's clock rather than the
+   * runtime's. The C++ side accumulates what it writes and hands over the lot
+   * when asked (etcs_web_shell_drain, loaders/etcs.cc): one call, one append
+   * and one reflow per tick instead of one of each per line. setInterval and
+   * not requestAnimationFrame, because a hidden tab stops painting but does not
+   * stop logging -- throttled is right, stopped is not.
+   *
+   * A quarter second rather than a frame: the tick costs the same whether it
+   * carries one line or three hundred, so a longer window is less work for the
+   * same text. The runtime pushes on its own if nothing drains for 750ms.
+   */
+  const SHELL_DRAIN_MS = 250;
+  let shellDrainTimer = 0;
+  function drainShellOutput() {
+    const mod = window.Module;
+    if (!mod || !mod.ccall) return;
+    let text = '';
+    try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
+    catch (e) { return; }
+    if (text) termWrite(text);
+  }
+  function startShellDrain() {
+    if (shellDrainTimer) return;
+    shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
+  }
+
+  window.etcsTermWrite = function (t) {
+    if (t == null) return;
+    termWrite(String(t));
+  };
+
+  function pushLine(line) {
+    const mod = window.Module;
+    if (!mod) { log('[etcs] line dropped, runtime not up: ' + line + '\n', 'err'); return; }
+    try {
+      // ccall only. The raw export is reached through several names depending on
+      // how the build exported it, and trying them in turn is what the shell
+      // page used to do -- but ccall does not need the raw symbol at all, so
+      // gating on finding one was the bug, not the fallback.
+      mod.ccall('etcs_web_shell_push_line', null, ['string'], [line]);
+    } catch (e) {
+      log('[etcs] push_line failed: ' + e + '\n', 'err');
+    }
+  }
+
+  window.addEventListener('message', function (ev) {
+    if (ev.origin !== ORIGIN) return;
+    if (ev.source !== shellFrame.contentWindow) return;
+    const m = ev.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.etcs === 'view-ready') {
+      shellReady = true;
+      // Replay what the runtime said while the view was still loading, so a
+      // session started before the iframe settled is not missing its head.
+      for (const t of pending) toShell({ etcs: 'out', text: t });
+      pending.length = 0;
+      toShell({ etcs: 'enable', enabled: !!(window.Module && window.Module.calledRun) });
+      return;
+    }
+    if (m.etcs === 'line') { pushLine(String(m.line == null ? '' : m.line)); return; }
+  });
+
+  // ── the include list ───────────────────────────────────────────────────
+  //
+  // modules.json is the source of truth and the only thing fetched blind: what
+  // providers load, which .etcs files to stage, and which one is argv[1].
+  function normalizeWasmList(raw) {
+    let arr = [];
+    if (Array.isArray(raw)) arr = raw;
+    else if (raw && Array.isArray(raw.modules)) arr = raw.modules;
+    else if (raw && Array.isArray(raw.wasm)) arr = raw.wasm;
+    return arr.map(function (x) {
+      x = String(x).trim();
+      if (!x) return null;
+      if (!/\.wasm$/i.test(x)) x += '.wasm';
+      x = x.replace(/^\.\//, '');
+      // etcs.wasm is the MAIN module -- the glue loads it, staging it as a side
+      // module would load the runtime twice.
+      if (/^etcs(\.wasm)?$/i.test(x) || /worker/i.test(x)) return null;
+      return x;
+    }).filter(Boolean);
+  }
+
+  async function fetchManifest() {
+    const r = await fetch('modules.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('modules.json HTTP ' + r.status + ' -- required (no fallback list)');
+    const j = await r.json();
+    const wasm = normalizeWasmList(j);
+    if (!wasm.length) throw new Error('modules.json names no modules');
+    const scripts = (j && Array.isArray(j.scripts) ? j.scripts : [])
+      .map(function (s) { return String(s).trim().replace(/^\.\//, ''); })
+      .filter(Boolean);
+    const boot = (j && j.boot) ? String(j.boot).trim().replace(/^\.\//, '') : '';
+    const glue = (j && j.glue) ? String(j.glue).trim().replace(/^\.\//, '') : '';
+    // Optional. Naming it skips the candidate walk in resolveWasmBase, for a
+    // deployment that knows where its artifacts are and would rather not have
+    // the page guess -- a CDN, or a second origin.
+    const base = (j && j.base) ? String(j.base).trim() : '';
+    log('[etcs] modules.json -> ' + wasm.join(', ') + '\n');
+    if (scripts.length) log('[etcs] scripts -> ' + scripts.join(', ') + '\n');
+    return { wasm: wasm, scripts: scripts, boot: boot, glue: glue, base: base };
+  }
+
+  /*
+   * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES. The runtime
+   * binaries are shared and move in epochs, so they live in one place --
+   * bin/wasm/, mounted at /wasm/ by the serve scripts (Makefile, WASM_DIR, for
+   * the argument) -- and every page fetches them from there. The base affects
+   * only the FETCH; what is written into MEMFS stays the bare name, because
+   * preload_web_modules dlopens by name. Scripts are not in here: they are
+   * mounted beside the page at the paths the OS side reads them from.
+   *
+   * Resolved by trying: same-origin /wasm/ first, because a local server must
+   * not need a setting; then beside the page, which is what a deployment made
+   * before the shared directory looks like; then the known-good remote.
+   * modules.json may name a "base" to skip the walk. The first candidate whose
+   * bytes carry the WebAssembly magic wins -- a 200 is not evidence, and every
+   * wrong answer a web server gives is markup. Identical across every page in
+   * this tree on purpose: one shared artifact directory is the point, and two
+   * pages disagreeing about where it is would undo it.
+   *
+   * The probe's bytes are kept: the first module has to be fetched anyway.
+   */
+  const WASM_BASE_CANDIDATES = ['/wasm/', './', 'https://anticurrententropy.com/wasm/'];
+  let wasm_base = null;
+  let wasm_probe = null;   // {name, buf} -- the module the probe already pulled
+  const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
+
+  function joinBase(base, name) {
+    return (base === './') ? name : base.replace(/\/*$/, '/') + name;
+  }
+
+  async function resolveWasmBase(declared, firstModule) {
+    const candidates = declared ? [declared] : WASM_BASE_CANDIDATES;
+    const tried = [];
+    for (const base of candidates) {
+      const url = joinBase(base, firstModule);
+      try {
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) { tried.push(base + ' HTTP ' + r.status); continue; }
+        const buf = new Uint8Array(await r.arrayBuffer());
+        // A 200 IS NOT EVIDENCE. Every wrong answer a web server gives is
+        // markup, and a module must open with the WebAssembly magic -- so the
+        // magic is what decides a candidate, not the status code.
+        const ok = buf.byteLength >= 4 && WASM_MAGIC.every(function (b, i) { return buf[i] === b; });
+        if (!ok) { tried.push(base + ' answered 200 with something that is not a module'); continue; }
+        wasm_base  = base;
+        wasm_probe = { name: firstModule, buf: buf };
+        log('[etcs] wasm base -> ' + base + '\n', 'ok');
+        return base;
+      } catch (e) {
+        tried.push(base + ' ' + (e && e.message ? e.message : e));
+      }
+    }
+    throw new Error('no wasm base serves ' + firstModule + ' -- tried '
+      + tried.join('; ') + '. `ace wasm make loader etcs` writes bin/wasm/, and a '
+      + 'serve script mounts it at /wasm/ (see serve_web.etcs).');
+  }
+
+  // base null means "beside the page" -- what scripts always want.
+  async function fetchAll(names, kind, base) {
+    const out = {};
+    for (const name of names) {
+      if (wasm_probe && wasm_probe.name === name) {
+        out[name] = wasm_probe.buf;
+        log('[etcs] staged ' + name + ' (' + wasm_probe.buf.byteLength
+            + ' bytes, from the base probe)\n', 'ok');
+        continue;
+      }
+      setStatus('fetch ' + name);
+      const url = base ? joinBase(base, name) : name;
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('fetch ' + url + ' failed HTTP ' + r.status);
+      const buf = new Uint8Array(await r.arrayBuffer());
+      if (!buf.byteLength) throw new Error(url + ' is empty');
+      out[name] = buf;
+      log('[etcs] staged ' + name + ' (' + buf.byteLength + ' bytes)\n', 'ok');
+    }
+    void kind;
+    return out;
+  }
+
+  function loadGlue(src) {
+    return new Promise(function (resolve, reject) {
+      const s = document.createElement('script');
+      s.src = src; s.async = true;
+      s.onload = resolve; s.onerror = reject;
+      document.body.appendChild(s);
+    });
+  }
+
+  async function boot() {
+    setStatus('fetching…');
+    const man = await fetchManifest();
+    // Base first: it is decided by fetching man.wasm[0], and fetchAll below
+    // reuses those bytes rather than asking for them again.
+    setStatus('locating runtime…');
+    await resolveWasmBase(man.base, man.wasm[0]);
+    const blobs = Object.assign({}, await fetchAll(man.wasm, 'module', wasm_base),
+                                    await fetchAll(man.scripts, 'script', null));
+
+    if (man.boot && !blobs[man.boot])
+      throw new Error('modules.json boot="' + man.boot + '" is not in its scripts list');
+
+    var Module = {
+      canvas: canvas,
+      /*
+       * ARGV, AND THIS IS THE WHOLE OF "THE PUMP ALREADY EXISTS ON LOAD".
+       *
+       * argv[1] is the boot script, so main() takes the script path, runs it,
+       * and then falls through to the navigator -- script mode and REPL mode are
+       * not alternatives in this binary (drive_main_loop_then_exit, after the
+       * run_script call in loaders/etcs.cc). So the window and its input pump
+       * are up before the first prompt is drawn, with no new C++ entry point and
+       * no page-driven menu typing.
+       */
+      arguments: man.boot ? [man.boot] : [],
+      print: function (t) {
+        window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n'));
+      },
+      printErr: function (t) {
+        // log() writes to the terminal itself now, so this is ONE write, not
+        // two -- it also lifts the first line into the status.
+        log(t + (String(t).endsWith('\n') ? '' : '\n'), 'err');
+      },
+      dynamicLibraries: [],
+      /*
+       * THE MAIN MODULE IS FETCHED BY THE GLUE, NOT BY THIS PAGE, so it is the
+       * one artifact the base reaches through emscripten rather than through
+       * fetchAll -- etcs.wasm never appears in the include list, because staging
+       * the main module as a side module loads the runtime twice.
+       *
+       * Left as `return path` this resolved against the PAGE, which was fine only
+       * while the artifacts sat beside it. With them at /wasm/ that asks for the
+       * page's own directory and gets a 404, from inside the glue, where nothing
+       * points back here.
+       */
+      locateFile: function (path) { return joinBase(wasm_base, path); },
+      preRun: [function () {
+        // Into MEMFS before main(): preload_web_modules dlopens the .wasm files
+        // by name and run_script opens the boot script by name, so both have to
+        // be on the filesystem the runtime sees, not just in a JS variable.
+        try {
+          for (const name of Object.keys(blobs)) {
+            // A NAME MAY BE A PATH, and the directories have to exist first.
+            // The point of allowing one is that a script can then be staged at
+            // the SAME relative path the OS side reads it from, so a `detach`
+            // line does not have to be spelled differently for the browser.
+            const slash = name.lastIndexOf('/');
+            if (slash > 0) { try { FS.mkdirTree(name.slice(0, slash)); } catch (e) {} }
+            try { FS.writeFile(name, blobs[name]); }
+            catch (e) {
+              FS.createDataFile('/', name.replace(/^\.\//, ''), blobs[name], true, true, true);
+            }
+          }
+          log('[etcs] MEMFS preload complete (' + Object.keys(blobs).length + ' files)\n');
+        } catch (e) {
+          // NOT swallowed per-file: if FS itself is unavailable every later name
+          // is missing too, and reporting the first one is what tells you which.
+          log('[etcs] preRun FS error: ' + e + '\n', 'err');
+        }
+      }],
+      onRuntimeInitialized: function () {
+        setStatus('runtime ready', 'ok');
+        startShellDrain();
+        log('[etcs] runtime initialized; boot script: '
+            + (man.boot || '(none)') + '\n', 'ok');
+        if (shellReady) toShell({ etcs: 'enable', enabled: true });
+      },
+      onAbort: function (r) {
+        setStatus('aborted', 'err');
+        log('[abort] ' + r + '\n', 'err');
+        if (shellReady) toShell({ etcs: 'enable', enabled: false });
+      }
+    };
+    window.Module = Module;
+
+    /*
+     * THE GLUE IS NAMED, NOT PROBED.
+     *
+     * Trying 'etcs.js' and falling back to 'etcs' meant every load logged a
+     * failed script fetch in the console -- a real error for an expected
+     * condition, which is the kind that trains you to ignore the console. The
+     * manifest already says what to load; this is one more thing it says.
+     *
+     * The probe stays as the no-manifest-entry path so an older deployment that
+     * has not added "glue" keeps working, with the reason logged rather than the
+     * browser's bare failure.
+     */
+    if (man.glue) {
+      setStatus('loading ' + man.glue + '…');
+      await loadGlue(joinBase(wasm_base, man.glue));
+    } else {
+      setStatus('loading glue…');
+      log('[etcs] modules.json names no "glue" -- probing etcs.js then etcs\n');
+      try { await loadGlue(joinBase(wasm_base, 'etcs.js')); }
+      catch (_) { await loadGlue(joinBase(wasm_base, 'etcs')); }
+    }
+  }
+
+  boot().catch(function (e) {
+    setStatus('boot failed', 'err');
+    log('[etcs] boot: ' + e + '\n', 'err');
+  });
+})();
+  </script>
+</body>
+</html>

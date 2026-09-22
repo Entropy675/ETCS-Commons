@@ -1,0 +1,107 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# HOW FAR THE PROJECTION REACHES.
+#
+#     etcs paint_pan_smoke.etcs
+#
+# There is no empty sheet. What lies outside the drawing is the surface's own
+# layer -- the window is a layer too -- so panning off the edge of the page is
+# not panning into nothing, and the pivot target is always present.
+#
+# What that buys, and what this file asserts, is a BOUND: the projection extends
+# past the page by the page's own extent in every direction, so
+#
+#   - an edge or a corner of the page can be put in the middle of the view and
+#     pivoted about, which a tighter bound would forbid;
+#   - the page cannot be pushed out of reach, which no bound at all allows.
+#
+# The clamp keeps the VIEW inside that region rather than keeping the page
+# inside the view. Those are different rules and only the first lets an edge sit
+# in the middle of the screen, so the assertions below are about where the pan
+# STOPS, not about whether the page is visible.
+#
+# A 200x150 document in a 400x300 view, at zoom 1:
+#   page in view pixels      200 x 150
+#   pan_x max                +200          (page pushed one page right)
+#   pan_x min   400 - 2*200 = 0            (page pushed one page left)
+#   pan_y max                +150
+#   pan_y min   300 - 2*150 = 0
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn RenderProvider::ImageSurface view
+view.Create(400, 300)
+
+spawn PaintProvider::PaintDocument doc
+doc.Create(200, 150, pan)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(200, 150)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(0)
+
+doc.SetActiveLayer(@ink)
+
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@view)
+canvas.AttachDocument(@doc)
+
+canvas.ZoomPercent()
+
+# ── inside the region: taken exactly ─────────────────────────────────────
+#
+# (100, 75) is well within the bounds, so the clamp must not touch it. A clamp
+# that narrowed the region would show up here first.
+
+canvas.SetPan(100, 75)
+canvas.ZoomPercent()
+
+# ── the far edges: reachable, and no further ─────────────────────────────
+#
+# Asking for ten pages away must land exactly on the bound, not somewhere near
+# it and not wherever it was asked for.
+
+canvas.SetPan(2000, 1500)
+canvas.ZoomPercent()
+
+canvas.SetPan(-2000, -1500)
+canvas.ZoomPercent()
+
+# ── a corner in the middle of the view ───────────────────────────────────
+#
+# The whole point of extending by a page rather than clamping to the page: the
+# top-left corner of the document sits at the centre of a 400x300 view when the
+# pan is (200, 150), which is inside the region and must be taken exactly.
+
+canvas.SetPan(200, 150)
+canvas.ZoomPercent()
+
+# ── the region moves with the zoom ───────────────────────────────────────
+#
+# It is measured in view pixels, so at 400% the page is 800x600 and the bounds
+# become max +800 / min 400-1600 = -1200. A pan that was at the old maximum is
+# now well inside, and the new maximum is four times further out.
+
+canvas.SetZoom(4.0)
+canvas.ZoomPercent()
+
+canvas.SetPan(5000, 5000)
+canvas.ZoomPercent()
+
+canvas.SetPan(-5000, -5000)
+canvas.ZoomPercent()
+
+# ── and back in, where the page is smaller than the view ─────────────────
+#
+# At 50% the page is 100x75 in a 400x300 view, so min > max on both axes: every
+# position is inside the region and the clamp has nothing to say. It must leave
+# the pan alone rather than invent an answer by applying the bounds backwards.
+
+canvas.SetZoom(0.5)
+canvas.SetPan(1234, 987)
+canvas.ZoomPercent()
+
+exit

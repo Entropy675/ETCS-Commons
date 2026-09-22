@@ -1,0 +1,166 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# EVERY TOOL KIND, DRIVEN THROUGH THE POINTER, without a window.
+#
+#     etcs paint_tools_smoke.etcs
+#
+# One document, one layer, one tool, and the kind changed between gestures --
+# which is the claim being tested. Radius and colour are set once and never
+# touched again, so if selecting a tool disturbed either of them the counts
+# below would move.
+#
+# EVERY ASSERTION IS A PIXEL COUNT, because that is the only thing that
+# distinguishes "the tool ran" from "the tool ran and drew nothing". A report
+# that merely said which kind was selected would pass with every commit path
+# removed.
+#
+# Counts are cumulative: the layer is not cleared between gestures, so each
+# report should be strictly larger than the one before it except where the tool
+# commits nothing (ruler) or covers ground it already covered.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn RenderProvider::ImageSurface view
+view.Create(400, 300)
+
+spawn RenderProvider::CompositeDrawable2D sheet
+sheet.Create(400, 300)
+sheet.SetPosition(0, 0)
+sheet.SetOrder(0)
+
+# A glyph provider. TextLabel is RenderProvider's Glyphs leaf -- the tool needs
+# somebody who can measure and rasterise, and does not care who.
+spawn RenderProvider::TextLabel typesetter
+typesetter.Create()
+
+spawn PaintProvider::PaintDocument doc
+doc.Create(400, 300, tools)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(400, 300)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(0)
+
+doc.SetActiveLayer(@ink)
+
+spawn PaintProvider::PaintTool tool
+tool.SetRadius(3.0)
+tool.SetColor(0.9, 0.2, 0.2, 1.0)
+
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@view)
+canvas.AttachDocument(@doc)
+
+spawn PaintProvider::PaintInput input
+input.Create(@doc, @tool, @canvas)
+input.BindRoot(@sheet)
+input.BindGlyphs(@typesetter)
+
+spawn PaintProvider::PaintRouter router
+router.Create(1)
+router.AddPane(@sheet, @input)
+
+ink.Report()
+
+# ── brush: continuous, marks on every sample ─────────────────────────────
+
+tool.SetKind(brush)
+router.Pointer(20, 20)
+router.Press()
+router.Pointer(60, 20)
+router.Pointer(100, 20)
+router.Release()
+ink.Report()
+
+# ── line: anchored, ONE commit on release ────────────────────────────────
+#
+# The drag passes through (100,120) but the committed line must run straight
+# from the anchor to the release point -- an anchored tool that marked while
+# dragging would leave the dog-leg the pointer actually took.
+
+tool.SetKind(line)
+router.Pointer(20, 60)
+router.Press()
+router.Pointer(100, 120)
+router.Pointer(180, 60)
+router.Release()
+ink.Report()
+
+# ── rect: the two points are opposite corners ────────────────────────────
+
+tool.SetKind(rect)
+router.Pointer(220, 20)
+router.Press()
+router.Pointer(300, 80)
+router.Release()
+ink.Report()
+
+# ── ellipse: inscribed in the same drag a rect would use ─────────────────
+
+tool.SetKind(ellipse)
+router.Pointer(220, 100)
+router.Press()
+router.Pointer(320, 170)
+router.Release()
+router.Pointer(0, 0)
+ink.Report()
+
+# ── ruler: commits NOTHING ───────────────────────────────────────────────
+#
+# The count either side of this gesture must be identical. That is the whole
+# assertion -- a ruler that drew would be a line tool with tick marks.
+
+tool.SetKind(ruler)
+router.Pointer(20, 200)
+router.Press()
+router.Pointer(320, 260)
+router.Release()
+ink.Report()
+
+# ── glyph: text INTO the layer's pixels ──────────────────────────────────
+#
+# Placed centred on the click (see PaintInput::place_glyphs), and counted like
+# everything else -- text that landed beside the picture rather than in it
+# would leave this number unchanged.
+
+tool.SetKind(glyph)
+tool.SetText(ETCS)
+tool.SetTextSize(24)
+router.Pointer(120, 250)
+router.Press()
+router.Release()
+ink.Report()
+
+# ── fill: one click, bounded by colour ───────────────────────────────────
+#
+# Seeded in a corner that nothing has drawn on, so it floods the transparent
+# background and stops at the marks above. The jump here should be large --
+# most of a 400x300 layer -- which is what distinguishes a flood from a dab.
+
+tool.SetKind(fill)
+tool.SetColor(0.15, 0.35, 0.75, 1.0)
+tool.SetTolerance(16)
+router.Pointer(390, 290)
+router.Press()
+router.Release()
+ink.Report()
+
+# ── smudge: carries pixels, adds few ─────────────────────────────────────
+#
+# After the fill almost everything is opaque, so smudging moves colour around
+# rather than adding coverage. The count barely moves; what matters is that it
+# does not fault and does not clear.
+
+tool.SetKind(smudge)
+tool.SetRadius(8.0)
+router.Pointer(60, 20)
+router.Press()
+router.Pointer(90, 40)
+router.Pointer(120, 60)
+router.Release()
+ink.Report()
+
+exit

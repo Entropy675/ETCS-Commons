@@ -280,9 +280,7 @@ public:
     void DrawRectConcrete(int32_t x, int32_t y, uint32_t w, uint32_t h,
                           float r, float g, float b, float a) override
     {
-        int32_t cx, cy; uint32_t cw, ch;
-        CurrentClip(cx, cy, cw, ch);
-        clipToRegion(x, y, w, h, cx, cy, cw, ch);
+        clipToCurrent(x, y, w, h);
         if (w == 0 || h == 0) return;
 
         if (this->DeviceProjection())
@@ -315,8 +313,9 @@ public:
     }
 
     // ── Clippable_ ───────────────────────────────────────────────────────
-    // Nothing device-side to set; this rasteriser reads CurrentClip at draw
-    // time. Same as CompositeDrawable2D, and for the same reason.
+    // Nothing device-side to set; this rasteriser narrows each rectangle
+    // against the region at draw time (clipToCurrent, in DrawRect). Same as
+    // CompositeDrawable2D, and for the same reason.
     void SetScissorConcrete(int32_t, int32_t, uint32_t, uint32_t) override {}
 
     /*
@@ -352,7 +351,7 @@ public:
         // walk that draws it, so the mark it leaves is consumed by this
         // frame's own upload and there is nothing left to schedule the next
         // frame with. Asking is what closes that loop, and it costs a load.
-        if (TakeObserved(getRID()) || sceneInMotion() || anyChildAnimating())
+        if (TakeObserved(getRID()) || sceneInMotion() || anyChildNeedsFrame())
         {
             // No self-clear: Render's writes mark with origin=this, so my own
             // edge is skipped at the source rather than cleared afterwards.
@@ -401,15 +400,16 @@ public:
  *
  * The dirty bit already covers a child changing DISCRETELY: TextLabel::SetText
  * marks its own path and that bubbles onto this camera's Observable, so
- * TakeObserved above fires. Animating is for the other kind of child, the one
+ * TakeObserved above fires. NeedsFrame is for the other kind of child, the one
  * with no discrete change to mark because what it displays changes on its own.
- * TextLabel::BindFps makes exactly that: Animating() true forever, because a
- * live readout is never "already up to date".
+ * TextLabel::BindFps makes exactly that: a live readout is never "already up to
+ * date", so the label claims Animated and NeedsFrame answers yes off that claim
+ * for as long as the counter is bound (ontology/Drawable.h).
  *
  * Nothing asked. CompositeDrawable2D asks its children, so a label under a
  * compositor works; a label under a CAMERA answered a question no one put to
  * it, and the hud in scene3d.etcs sat frozen with the pipeline settled around
- * it. The walk itself is Drawable_::anyChildAnimating now, beside the child
+ * it. The walk itself is Drawable_::anyChildNeedsFrame now, beside the child
  * list it reads -- one copy for every node that composites.
  *
  * THE COST IS REAL AND IT IS THE POINT. An animating overlay child now keeps
@@ -419,7 +419,7 @@ public:
  * live per-frame readout over a 3D view costs. A scene with no animating child
  * still settles exactly as before.
  */
-    bool Animating() override { return sceneInMotion() || anyChildAnimating(); }
+    bool NeedsFrame() override { return sceneInMotion() || anyChildNeedsFrame(); }
 
     // ── Resizable_ / Deletable_ ──────────────────────────────────────────
 
@@ -516,42 +516,6 @@ private:
             child->DrawInto(this);
         }
         PopClip();
-    }
-
-    // Where this node's PARENT sits, stopping at the first ancestor that is a
-    // raster, because such an ancestor is a coordinate origin. Identical to
-    // CompositeDrawable2D's and PolygonDrawable2D's -- the three are
-    // interchangeable as children, so they must agree on what a position
-    // means.
-    Point2D parentAbsoluteOrigin()
-    {
-        Point2D acc{0, 0};
-        for (ETCS::Entity* node = getParent(); node; node = node->getParent())
-        {
-            void* d2 = node->getInterfacePointer(ETCS::Buffer("Drawable2D"));
-            if (!d2) break;
-            if (node->getInterfacePointer(ETCS::Buffer("Raster"))) break;  // origin
-            const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
-            acc.x += pb.x;
-            acc.y += pb.y;
-        }
-        return acc;
-    }
-
-    static void clipToRegion(int32_t& x, int32_t& y, uint32_t& w, uint32_t& h,
-                             int32_t cx, int32_t cy, uint32_t cw, uint32_t ch)
-    {
-        const int64_t x0 = std::max<int64_t>(x, cx);
-        const int64_t y0 = std::max<int64_t>(y, cy);
-        const int64_t x1 = std::min<int64_t>(static_cast<int64_t>(x) + w,
-                                             static_cast<int64_t>(cx) + cw);
-        const int64_t y1 = std::min<int64_t>(static_cast<int64_t>(y) + h,
-                                             static_cast<int64_t>(cy) + ch);
-        if (x1 <= x0 || y1 <= y0) { w = 0; h = 0; return; }
-        x = static_cast<int32_t>(x0);
-        y = static_cast<int32_t>(y0);
-        w = static_cast<uint32_t>(x1 - x0);
-        h = static_cast<uint32_t>(y1 - y0);
     }
 
     int32_t  m_x = 0;

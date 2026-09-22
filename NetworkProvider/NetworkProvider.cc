@@ -6,7 +6,7 @@ ETCS_MODULE_EXPORT_MAIN(NetworkProvider,
 // its pages as typed children.
 ETCS_TAG_BLOCK_BASIC(HttpServer,
     SetPort, AddHandler, ClearHandlers, AddRoute, ClearRoutes,
-    EnableTLS, ReloadCerts,
+    EnableTLS, ReloadCerts, AddHeader,
     Start, Stop, IsStarted,
     Serve, ListPaths, Delete
 )
@@ -45,7 +45,8 @@ ETCS_TAG_BLOCK_BASIC(StaticHtmlPage,
 )
 
 ETCS_TAG_BLOCK_BASIC(FileHtmlPage,
-    LoadFromDisk, SetDefaultExtension, MountExternal, EnsureFallback, Resolve, ListPaths, Delete
+    LoadFromDisk, MountFile, MountTree, SetDefaultExtension, MountExternal,
+    EnsureFallback, Resolve, ListPaths, Delete
 )
 
 // TarpitNode — a self-registering Filter_ + gate-level consumer. See

@@ -1,0 +1,7 @@
+# Build output. The page fetches its modules and glue from bin/wasm/ (mounted
+# at /wasm/ by the serve scripts -- Makefile, WASM_DIR), never from here. Kept
+# ignored so a stale copy left in this directory can neither reach a commit nor
+# be mistaken for the current artifact; safe to delete.
+etcs.js
+etcs.wasm
+*.wasm

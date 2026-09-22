@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ETCS Web Shell</title>
+  <style>
+    :root {
+      /* Palette from chess.html (ACE Chess) so shell / window share the same surface. */
+      --light: #e8e2d5; --dark: #7a8a6f; --sel: #c9b458; --ink: #1c1c1a;
+      --bg: #14150f; --panel: #1b1c14; --line: #3b3d31; --dim: #8d907c;
+      /* Aliases used by the existing rules */
+      --border: var(--line);
+      --fg: var(--light);
+      --muted: var(--dim);
+      --accent: var(--sel);
+      --ok: #7a9a5a;
+      /*
+       * THE ANSI VOCABULARY, IN THIS PAGE'S PALETTE.
+       *
+       * The runtime emits the same SGR escapes a terminal gets
+       * (ETCS::color_enabled, core/CommandExecutor.h), so the MEANINGS here are
+       * the standard eight -- 1 red, 2 green, 3 yellow, 4 blue, 5 magenta,
+       * 6 cyan -- and only the shades are this page's. An xterm's own values
+       * (#0dbc79, #cd3131) are tuned for a black terminal and fight this
+       * background; the mapping is what has to match, not the hex.
+       *
+       * 8-15 are the bold forms, because that is what a terminal shows for
+       * `1;3Xm` -- and every colour the shell emits is a bold one
+       * (COLOR_DIR is 1;36, COLOR_LIB 1;32, COLOR_WARN 1;33, COLOR_RID 1;35,
+       * COLOR_ACT 1;34), so these are the ones actually seen.
+       */
+      --ansi0:  #3b3d31; --ansi1:  #c45c4a; --ansi2:  #7a9a5a; --ansi3:  #c9b458;
+      --ansi4:  #6f8aa8; --ansi5:  #a97bb5; --ansi6:  #6fa8a0; --ansi7:  #e8e2d5;
+      --ansi8:  #5c5f4d; --ansi9:  #e07a63; --ansi10: #9dc47a; --ansi11: #e5cf7a;
+      --ansi12: #8fb0d4; --ansi13: #cf9ada; --ansi14: #8fd0c6; --ansi15: #f5f1e6;
+      --err: #c45c4a;
+      --prompt: var(--sel);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: var(--bg); color: var(--fg);
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 70%;
+    }
+    #layout {
+      display: flex; flex-direction: column;
+      height: 100%; max-width: 960px; margin: 0 auto;
+      padding: 0.75rem; gap: 0.75rem;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      color: var(--muted); font-size: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+      margin: -0.75rem -0.75rem 0; /* bleed to edges of #layout padding */
+    }
+    header .brand {
+      color: var(--accent); font-size: 14px; font-weight: bold;
+      letter-spacing: .12em; text-decoration: none;
+    }
+    header .brand:hover { text-decoration: underline; }
+    #term {
+      flex: 1; min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.45;
+    }
+    #term .err { color: var(--err); }
+    #term .sys { color: var(--muted); }
+    #term .ok { color: var(--ok); }
+    #input-row {
+      display: flex; gap: 0.5rem; align-items: center;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+    }
+    #input-row .ps1 { color: var(--prompt); user-select: none; }
+    #cmdline {
+      flex: 1; border: 0; outline: none;
+      background: transparent; color: var(--fg);
+      font: inherit;
+    }
+    #cmdline:disabled { opacity: 0.5; }
+    canvas#canvas {
+      display: none; width: 100%; max-height: 40vh;
+      background: #0a0b08; border: 1px solid var(--border); border-radius: 6px;
+    }
+    canvas#canvas.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div id="layout">
+    <header>
+      <a class="brand" href="/" target="_top">ETCS Shell</a>
+      <span id="status">loading…</span>
+    </header>
+    <canvas id="canvas" width="600" height="400"></canvas>
+    <div id="term" aria-live="polite"></div>
+    <div id="input-row">
+      <span class="ps1">›</span>
+      <input id="cmdline" type="text" autocomplete="off" spellcheck="false"
+             placeholder="waiting for runtime…" disabled/>
+    </div>
+  </div>
+  <script>
+(function () {
+  const term = document.getElementById('term');
+  const cmdline = document.getElementById('cmdline');
+  const status = document.getElementById('status');
+  const canvas = document.getElementById('canvas');
+
+  /*
+   * ANSI SGR -> spans.
+   *
+   * WHY THE PAGE PARSES ESCAPES AT ALL. The alternative is a second colouring
+   * channel for the web -- some side band saying "this run of text is a RID" --
+   * and then two tables that have to keep agreeing about what COLOR_LIB means.
+   * The runtime already has a vocabulary for that and every other consumer
+   * reads it, so this is one more reader rather than a second scheme.
+   *
+   * STATE CARRIES ACROSS CALLS, because a write boundary is not a colour
+   * boundary: output reaches here one etcs_web_shell_write at a time, and
+   * nothing guarantees a `\033[0m` lands in the same call as the escape it
+   * closes.
+   *
+   * Everything that is not an SGR is DROPPED rather than shown. A cursor move
+   * or an erase-line has no meaning in a scrolling transcript, and printing the
+   * bytes is strictly worse than ignoring them.
+   */
+  const ANSI_RE = /\x1b\[([0-9;?]*)([A-Za-z])/g;
+  let sgr = { fg: null, bold: false, faint: false, underline: false };
+
+  function sgrApply(params) {
+    // An empty parameter list means 0 -- `\033[m` is a reset.
+    const codes = (params === '' ? '0' : params).split(';');
+    for (const raw of codes) {
+      const n = parseInt(raw, 10);
+      if (isNaN(n) || n === 0) { sgr = { fg: null, bold: false, faint: false, underline: false }; continue; }
+      if (n === 1) { sgr.bold = true; continue; }
+      if (n === 2) { sgr.faint = true; continue; }
+      if (n === 4) { sgr.underline = true; continue; }
+      if (n === 22) { sgr.bold = false; sgr.faint = false; continue; }
+      if (n === 24) { sgr.underline = false; continue; }
+      if (n === 39) { sgr.fg = null; continue; }
+      if (n >= 30 && n <= 37) { sgr.fg = n - 30; continue; }
+      if (n >= 90 && n <= 97) { sgr.fg = n - 90 + 8; continue; }
+      // Backgrounds and 256/truecolour are deliberately not handled: nothing in
+      // this runtime emits them, and a transcript with painted backgrounds is
+      // harder to read rather than richer.
+    }
+  }
+
+  function sgrSpan(text) {
+    const span = document.createElement('span');
+    span.textContent = text;
+    if (sgr.fg != null) {
+      // Bold selects the bright half, which is what a terminal shows for 1;3Xm
+      // and therefore what every COLOR_* macro in the runtime is asking for.
+      const idx = (sgr.bold && sgr.fg < 8) ? sgr.fg + 8 : sgr.fg;
+      span.style.color = 'var(--ansi' + idx + ')';
+    }
+    if (sgr.bold) span.style.fontWeight = '600';
+    if (sgr.faint) span.style.opacity = '0.7';
+    if (sgr.underline) span.style.textDecoration = 'underline';
+    return span;
+  }
+
+  /*
+   * ONE FRAGMENT AND ONE SCROLL PER CALL, however much text the call carries.
+   *
+   * The runtime now hands over everything it has written since the last drain
+   * rather than one line at a time (etcs_web_shell_drain), so a call is a
+   * hundred lines as often as it is one. Appending each span to the LIVE
+   * document and then reading scrollHeight is a forced synchronous layout, and
+   * doing that per span is what made a busy boot crawl. The spans go into a
+   * fragment first, the document is touched once, and the tail is followed
+   * once.
+   */
+  const SCROLLBACK_MAX  = 12000;   // spans kept before the oldest are dropped
+  const SCROLLBACK_KEEP = 8000;    // how many survive a trim
+
+  function trimScrollback() {
+    // A transcript nobody will scroll back to is still laid out on every
+    // reflow. Trimming in one batch rather than one node per append keeps the
+    // cost off the hot path.
+    let extra = term.childNodes.length - SCROLLBACK_MAX;
+    if (extra <= 0) return;
+    extra = term.childNodes.length - SCROLLBACK_KEEP;
+    const range = document.createRange();
+    range.setStart(term, 0);
+    range.setEnd(term, extra);
+    range.deleteContents();
+  }
+
+  function append(text, cls) {
+    // The page's own lines (sys/err/ok) keep their class and are never scanned:
+    // they are written here, contain no escapes, and a class is a stronger
+    // statement about them than any colour the runtime could ask for.
+    if (cls) {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = text;
+      term.appendChild(span);
+      trimScrollback();
+      term.scrollTop = term.scrollHeight;
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    ANSI_RE.lastIndex = 0;
+    let last = 0, m;
+    while ((m = ANSI_RE.exec(text)) !== null) {
+      if (m.index > last) frag.appendChild(sgrSpan(text.slice(last, m.index)));
+      if (m[2] === 'm') sgrApply(m[1]);
+      last = ANSI_RE.lastIndex;
+    }
+    if (last < text.length) frag.appendChild(sgrSpan(text.slice(last)));
+    term.appendChild(frag);
+    trimScrollback();
+    term.scrollTop = term.scrollHeight;
+  }
+
+  /*
+   * PULLING THE TERMINAL'S OUTPUT, on this page's clock rather than the
+   * runtime's. The C++ side accumulates what it writes and hands over the lot
+   * when asked (etcs_web_shell_drain, loaders/etcs.cc): one call, one append
+   * and one reflow per tick instead of one of each per line. setInterval and
+   * not requestAnimationFrame, because a hidden tab stops painting but does not
+   * stop logging -- throttled is right, stopped is not.
+   *
+   * A quarter second rather than a frame: the tick costs the same whether it
+   * carries one line or three hundred, so a longer window is less work for the
+   * same text. The runtime pushes on its own if nothing drains for 750ms.
+   */
+  const SHELL_DRAIN_MS = 250;
+  let shellDrainTimer = 0;
+  function drainShellOutput() {
+    const mod = window.Module;
+    if (!mod || !mod.ccall) return;
+    let text = '';
+    try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
+    catch (e) { return; }
+    if (text) window.etcsTermWrite(text);
+  }
+  function startShellDrain() {
+    if (shellDrainTimer) return;
+    shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
+  }
+
+  window.etcsTermWrite = function (t) {
+    if (t == null) return;
+    append(String(t), null);
+  };
+  function setStatus(s) { status.textContent = s; }
+
+  /*
+   * EMBEDDED MODE -- this same page, as somebody else's terminal.
+   *
+   * WindowProvider's page needs the canvas and the runtime in ONE document,
+   * because GLFWWindow resizes the canvas by the selector "#canvas" and that
+   * resolves in the runtime's own document. The terminal has no such tie: it is
+   * text out, lines in. So when this page is framed it boots no runtime at all
+   * and becomes the view -- the parent owns ETCS, this owns the scrollback and
+   * the input line.
+   *
+   * ONE FILE, TWO ROLES, and no second copy of the terminal to keep in step.
+   * Served on its own, nothing below changes: EMBEDDED is false, boot() runs, and
+   * this is the standalone shell it always was.
+   */
+  const EMBEDDED = (function () {
+    try { return window.parent && window.parent !== window; }
+    catch (_) { return true; }   // cross-origin parent: framed, and we cannot talk to it
+  })();
+
+  function parentPost(msg) {
+    try { window.parent.postMessage(msg, window.location.origin); } catch (_) {}
+  }
+
+  if (EMBEDDED) {
+    // The canvas belongs to the host page in this role. Leaving a second one
+    // here would give "#canvas" two answers in two documents.
+    if (canvas) canvas.remove();
+    setStatus('embedded');
+    window.addEventListener('message', function (ev) {
+      if (ev.origin !== window.location.origin) return;
+      const m = ev.data;
+      if (!m || typeof m !== 'object') return;
+      if (m.etcs === 'out') { append(String(m.text == null ? '' : m.text), null); return; }
+      if (m.etcs === 'enable') {
+        cmdline.disabled = !m.enabled;
+        cmdline.placeholder = m.enabled ? 'type an ETCS line, Enter to send'
+                                        : 'waiting for runtime…';
+        setStatus(m.enabled ? 'runtime ready' : 'embedded');
+        if (m.enabled) cmdline.focus();
+        return;
+      }
+    });
+  }
+
+  function submitLine(line) {
+    append(line + '\n', null);
+    if (EMBEDDED) { parentPost({ etcs: 'line', line: line }); return; }
+    const mod = window.Module;
+    if (!mod) return;
+
+    /*
+     * ccall FIRST AND UNGATED, because it does not need the symbol the gate was
+     * checking for.
+     *
+     * tryCall used to bail on `typeof fn !== 'function'` before doing anything --
+     * and its first branch then ignored `fn` entirely and went through
+     * mod.ccall(...). So a build that exposes ccall but does not also attach the
+     * raw _etcs_web_shell_push_line as a Module property (the common case unless
+     * it is named in EXPORTED_FUNCTIONS) refused all four candidates and printed
+     * "export not found", with the call that would have worked sitting inside the
+     * function it declined to enter. Every typed line was dropped.
+     */
+    if (mod.ccall) {
+      try {
+        mod.ccall('etcs_web_shell_push_line', null, ['string'], [line]);
+        return;
+      } catch (e) {
+        append('[push] ccall: ' + e + '\n', 'err');
+      }
+    }
+
+    // The raw-pointer path, for a build with no ccall. THIS one does need a real
+    // function, which is what the guard below is actually for.
+    function tryCall(fn) {
+      if (typeof fn !== 'function') return false;
+      try {
+        const len = (line.length * 4) + 1;
+        const ptr = mod._malloc(len);
+        if (mod.stringToUTF8) mod.stringToUTF8(line, ptr, len);
+        else mod.writeAsciiToMemory(line, ptr);
+        fn(ptr);
+        mod._free(ptr);
+        return true;
+      } catch (e) {
+        append('[push] ' + e + '\n', 'err');
+        return false;
+      }
+    }
+    if (tryCall(mod._etcs_web_shell_push_line)) return;
+    if (tryCall(mod.etcs_web_shell_push_line)) return;
+    const lib = mod.LDSO && mod.LDSO.loadedLibsByName &&
+                mod.LDSO.loadedLibsByName['ShellProvider.wasm'];
+    if (lib && lib.exports) {
+      if (tryCall(lib.exports._etcs_web_shell_push_line)) return;
+      if (tryCall(lib.exports.etcs_web_shell_push_line)) return;
+    }
+    append('[etcs] push_line export not found — is ShellProvider.wasm loaded?\n', 'err');
+  }
+
+  cmdline.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    const line = cmdline.value;
+    cmdline.value = '';
+    submitLine(line);
+  });
+
+  // Only modules.json — no candidate fallback. Shape:
+  //   { "modules": ["ShellProvider.wasm", "WindowProvider.wasm"] }
+  //   or a bare JSON array of filenames.
+  function normalizeWasmList(raw) {
+    let arr = [];
+    if (Array.isArray(raw)) arr = raw;
+    else if (raw && Array.isArray(raw.modules)) arr = raw.modules;
+    else if (raw && Array.isArray(raw.wasm)) arr = raw.wasm;
+    return arr.map(function (x) {
+      x = String(x).trim();
+      if (!x) return null;
+      if (!/\.wasm$/i.test(x)) x += '.wasm';
+      x = x.replace(/^\.\//, '');
+      if (/^etcs(\.wasm)?$/i.test(x) || /worker/i.test(x)) return null;
+      return x;
+    }).filter(Boolean);
+  }
+
+  async function resolveWasmNames() {
+    const r = await fetch('modules.json', { cache: 'no-store' });
+    if (!r.ok) {
+      throw new Error('modules.json HTTP ' + r.status + ' — required (no fallback list)');
+    }
+    const j = await r.json();
+    const list = normalizeWasmList(j);
+    if (!list.length) {
+      throw new Error('modules.json has no module entries');
+    }
+    append('[etcs] modules.json → ' + list.join(', ') + '\n', 'sys');
+    window.__etcsWasmNames = list;   // read by onRuntimeInitialized for the canvas
+    // The glue, if the manifest names it. See the load site below for why.
+    window.__etcsGlue = (j && j.glue) ? String(j.glue).trim().replace(/^\.\//, '') : '';
+    // Optional: pins the artifact directory and skips resolveWasmBase's walk.
+    window.__etcsBase = (j && j.base) ? String(j.base).trim() : '';
+    return list;
+  }
+
+  /*
+   * WHERE THE WASM COMES FROM IS NOT WHERE THIS PAGE LIVES. The runtime
+   * binaries are shared and move in epochs, so they live in one place --
+   * bin/wasm/, mounted at /wasm/ by the serve scripts (Makefile, WASM_DIR, for
+   * the argument) -- and every page fetches them from there. The base affects
+   * only the FETCH; what is written into MEMFS stays the bare name, because
+   * preload_web_modules dlopens by name. Scripts are not in here: they are
+   * mounted beside the page at the paths the OS side reads them from.
+   *
+   * Resolved by trying: same-origin /wasm/ first, because a local server must
+   * not need a setting; then beside the page, which is what a deployment made
+   * before the shared directory looks like; then the known-good remote.
+   * modules.json may name a "base" to skip the walk. The first candidate whose
+   * bytes carry the WebAssembly magic wins -- a 200 is not evidence, and every
+   * wrong answer a web server gives is markup. Identical across every page in
+   * this tree on purpose: one shared artifact directory is the point, and two
+   * pages disagreeing about where it is would undo it.
+   *
+   * The probe's bytes are kept: the first module has to be fetched anyway.
+   */
+  const WASM_BASE_CANDIDATES = ['/wasm/', './', 'https://anticurrententropy.com/wasm/'];
+  let wasm_base = null;
+  let wasm_probe = null;   // {name, buf} -- the module the probe already pulled
+  const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
+
+  function joinBase(base, name) {
+    return (base === './') ? name : base.replace(/\/*$/, '/') + name;
+  }
+
+  async function resolveWasmBase(declared, firstModule) {
+    const candidates = declared ? [declared] : WASM_BASE_CANDIDATES;
+    const tried = [];
+    for (const base of candidates) {
+      const url = joinBase(base, firstModule);
+      try {
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) { tried.push(base + ' HTTP ' + r.status); continue; }
+        const buf = new Uint8Array(await r.arrayBuffer());
+        const ok = buf.byteLength >= 4 && WASM_MAGIC.every(function (b, i) { return buf[i] === b; });
+        if (!ok) { tried.push(base + ' answered 200 with something that is not a module'); continue; }
+        wasm_base  = base;
+        wasm_probe = { name: firstModule, buf: buf };
+        append('[etcs] wasm base -> ' + base + '\n', 'ok');
+        return base;
+      } catch (e) {
+        tried.push(base + ' ' + (e && e.message ? e.message : e));
+      }
+    }
+    throw new Error('no wasm base serves ' + firstModule + ' -- tried '
+      + tried.join('; ') + '. `ace wasm make loader etcs` writes bin/wasm/, and a '
+      + 'serve script mounts it at /wasm/.');
+  }
+
+  async function fetchWasmBlobs(names) {
+    const out = {};
+    for (const name of names) {
+      let buf;
+      if (wasm_probe && wasm_probe.name === name) buf = wasm_probe.buf;
+      else {
+        setStatus('fetch ' + name);
+        const url = joinBase(wasm_base, name);
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) throw new Error('fetch ' + url + ' failed HTTP ' + r.status);
+        buf = new Uint8Array(await r.arrayBuffer());
+        if (buf.byteLength < 8) throw new Error(url + ' is empty');
+      }
+      out[name] = buf;
+      out['./' + name] = buf;
+      append('[etcs] staged ' + name + ' (' + buf.byteLength + ' bytes)\n', 'ok');
+    }
+    return out;
+  }
+
+  function loadGlue(src) {
+    return new Promise(function (resolve, reject) {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = resolve;
+      s.onerror = reject;
+      document.body.appendChild(s);
+    });
+  }
+
+  async function boot() {
+    setStatus('fetching modules…');
+    const names = await resolveWasmNames();
+    setStatus('locating runtime…');
+    await resolveWasmBase(window.__etcsBase, names[0]);
+    const blobs = await fetchWasmBlobs(names);
+    append('[etcs] ' + names.length + ' module(s) ready for MEMFS\n', 'sys');
+
+    var Module = {
+      canvas: canvas,
+      print: function (t) {
+        window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n'));
+      },
+      printErr: function (t) {
+        const span = document.createElement('span');
+        span.className = 'err';
+        span.textContent = t + (String(t).endsWith('\n') ? '' : '\n');
+        term.appendChild(span);
+        term.scrollTop = term.scrollHeight;
+      },
+      dynamicLibraries: [],
+      locateFile: function (path) { return joinBase(wasm_base, path); },
+      preRun: [function () {
+        try {
+          for (const name of Object.keys(blobs)) {
+            const data = blobs[name];
+            try {
+              FS.writeFile(name, data);
+            } catch (e) {
+              FS.createDataFile('/', name.replace(/^\.\//, ''), data, true, true, true);
+            }
+          }
+          append('[etcs] MEMFS preload complete\n', 'sys');
+        } catch (e) {
+          append('[etcs] preRun FS error: ' + e + '\n', 'err');
+        }
+      }],
+      onRuntimeInitialized: function () {
+        setStatus('runtime ready');
+        startShellDrain();
+        cmdline.disabled = false;
+        cmdline.placeholder = 'type an ETCS line, Enter to send';
+        cmdline.focus();
+        append('[etcs] main runtime initialized\n', 'sys');
+        /*
+         * THE CANVAS SHOWS IF THE MANIFEST SAID A WINDOW WOULD BE THERE.
+         *
+         * It used to test Module.LDSO.loadedLibsByName for a /Window/ name, which
+         * could never fire for two independent reasons: LDSO is an internal
+         * emscripten JS binding and not a property of Module (the '(none yet)'
+         * fallback below conceded as much), and at onRuntimeInitialized the C++
+         * side has not dlopen'd anything yet regardless. So a standalone shell
+         * page with WindowProvider loaded still showed no canvas.
+         *
+         * The include list is the honest source for this -- it is what decides
+         * whether a Window can exist at all -- and it is known before the runtime
+         * starts.
+         */
+        const libs = Object.keys((Module.LDSO && Module.LDSO.loadedLibsByName) || {});
+        append('[etcs] LDSO: ' + (libs.length ? libs.join(', ') : '(none yet)') + '\n', 'sys');
+        if (window.__etcsWasmNames && window.__etcsWasmNames.some(
+              function (n) { return /Window/i.test(n); }))
+          canvas.classList.add('visible');
+      },
+      onAbort: function (r) {
+        setStatus('aborted');
+        append('[abort] ' + r + '\n', 'err');
+      }
+    };
+    window.Module = Module;
+
+    /*
+     * THE GLUE, NAMED BY THE MANIFEST WHEN IT SAYS SO.
+     *
+     * Probing 'etcs.js' and falling back to 'etcs' logged a failed script fetch
+     * in the browser console on EVERY load -- a real error for an expected
+     * condition. modules.json already decides what this page loads, so it can
+     * decide this too:  "glue": "etcs.js"
+     *
+     * Stage the em++ output AS .js while you are there. Served extensionless it
+     * arrives as application/octet-stream and the browser warns that it is not a
+     * valid JavaScript MIME type; it runs anyway, and the warning is avoidable.
+     * FileHtmlPage::MimeForExtension is right not to guess -- an extensionless
+     * file is not evidence of JavaScript -- so the deploy is the place that knows.
+     *
+     * The probe remains for a deployment that has not added the key.
+     */
+    if (window.__etcsGlue) {
+      setStatus('loading ' + window.__etcsGlue + '…');
+      await loadGlue(joinBase(wasm_base, window.__etcsGlue));
+    } else {
+      setStatus('loading glue…');
+      append('[etcs] modules.json names no "glue" — probing etcs.js then etcs\n', 'sys');
+      try {
+        await loadGlue(joinBase(wasm_base, 'etcs.js'));
+      } catch (_) {
+        append('[etcs] etcs.js missing, trying ./etcs\n', 'sys');
+        await loadGlue(joinBase(wasm_base, 'etcs'));
+      }
+    }
+  }
+
+  if (EMBEDDED) {
+    // No fetch, no glue, no Module: the host page has all of that. Announcing
+    // readiness is the whole of this side's boot -- the parent replays whatever
+    // the runtime printed before this frame finished loading.
+    append('[etcs] terminal attached to the host page runtime\n', 'sys');
+    parentPost({ etcs: 'view-ready' });
+  } else {
+    boot().catch(function (e) {
+      setStatus('boot failed');
+      append('[etcs] boot: ' + e + '\n', 'err');
+    });
+  }
+})();
+  </script>
+</body>
+</html>

@@ -1,0 +1,181 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE COLOUR WHEEL: opening, picking, replacing a swatch, and dismissing.
+#
+#     etcs paint_wheel_smoke.etcs
+#
+# OPEN IS ROUTING, which is the claim worth testing. A wheel that were merely
+# drawn-or-not would still swallow clicks while "hidden", because PickAt does
+# not know what anybody meant to be visible. So the assertions here are about
+# WHERE A PRESS LANDS before and after Open/Close, not about pixels.
+#
+# Three panes, so "the press went to the wheel" and "the press went to the
+# canvas" are distinguishable by which document gained ink.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn RenderProvider::ImageSurface view
+view.Create(400, 300)
+
+# ── the canvas pane ──────────────────────────────────────────────────────
+
+spawn RenderProvider::CompositeDrawable2D sheet
+sheet.Create(400, 300)
+sheet.SetPosition(0, 0)
+sheet.SetOrder(0)
+
+spawn PaintProvider::PaintDocument doc
+doc.Create(400, 300, wheel)
+
+doc.spawn(PaintProvider::PaintLayer ink)
+ink.Create(400, 300)
+ink.Clear(0.0, 0.0, 0.0, 0.0)
+ink.SetName(Ink)
+ink.SetOrder(0)
+
+doc.SetActiveLayer(@ink)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(4.0)
+brush.SetColor(0.10, 0.10, 0.12, 1.0)
+
+spawn PaintProvider::PaintSurface canvas
+canvas.Create(@view)
+canvas.AttachDocument(@doc)
+
+# ── the toolbar, so there is a swatch for a pick to replace ──────────────
+#
+# One swatch is enough: the wheel replaces whichever colour entry was LAST
+# selected, so the test has to select it first for there to be a slot at all.
+
+spawn RenderProvider::CompositeDrawable2D bar
+bar.Create(400, 60)
+bar.SetPosition(0, 0)
+bar.SetOrder(20)
+
+spawn PaintProvider::PaintPalette palette
+palette.BindTool(@brush)
+
+bar.spawn(RenderProvider::PolygonDrawable2D swatch_red)
+swatch_red.Create()
+swatch_red.AddPoint(10, 10)
+swatch_red.AddPoint(50, 10)
+swatch_red.AddPoint(50, 50)
+swatch_red.AddPoint(10, 50)
+swatch_red.SetFill(0.85, 0.18, 0.22, 1.0)
+swatch_red.SetOrder(1)
+palette.AddColor(@swatch_red, 0.85, 0.18, 0.22, 1.0)
+
+# ── the wheel's own pane ─────────────────────────────────────────────────
+#
+# Order 30: above the toolbar and the canvas both, because a popup that is not
+# on top is not a popup. It is NOT added to the router here -- Open does that,
+# and that is the point.
+
+spawn RenderProvider::CompositeDrawable2D wheel_pane
+wheel_pane.Create(200, 200)
+wheel_pane.SetPosition(0, 0)
+wheel_pane.SetOrder(30)
+
+spawn PaintProvider::PaintColorWheel wheel
+wheel.Create(100, 100, 90)
+wheel.BindTool(@brush)
+wheel.BindPalette(@palette)
+wheel.SetValue(1.0)
+
+# ── inputs: one per pane ─────────────────────────────────────────────────
+
+spawn PaintProvider::PaintInput canvas_input
+canvas_input.Create(@doc, @brush, @canvas)
+canvas_input.BindRoot(@sheet)
+canvas_input.BindWheel(@wheel)
+canvas_input.SetWheelPane(0)
+
+spawn PaintProvider::PaintInput bar_input
+bar_input.Create(@doc, @brush, @canvas)
+bar_input.BindRoot(@bar)
+bar_input.BindPalette(@palette)
+
+spawn PaintProvider::PaintInput wheel_input
+wheel_input.Create(@doc, @brush, @canvas)
+wheel_input.BindRoot(@wheel_pane)
+wheel_input.BindWheel(@wheel)
+wheel_input.SetWheelPane(1)
+
+spawn PaintProvider::PaintRouter router
+router.Create(1)
+router.AddPane(@sheet, @canvas_input)
+router.AddPane(@bar, @bar_input)
+
+wheel.BindRouter(@router)
+wheel.BindPane(@wheel_pane, @wheel_input)
+
+router.Report()
+wheel.Report()
+
+# ── select the swatch, so the wheel has a slot to replace ───────────────
+
+router.Pointer(30, 30)
+router.Press()
+router.Release()
+palette.Report()
+
+# ── closed: a press where the wheel WOULD be reaches the canvas ─────────
+#
+# (150, 150) is inside wheel_pane's 200x200 box. While the wheel is closed that
+# pane is not in the router at all, so the press must fall through to the canvas
+# and paint. A wheel that were only hidden would eat this.
+
+ink.Report()
+router.Pointer(150, 150)
+router.Press()
+router.Release()
+ink.Report()
+
+# ── open: the same press now picks instead ──────────────────────────────
+#
+# Same coordinates, different destination, and the ink count must NOT move.
+# (150,150) is 70px from the wheel's centre at (100,100) -- inside the 90px
+# disc, at an angle that gives a definite hue.
+
+wheel.Open()
+router.Report()
+router.Pointer(150, 150)
+router.Press()
+router.Release()
+ink.Report()
+wheel.Report()
+palette.Report()
+
+# ── and it closed itself on the pick ────────────────────────────────────
+#
+# A popup that survives its own pick has to be dismissed twice. The press below
+# should reach the canvas again, which proves Close actually left the routing
+# set.
+#
+# AT A FRESH SPOT, deliberately: pressing at (150,150) again would land on the
+# pixels the first press already covered, so the count would not move whether
+# the press was routed to the canvas or swallowed. An assertion that cannot
+# fail is not one.
+
+router.Report()
+router.Pointer(250, 150)
+router.Press()
+router.Release()
+ink.Report()
+
+# ── dismissal by clicking the canvas ────────────────────────────────────
+#
+# Open it, then press somewhere the wheel is not. That press must close it and
+# must NOT paint -- otherwise putting the popup away leaves a dab behind.
+
+wheel.Open()
+router.Pointer(350, 250)
+router.Press()
+router.Release()
+wheel.Report()
+ink.Report()
+
+exit

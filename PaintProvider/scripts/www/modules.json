@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "THE INCLUDE LIST for the paint page, and the source of truth for what it",
+    "loads. The page fetches exactly this -- no candidate list, no directory",
+    "scan -- so adding a provider to the browser runtime is an edit here and",
+    "nothing else. Load order is the order these appear in.",
+    "RenderProvider before PaintProvider because a PaintSurface takes a Surface,",
+    "and ShellProvider last so the navigator comes up in the embedded terminal.",
+    "NAMES, NOT PATHS. These are fetched from the SHARED artifact directory --",
+    "/wasm/, which is bin/wasm/ mounted by the serve scripts -- and staged into",
+    "MEMFS under the bare name, because preload_web_modules dlopens by name and",
+    "run_script opens by name. The url and the staged name are different things.",
+    "Optional \"base\": pin that directory (a CDN, a second origin) and the page",
+    "skips its own same-origin-then-beside-then-remote walk. See resolveWasmBase",
+    "in index.html. \"glue\" comes from the same base -- it and etcs.wasm are one",
+    "link's output, and a mismatched pair fails before any ETCS code runs."
+  ],
+  "modules": [
+    "WindowProvider.wasm",
+    "RenderProvider.wasm",
+    "PaintProvider.wasm",
+    "DatabaseProvider.wasm",
+    "ShellProvider.wasm"
+  ],
+  "_scripts": [
+    "Staged into the browser's filesystem by the page, under these names, before",
+    "main() runs -- so each one must also answer over HTTP. THREE scripts mount",
+    "them and this list is the source of truth for all three: ../serve_paint.etcs",
+    "at the root of its own server, and ETCS's scripts/run_website.etcs and",
+    "run_tls_website.etcs under /paint/ on the whole site. Adding a script here",
+    "means adding one mount line to each -- a name the page asks for and a server",
+    "does not mount is a 404, and render_frames.etcs is the frame pump, so losing",
+    "it leaves a black canvas on a runtime that is otherwise working perfectly.",
+    "A NAME MAY BE A PATH: the page creates the directories first",
+    "(FS.mkdirTree), which is what lets a script be staged at the same relative",
+    "path the OS side reads it from, so boot_paint_panels.etcs's `detach` and",
+    "`run` lines are spelled once for both substrates rather than twice."
+  ],
+  "scripts": [
+    "boot_paint_panels.etcs",
+    "paint_routed_pointer.etcs",
+    "PaintProvider/scripts/paint_toolbar.etcs",
+    "PaintProvider/scripts/paint_wheel.etcs",
+    "PaintProvider/scripts/paint_menu.etcs",
+    "PaintProvider/scripts/paint_layers.etcs",
+    "PaintProvider/scripts/paint_import.etcs",
+    "RenderProvider/scripts/render_frames.etcs"
+  ],
+  "boot": "boot_paint_panels.etcs",
+  "_glue": [
+    "The emscripten loader output, STAGED AS .js: served extensionless it arrives",
+    "as application/octet-stream, which the browser warns is not a valid",
+    "JavaScript MIME type. Naming it here rather than probing removes a guaranteed",
+    "failed fetch on every load."
+  ],
+  "glue": "etcs.js"
+}

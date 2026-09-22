@@ -1,0 +1,167 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# TWO PANES AND ONE POINTER, without a window.
+#
+#     etcs paint_router_smoke.etcs
+#
+# What this pins down is the thing two PaintInputs could not: that an event lands
+# on exactly as many panes as the budget allows, top pane first, where "top" is
+# the panes' own Drawable_::Order() and nothing else. It also exercises the same
+# relation on the other side of the provider -- PaintLayer's order key -- because
+# a layer stack and a pane stack are the same question asked of different things,
+# and a change that broke one while leaving the other would be invisible in a
+# test that only looked at one.
+#
+# NO WINDOW AND NO SURFACE PUMP on purpose. The router takes positions through
+# its Pointer/Press/Release verbs exactly as the page layer does, so this runs on
+# a headless build and fails for one reason only.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+
+spawn RenderProvider::ImageSurface sheet_view
+sheet_view.Create(400, 300)
+
+# ── the two panes ────────────────────────────────────────────────────────
+#
+# Overlapping on purpose: the strip sits over the sheet's top-left corner, so a
+# point inside the strip is inside BOTH and the budget is the only thing deciding
+# who hears about it. A test where the panes were disjoint would pass with the
+# arbitration removed.
+
+spawn RenderProvider::CompositeDrawable2D sheet
+sheet.Create(400, 300)
+sheet.SetPosition(0, 0)
+sheet.SetOrder(0)
+
+spawn RenderProvider::CompositeDrawable2D strip
+strip.Create(200, 60)
+strip.SetPosition(0, 0)
+strip.SetOrder(10)
+
+# ── a document under each pane ───────────────────────────────────────────
+#
+# Two documents rather than one, so "did the sheet get it" is answerable by
+# looking at the sheet's own layer instead of by inferring from pixel positions.
+
+
+spawn PaintProvider::PaintDocument sheet_doc
+sheet_doc.Create(400, 300, sheet)
+
+sheet_doc.spawn(PaintProvider::PaintLayer sheet_ink)
+sheet_ink.Create(400, 300)
+sheet_ink.Clear(0.0, 0.0, 0.0, 0.0)
+sheet_ink.SetName(Sheet ink)
+
+sheet_doc.SetActiveLayer(@sheet_ink)
+
+
+spawn PaintProvider::PaintDocument strip_doc
+strip_doc.Create(200, 60, strip)
+
+strip_doc.spawn(PaintProvider::PaintLayer strip_ink)
+strip_ink.Create(200, 60)
+strip_ink.Clear(0.0, 0.0, 0.0, 0.0)
+strip_ink.SetName(Strip ink)
+
+strip_doc.SetActiveLayer(@strip_ink)
+
+spawn PaintProvider::PaintTool brush
+brush.SetRadius(3.0)
+brush.SetColor(0.9, 0.2, 0.2, 1.0)
+
+spawn PaintProvider::PaintSurface sheet_canvas
+sheet_canvas.Create(@sheet_view)
+sheet_canvas.AttachDocument(@sheet_doc)
+
+spawn PaintProvider::PaintSurface strip_canvas
+strip_canvas.Create(@sheet_view)
+strip_canvas.AttachDocument(@strip_doc)
+
+spawn PaintProvider::PaintInput sheet_input
+sheet_input.Create(@sheet_doc, @brush, @sheet_canvas)
+sheet_input.BindRoot(@sheet)
+
+spawn PaintProvider::PaintInput strip_input
+strip_input.Create(@strip_doc, @brush, @strip_canvas)
+strip_input.BindRoot(@strip)
+
+# ── the arbiter ──────────────────────────────────────────────────────────
+
+spawn PaintProvider::PaintRouter router
+router.Create(1)
+router.AddPane(@sheet, @sheet_input)
+router.AddPane(@strip, @strip_input)
+router.Report()
+
+# ── budget 1: inside the strip, the strip alone ──────────────────────────
+#
+# (40, 20) is inside both panes. The strip is at order 10 and the sheet at 0, so
+# the strip consumes the only pass there is and the sheet's layer must be
+# untouched -- which is exactly the bleed this mechanism replaced.
+
+router.Pointer(40, 20)
+router.Press()
+router.Pointer(60, 30)
+router.Release()
+sheet_doc.Report()
+strip_doc.Report()
+
+# ── budget 1: outside the strip, the sheet ───────────────────────────────
+#
+# (300, 200) misses the strip entirely, so the top pane that CONTAINS the point
+# is the sheet. Containment, not membership: a pane does not consume a pass for
+# an event that was never over it.
+
+router.Pointer(300, 200)
+router.Press()
+router.Pointer(320, 220)
+router.Release()
+sheet_doc.Report()
+
+# ── budget 2: both, top first ────────────────────────────────────────────
+#
+# The same point that reached only the strip now reaches the sheet as well. This
+# is what makes an overlay possible -- a pane that watches without blocking --
+# and it is one number rather than a second delivery path.
+
+router.SetPassBudget(2)
+router.Pointer(40, 20)
+router.Press()
+router.Pointer(60, 30)
+router.Release()
+sheet_doc.Report()
+strip_doc.Report()
+
+# ── the same relation, on layers ─────────────────────────────────────────
+#
+# A second layer in the sheet, stacked by its order key, then moved. Report prints
+# bottom-first, so the two reports either side of MoveLayerTo are the whole claim:
+# the stack is the relation, and moving a row renumbers it densely.
+
+sheet_doc.spawn(PaintProvider::PaintLayer sheet_paper)
+sheet_paper.Create(400, 300)
+sheet_paper.Clear(1.0, 1.0, 1.0, 1.0)
+sheet_paper.SetName(Paper)
+sheet_paper.SetOrder(5)
+sheet_doc.Report()
+
+# Paper under the ink, which is what a sheet of paper is. One call, one number.
+sheet_doc.MoveLayerTo(@sheet_paper, 0)
+sheet_doc.Report()
+
+# Hover isolation is view state and leaves no trace: dim, then clear, and the
+# opacities either side are the ones the document was given.
+sheet_doc.IsolateLayer(@sheet_ink, 0.25)
+sheet_doc.Report()
+sheet_doc.ClearIsolate()
+sheet_doc.Report()
+
+sheet_doc.RenameLayer(@sheet_paper, Backing sheet)
+sheet_doc.Report()
+
+sheet_doc.RemoveLayer(@sheet_paper)
+sheet_doc.Report()
+
+exit

@@ -4,6 +4,68 @@
 #include "../../../ontology.h"
 #include <GLFW/glfw3.h>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#include <emscripten/threading.h>
+#include <emscripten/proxying.h>
+#include <memory>
+#include <type_traits>
+
+// GLFW'S ENTIRE STATE LIVES IN ONE THREAD'S JS SCOPE.
+//
+// emscripten implements GLFW in JavaScript (library_glfw.js), and its window
+// list, hint table and callback table are plain properties of a `GLFW` object
+// in the calling thread's scope. A pthread worker gets its own copy of the glue,
+// so that object is there but EMPTY: glfwInit on the main thread does not
+// initialise the worker's, and the worker's calls then read and write state no
+// canvas is behind. The failure is not a missing feature --
+//
+//     glfwWindowHint  -> TypeError: Cannot set properties of null
+//     glfwSetKeyCallback, glfwGetFramebufferSize, ... -> silently on nothing
+//
+// -- and the DOM is only reachable from the main thread regardless. ETCS control
+// threads are workers, so every GLFW entry point this module reaches is routed
+// through here.
+namespace glfw_web {
+
+// Run `f` on the main runtime thread and wait for it. The thunk is a plain
+// function pointer because that is what the proxy queue carries; `f` itself
+// stays on this thread's stack, which is shared memory, so a lambda may capture
+// by reference and hand a result back through it.
+//
+// emscripten_proxy_sync, NOT emscripten_sync_run_in_main_runtime_thread. The
+// latter is the legacy em_queued_call API: it mallocs a call record, encodes the
+// arguments through a signature enum, and dispatches them back out through a
+// switch -- three layers over the same queue this uses directly, for a call that
+// is always void(void*).
+template <typename F>
+inline void on_main(F&& f)
+{
+    if (emscripten_is_main_runtime_thread()) { f(); return; }
+    using Fn = typename ::std::remove_reference<F>::type;
+    void (*thunk)(void*) = [](void* p) { (*static_cast<Fn*>(p))(); };
+    emscripten_proxy_sync(emscripten_proxy_get_system_queue(),
+                          emscripten_main_runtime_thread_id(),
+                          thunk, static_cast<void*>(::std::addressof(f)));
+}
+
+} // namespace glfw_web
+#endif // __EMSCRIPTEN__
+
+// ETCS_GLFW_MAIN(statements) -- where GLFW is allowed to be touched from.
+//
+// One spelling for both substrates, so the call sites below read as ordinary
+// GLFW code: a no-op wrapper on the desktop, a synchronous hop to the main
+// runtime thread in the browser (see glfw_web above for why there is no choice).
+// Statements, not an expression -- a value comes back through a local the
+// lambda captures, which is also what keeps GLFW's out-parameters working.
+#if defined(__EMSCRIPTEN__)
+    #define ETCS_GLFW_MAIN(...) ::glfw_web::on_main([&]() { __VA_ARGS__; })
+#else
+    #define ETCS_GLFW_MAIN(...) do { __VA_ARGS__; } while (0)
+#endif
+
 // Native-handle extraction (NativeSurfaceHandle, ontology/Window.h) needs
 // GLFW's platform-native accessors. Exposed here, inside WindowProvider's
 // own compiled code, against the one GLFW copy that actually called
@@ -23,10 +85,14 @@
 namespace glfw_native {
 #if defined(_WIN32)
     #define GLFW_EXPOSE_NATIVE_WIN32
+    #include <GLFW/glfw3native.h>
+#elif defined(__EMSCRIPTEN__)
+    // No X11/Win32 native handles under emscripten. Canvas / WebGL is the
+    // surface; NativeSurfaceHandle stays None (see populateNativeSurfaceHandle).
 #else
     #define GLFW_EXPOSE_NATIVE_X11
+    #include <GLFW/glfw3native.h>
 #endif
-#include <GLFW/glfw3native.h>
 }
 
 #include <iostream>
@@ -100,11 +166,14 @@ private:
 
 class GLFWWindow :
     public WindowBase<GLFWWindow>, public InputSourceBase<GLFWWindow>,
+    public PointerBase<GLFWWindow>,
     public ResizableBase<GLFWWindow>, public DeletableBase<GLFWWindow>
 {
 private:
     // Position changes matter to nothing here any more -- see noteCursor --
     // but the window's own placement is still worth logging.
+    static void scroll_callback(GLFWwindow* window, double dx, double dy);
+
     static void window_pos_callback(GLFWwindow* window, int x, int y)
     {
         auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
@@ -158,6 +227,9 @@ public:
 
     GLFWWindow()
     {
+#if !defined(__EMSCRIPTEN__)
+        // Custom arena allocator requires GLFW 3.4+ GLFWallocator. Emscripten's
+        // port is older and has no such type -- use the default allocator.
         GLFWallocator glfw_allocator{};
 
         glfw_allocator.allocate = [](size_t size, void* user) -> void* {
@@ -183,6 +255,7 @@ public:
 
         glfw_allocator.user = &getArena();
         glfwInitAllocator(&glfw_allocator);
+#endif
     }
 
     // No tag operation here, deliberately. This runs during teardown, where
@@ -214,7 +287,7 @@ public:
     {
         while (m_platform_users.load() != 0) std::this_thread::yield();
         ETCS_LOG("GLFWWindow", "destroying handle " << claimed << ".");
-        glfwDestroyWindow(static_cast<GLFWwindow*>(claimed));
+        ETCS_GLFW_MAIN(glfwDestroyWindow(static_cast<GLFWwindow*>(claimed)));
     }
 
     /*
@@ -238,7 +311,7 @@ public:
      * with a gap both callers fit into: two glfwCreateWindow calls, one of the
      * two windows immediately unreachable.
      */
-    void CreateWindowConcrete(const char* title = "invalid window", uint32_t width = 100, uint32_t height = 100)
+    void CreateWindowConcrete(const char* title = "invalid window", uint32_t width = 100, uint32_t height = 100) override
     {
         /*
          * TWO FLAGS BECAUSE THERE ARE TWO QUESTIONS, and `opening` alone
@@ -307,28 +380,111 @@ public:
         if (!GLFWPump::acquire()) { this->removeTag("opening"); return; }
         m_holds_glfw = true;
 
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
-        GLFWwindow* created = glfwCreateWindow(width, height, title, nullptr, nullptr);
+        /*
+         * NO CLIENT API ON EITHER PLATFORM, and in the browser that is a hard
+         * constraint rather than a preference.
+         *
+         * The desktop draws through Vulkan, which does not want a GL context. A
+         * canvas has exactly one context for its LIFETIME: whoever calls
+         * getContext first decides the kind, and every later request for a
+         * different kind returns null. Asking GLFW for GLFW_OPENGL_ES_API takes
+         * a WebGL context here, which permanently denies the 2D one -- and
+         * RenderProvider's browser surface presents by putImageData
+         * (RenderProvider/OS/CanvasSurface.h), so the page could never draw.
+         *
+         * Nothing is lost by declining it. Event delivery, sizing and input are
+         * independent of the client API, which is the half of GLFW this module
+         * uses. A device-backed browser surface would take the context itself,
+         * from the thread that will draw with it.
+         *
+         * The hint and the create are ONE hop: the hint table is per-thread
+         * state, so setting it anywhere but where glfwCreateWindow reads it
+         * would set it on a table nobody consults.
+         */
+        GLFWwindow* created = nullptr;
+        ETCS_GLFW_MAIN(
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+            created = glfwCreateWindow(static_cast<int>(width),
+                                       static_cast<int>(height),
+                                       title, nullptr, nullptr)
+        );
         m_window.store(created);
 
         ETCS_LOG("Creating window with handle: " << created << ".");
         if (created)
         {
-            glfwShowWindow(created);
-            glfwFocusWindow(created);
-            glfwSetWindowUserPointer(created, this);
-            glfwSetFramebufferSizeCallback(created, framebuffer_size_callback);
-            glfwSetKeyCallback(created, key_callback);
-            glfwSetCursorPosCallback(created, cursor_callback);
-            // Buttons were never wired at all, so anything wanting "press
-            // here" had to borrow the keyboard -- see InputSource.h.
-            glfwSetMouseButtonCallback(created, mouse_button_callback);
-            // Focus is tracked so capture can be re-applied on regaining it;
-            // enter/leave only reports whether the pointer is over the frame.
-            glfwSetCursorEnterCallback(created, cursor_enter_callback);
-            glfwSetWindowFocusCallback(created, window_focus_callback);
-            glfwSetWindowPosCallback(created, window_pos_callback);
+#if defined(__EMSCRIPTEN__)
+            // Host page needs <canvas id="canvas"> (or Module.canvas). GLFW's
+            // emscripten backend targets "#canvas" by default.
+            //
+            // No MakeContextCurrent/SwapInterval: there is no context to make
+            // current (GLFW_NO_API above), and a context is owned by the thread
+            // that created it -- binding one here, on whichever thread opened the
+            // window, is not the thread that would draw with it anyway.
+            glfw_web::on_main([&]() {
+                emscripten_set_canvas_element_size("#canvas",
+                    static_cast<int>(width), static_cast<int>(height));
+                emscripten_set_element_css_size("#canvas",
+                    static_cast<double>(width), static_cast<double>(height));
+            });
+#endif
+            // One hop for the whole registration, not one per call. Every one of
+            // these writes the window record the poll will later read, so they
+            // belong in the same scope as the poll -- and a browser round trip
+            // per line would be eleven of them.
+            ETCS_GLFW_MAIN(
+                glfwShowWindow(created);
+                glfwFocusWindow(created);
+                glfwSetWindowUserPointer(created, this);
+                glfwSetFramebufferSizeCallback(created, framebuffer_size_callback);
+                glfwSetKeyCallback(created, key_callback);
+                glfwSetCursorPosCallback(created, cursor_callback);
+                // Buttons were never wired at all, so anything wanting "press
+                // here" had to borrow the keyboard -- see InputSource.h.
+                glfwSetMouseButtonCallback(created, mouse_button_callback);
+                // Registered beside the other pointer callbacks: a wheel is a
+                // pointer event (ontology/Pointer.h), not a key one.
+                glfwSetScrollCallback(created, scroll_callback);
+                // Focus is tracked so capture can be re-applied on regaining it;
+                // enter/leave only reports whether the pointer is over the frame.
+                glfwSetCursorEnterCallback(created, cursor_enter_callback);
+                glfwSetWindowFocusCallback(created, window_focus_callback);
+                glfwSetWindowPosCallback(created, window_pos_callback)
+            );
+#if defined(__EMSCRIPTEN__)
+            // Seeded, because on the web GetSizeConcrete reads the mirror rather
+            // than asking GLFW, and the first reader runs before any resize
+            // callback has had a reason to fire.
+            m_size = { width, height };
+            /*
+             * THE BUTTON MASK, FROM THE DOCUMENT AND NOT THE CANVAS.
+             *
+             * emscripten's GLFW listens on the canvas, so a release that lands
+             * anywhere else on the page -- which is where every dragged-off
+             * release lands -- reaches neither its own mask nor our button
+             * callback (see noteCursor). The DOM knows: it puts `buttons` on
+             * every mouse event, and a listener on the DOCUMENT sees the events
+             * the canvas does not. So the truth is read from there and noted as
+             * the mask; the presses themselves still come from GLFW.
+             *
+             * CAPTURE PHASE, so this runs BEFORE GLFW's canvas listener for the
+             * same event: the position that listener flushes then carries the
+             * mask as of that event rather than the one before. MAIN RUNTIME
+             * THREAD, because that is where GLFW's listeners run and therefore
+             * the one thread allowed to write the ring's state (noteCursor).
+             * EM_FALSE from the handler, so nothing is consumed and GLFW still
+             * sees every event it saw before.
+             */
+            emscripten_set_mousemove_callback_on_thread(
+                EMSCRIPTEN_EVENT_TARGET_DOCUMENT, this, EM_TRUE, dom_button_mask,
+                EM_CALLBACK_THREAD_CONTEXT_MAIN_RUNTIME_THREAD);
+            emscripten_set_mousedown_callback_on_thread(
+                EMSCRIPTEN_EVENT_TARGET_DOCUMENT, this, EM_TRUE, dom_button_mask,
+                EM_CALLBACK_THREAD_CONTEXT_MAIN_RUNTIME_THREAD);
+            emscripten_set_mouseup_callback_on_thread(
+                EMSCRIPTEN_EVENT_TARGET_DOCUMENT, this, EM_TRUE, dom_button_mask,
+                EM_CALLBACK_THREAD_CONTEXT_MAIN_RUNTIME_THREAD);
+#endif
             populateNativeSurfaceHandle();
             // Enrolled before `active` goes on, so the first pump pass that
             // can see this window as open already has its post-poll work.
@@ -377,12 +533,23 @@ public:
                 return;
             }
 
-            if (glfwWindowShouldClose(*w) != GL_TRUE)
+#if defined(__EMSCRIPTEN__)
+            // The browser's own flag, never GLFW's -- see ShouldCloseConcrete.
+            if (!m_should_close.exchange(true))
             {
                 ETCS_LOG("closeWindow", "phase 1 -- signalling close on handle " << *w << ".");
-                glfwSetWindowShouldClose(*w, GL_TRUE);
                 return;
             }
+#else
+            int should = 0;
+            ETCS_GLFW_MAIN(should = glfwWindowShouldClose(*w));
+            if (should != GL_TRUE)
+            {
+                ETCS_LOG("closeWindow", "phase 1 -- signalling close on handle " << *w << ".");
+                ETCS_GLFW_MAIN(glfwSetWindowShouldClose(*w, GL_TRUE));
+                return;
+            }
+#endif
         }
 
         if (!this->removeTag("active"))
@@ -412,7 +579,26 @@ public:
     {
         PlatformUse w(*this);
         if (!w) return true;
-        return glfwWindowShouldClose(*w) == GL_TRUE;
+#if defined(__EMSCRIPTEN__)
+        /*
+         * ANSWERED HERE, NOT ASKED OF GLFW, and the browser is the one platform
+         * where that is also the MORE correct answer. GLFW's `shouldClose` is
+         * how a window manager reports the cross being pressed; a canvas in a
+         * page has no cross and nothing else ever sets the flag, so the only
+         * writer is CloseWindowConcrete -- us. Reading it back out of JS asks
+         * the main thread a question only this object knows the answer to.
+         *
+         * And it is asked every pass of the pump, which is what makes it worth
+         * removing rather than merely tidying: a synchronous hop to the main
+         * thread at the pump's own rate is the heaviest traffic this module
+         * generates, for a value that cannot have changed unless we changed it.
+         */
+        return m_should_close.load(::std::memory_order_acquire);
+#else
+        int should = 0;
+        ETCS_GLFW_MAIN(should = glfwWindowShouldClose(*w));
+        return should == GL_TRUE;
+#endif
     }
 
     /*
@@ -442,7 +628,21 @@ public:
     {
         PlatformUse w(*this);
         if (!w) return;
+#if !defined(__EMSCRIPTEN__)
+        // The browser flushes at the callback instead, because that is where its
+        // producer thread is -- see noteCursor. Doing it here as well would put a
+        // second writer on a single-producer ring.
+        //
+        // The mask is refreshed one statement before the flush, on this same
+        // thread, so the position going out carries what is held AT that position
+        // -- and it is queried rather than accumulated, so it inherits whatever
+        // the backend's own grab and focus handling did to the record (X11's
+        // implicit grab through a drag, Win32's SetCapture, the releases GLFW
+        // synthesises for every held button when a window loses focus) instead of
+        // being a tally of the button callbacks that happened to reach us.
+        noteButtonMask(platformButtonMask(*w));
         flushPointerPosition();
+#endif
         // The resize countdown, for the same reason and in the same place as
         // the pointer flush above it: a burst arrives as a burst of callbacks,
         // and what a consumer wants is the one value they settle on. This pass
@@ -460,8 +660,8 @@ public:
         PlatformUse w(*this);
         if (!w) return {0, 0};
 
-        int x, y;
-        glfwGetWindowPos(*w, &x, &y);
+        int x = 0, y = 0;
+        ETCS_GLFW_MAIN(glfwGetWindowPos(*w, &x, &y));
         return { static_cast<int32_t>(x), static_cast<int32_t>(y) };
     }
 
@@ -470,7 +670,7 @@ public:
         PlatformUse w(*this);
         if (!w) return;
 
-        glfwSetWindowPos(*w, x, y);
+        ETCS_GLFW_MAIN(glfwSetWindowPos(*w, x, y));
         ETCS_LOG("SetPosition", "Window moved to: " << x << ", " << y);
     }
 
@@ -480,10 +680,23 @@ public:
         PlatformUse w(*this);
         if (!w) return {0, 0};
 
-        int fw, fh;
-        glfwGetFramebufferSize(*w, &fw, &fh);
+#if defined(__EMSCRIPTEN__)
+        /*
+         * FROM THE MIRROR, for ShouldCloseConcrete's reason one step further on.
+         * m_size is already what framebuffer_size_callback records (Resizable's
+         * notifyResize), and that callback is the ONLY thing that can change a
+         * canvas's framebuffer size -- so glfwGetFramebufferSize would hand back
+         * the value this object just wrote, at the cost of a synchronous hop per
+         * frame from whichever thread is presenting.
+         */
+        (void)w;
+        return m_size;
+#else
+        int fw = 0, fh = 0;
+        ETCS_GLFW_MAIN(glfwGetFramebufferSize(*w, &fw, &fh));
         m_size = { static_cast<uint32_t>(fw), static_cast<uint32_t>(fh) };
         return m_size;
+#endif
     }
 
     /*
@@ -504,7 +717,8 @@ public:
         if (s.width == 0 || s.height == 0) return false;
         PlatformUse w(*this);
         if (!w) return false;
-        glfwSetWindowSize(*w, static_cast<int>(s.width), static_cast<int>(s.height));
+        ETCS_GLFW_MAIN(glfwSetWindowSize(*w, static_cast<int>(s.width),
+                                             static_cast<int>(s.height)));
         return true;
     }
 
@@ -523,13 +737,17 @@ public:
  */
     float GetScreenDpi()
     {
-        GLFWmonitor* mon = glfwGetPrimaryMonitor();
-        if (!mon) return 0.0f;
-        int mm_w = 0, mm_h = 0;
-        glfwGetMonitorPhysicalSize(mon, &mm_w, &mm_h);
-        const GLFWvidmode* mode = glfwGetVideoMode(mon);
-        if (!mode || mm_w <= 0) return 0.0f;
-        return static_cast<float>(mode->width) / (static_cast<float>(mm_w) / 25.4f);
+        int mm_w = 0, mm_h = 0, px_w = 0;
+        ETCS_GLFW_MAIN(
+            GLFWmonitor* mon = glfwGetPrimaryMonitor();
+            if (mon)
+            {
+                glfwGetMonitorPhysicalSize(mon, &mm_w, &mm_h);
+                if (const GLFWvidmode* mode = glfwGetVideoMode(mon)) px_w = mode->width;
+            }
+        );
+        if (mm_w <= 0 || px_w <= 0) return 0.0f;
+        return static_cast<float>(px_w) / (static_cast<float>(mm_w) / 25.4f);
     }
 
 private:
@@ -562,7 +780,7 @@ public:
  * connection to the server is gone entirely, and it is required not to
  * return. There is nothing to keep running at that point.
  */
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
     // Xlib's own types live in glfw_native (see this file's header comment on
     // why X11's `Window` typedef is quarantined there), so the handler is
     // declared in those terms -- there is no second Xlib visible to name.
@@ -585,7 +803,7 @@ public:
         glfw_native::XSetErrorHandler(&GLFWWindow::x_error_handler);
     }
 #else
-    static void install_x_error_handler() {}   // no X server to protect against
+    static void install_x_error_handler() {}   // no X server (Win32 / emscripten)
 #endif
 
     /*
@@ -696,13 +914,13 @@ public:
      * pointer's position over the frame is the angle, so it never needs to
      * keep going past an edge. Hiding it is the whole of what capture does.
      */
-        glfwSetInputMode(handle, GLFW_CURSOR,
-                         m_capture_want ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+        ETCS_GLFW_MAIN(glfwSetInputMode(handle, GLFW_CURSOR,
+                         m_capture_want ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL));
 #ifdef GLFW_RAW_MOUSE_MOTION
         // Explicitly OFF, not merely unrequested: GLFW leaves the mode as it
         // found it, so a previous capture that enabled it would otherwise
         // persist and silently switch the units under the turn rate.
-        glfwSetInputMode(handle, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+        ETCS_GLFW_MAIN(glfwSetInputMode(handle, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE));
 #endif
 
         /*
@@ -760,9 +978,135 @@ public:
  * against the camera's own frame (Scene3D::PointerPosition), so a window that
  * moves changes nothing.
  */
+    /*
+ * ── Pointer_ dispatch ────────────────────────────────────────────────────
+ *
+ * "Where is it now", as against InputSource's "what happened". Both are true of
+ * a window and they do not overlap: a frame loop asks this every frame and
+ * never misses anything by not listening; a tool that only acts on input reads
+ * the ring. The family's own header makes the argument at length.
+ *
+ * Position is the last one RECORDED rather than the ring's tail, deliberately:
+ * a poller must not consume events a stream reader is also owed, and the ring
+ * is single-producer-multi-reader for exactly that reason.
+ *
+ * SCROLL IS CONSUMED BY READING, which is the honest behaviour for a delta and
+ * is why ReadPointer returns a value instead of exposing fields -- two readers
+ * of one pointer will not both see the same notch, and pretending otherwise
+ * would apply it twice.
+ */
+    PointerState ReadPointerConcrete() override
+    {
+        PointerState st{};
+        st.x = this->currentPointerX();
+        st.y = this->currentPointerY();
+        st.buttons  = m_buttons.load(::std::memory_order_acquire);
+        st.scroll_x = this->takeScrollX();
+        st.scroll_y = this->takeScrollY();
+        return st;
+    }
+
+    /*
+ * Whether the cursor is over this window's own region -- which the coordinates
+ * cannot answer, since a position clamped to the edge and a position just
+ * outside it read the same. Maintained by the enter/leave callback, because
+ * that is the only thing that knows.
+ */
+    bool PointerInsideConcrete() override
+    {
+        return m_pointer_inside.load(::std::memory_order_acquire);
+    }
+
+    // Set from the button callback, read by Pointer_::ReadPointer. Bit 0 is the
+    // primary button; the rest are the platform's numbering unchanged.
+    void noteButtonState(int button, bool down)
+    {
+        if (button < 0 || button > 31) return;
+        const uint32_t bit = 1u << button;
+        if (down) m_buttons.fetch_or(bit, ::std::memory_order_release);
+        else      m_buttons.fetch_and(~bit, ::std::memory_order_release);
+    }
+
+    void notePointerInside(bool inside)
+    {
+        m_pointer_inside.store(inside, ::std::memory_order_release);
+    }
+
+    /*
+ * WHAT THE PLATFORM SAYS IS HELD, ASKED RATHER THAN ADDED UP.
+ *
+ * This is what lets a motion event claim to be a DRAG -- see
+ * InputEvent::buttons, and note that a tally of the presses we happened to see
+ * is the thing that goes wrong there.
+ *
+ * Buttons 0..2 only: left/right/middle is the whole vocabulary of
+ * paint_is_pan_button and the paint tools, and the field has eight bits, so
+ * widening this is a loop bound and nothing else.
+ *
+ * Not wrapped in ETCS_GLFW_MAIN, because the only caller is the pump inside a
+ * poll pass, which is already where GLFW is touched from on the desktop -- and
+ * the browser does not call this at all, for the reason in noteCursor.
+ *
+ * NOTHING MAY ENABLE GLFW_STICKY_MOUSE_BUTTONS while this exists: a sticky read
+ * CONSUMES the pending press (glfw/src/input.c), so polling here every pass
+ * would eat the click a consumer was waiting to be handed.
+ */
+#if defined(__EMSCRIPTEN__)
+    // The DOM's `buttons` uses the same bits GLFW's button numbers map to
+    // (1 left, 2 right, 4 middle), so it is the mask already. Registered in
+    // OpenWindowConcrete; the reasoning is there.
+    static EM_BOOL dom_button_mask(int, const EmscriptenMouseEvent* e, void* user)
+    {
+        auto* w = static_cast<GLFWWindow*>(user);
+        if (w && e) w->noteButtonMask(static_cast<uint8_t>(e->buttons & INPUT_BUTTONS_MASK));
+        return EM_FALSE;
+    }
+#endif
+
+    static uint8_t platformButtonMask(GLFWwindow* handle)
+    {
+        uint8_t mask = 0;
+        for (int b = GLFW_MOUSE_BUTTON_1; b <= GLFW_MOUSE_BUTTON_3; ++b)
+            if (glfwGetMouseButton(handle, b) == GLFW_PRESS)
+                mask = static_cast<uint8_t>(
+                    mask | input_button_bit(static_cast<uint16_t>(b)));
+        return mask;
+    }
+
     void noteCursor(double x, double y)
     {
         notePointerAt(static_cast<int>(x), static_cast<int>(y));
+#if defined(__EMSCRIPTEN__)
+        /*
+         * FLUSHED HERE, ON THE THREAD THE CALLBACK ARRIVED ON.
+         *
+         * InputSource's coalescing pair is single-producer by construction --
+         * "record from inside the callback, flush once the queue is drained",
+         * both on the thread that pumps the OS queue. In the browser those are
+         * two DIFFERENT threads: emscripten's GLFW runs the callback from a DOM
+         * listener on the main thread, while afterPoll runs on the detached pump
+         * worker. Leaving the flush there put two writers on a single-producer
+         * ring and raced m_pending* between them, which is not a lost sample --
+         * it is a torn event that the consumer then acts on.
+         *
+         * What it costs is the coalescing: one position per DOM event instead of
+         * one per pass. That is the cheap half to give up -- a position
+         * supersedes the one before it and the ring laps rather than blocks, so
+         * a consumer reading at frame rate sees the same position either way.
+         */
+
+        /*
+         * THE MASK IS NOT READ FROM GLFW HERE, and that is a decision. It does
+         * answer under emscripten, from a mask the glue keeps as `win.buttons` --
+         * but that mask is fed by the same canvas-only listeners that deliver our
+         * button callback, so the release that lands outside the canvas is missed
+         * by it exactly as it is missed by us. Reading it would dress our belief
+         * up as an observation. The mask comes from dom_button_mask instead, on
+         * this same thread and, being capture-phase, before this call: the flush
+         * below stamps the mask as of the event that caused it.
+         */
+        flushPointerPosition();
+#endif
     }
 
     /*
@@ -797,6 +1141,21 @@ private:
     // because only the create and the destructor touch it, and a create that
     // lost its claim returned before here.
     bool m_holds_glfw = false;
+#if defined(__EMSCRIPTEN__)
+    // The browser's close flag. See ShouldCloseConcrete for why GLFW's is not
+    // the authority here.
+    ::std::atomic<bool> m_should_close{ false };
+#endif
+    /*
+ * WHAT Pointer_ NEEDS THAT THE RING DOES NOT CARRY.
+ *
+ * The ring is a log of edges; these two are the current state, and neither can
+ * be recovered from the log by a reader that started late or missed a lap. Bit
+ * 0 is the primary button on every device that has one, which ontology/
+ * Pointer.h fixes and nothing else about the mask.
+ */
+    ::std::atomic<uint32_t> m_buttons{ 0 };
+    ::std::atomic<bool>     m_pointer_inside{ false };
 public:
 
     // Runs inside WindowProvider.so, against the GLFW copy that called
@@ -810,6 +1169,10 @@ public:
         m_nativeSurface.platform = NativeSurfacePlatform::Win32;
         m_nativeSurface.win32.hwnd = glfw_native::glfwGetWin32Window(*w);
         m_nativeSurface.win32.hinstance = GetModuleHandle(nullptr);
+#elif defined(__EMSCRIPTEN__)
+        // No OS window handle to hand to Vulkan/X11 interop. Canvas is owned
+        // by GLFW's emscripten backend; leave platform = None.
+        m_nativeSurface.platform = NativeSurfacePlatform::None;
 #else
         m_nativeSurface.platform = NativeSurfacePlatform::X11;
         m_nativeSurface.x11.display = glfw_native::glfwGetX11Display();
@@ -829,10 +1192,18 @@ inline bool GLFWPump::acquire()
     std::lock_guard<std::mutex> g(s_registry);
     if (s_refs > 0) { ++s_refs; return true; }
 
+    int up = 0;
+#if defined(__EMSCRIPTEN__)
+    // GLFW selects its emscripten platform for itself; there is only one.
+    ETCS_GLFW_MAIN(up = glfwInit());
+#else
     glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-    if (!glfwInit()) return false;
+    up = glfwInit();
+#endif
+    if (!up) return false;
     // Straight after glfwInit, which is where the display connection exists
-    // and before anything can issue a request against it.
+    // and before anything can issue a request against it (no-op on Win32 /
+    // emscripten).
     GLFWWindow::install_x_error_handler();
     s_refs = 1;
     ETCS_LOG("GLFWPump", "GLFW up.");
@@ -845,7 +1216,7 @@ inline void GLFWPump::release()
     if (s_refs == 0) return;
     if (--s_refs > 0) return;
     ETCS_LOG("GLFWPump", "last window gone -- GLFW down.");
-    glfwTerminate();
+    ETCS_GLFW_MAIN(glfwTerminate());
 }
 
 inline void GLFWPump::enroll(GLFWWindow* w)
@@ -869,7 +1240,22 @@ inline bool GLFWPump::poll()
     std::unique_lock<std::mutex> pumping(s_pumping, std::try_to_lock);
     if (!pumping.owns_lock()) return false;   // somebody else has the queue
 
+    /*
+     * NOT through ETCS_GLFW_MAIN, and this is the one GLFW call that must not
+     * be. emscripten's glfwPollEvents is `() => 0` -- literally nothing. Its
+     * backend registers DOM listeners at window creation and runs the callbacks
+     * as the events arrive, so there is no queue for a poll to drain. Proxying
+     * it would buy a synchronous round trip to the main thread PER PUMP PASS,
+     * thousands a second, to call an empty function.
+     *
+     * The call stays rather than being #if'd away: it is what makes the pump the
+     * same pump on both substrates, and on the desktop it is the whole of it.
+     */
+#if defined(__EMSCRIPTEN__)
     glfwPollEvents();
+#else
+    ETCS_GLFW_MAIN(glfwPollEvents());
+#endif
 
     // Under the registry lock rather than over a snapshot: a copied vector of
     // raw pointers is a list of windows that were alive when it was taken.
@@ -889,9 +1275,57 @@ void GLFWWindow::framebuffer_size_callback(GLFWwindow* window, int width, int he
     }
 }
 
-void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
+/*
+ * OPEN FOR BUSINESS, and in the browser that is a real question rather than a
+ * formality.
+ *
+ * On the desktop a callback can only run from inside glfwPollEvents, so the pump
+ * being round at all proves the window is up. emscripten's GLFW registers its DOM
+ * listeners at glfwCreateWindow and the page delivers events from then on -- so a
+ * pointer moving over the canvas while the rest of the session is still coming up
+ * (modules loading, the REPL starting, the edges not yet stated) reaches this code
+ * with the window half-built and nothing observing the rings it writes.
+ *
+ * `active` is the flag that says the window finished opening
+ * (OpenWindowConcrete sets it LAST for exactly this kind of reason), so it is
+ * what the input callbacks wait for. Costs a tag read per event and makes the
+ * browser's delivery behave like the platform's: events arrive once there is
+ * somebody to receive them.
+ */
+static inline GLFWWindow* input_ready(GLFWwindow* window)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
+    if (!handler) return nullptr;
+#if defined(__EMSCRIPTEN__)
+    if (!handler->IsActive()) return nullptr;
+#endif
+    return handler;
+}
+
+/*
+ * THE WHEEL, which had no home until Pointer_ turned out to have one.
+ *
+ * It travels the pointer ring beside the buttons, because a notch happens AT a
+ * position and means different things depending on where -- and it accumulates
+ * into the deltas Pointer_::ReadPointer hands back, because a per-frame consumer
+ * wants "how much since I last looked" rather than a replay of notches. Both
+ * readers, one source (ontology/InputSource.h::pushScroll).
+ *
+ * GLFW reports a wheel as a two-axis offset already normalised to notches, so
+ * there is no unit conversion to do here -- which is the shape the ontology
+ * asked for: a device converts once, at its own edge, and this device's units
+ * are already the right ones.
+ */
+void GLFWWindow::scroll_callback(GLFWwindow* window, double dx, double dy)
+{
+    auto handler = input_ready(window);
+    if (!handler) return;
+    handler->pushScroll(static_cast<float>(dx), static_cast<float>(dy));
+}
+
+void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
+{
+    auto handler = input_ready(window);
     if (!handler) return;
     handler->noteCursor(xpos, ypos);
 }
@@ -909,10 +1343,13 @@ void GLFWWindow::cursor_callback(GLFWwindow* window, double xpos, double ypos)
 void GLFWWindow::mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
 {
     (void)mods;
-    auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
+    auto handler = input_ready(window);
     if (!handler) return;
     double mx = 0.0, my = 0.0;
     glfwGetCursorPos(window, &mx, &my);
+    // The MASK is state, the ring entry is an edge -- see m_buttons. Updated
+    // here because this is the only place that knows which way the edge went.
+    handler->noteButtonState(button, action == GLFW_PRESS);
     handler->pushButton(button, action == GLFW_PRESS,
                         static_cast<int>(mx), static_cast<int>(my));
 }
@@ -920,10 +1357,15 @@ void GLFWWindow::mouse_button_callback(GLFWwindow* window, int button, int actio
 // Leaving is as important as entering: the cursor moves while it is away, and
 // the first report after it comes back would otherwise measure against where
 // it was when it left. Both edges re-prime for the same reason.
-void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int /*entered*/)
+void GLFWWindow::cursor_enter_callback(GLFWwindow* window, int entered)
 {
     auto handler = static_cast<GLFWWindow*>(glfwGetWindowUserPointer(window));
     if (!handler) return;
+
+    // The one thing Pointer_::PointerInside can be answered from. A position
+    // clamped to the edge and a position just outside it are the same numbers,
+    // so the coordinates genuinely cannot say -- only this edge can.
+    handler->notePointerInside(entered != 0);
 
     // NOTHING TO CHECK HERE ANY MORE. A pointer leaving the window used to be
     // evidence that a grab had been refused, because a relative control depends
@@ -979,7 +1421,10 @@ void GLFWWindow::key_callback(GLFWwindow* window, int key, int /*scancode*/, int
 #ifdef ETCS_VERBOSE_INPUT_EVENTS
     ETCS_LOG("GLFWWindow:Global", "GLFW user callback ptr: " << window << " handler: " << handler << " key: " << key);
 #endif
-    if (!handler) return;
+    // The chord above is deliberately NOT gated -- getting a captured pointer
+    // back cannot depend on the session being ready. Everything below feeds the
+    // key ring, so it is.
+    if (!input_ready(window)) return;
 
     if (action == GLFW_PRESS || action == GLFW_REPEAT)
     {

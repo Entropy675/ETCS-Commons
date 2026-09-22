@@ -1,0 +1,131 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE COLOUR DISC, drawn as wedges -- SUPERSEDED, and kept for the record.
+#
+# NOT USED BY THE PAINT PAGE ANY MORE. PaintColorWheel paints the pane's own
+# raster now: a continuous spectrum plus a brightness strip, from exactly the
+# conversion the pick runs, so what you click is what you get. The note below
+# about twelve wedges being "enough to aim with" was the thing that turned out to
+# be wrong in practice -- the pick was continuous and the picture was not, so the
+# colour you got was almost never the colour under the pointer.
+#
+# Still a working example of building a picker out of 2D shapes, which is why it
+# is here rather than deleted; a script that wants one can still run it.
+#
+#     run paint_wheel.etcs pane=<Drawable2D>
+#
+# Like the toolbar and the layer window, the LOOK is a script and the MEANING is
+# C++. PaintColorWheel computes a pick from a centre and a radius and knows
+# nothing about what is on screen -- so this file can be replaced by a square
+# picker, a hue strip, or somebody else's gradient, and as long as the geometry
+# given to PaintColorWheel::Create matches what was drawn, the picks land where
+# they look like they should.
+#
+# TWELVE WEDGES, NOT A SMOOTH DISC, and that is the honest limit of the
+# primitive: RenderProvider's shape leaf takes polygon points, so a continuous
+# hue sweep would be one polygon per pixel column. Twelve is enough to aim with
+# -- the PICK is continuous regardless, computed from the angle rather than from
+# which wedge was hit, so the colour you get is not quantised to these twelve.
+#
+# Each wedge is a triangle from the centre. Coordinates are the pane's, so moving
+# the pane moves the wheel with nothing here recomputed.
+
+requires pane [Drawable2D]
+
+# Hue 0 -- red, pointing right, then anticlockwise in screen terms.
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_00)
+wedge_00.Create()
+wedge_00.AddPoint(110, 110)
+wedge_00.AddPoint(206, 110)
+wedge_00.AddPoint(193, 158)
+wedge_00.SetFill(1.00, 0.00, 0.00, 1.0)
+wedge_00.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_01)
+wedge_01.Create()
+wedge_01.AddPoint(110, 110)
+wedge_01.AddPoint(193, 158)
+wedge_01.AddPoint(158, 193)
+wedge_01.SetFill(1.00, 0.50, 0.00, 1.0)
+wedge_01.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_02)
+wedge_02.Create()
+wedge_02.AddPoint(110, 110)
+wedge_02.AddPoint(158, 193)
+wedge_02.AddPoint(110, 206)
+wedge_02.SetFill(1.00, 1.00, 0.00, 1.0)
+wedge_02.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_03)
+wedge_03.Create()
+wedge_03.AddPoint(110, 110)
+wedge_03.AddPoint(110, 206)
+wedge_03.AddPoint(62, 193)
+wedge_03.SetFill(0.50, 1.00, 0.00, 1.0)
+wedge_03.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_04)
+wedge_04.Create()
+wedge_04.AddPoint(110, 110)
+wedge_04.AddPoint(62, 193)
+wedge_04.AddPoint(27, 158)
+wedge_04.SetFill(0.00, 1.00, 0.00, 1.0)
+wedge_04.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_05)
+wedge_05.Create()
+wedge_05.AddPoint(110, 110)
+wedge_05.AddPoint(27, 158)
+wedge_05.AddPoint(14, 110)
+wedge_05.SetFill(0.00, 1.00, 0.50, 1.0)
+wedge_05.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_06)
+wedge_06.Create()
+wedge_06.AddPoint(110, 110)
+wedge_06.AddPoint(14, 110)
+wedge_06.AddPoint(27, 62)
+wedge_06.SetFill(0.00, 1.00, 1.00, 1.0)
+wedge_06.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_07)
+wedge_07.Create()
+wedge_07.AddPoint(110, 110)
+wedge_07.AddPoint(27, 62)
+wedge_07.AddPoint(62, 27)
+wedge_07.SetFill(0.00, 0.50, 1.00, 1.0)
+wedge_07.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_08)
+wedge_08.Create()
+wedge_08.AddPoint(110, 110)
+wedge_08.AddPoint(62, 27)
+wedge_08.AddPoint(110, 14)
+wedge_08.SetFill(0.00, 0.00, 1.00, 1.0)
+wedge_08.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_09)
+wedge_09.Create()
+wedge_09.AddPoint(110, 110)
+wedge_09.AddPoint(110, 14)
+wedge_09.AddPoint(158, 27)
+wedge_09.SetFill(0.50, 0.00, 1.00, 1.0)
+wedge_09.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_10)
+wedge_10.Create()
+wedge_10.AddPoint(110, 110)
+wedge_10.AddPoint(158, 27)
+wedge_10.AddPoint(193, 62)
+wedge_10.SetFill(1.00, 0.00, 1.00, 1.0)
+wedge_10.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D wedge_11)
+wedge_11.Create()
+wedge_11.AddPoint(110, 110)
+wedge_11.AddPoint(193, 62)
+wedge_11.AddPoint(206, 110)
+wedge_11.SetFill(1.00, 0.00, 0.50, 1.0)
+wedge_11.SetOrder(2)

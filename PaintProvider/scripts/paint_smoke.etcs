@@ -27,13 +27,15 @@ spawn PaintProvider::PaintTool brush
 brush.SetRadius(12.0)
 brush.SetColor(1.0, 0.25, 0.25, 1.0)
 
-spawn PaintProvider::PaintLayer layer
-layer.Create(960, 720)
-layer.Clear(1.0, 1.0, 1.0, 1.0)
-
 spawn PaintProvider::PaintDocument doc
 doc.Create(960, 720, 'editor')
-doc.AddLayer(@layer)
+
+doc.spawn(PaintProvider::PaintLayer layer)
+layer.Create(960, 720)
+layer.Clear(1.0, 1.0, 1.0, 1.0)
+layer.SetName(Sheet)
+layer.SetOrder(0)
+
 doc.SetActiveLayer(@layer)
 
 spawn PaintProvider::PaintSurface editor_surface

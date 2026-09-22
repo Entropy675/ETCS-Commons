@@ -44,6 +44,13 @@
 //      the same "always re-read current content" property NetworkProvider
 //      .h's TestPage already relies on for StaticHtmlPage.
 //
+// Three ways a File-kind leaf gets into the tree, and the difference is
+// only WHO CHOSE THE NAME: LoadFromDisk takes the names a directory
+// already has, MountFile takes one name you give it for one file you
+// name, and InitAsFile is what both of them call. A mount is therefore
+// not a fourth kind of thing — Kind::Mount above is the only genuinely
+// different one, because it is the only one that re-reads.
+//
 // What a FileHtmlPage node is NEVER used for: holding a real file's own
 // bytes across the html/css/js triple it inherits from HtmlPageBase. That
 // triple is deliberately left UNUSED for Directory/File/Mount-kind nodes
@@ -179,6 +186,199 @@ public:
         return child;
     }
 
+    // --- Serve ONE FILE from disk at ONE url path ---
+    //
+    // The single-file counterpart to LoadFromDisk. LoadFromDisk exposes a whole
+    // directory and takes the names it finds; this takes one name you choose and
+    // one file you name, and exposes nothing else -- so a file can be served
+    // without the directory it lives in becoming reachable.
+    //
+    // WHY NOT MountExternal FOR THIS. That one forwards to a StaticHtmlPage,
+    // which is a PAGE, not a file: its bytes go through an NBuffer (a hard
+    // ETCS_NETWORK_MAX_HEADER_SIZE ceiling -- LoadFileIntoBuffer refuses
+    // anything larger), its path is canonicalised against the CURRENT WORKING
+    // DIRECTORY and refused if it leaves it, it answers "/", "/index.html",
+    // "/style.css" and "/app.js" rather than the one path asked for, and it
+    // carries no extension to derive a MIME type from, so everything it serves
+    // is text/html. Mounting a .wasm that way gets you the wrong Content-Type
+    // on the small ones and nothing at all on the real ones. MountExternal is
+    // for a LIVE page some other entity keeps rewriting; that is the job it is
+    // good at, and it is not this one.
+    //
+    // This makes a File-kind node instead -- exactly what LoadFromDisk builds
+    // for a real file, with the same unbounded std::string storage and the same
+    // MimeForExtension lookup, just chosen by hand instead of found by a walk.
+    //
+    // url_path may contain '/': intermediate Directory nodes are created as
+    // needed, so "assets/etcs.wasm" works with no matching directory on disk.
+    // Read once, here, like LoadFromDisk -- a later edit to the file needs a
+    // re-mount, which is the trade for not re-reading on every request.
+    bool MountFile(const std::string& url_path, const std::string& disk_path)
+    {
+        std::vector<std::string> segments;
+        size_t start = 0;
+        while (start <= url_path.size())
+        {
+            size_t slash = url_path.find('/', start);
+            std::string seg = (slash == std::string::npos)
+                ? url_path.substr(start)
+                : url_path.substr(start, slash - start);
+            if (!seg.empty()) segments.push_back(seg);
+            if (slash == std::string::npos) break;
+            start = slash + 1;
+        }
+        if (segments.empty())
+        {
+            ETCS_LOG("FileHtmlPage", "MountFile: empty url path for '"
+                     << disk_path << "' -- nothing mounted.");
+            return false;
+        }
+
+        // READ FIRST, mutate second. A failed open must not leave new Directory
+        // nodes behind on a path that will never resolve -- ListPaths would then
+        // advertise a 404 as a served path, which is the one thing it exists to
+        // rule out.
+        std::ifstream in(disk_path, std::ios::binary);
+        if (!in.is_open())
+        {
+            if (!warn_if_unexpanded(disk_path, "MountFile"))
+                ETCS_LOG("FileHtmlPage", "MountFile: failed to open '" << disk_path
+                         << "' -- nothing mounted at '" << url_path << "'.");
+            return false;
+        }
+        std::string bytes((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+
+        FileHtmlPage* node = this;
+        for (size_t i = 0; i + 1 < segments.size(); ++i)
+        {
+            auto it = node->children_by_name_.find(segments[i]);
+            if (it != node->children_by_name_.end())
+            {
+                // Refused rather than descended into: a File or a Mount has no
+                // children Resolve would ever consult on the way past it, so
+                // hanging a leaf under one mounts something unreachable and
+                // reports success.
+                if (it->second->kind_ != Kind::Directory)
+                {
+                    ETCS_LOG("FileHtmlPage", "MountFile: '" << segments[i]
+                             << "' on the way to '" << url_path
+                             << "' is not a directory -- nothing mounted.");
+                    return false;
+                }
+                node = it->second;
+                continue;
+            }
+            FileHtmlPage* dir = node->addTag<FileHtmlPage>();
+            dir->kind_         = Kind::Directory;
+            dir->segment_name_ = segments[i];
+            node->children_by_name_[segments[i]] = dir;
+            node = dir;
+        }
+
+        // MIME from the DISK name, not the url name, because the url name is
+        // the part a caller is free to invent: mounting index.html at "shell"
+        // still serves text/html.
+        const std::string& leaf = segments.back();
+        // Said out loud rather than silently won: the displaced node stays
+        // attached as a typed child and only leaves the name index, so a mount
+        // that shadows a real file looks like it worked and the file looks like
+        // it vanished. Same overwrite LoadFromDisk's own index does, made visible.
+        if (node->children_by_name_.count(leaf))
+            ETCS_LOG("FileHtmlPage", "MountFile: '" << url_path
+                     << "' replaces an entry already at that path.");
+
+        FileHtmlPage* child = node->addTag<FileHtmlPage>();
+        child->InitAsFile(leaf, std::move(bytes), MimeForExtension(disk_path));
+        node->children_by_name_[leaf] = child;
+
+        ETCS_LOG("FileHtmlPage", "MountFile: '" << disk_path << "' -> '/" << url_path
+                 << "' (" << child->content_.size() << " bytes, " << child->mime_type_
+                 << ") under RID:" << getRID());
+        return true;
+    }
+
+    // --- Serve a whole DIRECTORY at one url prefix ---
+    //
+    // LoadFromDisk takes the names it finds and answers them at THIS node's own
+    // level; this is "that directory, but under /paint", which is the shape a
+    // second SELF-CONTAINED site needs -- one that brings its own index.html.
+    // Loaded flat beside the first, the two index.html files land on the same
+    // name and which one wins is attach order, the same fragility
+    // run_website.etcs's header has to explain about "/".
+    //
+    // So: one named child, LoadFromDisk'd into. Resolution needs nothing new --
+    // a Directory child answers its own index.html at /paint/ and redirects
+    // /paint there (ResolveConcrete's Directory branch), so every relative url
+    // inside that page resolves under the prefix without the page knowing it
+    // was mounted.
+    //
+    // WHY NOT MountFile PER ASSET. The paint page is ~9 MB across ~20 files in
+    // four directories, and its own modules.json is the source of truth for
+    // which ones -- a hand-written mount list here would be a second copy of
+    // that list, silently stale the first time a provider is added to the page.
+    //
+    // Returns the entry count LoadFromDisk took, so the caller can compare it
+    // against what it expected; 0 means the directory was unreadable or empty
+    // and every path under the prefix will 404, which LoadFromDisk itself logs.
+    size_t MountTree(const std::string& url_segment, const std::string& disk_path)
+    {
+        if (url_segment.empty() || url_segment.find('/') != std::string::npos)
+        {
+            ETCS_LOG("FileHtmlPage", "MountTree: '" << url_segment << "' is not a single "
+                     "path segment -- a prefix is one name, and nesting it here would "
+                     "duplicate MountFile's segment walk. Nothing mounted.");
+            return 0;
+        }
+
+        kind_ = Kind::Directory;
+
+        // Replace rather than shadow: two children under one name would leave
+        // the loser resident for the process's life, holding its whole tree of
+        // file contents, reachable from nothing.
+        auto existing = children_by_name_.find(url_segment);
+        if (existing != children_by_name_.end())
+            ETCS_LOG("FileHtmlPage", "MountTree: '/" << url_segment
+                     << "' replaces an entry already at that path.");
+
+        FileHtmlPage* child = addTag<FileHtmlPage>();
+        child->segment_name_ = url_segment;
+        const size_t taken = child->LoadFromDisk(disk_path);
+        children_by_name_[url_segment] = child;
+
+        ETCS_LOG("FileHtmlPage", "MountTree: '" << disk_path << "' -> '/" << url_segment
+                 << "/' (" << taken << " entries) under RID:" << getRID());
+        return taken;
+    }
+
+    /*
+ * A PATH THAT STILL SAYS ACE_ROOT IS A VERSION SKEW, NOT A MISSING FILE.
+ *
+ * ACE_ROOT is expanded by the executor before a statement's arguments ever
+ * reach a work function (core/CommandExecutor.h). So a literal one arriving
+ * here means the script being run is NEWER than the binary running it, and the
+ * open that follows will fail for a reason that has nothing to do with the
+ * filesystem -- "failed to open 'ACE_ROOT/modules/...'" reads as a wrong path
+ * and sends the reader looking in the wrong place. This is the same class of
+ * mistake the loader/module manifest check catches, on the one axis it does not
+ * cover: a .etcs script is DATA, so editing one takes effect immediately, while
+ * the runtime that interprets it does not change until it is rebuilt.
+ *
+ * Named here rather than guarded against, because the module cannot fix it --
+ * it can only say what happened, once, at the first path that shows it.
+ */
+    static bool warn_if_unexpanded(const std::string& path, const char* verb)
+    {
+        if (path.compare(0, 9, "ACE_ROOT/") != 0) return false;
+        ETCS_LOG("FileHtmlPage", verb << ": '" << path << "' still contains ACE_ROOT, "
+                 "which the executor expands before a work function sees it. This "
+                 "runtime does not, so it is older than the script -- rebuild the "
+                 "NATIVE binaries with `ace make all`. `ace wasm make ...` builds "
+                 "only the browser artifacts and never touches bin/*.so or bin/etcs, "
+                 "which is what a server script like this one actually runs on.");
+        return true;
+    }
+
     // --- Tree construction from disk ---
     //
     // Walks disk_path non-recursively at each level, addTag<FileHtmlPage>
@@ -190,20 +390,41 @@ public:
     // wire boundary; it's read once at load time and served directly out
     // of process memory for the module's whole lifetime. Symlinks and
     // other special entries are skipped rather than guessed at.
-    void LoadFromDisk(const std::string& disk_path)
+    // Returns how many entries it took. ZERO IS NOT AN ERROR ON ITS OWN -- an
+    // empty directory is a legal thing to serve -- but it is the only number a
+    // caller can compare against what it expected, so it is handed back rather
+    // than swallowed. See the work function, which is what reports it.
+    size_t LoadFromDisk(const std::string& disk_path)
     {
         kind_ = Kind::Directory;
+        warn_if_unexpanded(disk_path, "LoadFromDisk");
 
         namespace fs = std::filesystem;
         std::error_code ec;
-        for (const auto& entry : fs::directory_iterator(disk_path, ec))
+
+        /*
+ * CHECKED HERE, BEFORE THE LOOP, and that is the whole of this fix.
+ *
+ * The check used to be the first statement INSIDE the range-for -- which never
+ * runs when the construction failed, because a directory_iterator that took an
+ * error compares equal to end(). So a path that does not exist walked zero
+ * entries, reported nothing, and left a Directory node with no children; every
+ * request under it then 404'd with the log insisting the tree had loaded. A
+ * mistyped or unresolved path is the most likely thing to be wrong here and it
+ * was the one thing that said nothing.
+ */
+        auto it = fs::directory_iterator(disk_path, ec);
+        if (ec)
         {
-            if (ec)
-            {
-                ETCS_LOG("FileHtmlPage", "LoadFromDisk: directory_iterator error on '"
-                         << disk_path << "': " << ec.message());
-                break;
-            }
+            ETCS_LOG("FileHtmlPage", "LoadFromDisk: cannot read '" << disk_path
+                     << "' -- " << ec.message() << ". Nothing was loaded, so every "
+                     "path under this tree will 404.");
+            return 0;
+        }
+
+        size_t taken = 0;
+        for (const auto& entry : it)
+        {
 
             const std::string name = entry.path().filename().string();
             FileHtmlPage* child = addTag<FileHtmlPage>();
@@ -230,9 +451,11 @@ public:
             {
                 continue; // symlink / special file -- skip rather than guess intent
             }
+            ++taken;
 
             children_by_name_[name] = child;
         }
+        return taken;
     }
 
     // --- Path resolution ---
@@ -309,14 +532,34 @@ public:
             return result;
         }
 
-        // Directory: try a real index child first (index.html by default,
-        // or "index" + default_extension_ when one is set), then a local
+        // Directory: a real index child first (index.html by default, or
+        // "index" + default_extension_ when one is set), then a local
         // synthesized fallback, else genuinely not found.
         const std::string index_name = default_extension_.empty()
             ? std::string(kIndexFile)
             : ("index" + default_extension_);
         auto idx_it = node->children_by_name_.find(index_name);
-        if (idx_it != node->children_by_name_.end() && idx_it->second->kind_ == Kind::File)
+        const bool has_index = idx_it != node->children_by_name_.end()
+                            && idx_it->second->kind_ == Kind::File;
+        if (!has_index && !node->fallback_page_) return result;   // not found
+
+        // ASKED FOR WITHOUT ITS TRAILING SLASH: send the client to the slashed
+        // spelling rather than answer with the index. The page's relative URLs
+        // ("modules.json", "shell") resolve against the request URL in the
+        // browser, so the bytes at "/paint" are a page whose every fetch goes
+        // to "/" -- see ResolvedAsset in ontology/HtmlPage.h. Only for a
+        // directory that would answer, so a miss stays one 404 rather than a
+        // redirect to one. The root never gets here without a slash (no
+        // segments), and a segment that resolved through the default
+        // extension is a File, not a Directory.
+        if (!segments.empty() && !request_path.empty() && request_path.back() != '/')
+        {
+            result.matched  = true;
+            result.redirect = request_path + "/";
+            return result;
+        }
+
+        if (has_index)
         {
             result.matched   = true;
             result.data      = idx_it->second->content_.data();
@@ -324,16 +567,12 @@ public:
             result.mime_type = idx_it->second->mime_type_;
             return result;
         }
-        if (node->fallback_page_)
-        {
-            const ETCS::NBuffer& nb = node->fallback_page_->GetHtmlContent();
-            result.matched   = true;
-            result.data      = nb.buf;
-            result.length    = nb.written;
-            result.mime_type = "text/html";
-            return result;
-        }
-        return result; // not found
+        const ETCS::NBuffer& nb = node->fallback_page_->GetHtmlContent();
+        result.matched   = true;
+        result.data      = nb.buf;
+        result.length    = nb.written;
+        result.mime_type = "text/html";
+        return result;
     }
 
     // --- Enumerate every resolvable path beneath this node ---
