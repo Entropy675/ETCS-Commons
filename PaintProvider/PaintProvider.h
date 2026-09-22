@@ -3997,11 +3997,17 @@ public:
     // picture should be able to not have it.
     void ShowEdgeRuler(bool on) { m_edge_ruler = on; }
 
-    // THE RASTER THE EDGE RULER IS DRAWN ON: the frame the drawable pane sits
-    // inside, not the pane. Bound rather than derived from the tree, because a
-    // node's parent is a tree fact and where chrome belongs is a composition
-    // choice -- and the frame is only the parent when a page nests them that way.
-    // Unbound, the marks fall back inside the pane; see draw_edge_ruler.
+    // THE RASTER THE EDGE RULER IS DRAWN ON: a surface the size of the frame
+    // the drawable pane sits inside, at that frame's origin -- the pane's
+    // Bounds() are read in the frame's space and used as offsets in this one,
+    // so the two spaces must coincide. A node of its own rather than the frame
+    // itself, because the frame is a compositor the frame edge rebuilds on its
+    // thread while Render writes on the input thread: one buffer with two
+    // writers and no order between them, which showed as the band flickering
+    // over the toolbar during a drag (boot_paint_panels.etcs, ruler_pane).
+    // Bound rather than derived from the tree, because where chrome belongs is
+    // a composition choice. Unbound, the marks fall back inside the pane; see
+    // draw_edge_ruler.
     void BindRulerFrame(ETCS::RID frame) { m_ruler_frame = frame; }
 
     // The band's own two colours. Separate from SetBackground because they were
@@ -5587,8 +5593,9 @@ void Report() const
         payload.write((std::to_string(r) + " " + std::to_string(g) + " "
                      + std::to_string(b) + " " + std::to_string(a)).c_str());
         try { e->call(action, payload); } catch (...) {}
-        // sheet_root is retained: mark the whole parent chain or the bar
-        // never gets re-blitted into the sheet and fills look like a no-op.
+        // The fill went in by verb, across a module boundary; mark the chain
+        // from here so the bar's compositor re-blits whatever the leaf's own
+        // mark did or did not reach.
         for (ETCS::Entity* n = e; n; n = n->getParent())
             etcs_mark_observed(n);
     }
@@ -5785,10 +5792,10 @@ private:
     /*
  * Open and close are the wheel's (PaintColorWheel::Open / Close): the pane
  * joins the router and is drawn, or leaves it and is hidden, as one change.
- * Closing re-renders the surface for the reason the wheel's BindSurface gives
- * -- the sheet is retained, and nothing but PaintSurface::Render puts back what
- * the pane was covering. The wheel is closed on the way in, because two popups
- * would each have to know about the other to dismiss it.
+ * Hiding is enough: the sheet is rebuilt from its tree by the compose walk, so
+ * what the pane was covering comes back with the next frame. The wheel is
+ * closed on the way in, because two popups would each have to know about the
+ * other to dismiss it.
  */
     void open_popup(ETCS::RID pane, ETCS::RID input)
     {
@@ -5829,7 +5836,6 @@ private:
         set_node_hidden(m_popup_open, true);
         ETCS_LOG("PaintPalette", "popup pane RID:" << m_popup_open << " closed.");
         m_popup_open = 0;
-        if (m_surface) m_surface->Render();
     }
 
     // The label for a hovered target: its own, or the one bound to any entry in
@@ -7046,15 +7052,9 @@ public:
         if (raw) m_palette = static_cast<PaintPalette*>(raw->getTrueType());
     }
 
-    /*
- * The view to repaint when this popup MOVES or CLOSES -- and it needs one.
- *
- * The sheet is retained, so nothing clears it: whatever the wheel last covered
- * keeps showing the wheel. The picture underneath is only restored by the one
- * writer that clears before drawing, which is PaintSurface::Render. Without this
- * the wheel leaves a copy of itself wherever it has been, which reads as the
- * popup not closing at all.
- */
+    // The view this popup is over. Kept for the scripts that bind it; nothing
+    // here asks it to draw any more -- a move or a close is a change to the
+    // tree, and the compose walk redraws what the pane was covering.
     void BindSurface(ETCS::RID surface)
     {
         ETCS::Entity* raw = paint_resolve_tag("PaintSurface", surface);
@@ -7124,8 +7124,6 @@ public:
             if (px < 0) px = 0;
             if (py < 0) py = 0;
             move_pane(px, py);
-            // The old position is somebody else's picture again.
-            if (m_surface) m_surface->Render();
             ETCS_LOG("PaintColorWheel", "pane to " << px << "," << py
                      << " (asked above " << x << "," << y << ") for swatch RID:" << slot);
         }
@@ -7143,9 +7141,6 @@ public:
             route_remove(raw);
         m_open = false;
         set_pane_hidden(true);
-        // See BindSurface: closing a popup over a retained sheet does not by
-        // itself put back what it was covering.
-        if (m_surface) m_surface->Render();
         ETCS_LOG("PaintColorWheel", "closed.");
     }
 
@@ -8175,15 +8170,9 @@ public:
             }
             // A window being dragged by its title takes every motion until the
             // release, ahead of the hover: the pointer is over whatever the
-            // window is passing, not choosing a row. Rendered per motion for
-            // the reason a popup's close renders (PaintPalette::close_popup):
-            // the sheet is retained, and only the surface's Render puts back
-            // what the window was covering a moment ago.
-            if (ev.action == INPUT_MOTION && m_panel->DragWindow(pane_pt))
-            {
-                if (m_surface) m_surface->Render();
-                return;
-            }
+            // window is passing, not choosing a row. The move alone is the
+            // change; the compose walk redraws what the window was covering.
+            if (ev.action == INPUT_MOTION && m_panel->DragWindow(pane_pt)) return;
             if (is_release && m_panel->EndWindowDrag()) { m_on_panel = false; return; }
             if (ev.action == INPUT_MOTION) m_panel->Hover(hit_rid);
             if (is_release && m_panel->Drop(hit_rid)) { m_on_panel = false; return; }

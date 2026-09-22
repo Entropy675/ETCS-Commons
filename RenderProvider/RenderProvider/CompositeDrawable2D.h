@@ -210,13 +210,31 @@ public:
 
     // Rectangular, and see the header comment for why that is the honest
     // answer rather than a simplification: the shape of a buffer is the
-    // buffer.
+    // buffer. Unless the node is scenery (SetPickable), in which case it
+    // contains nothing as far as a pick is concerned.
     bool ContainsLocalConcrete(int32_t x, int32_t y) override
     {
-        return x >= 0 && y >= 0
+        return m_pickable
+            && x >= 0 && y >= 0
             && x < static_cast<int32_t>(m_w)
             && y < static_cast<int32_t>(m_h);
     }
+
+    /*
+ * SCENERY: DRAWN, NEVER HIT. A buffer that lies over other nodes -- a ruler
+ * frame around a pane, a grid, a vignette -- would otherwise take every pick
+ * inside its rectangle, because Drawable2D_::PickAt walks the children top
+ * down and a compositor is its whole rectangle. Answering "I contain nothing"
+ * is what lets the walk fall through to what is under it, and since the walk
+ * asks ContainsLocal before it looks at children, the node's own children
+ * are skipped with it -- which is what a scenery node's children are.
+ *
+ * On the node rather than on the family because the family's rule is right:
+ * the shape of a buffer is the buffer. This is one node declining to be
+ * asked, not a second notion of shape.
+ */
+    void SetPickable(bool on) { m_pickable = on; }
+    bool Pickable() const     { return m_pickable; }
 
     // ── Surface_ dispatch: these RASTERISE, they do not retain ───────────
     //
@@ -581,6 +599,8 @@ private:
     uint32_t m_h = 0;
     // See SetRetain.
     bool m_retain = false;
+    // See SetPickable.
+    bool m_pickable = true;
 
     /*
      * ── THE PUBLISHED FRAME ──────────────────────────────────────────────

@@ -154,9 +154,18 @@ Nothing enforces that the band is unpaintable; two facts already in the tree do 
 * the pane is its own raster — the document blit is clipped by that buffer's extent
   rather than by a check, so the picture cannot reach the band in the first place.
 
-`canvas.BindRulerFrame(@sheet_root)` is what tells the surface which raster to mark;
-with nothing bound the ruler falls back to the inside of the pane, which is all a
-page with no margin can have. The band sizes itself per side from the room the page
+`canvas.BindRulerFrame(@ruler_pane)` is what tells the surface which raster to
+draw on: a sibling of the pane at the sheet's origin and size, retained (the
+surface is its one writer) and not pickable (`CompositeDrawable2D::SetPickable`,
+or every press on the paper would land on it). Its own raster and not the sheet's,
+because the sheet is composed on the frame edge's thread while `Render` draws on
+the input thread; when the band was written straight into the sheet, which of
+the two got there last decided whether a frame showed the band or the toolbar
+over it -- measured at a third of the frames during a drag. With the ruler as a
+node, the sheet is rebuilt from its children in order every recompose, nothing
+else writes it, and a moved popup or window needs no re-render to uncover what
+was under it. With nothing bound the ruler falls back to the inside of the pane,
+which is all a page with no margin can have. The band sizes itself per side from the room the page
 left (the toolbar takes the bottom strip, so there is no bottom band) and measures
 its own labels, so the numbers are not clipped by a provider with a wider advance.
 The margin is CLEARED to a fixed width (64px) each frame even though the band

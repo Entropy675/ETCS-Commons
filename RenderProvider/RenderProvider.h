@@ -513,6 +513,14 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetRetain, (int32_t, on))
                                                     : "OFF -- the buffer is derived from the tree"));
 }
 
+// SetPickable <0|1> -- 0 makes the node scenery: drawn, and no pick lands on
+// it or on anything inside it. See SetPickable itself.
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPickable, (int32_t, on))
+{
+    (void)ctx;
+    self.SetPickable(on != 0);
+}
+
 /*
  * MoveTo / ResizeTo -- the FAMILY verbs, exposed so a script can drive by hand
  * exactly what a layout drives automatically.

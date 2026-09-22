@@ -42,8 +42,8 @@ view.Clear(0.13, 0.13, 0.15, 1.0)
 # else does: stage holds exactly two children, and each is switched on its own.
 #
 # sheet_root keeps its identity, its size, its position and every reference to
-# it (BindRulerFrame, BindRoot, AddPane below) -- it is one level deeper and
-# still at 0,0, so no coordinate anywhere moves.
+# it (BindRoot, AddPane below) -- it is one level deeper and still at 0,0, so
+# no coordinate anywhere moves.
 spawn RenderProvider::CompositeDrawable2D stage
 stage.Create(1024, 768)
 stage.SetPosition(0, 0)
@@ -192,23 +192,28 @@ sheet_root.spawn(RenderProvider::CompositeDrawable2D paper_pane)
 paper_pane.Create(952, 632)
 paper_pane.SetPosition(36, 36)
 paper_pane.SetOrder(1)
-# Retained for the same reason sheet_root is: PaintSurface::Render is the one
-# writer of this buffer and clears it itself.
+# RETAINED: PaintSurface::Render is the one writer of this buffer and clears it
+# itself before blitting the document in. A composite normally clears to its
+# background before drawing its children, because normally the buffer is
+# derived from the tree; here the buffer IS the picture, and a recompose that
+# cleared it would wipe the document -- the sheet going blank whenever anything
+# is composed over it.
 paper_pane.SetRetain(1)
 
 # ── the document draws INTO the pane, not beside it ──────────────────────────
 #
 # This is the one ordering that works, and the alternative is worth stating
 # because it looks right and is not. Leaving the document pointed at `view` and
-# composing sheet_root into the same surface gives two writers: the frame pump
+# composing the tree into the same surface gives two writers: the frame pump
 # rebuilds `view` from the tree every frame, which wipes whatever Render blitted.
 #
 # So the pane is the TARGET. canvas clears and blits the document into
-# sheet_root's own raster (a CompositeDrawable2D is a Surface and owns Pixels),
-# the compose walk then draws sheet_root's children -- the zoom readout -- on top
-# of the picture, and `view` presents the one composed result. One writer per
-# buffer, and the widget is over the sheet because the tree says so rather than
-# because of which call ran last.
+# paper_pane's own raster (a CompositeDrawable2D is a Surface and owns Pixels),
+# the compose walk then draws the sheet's other children -- the ruler, the
+# window, the bar -- over it in order, and `view` presents the one composed
+# result. ONE WRITER PER BUFFER: the surface writes the pane and the ruler's
+# raster, the walk writes everything else, and a widget is over the picture
+# because the tree says so rather than because of which call ran last.
 spawn PaintProvider::PaintSurface canvas
 canvas.Create(@paper_pane)
 canvas.AttachDocument(@doc)
@@ -216,32 +221,54 @@ canvas.SetBackground(0.13, 0.13, 0.15, 1.0)
 # For the edge ruler's numbers -- a second consumer of the same provider the
 # document uses, because the ruler describes the PANE and the boxes the page.
 canvas.BindGlyphs(@glyph_src)
-# The ruler is drawn on the frame, in the margin around the pane, rather than
-# inside the pane. See the inset above.
-canvas.BindRulerFrame(@sheet_root)
+# ── the ruler, ON ITS OWN RASTER ─────────────────────────────────────────────
+#
+# The margin around the pane is where the ruler goes (the inset above), and
+# it is drawn by PaintSurface::Render -- on the INPUT thread, whenever the
+# view changes, which during a drag or a stroke is per motion. It used to be
+# drawn straight into sheet_root's buffer, which the frame edge composes and
+# presents on ITS thread. Two writers, no order between them: the band's clear
+# landed over the toolbar's rows (the band runs to the sheet's edge, under the
+# bar) and over anything dragged across the margin, and whether the presented
+# frame showed the band or the bar depended on which thread got there last.
+# Measured: a third of the frames during a drag showed the band over the bar.
+#
+# So the ruler has a raster of its own, a sibling of the pane at the sheet's
+# origin and the sheet's size, and the surface writes THAT. The sheet is then
+# what a compositor is meant to be -- derived from its children, in order:
+# pane (1), ruler (2), the layer window (15), the bar (19..21), popups (29..30)
+# -- and the bar is over the band because the tree says so, every frame, with
+# nobody's write racing it. What can still tear is the ruler's own raster, a
+# band half-updated between two presents, which is the same band in the same
+# colour and does not show.
+#
+# Retained: nothing in the tree draws it, so nothing may clear it either; the
+# surface's band rects cover the margin and the area under the pane is never
+# touched, so it stays transparent from Allocate. Order 2, just over the pane:
+# the ruler is chrome, and everything else is over chrome.
+#
+# NOT PICKABLE, and this is the line that makes a full-sheet sibling possible:
+# the pick walks children top down and a compositor answers for its whole
+# rectangle, so without it every press on the paper would have landed on the
+# ruler and no stroke would ever have started (CompositeDrawable2D::SetPickable).
+# It is at the sheet's origin so the pane's Bounds() -- in the sheet's space --
+# are the same offsets in the ruler's space, which is what draw_edge_ruler
+# reads (PaintSurface::BindRulerFrame).
+sheet_root.spawn(RenderProvider::CompositeDrawable2D ruler_pane)
+ruler_pane.Create(1024, 768)
+ruler_pane.SetPosition(0, 0)
+ruler_pane.SetOrder(2)
+ruler_pane.SetRetain(1)
+ruler_pane.SetPickable(0)
+canvas.BindRulerFrame(@ruler_pane)
 canvas.Render()
 
-# RETAINED, and this one line is what makes an overlay possible at all.
-#
-# A composite normally CLEARS its buffer before drawing its children, because
-# normally the buffer is derived from the tree and nothing else may write it.
-# Here two things write it: the paint document blits the picture in, and the
-# recompose draws the readout on top. Without retain the recompose wipes the
-# picture -- which reads as the sheet going blank the moment anything is
-# composed over it.
-#
-# Safe because the CLEAR still happens, from the other side: PaintSurface::Render
-# clears the target to its own background before blitting, so panning does not
-# smear. Retain moves the responsibility for clearing to the one writer that
-# knows when the whole surface is being redrawn.
-#
-# WHICH IS WHY IT IS HERE AND NOT WITH THE Create, and that is not tidying: the
-# edge has been presenting this root since the top of the file, and between
-# those two points there is no PaintSurface yet -- so nothing would have been
-# clearing, and the boot throbber would have smeared a trail of its own dots
-# across the page. Retain is turned on at the line where the writer it names
-# starts existing.
-sheet_root.SetRetain(1)
+# NOT RETAINED, and the sheet needs no line to say so: with the ruler on its
+# own raster nothing but the compose walk writes this buffer, so it is cleared
+# and rebuilt from the tree like any other compositor. That is also what ends
+# the re-Render a popup's close, a window drag and the wheel's move used to
+# ask for: whatever a moved thing was covering is redrawn by the walk, because
+# the walk draws everything.
 
 # ── the toolbar, ON the sheet ───────────────────────────────────────────────
 sheet_root.spawn(RenderProvider::PolygonDrawable2D bar_bg)
@@ -454,9 +481,8 @@ wheel.BindPane(@wheel_pane, @wheel_input)
 # one place on the sheet that is neither picture nor toolbar nor scale: the band
 # is 36px, its label sits at y=16 (draw_edge_ruler puts the extent at
 # oy - band_h + 2), so an octagon in the 2..14 square above it overlaps nothing.
-# A child of sheet_root like the zoom steps, for the same reason: the band is
-# drawn INTO the sheet's retained raster and children go over it every compose,
-# so the ruler's own clear never takes the gear with it.
+# A child of sheet_root like the zoom steps, ordered over the ruler's raster,
+# so the band's clear never takes the gear with it.
 #
 # A press on it is scenery routed to `input` -- inside sheet_root, outside the
 # canvas -- and PaintInput::RouteEvent asks the palette first, which is where
