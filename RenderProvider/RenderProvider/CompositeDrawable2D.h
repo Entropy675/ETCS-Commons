@@ -176,13 +176,31 @@ public:
         return true;
     }
 
-    // The colour the buffer is reset to at the start of every recomposition.
-    // Transparent by default, which is what a layer wants -- an opaque
-    // default would make every compositor a rectangle you cannot see past.
+    /*
+     * The colour the buffer is reset to at the start of every recomposition.
+     * Transparent by default, which is what a layer wants -- an opaque default
+     * would make every compositor a rectangle you cannot see past.
+     *
+     * MARKED WITH NO ORIGIN, and that is the whole of the fix. This is not a
+     * change a child made and it is not a foreign write into my pixels; it is a
+     * change to what my OWN recompose derives, so the edge that has to be set
+     * is my own -- the one DrawIntoConcrete reads to decide whether to
+     * recompose at all.
+     *
+     * etcs_mark_observed(this) is exactly the statement that does NOT set it: it
+     * marks with origin = my RID, and MarkObservedLocal excludes the origin's
+     * edge deliberately, so a stroke painted straight into my pixels does not
+     * make me rebuild my subtree. Right there, wrong here. Marked that way the
+     * new colour reached every observer of this node and never reached the clear
+     * that paints it -- so the background changed and the picture did not, until
+     * something else in the subtree happened to dirty the node. A toolbar whose
+     * slices are compositors is where that finally showed: the highlight moved
+     * only when an arrow inside the slice was repainted in the same pass.
+     */
     void SetBackground(float r, float g, float b, float a)
     {
         m_bg[0] = r; m_bg[1] = g; m_bg[2] = b; m_bg[3] = a;
-        etcs_mark_observed(this);
+        this->MarkObserved(0);
     }
 
     /*

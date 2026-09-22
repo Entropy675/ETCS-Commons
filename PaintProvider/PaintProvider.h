@@ -5472,6 +5472,13 @@ public:
         e.tool = paint_tool_kind_from(kind);
         e.idle[0] = 0.16f; e.idle[1] = 0.16f; e.idle[2] = 0.20f; e.idle[3] = 1.0f;
         m_entries[node] = e;
+        // LIT FROM THE MOMENT IT IS DECLARED, if it is the tool in hand. The
+        // bar is built before anything has hovered or pressed it, so without
+        // this the slice holding the default tool stays idle until the pointer
+        // first crosses the bar -- which reads as "the highlight only appears
+        // once you touch something", not as a starting state.
+        float c[4]; restingColor(e, c);
+        set_node_fill(node, c[0], c[1], c[2], c[3]);
     }
 
     /*
@@ -5700,7 +5707,7 @@ public:
         {
             m_tool->SetKind(paint_tool_kind_name(e.tool));
             ETCS_LOG("PaintPalette", "tool -> " << paint_tool_kind_name(e.tool));
-            refreshResting();
+            repaintPalette();
             /*
              * THE SELECTION SURVIVES THE TOOL, which is a reversal and the
              * reason for it is the clip. Leaving select used to DROP the
@@ -5864,39 +5871,11 @@ public:
             }
         }
         if (target == m_hovering) return;
-
-        /*
-     * THE GENERAL ENTRIES ARE NOT RESTYLED HERE, in either pass. Their look
-     * belongs to whoever bound them -- the canvas menu paints its anchor cells
-     * to show the chosen one (PaintCanvasMenu::show_anchor) -- and this type
-     * never learned an idle colour for them, so a hover that wrote one back
-     * would erase a state it did not know was there.
-     */
-        for (const auto& [rid, e] : m_entries)
-            if (owns_look(e)) { float c[4]; restingColor(e, c); set_node_fill(rid, c[0], c[1], c[2], c[3]); }
         m_hovering = target;
         // The caption of whatever was hovered goes away with the hover; the new
         // target's, if it has one, appears. See AddHoverLabel.
         show_hover_label(target);
-        if (target == 0) return;
-
-        node = target;
-        const Entry& ref = it->second;
-        const float t = (ref.kind == Kind::Color) ? 0.40f : 0.60f;
-        for (const auto& [rid, e] : m_entries)
-        {
-            if (!owns_look(e)) continue;
-            if (rid != node && !same_hover_group(ref, e)) continue;
-            // OVER THE RESTING COLOUR, not over idle: the slice you are holding
-            // is already lit, and hovering it has to read as brighter still
-            // rather than as the same lift arriving twice.
-            float c[4]; restingColor(e, c);
-            set_node_fill(rid,
-                          c[0] + (1.0f - c[0]) * t,
-                          c[1] + (1.0f - c[1]) * t,
-                          c[2] + (1.0f - c[2]) * t,
-                          1.0f);
-        }
+        repaintPalette();
     }
 
 
@@ -6094,32 +6073,74 @@ private:
     }
 
     /*
- * Re-apply the resting colours, for the one thing Hover cannot notice: the tool
- * changing without the pointer moving. A press is exactly that -- the slice
- * under the pointer stays under it -- so the highlight would otherwise not
- * appear until the pointer left and came back.
+ * ── the whole bar's look, in one pass ────────────────────────────────────
  *
- * The hovered group is left alone: it is already drawn brighter than resting,
- * and rewriting it here would dim the thing the pointer is on.
+ * A slice is one of three things: idle, lit because its tool is the one in
+ * hand, or lit further because the pointer is on it. That is ONE answer per
+ * node, so it is one write per node -- which is the correction here, and it is
+ * not only tidiness.
+ *
+ * This used to be two passes: reset everything to idle, then tint the hovered
+ * group over it. Every pointer move therefore wrote most of the bar twice,
+ * once with a value that was already known to be wrong, and the compositor is
+ * on another thread. A recompose landing between the two reads the first. The
+ * visible failure was a hovered slice that stayed dark while every other slice
+ * repainted correctly -- the tint had gone out, and the frame that showed it
+ * had already been taken.
+ *
+ * It also fixes what two passes could not express: a tool change while the
+ * pointer is ON the slice. The old refresh skipped the hovered group to avoid
+ * dimming it, so the newly held slice was never given its lit resting colour,
+ * and since the pointer had not moved there was no hover to restore it either.
+ * Selecting a tool left nothing highlighted at all.
+ *
+ * THE GENERAL ENTRIES ARE NOT RESTYLED. Their look belongs to whoever bound
+ * them -- the canvas menu paints its anchor cells to show the chosen one
+ * (PaintCanvasMenu::show_anchor) -- and this type never learned an idle colour
+ * for them, so writing one back would erase a state it does not know is there.
+ * See owns_look, which says the same of the arrows.
  */
-    void refreshResting()
+    void repaintPalette()
     {
+        auto h = (m_hovering != 0) ? m_entries.find(m_hovering) : m_entries.end();
+        const bool hovered = (h != m_entries.end());
+        // A swatch lifts less than a tool: its idle colour is the colour it
+        // MEANS, and washing it toward white says the wrong thing about it.
+        const float t = hovered ? ((h->second.kind == Kind::Color) ? 0.40f : 0.60f) : 0.0f;
+
         for (const auto& [rid, e] : m_entries)
         {
             if (!owns_look(e)) continue;
-            if (m_hovering != 0)
-            {
-                auto h = m_entries.find(m_hovering);
-                if (h != m_entries.end() && (rid == m_hovering || same_hover_group(h->second, e)))
-                    continue;
-            }
             float c[4]; restingColor(e, c);
+            // OVER THE RESTING COLOUR, not over idle: the slice in hand is
+            // already lit, and hovering it has to read as brighter still
+            // rather than as the same lift arriving twice.
+            if (hovered && (rid == m_hovering || same_hover_group(h->second, e)))
+            {
+                for (int i = 0; i < 3; ++i) c[i] = c[i] + (1.0f - c[i]) * t;
+                c[3] = 1.0f;
+            }
             set_node_fill(rid, c[0], c[1], c[2], c[3]);
         }
     }
 
-    // Whether Hover may restyle this entry -- see the note in Hover.
-    static bool owns_look(const Entry& e) { return e.kind != Kind::Call && e.kind != Kind::Popup; }
+    /*
+ * Whether this type may restyle the entry at all -- see the note in
+ * repaintPalette.
+ *
+ * AN ARROW IS NOT OURS. AddWheelArrow and AddModeArrow never learned an idle
+ * colour, so they carried the default -- 0.16, the slice's own dark -- and
+ * every repaint painted the arrow that colour. On the first pointer move over
+ * the bar all sixteen arrows vanished into their cells, which looked like they
+ * had "started highlighted" and then been turned off. Their look belongs to
+ * the script that drew them (SetFill, paint_toolbar.etcs), exactly as a
+ * general entry's does.
+ */
+    static bool owns_look(const Entry& e)
+    {
+        return e.kind != Kind::Call && e.kind != Kind::Popup
+            && e.kind != Kind::WheelArrow && e.kind != Kind::ModeArrow;
+    }
 
     static bool same_hover_group(const Entry& a, const Entry& b)
     {
@@ -6197,7 +6218,7 @@ private:
         const PaintToolKind want = is_select ? PaintToolKind::Select
                                  : is_shape  ? PaintToolKind::Shape
                                              : PaintToolKind::Brush;
-        if (m_tool->kind() != want) { m_tool->SetKind(paint_tool_kind_name(want)); refreshResting(); }
+        if (m_tool->kind() != want) { m_tool->SetKind(paint_tool_kind_name(want)); repaintPalette(); }
         if (is_select)
         {
             m_tool->CycleMode();

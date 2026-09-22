@@ -30,7 +30,22 @@
   * { box-sizing:border-box; }
   html, body { margin:0; height:100%; background:var(--bg); color:var(--light);
                font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-  body { overflow-y:auto; }
+  /* A COLUMN, so the grid below gets a definite height to divide.
+     The header is a fixed row and #layout takes the rest; min-height:0 is what
+     lets that rest actually be smaller than its content, which a flex item
+     refuses by default. Without a definite height the grid's minmax(0,1fr)
+     rows resolve to MAX-content, so the chat grew a line at a time and pushed
+     the terminal off the bottom -- its own overflow-y never engaged, because
+     there was nothing for it to overflow. */
+  body { display:flex; flex-direction:column; overflow-y:auto; }
+  header { flex:0 0 auto; }
+  /* WIDTH IS STATED, because `margin:0 auto` is on it. An auto margin on a flex
+     item's cross axis beats the default stretch, so the item sizes to its own
+     content -- which, once the board column became a container and stopped
+     contributing one, was nothing. The layout collapsed to zero and took the
+     board with it. Stating 100% puts stretch back and leaves max-width and the
+     auto margins doing the one job they were for: centring the capped box. */
+  #layout { flex:1 1 auto; min-height:0; width:100%; }
   .hidden { display:none !important; }
 
   header { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
@@ -48,11 +63,22 @@
             grid-template-areas:"board" "chat" "term"; }
   @media (min-width:62rem) {
     #layout { grid-template-columns:minmax(0,1fr) minmax(22rem, 34%);
-              grid-template-rows:auto minmax(0,1fr) minmax(0,1fr);
+              grid-template-rows:minmax(0,1fr) minmax(0,1fr);
               grid-template-areas:"board chat" "board term"; }
+    /* THE PAGE STOPS SCROLLING AND THE PANES START. Side by side there is a
+       height to divide, so the two rows share it and each pane scrolls inside
+       its own box. The columns' stacked floors come off here: two 12rem floors
+       in a short window add up to more than the window, and a grid that
+       overflows its own row is the thing this is fixing. */
+    body { overflow:hidden; }
+    #chat-col, #term-col { min-height:0; }
+    #chat, #shell { min-height:0; }
   }
 
-  #board-col { grid-area:board; display:flex; flex-direction:column; align-items:center; gap:7px; }
+  /* A CONTAINER, so the board can be sized from the column it is in rather
+     than from the viewport -- see #board's own --sq. */
+  #board-col { grid-area:board; display:flex; flex-direction:column; align-items:center; gap:7px;
+               container-type:inline-size; min-width:0; }
   #boardwrap { display:flex; flex-direction:column; width:max-content; max-width:100%;
                position:relative; }   /* the boot throbber anchors to this */
   /* THE BOOT THROBBER, over the board, gone the moment there is a position to
@@ -67,7 +93,18 @@
   #boardbar button { padding:0 5px; font-size:10px; line-height:1.45; letter-spacing:.02em; }
   #ply { color:var(--dim); font-size:9px; margin-left:auto; padding-left:8px; white-space:nowrap; }
 
-  #board { display:grid; grid-auto-flow:row; grid-template-columns:repeat(8,var(--sq));
+  /* THE SQUARE, FROM THE COLUMN AND NOT THE WINDOW. The :root --sq measures
+     the viewport, which is the right answer only while the board has the whole
+     of it -- stacked. Side by side the board's column is the window MINUS the
+     chat pane, the gap and the padding, and none of that is in 100vw: the
+     board came out 696px wide in a 659px column and the 37px it spilled sat
+     over the first characters of every chat line. cqw is that column, measured
+     rather than re-derived from the grid's own template, which would have to
+     be kept in step with it. The other two terms are unchanged -- a ceiling so
+     one square does not become furniture on an ultrawide, and the height
+     budget for the chrome under the board. */
+  #board { --sq: min(120px, calc((100cqw - 6px) / 8), calc((100vh - 210px) / 8));
+           display:grid; grid-auto-flow:row; grid-template-columns:repeat(8,var(--sq));
            grid-template-rows:repeat(8,var(--sq)); border:3px solid var(--line);
            box-shadow:0 10px 40px #0008; }
   .sq { display:flex; align-items:center; justify-content:center;
