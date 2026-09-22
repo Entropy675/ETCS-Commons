@@ -12,7 +12,7 @@
 // thread / OS event pump affinity).
 ETCS_MODULE_EXPORT_MAIN(PaintProvider,
     "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette "
-    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages")
+    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages PaintNode PaintVisitors")
 
 // SetKind is what makes one tool eight: radius/colour/hardness vary
 // independently of it, and the kind is the shape of the whole gesture rather
@@ -46,6 +46,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
     SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
     CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo,
     ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
+    ExportOps, ImportOps, NotebookHead, SetAuthor,
     Report, Delete)
 
 // The projection verbs sit beside Render because every one of them ends in a
@@ -118,3 +119,22 @@ ETCS_TAG_BLOCK_HYBRID(PaintRouter,
     (Create, AddPane, RemovePane, SetPassBudget,
      Pointer, Press, Release, PressButton, ReleaseButton, Key, Report, Delete),
     (ConsumePointer, ConsumeInput))
+
+// PaintNode -- a shared session's roster and its entries, and nothing else. It
+// holds no document and decodes no entry: see its own header note for why a
+// relay that understood its payload would have to be rebuilt every time the
+// payload grew.
+//
+// Request is registered with HttpServer.AddRequestRoute, NOT AddRoute -- it
+// reads the method and the body, and a path string carries neither.
+ETCS_TAG_BLOCK_BASIC(PaintNode,
+    Mount, Request, Filter, Delete)
+
+// PaintVisitors -- who is in the session, as a pane on the sheet. Rows are
+// declared by the script and filled here; the row buttons are ordinary palette
+// calls naming Promote/Demote/Remove with the row index, so nothing about this
+// window touches the input path. It never reaches the node: a press raises an
+// event and the PAGE performs the verb, because a fetch is the page's.
+ETCS_TAG_BLOCK_BASIC(PaintVisitors,
+    Create, AddRow, BindWindow, SetRowColors, SetInk,
+    SetRoster, Open, Close, Promote, Demote, Remove, Delete)

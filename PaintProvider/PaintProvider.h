@@ -10,12 +10,24 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <mutex>
+#include <random>
 #include <thread>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+// PaintNode's route surface. Header-only POD (a parsed request, and a frame
+// that names borrowed bytes) with no NetworkProvider type in it, so including
+// it here does not make PaintProvider depend on NetworkProvider being loaded --
+// the same property ChessProvider's own "takes only Buffer data, never a
+// NetworkProvider type" note protects, reached the same way.
+#include "../NetworkProvider/NetworkProvider/RouteRequest.h"
 
 /*
  * THE CODECS. stb_image reads PNG, JPEG, BMP, GIF and TGA; stb_image_write
@@ -2469,6 +2481,580 @@ struct PaintTextBox
     float       rgba[4] = { 0.08f, 0.08f, 0.10f, 1.0f };
 };
 
+/*
+ * ── THE NOTEBOOK ─────────────────────────────────────────────────────────────
+ *
+ * WHAT HAPPENED, IN ORDER, RE-EXECUTABLE.
+ *
+ * The three-deep snapshot store this replaces said of itself, from the day it
+ * was written, that it was a placeholder: "the real history comes from the
+ * persistence tag: the input event stream is itself the record of what happened,
+ * and undo will be a replay of it -- unbounded, and kept across sessions once
+ * saving is in." That is this, and the seam it named -- Remember(), called by
+ * every committed change before it lands -- is still the seam. No call site
+ * moved.
+ *
+ * ONE OBJECT, FOUR JOBS, which is the argument for building it now rather than
+ * building a fourth thing beside it:
+ *
+ *   undo/redo   walk the log
+ *   sharing     a viewer replays it; a late one replays from a snapshot
+ *   saving      a document is its notebook
+ *   autosave    the head sequence is the only dirty check anyone needs
+ *
+ * AN ENTRY HAS A LIFETIME, unlike the snapshot it replaces. Remember() fires at
+ * BeginStroke -- deliberately, so an anchored preview that commits nothing does
+ * not spend a snapshot -- but a freehand stroke's content accrues through motion
+ * afterwards and is complete only at release. So an entry is opened at the seam,
+ * appended to while the stroke runs, and sealed at the release. An entry left
+ * open by a lost release is sealed by the next seam rather than discarded: the
+ * ink is on the layer either way, and a notebook that disagrees with the pixels
+ * is worse than a slightly ragged stroke.
+ *
+ * WHY POINTS AND NOT SAMPLES. A Dab records every point ApplyBrush was actually
+ * called with, interpolation included, rather than the raw pointer samples plus
+ * a spacing rule. Replay is then the same calls in the same order and cannot
+ * drift: re-deriving the spacing at replay time would make the viewer's copy a
+ * function of PaintInput::apply_segment's arithmetic, which is exactly the kind
+ * of agreement that holds until one side is edited. It costs more points than a
+ * sample list -- a one-pixel nib over a thousand pixels is a thousand of them --
+ * and that is the price of the guarantee.
+ *
+ * WHAT IS NOT DESCRIBED gets a Snapshot, and that is not an admission of
+ * defeat: a paste carries arbitrary pixels, a lift is a hole plus a floating
+ * buffer, and there is no compact descriptor for either that is not just the
+ * bytes. Remember() with no describing call in front of it MEANS Snapshot, so a
+ * change nobody taught the notebook about is recorded correctly rather than
+ * silently missed -- the failure mode of the alternative.
+ */
+enum class PaintOpKind : uint8_t
+{
+    Snapshot,   // whole-layer bytes; the only entry that restores without replay
+    Dab,        // freehand: brush + every point it was stamped at
+    Line, Rect, Ellipse,
+    Poly,       // a shape mode's vertex ring, stroked closed
+    Fill,
+};
+
+static inline const char* paint_op_name(PaintOpKind k)
+{
+    switch (k)
+    {
+    case PaintOpKind::Snapshot: return "snap";
+    case PaintOpKind::Dab:      return "dab";
+    case PaintOpKind::Line:     return "line";
+    case PaintOpKind::Rect:     return "rect";
+    case PaintOpKind::Ellipse:  return "ellipse";
+    case PaintOpKind::Poly:     return "poly";
+    case PaintOpKind::Fill:     return "fill";
+    }
+    return "snap";
+}
+
+static inline PaintOpKind paint_op_from(const std::string& s)
+{
+    if (s == "dab")     return PaintOpKind::Dab;
+    if (s == "line")    return PaintOpKind::Line;
+    if (s == "rect")    return PaintOpKind::Rect;
+    if (s == "ellipse") return PaintOpKind::Ellipse;
+    if (s == "poly")    return PaintOpKind::Poly;
+    if (s == "fill")    return PaintOpKind::Fill;
+    return PaintOpKind::Snapshot;
+}
+
+/*
+ * ── base64, because a snapshot has to travel as a line ───────────────────────
+ *
+ * The notebook's wire form is one entry per line, so a viewer can parse what it
+ * has without waiting for the rest -- and a line cannot hold a NUL, which a PNG
+ * begins with. Sixty-four characters is the price of that, and it is the same
+ * price every other line-oriented transport pays.
+ *
+ * NOT A GENERAL CODEC. No wrapping, no whitespace tolerance beyond what a
+ * splitter already removed: this encodes what this decodes and nothing else is
+ * ever handed to it.
+ */
+static inline const char* paint_b64_alphabet()
+{
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+}
+
+static inline std::string paint_b64_encode(const uint8_t* p, size_t n)
+{
+    const char* A = paint_b64_alphabet();
+    std::string out;
+    out.reserve((n + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 2 < n; i += 3)
+    {
+        const uint32_t v = (uint32_t(p[i]) << 16) | (uint32_t(p[i + 1]) << 8) | p[i + 2];
+        out += A[(v >> 18) & 63]; out += A[(v >> 12) & 63];
+        out += A[(v >>  6) & 63]; out += A[v & 63];
+    }
+    if (i + 1 == n)
+    {
+        const uint32_t v = uint32_t(p[i]) << 16;
+        out += A[(v >> 18) & 63]; out += A[(v >> 12) & 63]; out += "==";
+    }
+    else if (i + 2 == n)
+    {
+        const uint32_t v = (uint32_t(p[i]) << 16) | (uint32_t(p[i + 1]) << 8);
+        out += A[(v >> 18) & 63]; out += A[(v >> 12) & 63]; out += A[(v >> 6) & 63]; out += '=';
+    }
+    return out;
+}
+
+static inline bool paint_b64_decode(const std::string& s, std::vector<uint8_t>& out)
+{
+    int8_t rev[256];
+    std::memset(rev, -1, sizeof(rev));
+    const char* A = paint_b64_alphabet();
+    for (int k = 0; k < 64; ++k) rev[static_cast<uint8_t>(A[k])] = static_cast<int8_t>(k);
+
+    out.clear();
+    out.reserve(s.size() / 4 * 3);
+    uint32_t acc = 0;
+    int bits = 0;
+    for (char ch : s)
+    {
+        if (ch == '=') break;
+        const int8_t v = rev[static_cast<uint8_t>(ch)];
+        if (v < 0) return false;
+        acc = (acc << 6) | static_cast<uint32_t>(v);
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((acc >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
+/*
+ * ONE ENTRY. The brush is carried by VALUE rather than read from the tool at
+ * replay time, and that is the whole difference between a log and a rumour: the
+ * tool has moved on by the time anything replays this, and on a viewer's machine
+ * it was never the same tool.
+ *
+ * `layer` is a RID and is resolved at replay, not held: a layer can be
+ * reordered, renamed or deleted between the entry and its use, and only the last
+ * of those is a problem -- which is the same rule the snapshot store already
+ * used and the reason it took the RID rather than an index.
+ */
+struct PaintOp
+{
+    uint64_t    seq   = 0;
+    /*
+     * THE ENTRY THIS ONE WAS MADE AFTER, which is what makes the notebook a
+     * TREE rather than a list with a cursor on it.
+     *
+     * A session that never undoes has parent == the previous entry for every
+     * one of them, so the tree is a line and nothing about it is visible.
+     * Undo moves the cursor to a parent; a change made while the cursor is
+     * behind the head becomes a SECOND CHILD instead of erasing the future,
+     * and redo picks the most recent child. That is the whole of branching,
+     * and it replaced a separate `m_redo_from` high-water mark -- "is there
+     * anything to redo" is now "does the cursor have children", which is the
+     * same question asked of the structure instead of of a second variable
+     * that had to be kept in step with it.
+     *
+     * LOCAL, AND NEVER ON THE WIRE. A node renumbers every entry it accepts,
+     * because two writers numbering their own would collide -- so a parent in
+     * this runtime's numbering means nothing after renumbering, and carrying
+     * it would make the node understand a field it otherwise copies blind.
+     * Branches are a property of YOUR editing history; what a session replays
+     * is the canonical path and only that (PaintDocument::ExportOps).
+     */
+    uint64_t    parent = 0;
+    PaintOpKind kind  = PaintOpKind::Snapshot;
+    /*
+     * WHICH LAYER, SAID TWICE, because the two readers of this entry are not
+     * on the same machine. A RID is this runtime's own name for the layer and
+     * is exact here -- undo resolves by it and gets the layer it recorded. It
+     * is meaningless on a VIEWER, whose layers were spawned separately and
+     * carry entirely different RIDs, so the entry also carries the layer's
+     * ORDER: the document's own stable, shared name for a position in the
+     * stack. ApplyOp tries the RID, falls back to the order, and falls back
+     * again to the active layer -- exact locally, correct remotely, and never
+     * silently dropping a mark on the floor.
+     */
+    ETCS::RID   layer = 0;
+    int32_t     order = 0;
+    // Who made it. Empty is "this page", which is what a session with nobody
+    // else in it writes and what a local-only document keeps writing forever.
+    std::string author;
+
+    PaintBrushState brush;
+    uint32_t        tolerance = 0;          // Fill only
+
+    // x,y pairs. A Dab's path; a Line/Rect/Ellipse's two corners; a Poly's ring;
+    // a Fill's one seed point.
+    std::vector<int32_t> pts;
+
+    // Snapshot only: the layer's bytes and the extent they are for. Checked at
+    // restore rather than trusted -- a snapshot taken before a resize must not
+    // be written over a buffer of another size, which is the check RestoreBytes
+    // has always made and the reason a stale entry is dropped rather than fatal.
+    std::vector<uint8_t> bytes;
+    uint32_t w = 0, h = 0;
+
+    bool marks() const { return kind != PaintOpKind::Snapshot; }
+    void addPoint(int32_t x, int32_t y) { pts.push_back(x); pts.push_back(y); }
+    size_t points() const { return pts.size() / 2; }
+};
+
+/*
+ * THE LOG ITSELF -- append-only, sequence-numbered from 1 so that 0 can mean
+ * "before anything", which is what a viewer asking for everything sends.
+ *
+ * SEQUENCES ARE ASSIGNED HERE and nowhere else. When this notebook is the one a
+ * node holds, that makes the node the ordering domain for the session, which is
+ * the same answer ChessNode reached for the same reason and by the same
+ * argument: the sync unit and the ordering domain have to be one object or a
+ * viewer following two documents needs two channels.
+ *
+ * THE COST OF UNDO IS THE SNAPSHOT INTERVAL. Replay-only undo is O(history) per
+ * step, which is precisely why the store this replaces was snapshots; entries
+ * with a whole-layer snapshot dropped in every SNAPSHOT_EVERY marks bounds it at
+ * that interval instead. The same structure is what a late joiner wants --
+ * nearest snapshot plus the tail -- so the interval is one knob for both and
+ * neither reader has to know the other exists.
+ */
+class PaintNotebook
+{
+public:
+    // Marks between snapshots, per layer. Sixteen is a compromise with two
+    // readers: undo replays at most this many ops, and a viewer joining late
+    // downloads at most this many on top of one snapshot.
+    static constexpr size_t SNAPSHOT_EVERY = 16;
+
+    uint64_t head() const { return m_ops.empty() ? 0 : m_ops.back().seq; }
+    size_t   size() const { return m_ops.size(); }
+    bool     empty() const { return m_ops.empty(); }
+
+    // `parent` is where the document stood when this was made. Passed in
+    // rather than read from a member, because the notebook does not own the
+    // cursor -- the document does, and a store that kept its own copy of
+    // somebody else's position is a second thing to keep in step.
+    uint64_t Append(PaintOp op, uint64_t parent)
+    {
+        op.seq    = m_next++;
+        op.parent = parent;
+        return push(std::move(op));
+    }
+
+    /*
+     * KEEP THE NUMBER IT ARRIVED WITH. An entry made here is numbered here;
+     * an entry that came from a node was numbered THERE, and renumbering it
+     * would quietly break the one thing a viewer depends on -- that "I have
+     * read up to N" means the same N on both ends. The node is the ordering
+     * domain for a shared session, so on a viewer this notebook is a copy of
+     * the node's numbering rather than a numbering of its own.
+     *
+     * Out of order or repeated is not an error worth refusing over: a
+     * duplicate arrives when a poll overlaps a push, and dropping the picture
+     * on the floor over it would be a worse answer than drawing the stroke
+     * twice. It is logged, applied, and the sequence carries on from the
+     * highest seen.
+     */
+    uint64_t AppendAt(PaintOp op, uint64_t parent)
+    {
+        if (op.seq == 0) op.seq = m_next;
+        if (op.seq < m_next)
+            ETCS_LOG("PaintNotebook", "entry " << op.seq << " arrived at or behind "
+                     << m_next << " -- kept, in arrival order.");
+        m_next = std::max(m_next, op.seq + 1);
+        // An arriving entry is a LINE, not a branch: what a session replays is
+        // one canonical path, so a viewer's copy of it is linear by
+        // construction. Its parent is simply whatever this notebook last held.
+        op.parent = parent;
+        return push(std::move(op));
+    }
+
+    // Is this layer due for a keyframe? Asked by the document before it opens a
+    // marking entry, so the snapshot lands BEFORE the mark it protects rather
+    // than after it -- a snapshot taken after the change cannot undo it.
+    bool snapshotDue(ETCS::RID layer) const
+    {
+        auto it = m_since_snap.find(layer);
+        if (it == m_since_snap.end()) return true;      // never seen: seed one
+        return it->second >= SNAPSHOT_EVERY;
+    }
+
+    const PaintOp* at(uint64_t seq) const
+    {
+        for (const PaintOp& o : m_ops) if (o.seq == seq) return &o;
+        return nullptr;
+    }
+
+    const std::vector<PaintOp>& ops() const { return m_ops; }
+
+    // Everything after `since`, in order. The viewer's whole read.
+    void Since(uint64_t since, std::vector<const PaintOp*>& out) const
+    {
+        out.clear();
+        for (const PaintOp& o : m_ops) if (o.seq > since) out.push_back(&o);
+    }
+
+    /*
+     * ── the tree ────────────────────────────────────────────────────────
+     *
+     * THE CANONICAL PATH IS THE ONLY THING THAT GETS REPLAYED, and every one
+     * of these exists to say what that path is. Sequence order stopped being
+     * the answer the moment a second branch could exist: the entries between
+     * a snapshot and a target may belong to a sibling, and replaying those
+     * paints a picture that was never made.
+     */
+
+    // Root-first: the chain of entries from the beginning to `seq`. Empty if
+    // `seq` names nothing, which is what a cursor of 0 means -- before
+    // anything, and correct rather than an error.
+    void ChainTo(uint64_t seq, std::vector<const PaintOp*>& out) const
+    {
+        out.clear();
+        uint64_t walk = seq;
+        // Bounded by the log's own size: a cycle cannot form from an append-only
+        // store whose parents are always older, but this walks user-visible
+        // state and a bound costs nothing next to trusting that.
+        for (size_t guard = 0; walk != 0 && guard <= m_ops.size(); ++guard)
+        {
+            const PaintOp* o = at(walk);
+            if (!o) break;
+            out.push_back(o);
+            walk = o->parent;
+        }
+        std::reverse(out.begin(), out.end());
+    }
+
+    // The children of `seq`, newest first -- which is the order redo wants and
+    // the whole of the "branches decided by most recent" rule. Sequences are
+    // unique and assigned in the order things happened, so there is no tie to
+    // break.
+    void ChildrenOf(uint64_t seq, std::vector<const PaintOp*>& out) const
+    {
+        out.clear();
+        for (const PaintOp& o : m_ops) if (o.parent == seq) out.push_back(&o);
+        std::sort(out.begin(), out.end(),
+                  [](const PaintOp* a, const PaintOp* b) { return a->seq > b->seq; });
+    }
+
+    // The newest snapshot of this layer ON THIS CHAIN. Not "at or before seq":
+    // an entry with a lower sequence can belong to a branch the target is not
+    // on, and restoring from it would be restoring somebody else's past.
+    static const PaintOp* SnapshotOnChain(const std::vector<const PaintOp*>& chain,
+                                          ETCS::RID layer)
+    {
+        const PaintOp* best = nullptr;
+        for (const PaintOp* o : chain)
+            if (o->kind == PaintOpKind::Snapshot && o->layer == layer) best = o;
+        return best;
+    }
+
+    // Drop everything before the newest snapshot of every layer. What keeps a
+    // long session bounded, and the reason snapshots exist at all rather than
+    // being only an undo optimisation: without a keyframe there is nothing a
+    // prefix can be discarded in favour of.
+    /*
+     * COMPACT ALONG ONE PATH, AND REFUSE IF THERE ARE OTHERS.
+     *
+     * Dropping by sequence number was right for a list and is wrong for a
+     * tree: an entry with a low sequence can be the only thing holding a
+     * branch's ancestry, and cutting it orphans every entry above it -- an
+     * undo that walks into the gap then finds a parent that is not there.
+     *
+     * So this keeps the given path's prefix back to its own oldest still-
+     * needed keyframe, and only when that path is the whole tree. A document
+     * with live branches keeps everything, which is the correct answer at the
+     * sizes anybody has actually reached; a session long enough for that to
+     * hurt wants a policy for WHICH branches to forget, and inventing one
+     * before anyone has hit the problem would be inventing the wrong one.
+     */
+    size_t Compact(const std::vector<const PaintOp*>& path)
+    {
+        if (path.empty()) return 0;
+        if (path.size() != m_ops.size())
+        {
+            ETCS_LOG("PaintNotebook", "compact declined: " << (m_ops.size() - path.size())
+                     << " entr(ies) sit off this path -- branches are kept whole.");
+            return 0;
+        }
+
+        uint64_t cut = path.back()->seq;
+        std::unordered_map<ETCS::RID, uint64_t> newest;
+        for (const PaintOp* o : path)
+            if (o->kind == PaintOpKind::Snapshot) newest[o->layer] = o->seq;
+        if (newest.empty()) return 0;
+        for (const auto& [rid, seq] : newest) { (void)rid; cut = std::min(cut, seq); }
+
+        const size_t before = m_ops.size();
+        std::vector<PaintOp> kept;
+        kept.reserve(m_ops.size());
+        for (PaintOp& o : m_ops) if (o.seq >= cut) kept.push_back(std::move(o));
+        m_ops.swap(kept);
+        // The oldest survivor is a root now; nothing above it may point past it.
+        if (!m_ops.empty()) m_ops.front().parent = 0;
+        return before - m_ops.size();
+    }
+
+    void Clear() { m_ops.clear(); m_since_snap.clear(); m_next = 1; }
+
+    // Drop the tail from `seq` on. Undo does not use this -- an undo that
+    // erased its own future could not be redone -- but a document reloaded from
+    // a shorter notebook does.
+    void Truncate(uint64_t seq)
+    {
+        while (!m_ops.empty() && m_ops.back().seq >= seq) m_ops.pop_back();
+        m_next = head() + 1;
+        m_since_snap.clear();
+        for (const PaintOp& o : m_ops)
+        {
+            if (o.marks()) ++m_since_snap[o.layer];
+            else            m_since_snap[o.layer] = 0;
+        }
+    }
+
+private:
+    uint64_t push(PaintOp op)
+    {
+        if (op.marks()) ++m_since_snap[op.layer];
+        else            m_since_snap[op.layer] = 0;
+        m_ops.push_back(std::move(op));
+        return m_ops.back().seq;
+    }
+
+    std::vector<PaintOp> m_ops;
+    std::unordered_map<ETCS::RID, size_t> m_since_snap;
+    uint64_t m_next = 1;
+};
+
+/*
+ * ── the notebook on the wire ─────────────────────────────────────────────────
+ *
+ * ONE ENTRY PER LINE, fields separated by single spaces, numbers in decimal:
+ *
+ *   <seq> <kind> <author> <layer> <r> <g> <b> <a> <size> <hard> <tip> <blend>
+ *         <tol> <npts> <x,y> <x,y> ...
+ *   <seq> snap <author> <layer> <w> <h> <base64 png>
+ *
+ * LINES, not a binary frame, for a reason that outlives the convenience: the
+ * thing carrying these is an HTTP body and the thing relaying them is a node
+ * that must renumber and re-attribute every entry without understanding any of
+ * them. A node parses the first three fields and copies the rest through --
+ * which is what lets the SAME node relay an entry kind that was added to
+ * PaintProvider after the node was built.
+ *
+ * WHY THE NODE REWRITES AUTHOR. A writer that could name itself could name
+ * somebody else. The token the push arrived with is the only trustworthy
+ * statement of who is pushing, so the node puts that name in and drops whatever
+ * the line claimed. Same argument as ChessGame refusing a move from a seat's
+ * non-holder: the client's own account of who it is has no standing.
+ *
+ * A snapshot travels as a PNG rather than raw RGBA -- the same encoder an
+ * export already uses -- because a 1024x768 layer is 3 MB raw, and the base64
+ * of that is 4 MB, which is most of an HttpServer send buffer for one entry.
+ */
+static inline std::string paint_op_encode(const PaintOp& op)
+{
+    std::string out;
+    out += std::to_string(op.seq);
+    out += ' ';
+    out += paint_op_name(op.kind);
+    out += ' ';
+    out += op.author.empty() ? "-" : op.author;
+    out += ' ';
+    out += std::to_string(op.layer);
+    out += ' ';
+    out += std::to_string(op.order);
+
+    if (op.kind == PaintOpKind::Snapshot)
+    {
+        out += ' '; out += std::to_string(op.w);
+        out += ' '; out += std::to_string(op.h);
+        out += ' ';
+        // Straight from the entry's bytes: they are RGBA at (w,h), packed,
+        // which is the layout the encoder wants and the layout SnapshotBytes
+        // produced.
+        std::vector<uint8_t> png;
+        if (op.w && op.h && op.bytes.size() == size_t(op.w) * op.h * 4)
+        {
+            stbi_write_png_to_func(
+                [](void* ctx, void* data, int len)
+                {
+                    auto* v = static_cast<std::vector<uint8_t>*>(ctx);
+                    const uint8_t* b = static_cast<const uint8_t*>(data);
+                    v->insert(v->end(), b, b + len);
+                },
+                &png, static_cast<int>(op.w), static_cast<int>(op.h), 4,
+                op.bytes.data(), static_cast<int>(op.w) * 4);
+        }
+        out += png.empty() ? std::string("-") : paint_b64_encode(png.data(), png.size());
+        return out;
+    }
+
+    const PaintBrushState& b = op.brush;
+    auto num = [](float f) { return std::to_string(f); };
+    out += ' ' + num(b.color.r) + ' ' + num(b.color.g) + ' ' + num(b.color.b) + ' ' + num(b.color.a);
+    out += ' ' + num(b.size_px) + ' ' + num(b.hardness);
+    out += ' ' + std::to_string(static_cast<int>(b.tip));
+    out += ' ' + std::to_string(static_cast<int>(b.blend));
+    out += ' ' + std::to_string(op.tolerance);
+    out += ' ' + std::to_string(op.points());
+    for (size_t i = 0; i + 1 < op.pts.size(); i += 2)
+        out += ' ' + std::to_string(op.pts[i]) + ',' + std::to_string(op.pts[i + 1]);
+    return out;
+}
+
+static inline bool paint_op_decode(const std::string& line, PaintOp& out)
+{
+    std::istringstream in(line);
+    std::string kind, author;
+    out = PaintOp{};
+    if (!(in >> out.seq >> kind >> author >> out.layer >> out.order)) return false;
+    out.kind   = paint_op_from(kind);
+    out.author = (author == "-") ? std::string() : author;
+
+    if (out.kind == PaintOpKind::Snapshot)
+    {
+        std::string b64;
+        if (!(in >> out.w >> out.h >> b64)) return false;
+        if (b64 == "-") return false;
+        std::vector<uint8_t> png;
+        if (!paint_b64_decode(b64, png)) return false;
+        int w = 0, h = 0, comp = 0;
+        // Four channels forced, exactly as an import does: a layer is RGBA and
+        // a PNG that was greyscale on the way out would otherwise come back a
+        // different width in bytes.
+        uint8_t* px = stbi_load_from_memory(png.data(), static_cast<int>(png.size()),
+                                            &w, &h, &comp, 4);
+        if (!px) return false;
+        out.bytes.assign(px, px + size_t(w) * size_t(h) * 4);
+        out.w = static_cast<uint32_t>(w);
+        out.h = static_cast<uint32_t>(h);
+        stbi_image_free(px);
+        return true;
+    }
+
+    int tip = 0, blend = 0;
+    size_t n = 0;
+    if (!(in >> out.brush.color.r >> out.brush.color.g >> out.brush.color.b >> out.brush.color.a
+             >> out.brush.size_px >> out.brush.hardness >> tip >> blend
+             >> out.tolerance >> n)) return false;
+    out.brush.tip   = static_cast<PaintTipMode>(tip);
+    out.brush.blend = static_cast<PaintBlendMode>(blend);
+    out.pts.reserve(n * 2);
+    for (size_t i = 0; i < n; ++i)
+    {
+        std::string pair;
+        if (!(in >> pair)) return false;
+        const size_t c = pair.find(',');
+        if (c == std::string::npos) return false;
+        out.pts.push_back(std::atoi(pair.substr(0, c).c_str()));
+        out.pts.push_back(std::atoi(pair.substr(c + 1).c_str()));
+    }
+    return true;
+}
+
 class PaintDocument : public DeletableBase<PaintDocument>
 {
 public:
@@ -2675,6 +3261,22 @@ public:
                      << " .. " << m_sel.x1 << "," << m_sel.y1 << " = " << m_sel.count << " px"
                      << (m_sel.lifted() ? "  lifted, at +" + std::to_string(m_sel.dx)
                                           + "," + std::to_string(m_sel.dy) : std::string()));
+
+        // The notebook, in one line: what a test asserts on and what tells an
+        // operator whether a shared session is actually recording anything.
+        // Marks and snapshots counted apart because the two have completely
+        // different costs, and a run whose entries are all snapshots is a run
+        // where something is taking the undescribed path every time.
+        size_t marks = 0, snaps = 0, points = 0;
+        for (const PaintOp& o : m_book.ops())
+        {
+            if (o.marks()) { ++marks; points += o.points(); } else ++snaps;
+        }
+        ETCS_LOG("PaintDocument", "  notebook: " << m_book.size() << " entr(ies) to seq "
+                 << m_book.head() << " -- " << marks << " mark(s) over " << points
+                 << " point(s), " << snaps << " snapshot(s); at " << m_cursor
+                 << ", " << undoDepth() << " back / " << redoDepth() << " forward"
+                 << (m_open_live ? ", one open" : ""));
     }
 
     /*
@@ -3104,44 +3706,416 @@ public:
     bool hasClip() const { return !m_clip.lift.empty(); }
 
     /*
- * ── history, three deep ──────────────────────────────────────────────────
+ * ── history, as the notebook ─────────────────────────────────────────────
  *
- * A PLACEHOLDER, AND SHAPED AS ONE. The real history comes from the
- * persistence tag: the input event stream is itself the record of what
- * happened, and undo will be a replay of it -- unbounded, and kept across
- * sessions once saving is in. Until then this remembers the last few
- * changes as whole-layer snapshots, which is the simplest correct thing at
- * this depth and exactly what the real store will replace.
+ * THE SAME SEAM, A DIFFERENT STORE. Remember() is still what every committed
+ * change calls before it lands, and every one of its call sites is unchanged.
+ * What it records is now an entry in the notebook (PaintNotebook, above)
+ * rather than one of three whole-layer snapshots, so the depth cap is gone,
+ * undo is a replay, and the same object answers a viewer.
  *
- * ONE SEAM. Every committed change calls Remember() before it lands, and
- * that call is the one place the replacement plugs in: swap what Remember
- * records and what Undo/Redo restore, and no call site moves. So the depth
- * cap is a named constant and the store is a private type, and nothing
- * outside this block knows either exists.
+ * Remember() ALONE STILL MEANS SNAPSHOT. A caller that did not describe its
+ * change gets the bytes, which is what makes this safe to land before every
+ * mutation has a descriptor: an operation nobody has taught the notebook
+ * about is recorded correctly and expensively rather than missed.
  *
- * WHAT IT COSTS: one copy of the active layer's bytes per change, three deep
- * each way. 3 MB a snapshot at 1024x768, 18 MB in the worst case. Acceptable
- * for three; the reason the real store is not snapshots.
+ * WHAT IT COSTS NOW: one snapshot per SNAPSHOT_EVERY described marks per
+ * layer, plus one per undescribed change. At 1024x768 that is 3 MB every
+ * sixteen strokes instead of 3 MB every stroke -- and Compact() can throw
+ * the prefix away, which the old store could not do at all because three
+ * snapshots deep has no prefix to throw.
  */
-    static constexpr size_t HISTORY_DEPTH = 3;
-
     void Remember()
     {
         Touch();
+        sealOpenOp();
         if (!m_active_layer) return;
-        HistoryEntry e;
-        e.layer = m_active_layer->getRID();
-        if (!m_active_layer->SnapshotBytes(e.bytes)) return;
-        if (m_undo.size() >= HISTORY_DEPTH) m_undo.erase(m_undo.begin());
-        m_undo.push_back(std::move(e));
-        m_redo.clear();          // a new change is a new future
+        appendSnapshot(m_active_layer);
     }
 
-    bool Undo() { return step(m_undo, m_redo, "undo"); }
-    bool Redo() { return step(m_redo, m_undo, "redo"); }
+    /*
+ * THE DESCRIBING SEAM. Same moment as Remember(), one fact richer: the caller
+ * knows what it is about to do, so the notebook records the operation instead
+ * of the pixels.
+ *
+ * A snapshot still goes in first when the layer is due one, and BEFORE the
+ * mark rather than after -- a keyframe taken after the change it is supposed
+ * to be undoable past is a keyframe of the wrong picture.
+ */
+    void RememberOp(PaintOpKind kind, const PaintBrushState& brush,
+                    uint32_t tolerance = 0)
+    {
+        Touch();
+        sealOpenOp();
+        if (!m_active_layer) return;
+        if (m_book.snapshotDue(m_active_layer->getRID()))
+            appendSnapshot(m_active_layer);
 
-    size_t undoDepth() const { return m_undo.size(); }
-    size_t redoDepth() const { return m_redo.size(); }
+        m_open = PaintOp{};
+        m_open.kind      = kind;
+        m_open.layer     = m_active_layer->getRID();
+        m_open.order     = m_active_layer->order();
+        m_open.author    = m_author;
+        m_open.brush     = brush;
+        m_open.tolerance = tolerance;
+        m_open_live      = true;
+    }
+
+    // A point on the open entry. Called by ApplyBrush for a Dab, and by the
+    // anchored commits for their corners -- one path, so an entry that was
+    // opened and never given a point is an entry that marked nothing.
+    void NoteOpPoint(int32_t x, int32_t y)
+    {
+        if (m_open_live) m_open.addPoint(x, y);
+    }
+
+    // Seal the open entry. Called at every stroke release, and again by the
+    // next seam, which is what closes one a lost release left in the air.
+    void SealOp() { sealOpenOp(); }
+
+    const PaintNotebook& notebook() const { return m_book; }
+    PaintNotebook&       notebook()       { return m_book; }
+
+    // Start the record over. The three callers are the three acts that make
+    // every existing entry describe a picture that no longer exists: a resize
+    // re-states every raster, New clears them all, and DestroyLayers takes them
+    // away. Each used to drop two snapshot stacks and now drops one notebook,
+    // which is the same sentence with less of it.
+    void ClearHistory()
+    {
+        m_open      = PaintOp{};
+        m_open_live = false;
+        m_book.Clear();
+        m_cursor    = 0;
+    }
+
+    // Who authors entries made on this document from now on. Empty means this
+    // page, which is what a document nobody is sharing keeps writing.
+    void SetAuthor(const std::string& who) { m_author = who; }
+    const std::string& author() const { return m_author; }
+
+    /*
+ * ── the notebook through a FILE, and why not through the call buffer ─────
+ *
+ * A page hands the runtime arguments through etcs_web_call, whose payload is
+ * an ETCS::Buffer -- 256 bytes. One stroke does not fit, let alone a
+ * snapshot. So the notebook crosses the same way an imported image already
+ * does: the page writes the bytes into the browser's own filesystem and
+ * passes a PATH, and the runtime reads the file.
+ *
+ * That is not a workaround for this feature, it is the established answer to
+ * this exact question in this codebase (PaintCanvasMenu::OfferImport), and
+ * reusing it means a shared session needs no new bridge, no new buffer size
+ * and no second way for bulk data to reach the runtime.
+ *
+ * ExportOps writes what happened AFTER `since`, which is the only thing a
+ * host has to push and the only thing a caught-up viewer has to read.
+ */
+    size_t ExportOps(const std::string& path, uint64_t since) const
+    {
+        std::ofstream o(path, std::ios::binary | std::ios::trunc);
+        if (!o)
+        {
+            ETCS_LOG("PaintDocument", "ExportOps: cannot open '" << path << "'.");
+            return 0;
+        }
+        /*
+     * ALONG THE CANONICAL PATH, which is the only thing a session replays.
+     * Sequence order would hand a viewer entries from a branch this document
+     * abandoned -- strokes that were undone here would appear there, which is
+     * the exact opposite of what an undo means.
+     *
+     * A PATH THAT NO LONGER CONTAINS `since` IS A DIVERGENCE: this document
+     * has wound back past what it already sent, so the room is holding
+     * strokes that are no longer part of the picture. Re-baselining is the
+     * honest answer -- a keyframe of every layer on the path, then the tail --
+     * and it costs one snapshot per divergence rather than per stroke.
+     */
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+
+        bool on_path = (since == 0);
+        for (const PaintOp* op : chain) if (op->seq == since) { on_path = true; break; }
+
+        size_t n = 0;
+        if (!on_path)
+        {
+            ETCS_LOG("PaintDocument", "ExportOps: " << since << " is not on this path "
+                     "any more -- re-baselining with a keyframe per layer.");
+            std::vector<ETCS::RID> done;
+            for (const PaintOp* op : chain)
+            {
+                bool seen = false;
+                for (ETCS::RID r : done) if (r == op->layer) { seen = true; break; }
+                if (seen) continue;
+                done.push_back(op->layer);
+                PaintLayer* l = layerByRID(op->layer);
+                if (!l) continue;
+                PaintOp snap;
+                snap.kind   = PaintOpKind::Snapshot;
+                snap.layer  = op->layer;
+                snap.order  = l->order();
+                snap.author = m_author;
+                snap.w      = l->PixelWidth();
+                snap.h      = l->PixelHeight();
+                if (!l->SnapshotBytes(snap.bytes)) continue;
+                snap.seq = 0;                 // the node numbers it
+                o << paint_op_encode(snap) << "\n";
+                ++n;
+            }
+        }
+        else
+        {
+            for (const PaintOp* op : chain)
+            {
+                if (op->seq <= since) continue;
+                o << paint_op_encode(*op) << "\n";
+                ++n;
+            }
+        }
+        if (!o) { ETCS_LOG("PaintDocument", "ExportOps: write to '" << path << "' failed."); return 0; }
+        ETCS_LOG("PaintDocument", "ExportOps: " << n << " entr(ies) after " << since
+                 << " along a " << chain.size() << "-entry path -> '" << path << "'.");
+        return n;
+    }
+
+    /*
+ * EVERY LINE IS APPLIED AND KEPT, in the order it arrives. A line that does
+ * not parse is skipped and said so rather than aborting the batch: a viewer
+ * that drops one entry shows a slightly wrong picture, and a viewer that
+ * stops reading shows a frozen one. The first is recoverable by the next
+ * snapshot and the second is not recoverable at all.
+ */
+    size_t ImportOps(const std::string& path)
+    {
+        std::ifstream f(path, std::ios::binary);
+        if (!f)
+        {
+            ETCS_LOG("PaintDocument", "ImportOps: cannot open '" << path << "'.");
+            return 0;
+        }
+        std::string line;
+        size_t taken = 0, bad = 0;
+        while (std::getline(f, line))
+        {
+            if (line.empty()) continue;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            PaintOp op;
+            if (!paint_op_decode(line, op)) { ++bad; continue; }
+            AcceptOp(std::move(op));
+            ++taken;
+        }
+        ETCS_LOG("PaintDocument", "ImportOps: " << taken << " entr(ies) from '" << path
+                 << "'" << (bad ? ", " + std::to_string(bad) + " unreadable and skipped" : "")
+                 << "; at " << m_book.head() << ".");
+        return taken;
+    }
+
+    /*
+ * ── UNDO AND REDO WALK THE TREE ──────────────────────────────────────────
+ *
+ * Undo is "stand on my parent", redo is "stand on my most recent child", and
+ * between them that is the entire model. Neither exchanges buffers with the
+ * other -- a snapshot stack had to, because it can only move a state from one
+ * pile to another, and a tree can simply name a node.
+ *
+ * WHAT A BRANCH IS. Draw, undo, draw again: the second stroke's parent is the
+ * cursor, which already had a child, so it becomes a SECOND child rather than
+ * erasing the first. Nothing is discarded by an undo and nothing is discarded
+ * by the change that follows one -- ctrl+z walks back to the fork and ctrl+y
+ * comes forward down whichever branch was made most recently.
+ *
+ * MOST RECENT, WITH NO TIE TO BREAK, because sequences are unique and handed
+ * out in the order things actually happened. "Most recent" is `max(seq)` over
+ * the children and needs no timestamp and no policy.
+ *
+ * THIS REPLACED A SEPARATE HIGH-WATER MARK. `m_redo_from` was a second
+ * variable recording where the future used to reach, kept in step with the
+ * cursor by hand and cleared by every new change -- which is how it expressed
+ * "the untaken future is gone", the one thing a tree does not have to say.
+ * Now "is there anything to redo" is "does the cursor have children", asked of
+ * the structure rather than of a variable beside it.
+ *
+ * SNAPSHOTS ARE STEPPED OVER, not stopped on. A keyframe is an entry in the
+ * chain but not a thing anybody did, so landing on one would make ctrl+z
+ * sometimes do nothing visible -- which reads as a broken key, not as a
+ * subtlety. Both directions skip to the nearest entry that MARKED something.
+ */
+    bool Undo()
+    {
+        sealOpenOp();
+        // NOT "0 means the head". Every append sets the cursor, so zero is
+        // genuinely "before anything" -- and reading it as the head would make
+        // an undo on a fully wound-back document leap to the top and undo the
+        // newest entry instead of answering that there is nothing left.
+        const uint64_t cur = m_cursor;
+
+        // The newest marking entry at or above the cursor, walking parents --
+        // stepping over any keyframes sitting between here and it.
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(cur, chain);
+        const PaintOp* mark = nullptr;
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+            if ((*it)->marks()) { mark = *it; break; }
+
+        if (!mark) { ETCS_LOG("PaintDocument", "nothing to undo"); return false; }
+        m_cursor = mark->parent;
+        return replayTo(m_cursor, "undo");
+    }
+
+    bool Redo()
+    {
+        sealOpenOp();
+        // Down the most-recent child each time, until something that marked
+        // lands under us. A run of keyframes has one child each, so this is
+        // one step in every ordinary case.
+        uint64_t walk = m_cursor;
+        std::vector<const PaintOp*> kids;
+        for (size_t guard = 0; guard <= m_book.size(); ++guard)
+        {
+            m_book.ChildrenOf(walk, kids);
+            if (kids.empty()) break;
+            walk = kids.front()->seq;                 // newest first
+            if (kids.front()->marks())
+            {
+                m_cursor = walk;
+                return replayTo(m_cursor, "redo");
+            }
+        }
+        ETCS_LOG("PaintDocument", "nothing to redo");
+        return false;
+    }
+
+    // Steps available each way, for the layer panel's readout and the two work
+    // functions that print them. Ancestors that marked, and the marking entries
+    // reachable forward down the most-recent branch.
+    size_t undoDepth() const
+    {
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+        size_t n = 0;
+        for (const PaintOp* o : chain) if (o->marks()) ++n;
+        return n;
+    }
+
+    size_t redoDepth() const
+    {
+        size_t n = 0;
+        uint64_t walk = m_cursor;
+        std::vector<const PaintOp*> kids;
+        for (size_t guard = 0; guard <= m_book.size(); ++guard)
+        {
+            m_book.ChildrenOf(walk, kids);
+            if (kids.empty()) break;
+            if (kids.front()->marks()) ++n;
+            walk = kids.front()->seq;
+        }
+        return n;
+    }
+
+    // How many branches fork off the cursor, which is the one thing about the
+    // tree a person can otherwise only discover by pressing redo and being
+    // surprised. The panel can say "2 futures" with this.
+    size_t branchesHere() const
+    {
+        std::vector<const PaintOp*> kids;
+        m_book.ChildrenOf(m_cursor, kids);
+        return kids.size();
+    }
+
+    /*
+ * REPLAY ONE ENTRY ONTO THIS DOCUMENT. The viewer's whole job, and the second
+ * half of undo's.
+ *
+ * Deliberately NOT a second implementation of any mark: every branch here ends
+ * in the same PaintLayer primitive the live path calls, with the brush the
+ * entry carries. A replayed stroke that drew itself differently from the one
+ * it is replaying would be a test of the wrong thing and a viewer showing a
+ * different picture.
+ */
+    bool ApplyOp(const PaintOp& op)
+    {
+        PaintLayer* layer = layerFor(op);
+        if (!layer)
+        {
+            ETCS_LOG("PaintDocument", "replay: no layer for entry " << op.seq
+                     << " (RID " << op.layer << ", order " << op.order
+                     << ") -- dropped.");
+            return false;
+        }
+
+        switch (op.kind)
+        {
+        case PaintOpKind::Snapshot:
+            if (!layer->RestoreBytes(op.bytes))
+            {
+                ETCS_LOG("PaintDocument", "replay: entry " << op.seq
+                         << " is " << op.bytes.size() << " bytes for a layer that is not that size"
+                         << " -- dropped.");
+                return false;
+            }
+            return true;
+
+        case PaintOpKind::Dab:
+            for (size_t i = 0; i + 1 < op.pts.size(); i += 2)
+                layer->DrawBrush(op.pts[i], op.pts[i + 1], op.brush);
+            return true;
+
+        case PaintOpKind::Line:
+            if (op.points() < 2) return false;
+            layer->StrokeLine(op.pts[0], op.pts[1], op.pts[2], op.pts[3], op.brush);
+            return true;
+
+        case PaintOpKind::Rect:
+            if (op.points() < 2) return false;
+            layer->DrawRectOutline(op.pts[0], op.pts[1], op.pts[2], op.pts[3], op.brush);
+            return true;
+
+        case PaintOpKind::Ellipse:
+            if (op.points() < 2) return false;
+            layer->DrawEllipseOutline(op.pts[0], op.pts[1], op.pts[2], op.pts[3], op.brush);
+            return true;
+
+        case PaintOpKind::Poly:
+        {
+            const size_t n = op.points();
+            if (n < 2) return false;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const size_t j = (i + 1) % n;
+                layer->StrokeLine(op.pts[i * 2], op.pts[i * 2 + 1],
+                                  op.pts[j * 2], op.pts[j * 2 + 1], op.brush);
+            }
+            return true;
+        }
+
+        case PaintOpKind::Fill:
+        {
+            if (op.points() < 1) return false;
+            const PaintColor ink = (op.brush.blend == PaintBlendMode::Erase)
+                                   ? PaintColor{ 0.0f, 0.0f, 0.0f, 0.0f }
+                                   : op.brush.color;
+            layer->FloodFill(op.pts[0], op.pts[1], ink, op.tolerance);
+            return true;
+        }
+        }
+        return false;
+    }
+
+    // Take an entry somebody else made -- a host's push, a file being reopened
+    // -- into this notebook AND onto the picture. The one door for arriving
+    // history, so a viewer and a reload are the same code path.
+    bool AcceptOp(PaintOp op)
+    {
+        const bool ok = ApplyOp(op);
+        m_cursor = m_book.AppendAt(std::move(op), m_cursor);
+        Touch();
+        return ok;
+    }
+
+    // Where this document stands in the record, which on a viewer is where it
+    // stands in the NODE's record -- the `since` of its next read.
+    uint64_t notebookHead() const { return m_book.head(); }
 
     void RenderToSurface(ETCS::RID target, int32_t x, int32_t y, float zoom = 1.0f)
     {
@@ -3481,13 +4455,12 @@ public:
         else m_sel.Reset(w, h);
         for (PaintTextBox& b : m_text) { b.x += dx; b.y += dy; }
 
-        m_undo.clear();
-        m_redo.clear();
+        ClearHistory();
         ETCS_LOG("PaintDocument", "'" << m_name << "' " << m_width << "x" << m_height
                  << " -> " << w << "x" << h << " anchored at " << anchor
                  << " (pixels moved by " << dx << "," << dy << "), " << stack.size()
                  << " layer(s)" << (paper ? ", paper '" + paper->name() + "' extended" : "")
-                 << "; history dropped -- a resize is not a step the snapshot store can hold.");
+                 << "; history dropped -- a resize re-states every raster, so no entry taken before it describes a layer that is still that size.");
         m_width = w;
         m_height = h;
         return true;
@@ -3517,8 +4490,7 @@ public:
         m_sel.Reset(w, h);               // the lift goes with it: there is nothing to land on
         m_text.clear();
         m_text_sel = 0;
-        m_undo.clear();
-        m_redo.clear();
+        ClearHistory();
         m_width = w;
         m_height = h;
         ETCS_LOG("PaintDocument", "'" << m_name << "' new " << w << "x" << h << ", "
@@ -3559,8 +4531,7 @@ public:
     {
         m_sel.Reset(m_width, m_height);              // the carry's layer is about to go, lift and all
         m_active_layer = nullptr;
-        m_undo.clear();
-        m_redo.clear();
+        ClearHistory();
         m_text.clear();
         m_text_sel = 0;
 
@@ -3888,9 +4859,20 @@ public:
     // THROUGH activeLayer(), not the member: that is where the selection is
     // bound as the clip, and this is the freehand path -- the one every stroke
     // takes and the one that must not be the exception.
+    //
+    // AND THE POINT GOES IN THE NOTEBOOK HERE, not in PaintInput. This is the
+    // one place a freehand mark reaches the document, which makes it the only
+    // place a Dab's path can be recorded without the recording and the marking
+    // being two different code paths that have to agree. It also means a
+    // scripted stroke (PaintInput::ScriptPointer) is recorded exactly as a
+    // device's is, because both arrive here.
     void ApplyBrush(int32_t x, int32_t y, const PaintBrushState& brush)
     {
-        if (PaintLayer* l = activeLayer()) l->DrawBrush(x, y, brush);
+        if (PaintLayer* l = activeLayer())
+        {
+            l->DrawBrush(x, y, brush);
+            NoteOpPoint(x, y);
+        }
     }
 
     uint32_t width() const { return m_width; }
@@ -3949,9 +4931,136 @@ private:
     std::vector<uint8_t> m_sel_base;
     PaintSelection m_clip;     // the clipboard: a selection's shape and bytes, kept
 
-    struct HistoryEntry { ETCS::RID layer = 0; std::vector<uint8_t> bytes; };
-    std::vector<HistoryEntry> m_undo;
-    std::vector<HistoryEntry> m_redo;
+    /*
+     * ── the notebook, and where in it this document currently stands ─────
+     *
+     * m_cursor is "the entry this picture is as of", and it is the ONLY
+     * position this document keeps -- which is the point of the tree. It is
+     * also every new entry's parent, so a change made after an undo forks
+     * rather than overwrites, and it is the node redo looks for children of.
+     *
+     * Zero means "before anything", which an empty notebook and a document
+     * wound all the way back both are, and both want the same answer from
+     * every walk.
+     */
+    PaintNotebook m_book;
+    PaintOp       m_open;
+    bool          m_open_live = false;
+    uint64_t      m_cursor    = 0;
+    std::string   m_author;
+
+    void sealOpenOp()
+    {
+        if (!m_open_live) return;
+        m_open_live = false;
+        // An entry that marked nothing is not history. A press that never
+        // moved, an anchored gesture abandoned before it had two corners,
+        // a preview that committed nothing -- all of them open an entry and
+        // none of them changed the picture.
+        if (m_open.pts.empty()) { m_open = PaintOp{}; return; }
+        // The cursor is the parent, which is what makes a change after an undo
+        // a BRANCH rather than an overwrite.
+        m_cursor = m_book.Append(std::move(m_open), m_cursor);
+        m_open = PaintOp{};
+    }
+
+    void appendSnapshot(PaintLayer* layer)
+    {
+        if (!layer) return;
+        PaintOp snap;
+        snap.kind   = PaintOpKind::Snapshot;
+        snap.layer  = layer->getRID();
+        snap.order  = layer->order();
+        snap.author = m_author;
+        snap.w      = layer->PixelWidth();
+        snap.h      = layer->PixelHeight();
+        if (!layer->SnapshotBytes(snap.bytes)) return;
+        m_cursor = m_book.Append(std::move(snap), m_cursor);
+    }
+
+    PaintLayer* layerByRID(ETCS::RID rid) const
+    {
+        std::vector<PaintLayer*> layers;
+        OrderedLayers(layers);
+        for (PaintLayer* l : layers) if (l->getRID() == rid) return l;
+        return nullptr;
+    }
+
+    // The RID if this runtime knows it, then the order, then the active layer.
+    // See PaintOp::layer for why an entry names its layer twice; the last
+    // fallback is there because a viewer with ONE layer should show a host's
+    // strokes on it rather than show nothing, which is the common case and the
+    // one where being strict would be indistinguishable from being broken.
+    PaintLayer* layerFor(const PaintOp& op) const
+    {
+        if (PaintLayer* l = layerByRID(op.layer)) return l;
+        std::vector<PaintLayer*> layers;
+        OrderedLayers(layers);
+        for (PaintLayer* l : layers) if (l->order() == op.order) return l;
+        return m_active_layer;
+    }
+
+    /*
+     * BE THE PICTURE AS OF seq. For every layer the notebook has touched:
+     * restore its newest snapshot at or before seq, then replay that layer's
+     * marks from there forward.
+     *
+     * PER LAYER rather than over the whole log, because a snapshot is a
+     * layer's and replaying another layer's marks onto it would be wrong in
+     * the one case that matters -- two layers painted alternately, which is
+     * ordinary work rather than a corner.
+     *
+     * A layer with no snapshot at or before seq is left alone and said so:
+     * its recorded past begins later than the point being asked for, so
+     * there is nothing this function could restore it to that would be more
+     * correct than what is already on it.
+     */
+    bool replayTo(uint64_t seq, const char* what)
+    {
+        if (m_sel.lifted()) DropSelection();
+
+        // THE CANONICAL PATH, and only it. Sequence order stopped being the
+        // answer when a second branch became possible: entries numbered
+        // between a keyframe and the target may belong to a sibling, and
+        // replaying those paints a picture nobody ever made.
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(seq, chain);
+
+        std::vector<ETCS::RID> touched;
+        for (const PaintOp* o : chain)
+        {
+            bool seen = false;
+            for (ETCS::RID r : touched) if (r == o->layer) { seen = true; break; }
+            if (!seen) touched.push_back(o->layer);
+        }
+
+        size_t replayed = 0, restored = 0;
+        for (ETCS::RID rid : touched)
+        {
+            const PaintOp* base = PaintNotebook::SnapshotOnChain(chain, rid);
+            if (!base)
+            {
+                ETCS_LOG("PaintDocument", what << ": layer " << rid
+                         << " has no keyframe on this path -- left as it is.");
+                continue;
+            }
+            if (!ApplyOp(*base)) continue;
+            ++restored;
+            bool past = false;
+            for (const PaintOp* o : chain)
+            {
+                if (!past) { if (o == base) past = true; continue; }
+                if (o->layer != rid || !o->marks()) continue;
+                if (ApplyOp(*o)) ++replayed;
+            }
+        }
+
+        Touch();
+        ETCS_LOG("PaintDocument", what << " to " << seq << ": " << restored
+                 << " layer(s) restored, " << replayed << " op(s) replayed along a "
+                 << chain.size() << "-entry path.");
+        return restored > 0;
+    }
 
     // What the paper is cleared to -- the page's convention, stated once here
     // for the two verbs that have to make new paper (Resize, New) rather than
@@ -4006,36 +5115,6 @@ private:
         return stack.front();
     }
 
-    // Move one entry from `from` to `to`, exchanging it with the layer's
-    // current bytes so the step is its own inverse.
-    bool step(std::vector<HistoryEntry>& from, std::vector<HistoryEntry>& to, const char* what)
-    {
-        if (from.empty()) { ETCS_LOG("PaintDocument", "nothing to " << what); return false; }
-        HistoryEntry e = std::move(from.back());
-        from.pop_back();
-        // By RID, resolved now: the layer may have been reordered, renamed or
-        // deleted since the snapshot, and only the last of those is a problem.
-        PaintLayer* layer = nullptr;
-        std::vector<PaintLayer*> layers;
-        OrderedLayers(layers);
-        for (PaintLayer* l : layers)
-            if (l->getRID() == e.layer) { layer = l; break; }
-        if (!layer)
-        {
-            ETCS_LOG("PaintDocument", what << ": that layer is gone -- entry dropped.");
-            return false;
-        }
-        if (m_sel.lifted()) DropSelection();
-        HistoryEntry now; now.layer = e.layer;
-        if (!layer->SnapshotBytes(now.bytes) || !layer->RestoreBytes(e.bytes))
-        {
-            ETCS_LOG("PaintDocument", what << ": layer size changed since -- entry dropped.");
-            return false;
-        }
-        to.push_back(std::move(now));
-        Touch();
-        return true;
-    }
 };
 
 // Out of line because a layer's parent is a PaintDocument, which is declared
@@ -9036,10 +10115,16 @@ public:
             {
                 // History, at the ONE point a continuous stroke starts writing.
                 // An anchored kind writes at release and is remembered there
-                // (commit_anchored); doing both here would spend a snapshot on a
+                // (commit_anchored); doing both here would spend an entry on a
                 // preview that may commit nothing.
+                //
+                // OPENS A Dab ENTRY rather than taking a snapshot: the points
+                // arrive afterwards, through PaintDocument::ApplyBrush, and the
+                // release seals it. An entry that never gets a point -- a press
+                // that did not move and marked nothing -- is dropped at the seal
+                // rather than recorded as an empty stroke.
                 if (m_document && !paint_kind_is_anchored(m_tool->kind()) && !paint_kind_is_placed(m_tool->kind()))
-                    m_document->Remember();
+                    m_document->RememberOp(PaintOpKind::Dab, m_tool->brush());
                 m_tool->BeginStroke(m_cursor_x, m_cursor_y);
                 m_last_x = m_cursor_x;
                 m_last_y = m_cursor_y;
@@ -9123,12 +10208,14 @@ public:
             if (m_tool)
             {
                 const PaintToolKind k = m_tool->kind();
+                // commit_anchored opens its OWN entry now -- it is the only
+                // thing here that knows which shape is about to be drawn, and
+                // an entry opened before that is known could only be a
+                // snapshot. A glyph commit places a box rather than pixels and
+                // still takes the undescribed path, inside place_text_box.
                 if (m_tool->active() && paint_kind_is_anchored(k) && paint_kind_commits(k))
-                {
-                    if (m_document) m_document->Remember();
                     commit_anchored(k, m_tool->anchorX(), m_tool->anchorY(),
                                     m_cursor_x, m_cursor_y);
-                }
                 else if (m_tool->active() && k == PaintToolKind::Select)
                     end_selection(m_tool->anchorX(), m_tool->anchorY(),
                                   m_cursor_x, m_cursor_y);
@@ -9152,8 +10239,14 @@ public:
                  * and the release is the moment that has to end with them
                  * agreeing. Once per stroke, against once per motion sample,
                  * so this is not the path the live dab exists to protect.
+                 *
+                 * AND THE NOTEBOOK ENTRY IS SEALED HERE, for the same reason
+                 * and at the same moment: the release is where the stroke's
+                 * content is finally complete, so it is where the record of it
+                 * stops being open. The two invariants are the same invariant.
                  */
                 (void)k;
+                if (m_document) m_document->SealOp();
                 repaint_view();
             }
         }
@@ -9606,20 +10699,58 @@ private:
         if (!layer || !m_tool) return;
         const PaintBrushState& brush = m_tool->brush();
 
+        /*
+     * THE ENTRY IS OPENED HERE, one line before the mark it describes, because
+     * this is the first point at which the shape is known: the press knew only
+     * that something anchored had begun. open_shape records the kind and the
+     * brush, the two corners go in as the entry's points, and seal_shape closes
+     * it -- which is the same open/append/seal shape a freehand stroke has,
+     * compressed into one call because a shape's content is complete the
+     * instant it is committed.
+     */
+        auto open_shape = [&](PaintOpKind k)
+        {
+            m_document->RememberOp(k, brush);
+            m_document->NoteOpPoint(ax, ay);
+            m_document->NoteOpPoint(bx, by);
+        };
+
         switch (kind)
         {
-        case PaintToolKind::Line:    layer->StrokeLine(ax, ay, bx, by, brush); break;
-        case PaintToolKind::Rect:    layer->DrawRectOutline(ax, ay, bx, by, brush); break;
-        case PaintToolKind::Ellipse: layer->DrawEllipseOutline(ax, ay, bx, by, brush); break;
+        case PaintToolKind::Line:
+            open_shape(PaintOpKind::Line);
+            layer->StrokeLine(ax, ay, bx, by, brush);
+            break;
+        case PaintToolKind::Rect:
+            open_shape(PaintOpKind::Rect);
+            layer->DrawRectOutline(ax, ay, bx, by, brush);
+            break;
+        case PaintToolKind::Ellipse:
+            open_shape(PaintOpKind::Ellipse);
+            layer->DrawEllipseOutline(ax, ay, bx, by, brush);
+            break;
         case PaintToolKind::Shape:
             switch (m_tool->shape())
             {
-            case PaintShapeMode::Rect:    layer->DrawRectOutline(ax, ay, bx, by, brush); break;
-            case PaintShapeMode::Ellipse: layer->DrawEllipseOutline(ax, ay, bx, by, brush); break;
+            case PaintShapeMode::Rect:
+                open_shape(PaintOpKind::Rect);
+                layer->DrawRectOutline(ax, ay, bx, by, brush);
+                break;
+            case PaintShapeMode::Ellipse:
+                open_shape(PaintOpKind::Ellipse);
+                layer->DrawEllipseOutline(ax, ay, bx, by, brush);
+                break;
             default:
             {
                 std::vector<std::pair<int32_t, int32_t>> v;
                 paint_shape_vertices(m_tool->shape(), ax, ay, bx, by, v);
+                // The RING rather than the shape mode: a replaying viewer must
+                // not have to own a second copy of paint_shape_vertices, and a
+                // mode added later would then draw as whatever that viewer's
+                // build thought the name meant. Vertices are the wire form for
+                // exactly the reason points are a stroke's.
+                m_document->RememberOp(PaintOpKind::Poly, brush);
+                for (const auto& p : v) m_document->NoteOpPoint(p.first, p.second);
                 for (size_t i = 0; i < v.size(); ++i)
                 {
                     const auto& p0 = v[i]; const auto& p1 = v[(i + 1) % v.size()];
@@ -9630,10 +10761,13 @@ private:
             }
             break;
         // A glyph commit places a BOX, not pixels, and a box is the document's
-        // rather than the layer's -- see PaintTextBox and place_text_box.
+        // rather than the layer's -- see PaintTextBox and place_text_box. No
+        // descriptor: a box is not a mark on a layer, so there is nothing for
+        // ApplyOp to replay and place_text_box takes the snapshot path.
         case PaintToolKind::Glyph:   place_text_box(ax, ay, bx, by); break;
         default: break;
         }
+        m_document->SealOp();
     }
 
     /*
@@ -9648,13 +10782,19 @@ private:
 
         if (kind == PaintToolKind::Fill)
         {
-            if (m_document) m_document->Remember();
+            // Open, seed, seal: a fill's whole content is the point it started
+            // from and the brush it started with, both known here.
+            m_document->RememberOp(PaintOpKind::Fill, m_tool->brush(), m_tool->tolerance());
+            m_document->NoteOpPoint(x, y);
             // The eraser is a blend, so it means the same thing on every tool
             // that marks: fill lays the transparent pixel rather than the ink.
+            // ApplyOp derives the same ink from the entry's own brush, so a
+            // replayed erase-fill erases rather than painting black.
             const PaintColor ink = (m_tool->brush().blend == PaintBlendMode::Erase)
                                    ? PaintColor{ 0.0f, 0.0f, 0.0f, 0.0f }
                                    : m_tool->brush().color;
             const size_t n = layer->FloodFill(x, y, ink, m_tool->tolerance());
+            m_document->SealOp();
             ETCS_LOG("PaintInput", "fill at " << x << "," << y << " -> " << n << " px");
         }
         else if (kind == PaintToolKind::Eyedrop)
@@ -10307,6 +11447,697 @@ private:
     int32_t  m_y = 0;
 };
 
+/*
+ * ── PaintNode: a shared session, and who may do what to it ───────────────────
+ *
+ * THE SAME CENTRALIZATION ARTIFACT ChessNode names itself as, for the same
+ * structural reason and with the same consequence: a browser has no listening
+ * socket, so a page cannot be a server. A host PUSHES its notebook here and
+ * viewers PULL it, and the asymmetry is not a design preference -- it is the
+ * only arrangement available until there is a peer link. A node hosting many
+ * sessions is a server; a node hosting one is a peer.
+ *
+ * IT HOLDS LINES, NOT A DOCUMENT. This type never decodes an entry, never owns
+ * a PaintDocument and never draws anything. It assigns sequence numbers, checks
+ * a token against a role, rewrites one field and stores the rest verbatim --
+ * which is precisely what lets a node built today relay an entry kind added to
+ * PaintProvider tomorrow. A relay that understood its payload would have to be
+ * rebuilt every time the payload grew.
+ *
+ * IT IS THE ORDERING DOMAIN. Sequence numbers are assigned here and nowhere
+ * else, so the host and every viewer agree on what happened in what order by
+ * construction rather than by reconciliation. The host draws its own stroke
+ * locally the instant it is made -- the input arriving is what drives the
+ * picture -- and pushes afterwards, so two writers marking the same pixels can
+ * see them settle in different orders on their own screens until the next
+ * snapshot. That is the honest cost of local echo and it is stated rather than
+ * hidden; the alternative is a round trip before your own ink appears.
+ *
+ * ── the link IS the right to view ───────────────────────────────────────────
+ *
+ * There is no knocking and nothing to admit. Holding the session's id is what
+ * makes you a reader, because that is what a link means to everyone who has
+ * ever been sent one -- and a door that has to be answered is a door somebody
+ * has to be sitting at.
+ *
+ * WHICH MAKES THE SESSION ID A SECRET, and that is not a side effect to be
+ * tolerated, it is the whole security model. So it is minted here exactly as a
+ * token is -- sixteen characters from random_device, never a name anybody
+ * types -- and THERE IS NO LISTING VERB. A node that could enumerate its
+ * sessions would be handing out every capability it holds; the one that used to
+ * be here was written for chess, where being findable is the point, and it is
+ * precisely wrong here.
+ *
+ * A TOKEN IS STILL A ROLE, and that is the part the host does decide. Arriving
+ * by link makes you a reader; writing takes an elevation the host performs by
+ * hand in the visitor menu. So the roster is name -> token -> role, the check at
+ * each verb is a role check rather than a membership check, and the host's own
+ * page holds a token too (role owner) -- one code path in, and no "am I the
+ * host" special case anywhere in it.
+ *
+ * Elevation does not open a second channel -- it lets that name's entries into
+ * the one that already exists. Revocation is dropping the token: the next read
+ * answers FORBIDDEN and that page falls back to its own local document, which
+ * it has had all along.
+ *
+ * ── the path surface ─────────────────────────────────────────────────────────
+ *
+ *   /<mount>/<self>/open                              start one; "<session> <token>"
+ *   /<mount>/<self>/join/<session>                    the link; answers a token
+ *   /<mount>/<self>/<token>/<session>/read/<since>    entries after <since>
+ *   /<mount>/<self>/<token>/<session>/head            the newest sequence
+ *   /<mount>/<self>/<token>/<session>/push            POST body: entries
+ *   /<mount>/<self>/<token>/<session>/who             the roster (owner)
+ *   /<mount>/<self>/<token>/<session>/role/<name>/<r> reader|writer|out (owner)
+ *   /<mount>/<self>/<token>/<session>/close           end it, and everyone in it
+ *
+ * `open` and `join` are the only verbs reachable without a token, and both are
+ * reserved words in the segment a token would occupy. Tokens and session ids are
+ * hex, so the two spaces cannot collide -- the same shape ChessNode's reserved
+ * selves and reserved matches already have.
+ *
+ * NOTE THAT `open` DOES NOT TAKE A NAME. The host cannot choose the id, because
+ * an id anybody could choose is an id anybody could guess, and guessing it is
+ * the whole of getting in.
+ *
+ * THIS IS A STRUCTURED ROUTE (HttpServer::AddRequestRoute): it needs the METHOD
+ * to tell a push from a read and the BODY to receive one, and it answers `read`
+ * by REFERENCE because a batch of entries is not going to fit in 255 bytes.
+ * Neither was possible before the NetworkProvider change that went in with it.
+ */
+/*
+ * ── PaintVisitors: who is in the session, drawn on the sheet ─────────────────
+ *
+ * THE MENU IS IN THE CANVAS BECAUSE IT CAN BE. The page used to hold this, and
+ * my reason was that a share panel needs TEXT ENTRY -- a node address, a name, a
+ * session to type -- which a PaintCanvasMenu pane has no field for. The link
+ * removed all three: the id is minted, the name is remembered, and the node is
+ * whoever served the page. What is left is names, roles and buttons, which is
+ * exactly what these panes are made of.
+ *
+ * ROWS ARE DECLARED BY THE SCRIPT, NOT SPAWNED HERE -- the same shape
+ * PaintLayerPanel uses, and for the same reason: the LOOK belongs to the script
+ * that draws it and this type only says what each row currently MEANS. A fixed
+ * pool with the unused rows hidden also means no allocation on a roster change,
+ * which happens on a timer.
+ *
+ * AND THE BUTTONS ARE PALETTE CALLS. Each row's controls are ordinary
+ * PaintPalette::AddCall entries naming a verb here with the row index as the
+ * argument, which is how every control in paint_menu.etcs already works. That
+ * is worth stating because the alternative -- teaching PaintInput a second
+ * panel type, as it knows PaintLayerPanel -- would have been new surface on the
+ * input path for a window that needs none of it.
+ *
+ * WHAT IT DOES NOT DO: talk to the node. It cannot -- a fetch belongs to the
+ * page. So a press raises an event the page listens for, the page performs the
+ * verb against the node, and the answer comes back as a fresh roster. One
+ * direction each way, and this type never learns what a session is.
+ */
+class PaintVisitors : public DeletableBase<PaintVisitors>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintVisitors);
+
+    PaintVisitors() = default;
+    bool DeleteConcrete() override { return true; }
+
+    bool Create()
+    {
+        m_rows.clear();
+        this->addTag("active");
+        return true;
+    }
+
+    // bg is the row's plate, name/role the two labels this fills in. The
+    // buttons are not listed: they are palette calls naming a verb below, so
+    // this type never has to resolve them.
+    void AddRow(ETCS::RID bg, ETCS::RID name, ETCS::RID role)
+    {
+        m_rows.push_back(Row{ bg, name, role });
+    }
+
+    void BindWindow(ETCS::RID pane) { m_window = pane; }
+
+    // Row colours and the two role inks, given by the script for the same
+    // reason the panel's are: this is a look, and the script drew it.
+    void SetRowColors(float r, float g, float b, float a)
+    { m_row[0] = r; m_row[1] = g; m_row[2] = b; m_row[3] = a; }
+    void SetInk(float wr, float wg, float wb, float rr, float rg, float rb)
+    {
+        m_ink_writer[0] = wr; m_ink_writer[1] = wg; m_ink_writer[2] = wb;
+        m_ink_reader[0] = rr; m_ink_reader[1] = rg; m_ink_reader[2] = rb;
+    }
+
+    /*
+ * "name role" per line, exactly as the node answers `who`. Parsed here rather
+ * than by the page because the page would then be deciding what a row says,
+ * and the row is this window's.
+ *
+ * The OWNER's line is kept and marked rather than dropped: a host looking at a
+ * list of other people has no way to tell whether the list is short because
+ * nobody came or because it does not include them.
+ */
+    void SetRoster(const std::string& text)
+    {
+        m_who.clear();
+        std::istringstream in(text);
+        std::string line;
+        while (std::getline(in, line))
+        {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            std::istringstream ls(line);
+            std::string who, role;
+            if (!(ls >> who >> role)) continue;
+            m_who.push_back({ who, role });
+        }
+        // Owner first, then by name, so a row does not move under the pointer
+        // every time somebody's idle clock ticks.
+        std::stable_sort(m_who.begin(), m_who.end(),
+            [](const Person& a, const Person& b)
+            {
+                if ((a.role == "owner") != (b.role == "owner")) return a.role == "owner";
+                return a.name < b.name;
+            });
+        Refresh();
+    }
+
+    void Open()  { show(true);  }
+    void Close() { show(false); page_event("close"); }
+    bool shown() const { return m_shown; }
+    size_t count() const { return m_who.size(); }
+
+    /*
+ * THE THREE ROW VERBS, reached as palette calls with the row index. Each one
+ * only NAMES what the page should ask the node for -- this window changes
+ * nothing by itself, because the roster it is drawing is the node's and the
+ * next refresh would overwrite any guess it made.
+ */
+    void Promote(size_t row) { act(row, "writer"); }
+    void Demote(size_t row)  { act(row, "reader"); }
+    void Remove(size_t row)  { act(row, "out");    }
+
+private:
+    struct Row    { ETCS::RID bg = 0, name = 0, role = 0; };
+    struct Person { std::string name, role; };
+
+    void act(size_t row, const char* verb)
+    {
+        if (row >= m_who.size()) return;
+        if (m_who[row].role == "owner") return;      // the host is not theirs to change
+        page_event((std::string(verb) + ":" + m_who[row].name).c_str());
+    }
+
+    void show(bool up)
+    {
+        m_shown = up;
+        set_hidden(m_window, !up);
+    }
+
+    static void set_text(ETCS::RID rid, const std::string& text)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("TextLabel", rid);
+        if (!raw) return;
+        ETCS::Buffer b; b.writeString(text.c_str());
+        raw->call(ETCS::Buffer("TextLabel.SetText"), b, ETCS::RootSignalContext());
+    }
+
+    static void set_ink(ETCS::RID rid, const float* c)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("TextLabel", rid);
+        if (!raw) return;
+        ETCS::Buffer b;
+        b.writeString((std::to_string(c[0]) + ", " + std::to_string(c[1]) + ", "
+                       + std::to_string(c[2]) + ", 1.0").c_str());
+        raw->call(ETCS::Buffer("TextLabel.SetColor"), b, ETCS::RootSignalContext());
+    }
+
+    // Through the node's OWN SetHidden verb, not a family method: hiding is a
+    // concrete type's action here (PaintLayerPanel's own hider says the same),
+    // and the tag is what names it.
+    static void set_hidden(ETCS::RID rid, bool hide)
+    {
+        if (rid == 0) return;
+        ETCS::Held<Drawable2D_> held = ETCS::resolve_held<Drawable2D_>("Drawable2D", rid);
+        if (!held) return;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(held.get());
+        if (!e) return;
+        ETCS::Buffer act; act.write((e->getSourceTag().toString() + ".SetHidden").c_str());
+        ETCS::Buffer payload; payload.write(hide ? "1" : "0");
+        try { e->call(act, payload); } catch (...) {}
+        for (ETCS::Entity* n = e; n; n = n->getParent()) etcs_mark_observed(n);
+    }
+
+    // Rows beyond the roster are HIDDEN rather than blanked: an empty plate
+    // still reads as a person who has not loaded yet.
+    void Refresh()
+    {
+        for (size_t i = 0; i < m_rows.size(); ++i)
+        {
+            const bool live = (i < m_who.size());
+            set_hidden(m_rows[i].bg,   !live);
+            set_hidden(m_rows[i].name, !live);
+            set_hidden(m_rows[i].role, !live);
+            if (!live) continue;
+            set_text(m_rows[i].name, m_who[i].name);
+            set_text(m_rows[i].role, m_who[i].role);
+            set_ink(m_rows[i].role,
+                    (m_who[i].role == "writer" || m_who[i].role == "owner")
+                        ? m_ink_writer : m_ink_reader);
+        }
+        ETCS_LOG("PaintVisitors", m_who.size() << " in the session, "
+                 << m_rows.size() << " row(s) available.");
+    }
+
+    /*
+ * UP TO THE PAGE, because only the page can reach the node. Same proxy and the
+ * same reason as PaintCanvasMenu::page_event: this runs on a Worker with no
+ * window, so MAIN_THREAD_EM_ASM rather than EM_ASM.
+ */
+    void page_event(const char* what)
+    {
+#if defined(__EMSCRIPTEN__)
+        MAIN_THREAD_EM_ASM({
+            var what = UTF8ToString($0);
+            window.dispatchEvent(new CustomEvent('etcs-visitors', { detail: what }));
+        }, what);
+#endif
+        ETCS_LOG("PaintVisitors", what << " -> the page.");
+    }
+
+    std::vector<Row>    m_rows;
+    std::vector<Person> m_who;
+    ETCS::RID m_window = 0;
+    bool  m_shown = false;
+    float m_row[4]        = { 0.14f, 0.15f, 0.11f, 0.96f };
+    float m_ink_writer[3] = { 0.79f, 0.71f, 0.35f };
+    float m_ink_reader[3] = { 0.55f, 0.57f, 0.50f };
+};
+
+class PaintNode : public DeletableBase<PaintNode>, public FilterBase<PaintNode>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintNode);
+
+    PaintNode()          = default;
+    virtual ~PaintNode() = default;
+
+    enum class Role : uint8_t { None, Reader, Writer, Owner };
+
+    static const char* role_name(Role r)
+    {
+        switch (r)
+        {
+        case Role::Reader:  return "reader";
+        case Role::Writer:  return "writer";
+        case Role::Owner:   return "owner";
+        default:            return "out";
+        }
+    }
+
+    // Route-level filter, the same one ChessNode has and for the same reason:
+    // one server can carry several mounts and only the node knows which is its.
+    bool AcceptsConcrete(ETCS::Buffer& io) const
+    {
+        const std::string desc = io.restAsString();
+        size_t i = 0;
+        while (i < desc.size() && desc[i] == '/') ++i;
+        size_t j = desc.find('/', i);
+        if (j == std::string::npos) j = desc.size();
+        if (desc.compare(i, j - i, m_mount) != 0) { io.reset(); return false; }
+        io.writeString(m_mount.c_str());
+        return true;
+    }
+
+    const std::string& MountPath() const { return m_mount; }
+    void SetMount(const std::string& m) { if (!m.empty()) m_mount = m; }
+
+    bool DeleteConcrete()
+    {
+        const std::string key = getSourceModule().toString() + ":" + getSourceTag().toString();
+        return ETCS::DestroyEvent{key.c_str(), this}();
+    }
+
+    /*
+ * ONE LOCK, NOT ONE PER SESSION. Every listing verb walks every session, the
+ * reaper walks every session and every roster, and a push touches one session
+ * while `sessions` is reading all of them. Cutting the lock finer would make
+ * each of those an unsynchronised cross-domain read for no gain a relay can
+ * spend -- there is no per-session work here long enough to be worth
+ * overlapping, because this type does no drawing at all.
+ */
+    std::string Request(const RouteRequest& req)
+    {
+        std::lock_guard<std::mutex> lock(m_mu);
+        return requestLocked(req);
+    }
+
+    // The answer is held HERE, as this node's own storage, because a route that
+    // answers by reference is promising the bytes outlive the send -- the same
+    // promise FileHtmlPage makes about a mounted file. One buffer per node and
+    // one answer at a time, which the lock above already guarantees.
+    const std::string& lastAnswer() const { return m_answer; }
+    void setAnswer(std::string s) { m_answer = std::move(s); }
+
+private:
+    struct Member
+    {
+        std::string token;
+        Role        role = Role::Reader;
+        // Last time this member was heard from, so a roster does not fill with
+        // names that walked away. Refreshed by every verb they reach.
+        std::chrono::steady_clock::time_point seen = std::chrono::steady_clock::now();
+    };
+
+    struct Session
+    {
+        std::string host;
+        std::vector<std::string> lines;   // verbatim, one entry each
+        uint64_t seq = 0;
+        std::unordered_map<std::string, Member> roster;   // by name
+        std::chrono::steady_clock::time_point opened = std::chrono::steady_clock::now();
+    };
+
+    // Long enough that a tab left on another desktop is not evicted mid-session,
+    // short enough that a roster is a list of people rather than a guest book.
+    static constexpr long kIdleSeconds = 900;
+
+    /*
+     * A TOKEN IS A SECRET AND HAS TO LOOK LIKE ONE. Sixteen hex characters
+     * from the platform's random device, not from the clock and not from a
+     * counter: a token a viewer can guess is an admission control that admits
+     * everyone, and the two obvious cheap sources are both guessable by
+     * someone who knows roughly when the session opened.
+     */
+    static std::string mint()
+    {
+        static std::mutex mu;
+        std::lock_guard<std::mutex> g(mu);
+        static std::random_device rd;
+        static std::mt19937_64 gen(rd());
+        static const char* hex = "0123456789abcdef";
+        std::uniform_int_distribution<int> d(0, 15);
+        std::string out;
+        out.reserve(16);
+        for (int i = 0; i < 16; ++i) out += hex[d(gen)];
+        return out;
+    }
+
+    // A name is a path segment and an author field, so it may hold neither a
+    // slash nor a space. Sanitised once, here, rather than checked at each of
+    // the places it is about to be interpolated into one or the other.
+    static std::string clean(const std::string& s, size_t cap = 24)
+    {
+        std::string out;
+        for (char c : s)
+        {
+            if (c == '/' || c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+            out += c;
+            if (out.size() >= cap) break;
+        }
+        return out;
+    }
+
+    Session* find(const std::string& name)
+    {
+        auto it = m_sessions.find(name);
+        return (it == m_sessions.end()) ? nullptr : &it->second;
+    }
+
+    // Whose token this is, within this session. Linear because a roster is
+    // people: a session with enough members for this to matter has a bigger
+    // problem than the scan.
+    Member* member(Session& s, const std::string& self, const std::string& token)
+    {
+        auto it = s.roster.find(self);
+        if (it == s.roster.end()) return nullptr;
+        if (it->second.token.empty() || it->second.token != token) return nullptr;
+        it->second.seen = std::chrono::steady_clock::now();
+        return &it->second;
+    }
+
+    void reapLocked()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        for (auto sit = m_sessions.begin(); sit != m_sessions.end(); )
+        {
+            Session& s = sit->second;
+            for (auto mit = s.roster.begin(); mit != s.roster.end(); )
+            {
+                const long idle = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - mit->second.seen).count();
+                // The owner is not reaped out of their own session: a host who
+                // steps away should come back to their session, not to its
+                // absence. It goes when they close it or when it empties.
+                if (mit->second.role != Role::Owner && idle >= kIdleSeconds)
+                {
+                    ETCS_LOG("PaintNode", "'" << mit->first << "' idle " << idle
+                             << "s -- dropped from session '" << sit->first << "'.");
+                    mit = s.roster.erase(mit);
+                    continue;
+                }
+                ++mit;
+            }
+            if (s.roster.empty())
+            {
+                ETCS_LOG("PaintNode", "session '" << sit->first << "' has nobody left -- closing ("
+                         << s.lines.size() << " entr(ies) discarded).");
+                sit = m_sessions.erase(sit);
+                continue;
+            }
+            ++sit;
+        }
+    }
+
+    /*
+     * THERE IS NO LISTING, AND ITS ABSENCE IS THE FEATURE. A verb that
+     * enumerated sessions would publish every id on this node, and an id is
+     * the right to view -- so the listing chess has, which exists there
+     * because being found is the point, is exactly the wrong verb here. If an
+     * operator needs to know what a node is carrying, that is a log line on
+     * the machine, not a route anyone can call.
+     */
+
+    std::string whoLocked(const Session& s) const
+    {
+        std::string out;
+        for (const auto& [name, m] : s.roster)
+        {
+            out += name;
+            out += " ";
+            out += role_name(m.role);
+            out += "\n";
+        }
+        return out;
+    }
+
+    /*
+     * THE PUSH. Every line is renumbered and re-attributed before it is
+     * stored, and that is the whole of what a node does to a payload it
+     * otherwise does not read.
+     *
+     * A line is "<seq> <kind> <author> <rest...>": the first two fields are
+     * replaced, the third is replaced, the rest is copied. Anything that does
+     * not have three fields is refused rather than stored, because a stored
+     * line that nobody can parse is an entry every viewer will skip forever.
+     */
+    size_t pushLocked(Session& s, const std::string& author, const std::string& body)
+    {
+        size_t taken = 0, bad = 0;
+        std::istringstream in(body);
+        std::string line;
+        while (std::getline(in, line))
+        {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+
+            std::istringstream ls(line);
+            std::string was_seq, kind, was_author;
+            if (!(ls >> was_seq >> kind >> was_author)) { ++bad; continue; }
+            std::string rest;
+            std::getline(ls, rest);            // everything after the author, space included
+
+            std::string stored = std::to_string(++s.seq);
+            stored += " " + kind;
+            stored += " " + (author.empty() ? std::string("-") : author);
+            stored += rest;
+            s.lines.push_back(std::move(stored));
+            ++taken;
+        }
+        if (bad)
+            ETCS_LOG("PaintNode", "push from '" << author << "': " << bad
+                     << " malformed line(s) refused.");
+        return taken;
+    }
+
+    std::string readLocked(const Session& s, uint64_t since) const
+    {
+        std::string out;
+        // The lines are in sequence order and their sequence is their position
+        // plus one, so the slice is arithmetic rather than a scan.
+        const size_t first = (since >= s.seq) ? s.lines.size() : static_cast<size_t>(since);
+        for (size_t i = first; i < s.lines.size(); ++i)
+        {
+            out += s.lines[i];
+            out += "\n";
+        }
+        return out;
+    }
+
+    std::string requestLocked(const RouteRequest& req)
+    {
+        if (req.at(0) != m_mount) return "NOT FOUND";
+        reapLocked();
+
+        const std::string self = clean(req.at(1));
+        if (self.empty()) return "NOT FOUND";
+
+        const std::string second = req.at(2);
+        if (second.empty()) return "NOT FOUND";
+
+        /*
+     * ── the two verbs reachable without a token ─────────────────────
+     *
+     * `open` mints the id as well as the token, so a host cannot pick a
+     * name and therefore nobody can guess one. `join` takes the id from
+     * the link and hands back a reader's token, with nothing in between:
+     * holding the link IS the right to view, and there is no pending
+     * state because there is nothing to be pending on.
+     */
+        if (second == "open")
+        {
+            Session fresh;
+            fresh.host = self;
+            Member owner;
+            owner.token = mint();
+            owner.role  = Role::Owner;
+            const std::string token = owner.token;
+            fresh.roster[self] = std::move(owner);
+
+            std::string id = mint();
+            while (m_sessions.count(id)) id = mint();     // astronomically never
+            m_sessions[id] = std::move(fresh);
+            ETCS_LOG("PaintNode", "session '" << id << "' opened by '" << self << "'.");
+            return id + " " + token;
+        }
+
+        if (second == "join")
+        {
+            const std::string id = clean(req.at(3), 40);
+            Session* s = find(id);
+            // The SAME answer for an id that never existed and one that has
+            // been closed: telling the two apart is telling somebody guessing
+            // ids which of their guesses was once real.
+            if (!s) return "NO SUCH SESSION";
+
+            auto it = s->roster.find(self);
+            if (it != s->roster.end())
+            {
+                // Already in: hand back the token they hold, at whatever role
+                // they now have. This is the reload path, and it is also how a
+                // page LEARNS it has been elevated -- the role travels with the
+                // answer, so a viewer that was made a writer finds out on its
+                // next join without anything having to reach it.
+                it->second.seen = std::chrono::steady_clock::now();
+                return it->second.token + " " + role_name(it->second.role);
+            }
+
+            Member m;
+            m.token = mint();
+            m.role  = Role::Reader;          // THE LINK IS WORTH EXACTLY THIS
+            const std::string token = m.token;
+            s->roster[self] = std::move(m);
+            ETCS_LOG("PaintNode", "'" << self << "' joined '" << id << "' as reader.");
+            return token + " reader";
+        }
+
+        // ── everything else carries a token ─────────────────────────────
+        const std::string token = second;
+        const std::string id    = clean(req.at(3), 40);
+        const std::string verb  = req.at(4);
+        const std::string arg   = req.at(5);
+
+        Session* s = find(id);
+        if (!s) return "NO SUCH SESSION";
+        Member* me = member(*s, self, token);
+        if (!me) return "FORBIDDEN";
+
+        if (verb == "head") return std::to_string(s->seq);
+        if (verb == "role" && arg.empty())
+        {
+            // Ask what I am. A viewer polls this to notice an elevation without
+            // having to re-join, which is the one thing the roster cannot tell
+            // it -- the roster is the owner's to read.
+            return role_name(me->role);
+        }
+        if (verb == "read")
+        {
+            const uint64_t since = arg.empty() ? 0
+                                 : static_cast<uint64_t>(std::strtoull(arg.c_str(), nullptr, 10));
+            return readLocked(*s, since);
+        }
+
+        if (verb == "push")
+        {
+            // THE ROLE CHECK, and the only place writing is decided. A reader
+            // reaching this is not an error to log loudly -- it is a page whose
+            // elevation was taken away between its last stroke and this one,
+            // which is exactly what revocation is supposed to feel like.
+            if (me->role != Role::Writer && me->role != Role::Owner) return "READ ONLY";
+            if (!req.posted()) return "POST REQUIRED";
+            const size_t n = pushLocked(*s, self, req.bodyString());
+            return std::to_string(s->seq) + " " + std::to_string(n);
+        }
+
+        // ── the host's own verbs ────────────────────────────────────────
+        if (me->role != Role::Owner) return "FORBIDDEN";
+
+        if (verb == "who") return whoLocked(*s);
+        if (verb == "close")
+        {
+            // CLOSING IS THE KICK. Every other token in this session stops
+            // resolving on the next request, each page keeps the picture it
+            // already has, and nothing has to be told anything -- which is the
+            // only shape available anyway, since none of them can be called.
+            ETCS_LOG("PaintNode", "session '" << id << "' closed by '" << self
+                     << "' -- " << (s->roster.size() - 1) << " other(s) dropped.");
+            m_sessions.erase(id);
+            return "closed";
+        }
+        if (verb == "role")
+        {
+            const std::string guest = clean(arg);
+            const std::string want  = req.at(6);
+            auto it = s->roster.find(guest);
+            if (it == s->roster.end()) return "NO SUCH MEMBER";
+            if (it->second.role == Role::Owner) return "REFUSED";   // not even by themselves
+
+            if (want == "writer")      it->second.role = Role::Writer;
+            else if (want == "reader") it->second.role = Role::Reader;
+            else if (want == "out")
+            {
+                // Dropping the token IS the removal. They keep their canvas and
+                // can come back through the link as a reader, which is the
+                // right amount of undo for a mis-click.
+                ETCS_LOG("PaintNode", "'" << guest << "' removed from '" << id << "'.");
+                s->roster.erase(it);
+                return "out";
+            }
+            else return "BAD ROLE";
+
+            ETCS_LOG("PaintNode", "'" << guest << "' is now " << role_name(it->second.role)
+                     << " in '" << id << "'.");
+            return role_name(it->second.role);
+        }
+
+        return "NOT FOUND";
+    }
+
+    mutable std::mutex m_mu;
+    std::string m_mount = "art";
+    std::unordered_map<std::string, Session> m_sessions;
+    std::string m_answer;
+};
+
 
 // ── work / stream surface ───────────────────────────────────────────────────
 
@@ -10742,6 +12573,49 @@ DEFINE_WORK_FUNC(PaintDocument, ExportImage)
     const std::string path = paint_path_arg(data);
     if (path.empty()) { ETCS_LOG("PaintDocument", "ExportImage needs a path."); return; }
     self.ExportImage(path);
+}
+
+// ExportOps <path> [since] -- the notebook's entries after `since`, as lines.
+// The path is first because every other file verb here puts it first; `since`
+// is optional and zero means everything, which is what a first push sends.
+DEFINE_WORK_FUNC(PaintDocument, ExportOps)
+{
+    (void)ctx;
+    std::istringstream in(data.restAsString());
+    std::string path;
+    uint64_t since = 0;
+    in >> path >> since;
+    if (path.empty()) { ETCS_LOG("PaintDocument", "ExportOps needs a path."); data.writeString("0"); return; }
+    const size_t n = self.ExportOps(path, since);
+    // The COUNT and the HEAD, because the page needs both: one to know whether
+    // there was anything to send, the other to know what to ask for next time.
+    data.writeString((std::to_string(n) + " " + std::to_string(self.notebookHead())).c_str());
+}
+
+DEFINE_WORK_FUNC(PaintDocument, ImportOps)
+{
+    (void)ctx;
+    const std::string path = paint_path_arg(data);
+    if (path.empty()) { ETCS_LOG("PaintDocument", "ImportOps needs a path."); data.writeString("0"); return; }
+    const size_t n = self.ImportOps(path);
+    data.writeString((std::to_string(n) + " " + std::to_string(self.notebookHead())).c_str());
+}
+
+// Where this document stands in the record -- the `since` of its next read or
+// push. Its own numbering locally; the node's once it is following a session.
+DEFINE_WORK_FUNC(PaintDocument, NotebookHead)
+{
+    (void)ctx;
+    data.writeString(std::to_string(self.notebookHead()).c_str());
+}
+
+// Who authors entries from now on. Set to the name this page joined a session
+// under, so a host's own entries carry the host's name rather than a blank.
+DEFINE_WORK_FUNC(PaintDocument, SetAuthor)
+{
+    (void)ctx;
+    self.SetAuthor(data.restAsString());
+    data.writeString(self.author().c_str());
 }
 
 DEFINE_WORK_FUNC(PaintDocument, ExportLayer)
@@ -12146,6 +14020,142 @@ DEFINE_WORK_FUNC(PaintInput, Delete)
 {
     (void)ctx; (void)data;
     self.DeleteConcrete();
+}
+
+// ── PaintVisitors ───────────────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC(PaintVisitors, Create)
+{
+    (void)ctx; (void)data;
+    self.Create();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, AddRow, (ETCS::RID, bg), (ETCS::RID, name), (ETCS::RID, role))
+{
+    (void)ctx;
+    self.AddRow(bg, name, role);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, BindWindow, (ETCS::RID, pane))
+{
+    (void)ctx;
+    self.BindWindow(pane);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, SetRowColors, (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetRowColors(r, g, b, a);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, SetInk,
+                       (float, wr), (float, wg), (float, wb),
+                       (float, rr), (float, rg), (float, rb))
+{
+    (void)ctx;
+    self.SetInk(wr, wg, wb, rr, rg, rb);
+}
+
+// The roster as the node answered it. Small by construction -- "luke reader"
+// is twelve bytes -- but this crosses the 256-byte call buffer, so a session
+// larger than about twenty is where the page should start sending it the way
+// the notebook crosses, as a file.
+DEFINE_WORK_FUNC(PaintVisitors, SetRoster)
+{
+    (void)ctx;
+    self.SetRoster(data.restAsString());
+    data.writeString(std::to_string(self.count()).c_str());
+}
+
+DEFINE_WORK_FUNC(PaintVisitors, Open)
+{
+    (void)ctx; (void)data;
+    self.Open();
+}
+
+// Closing the window IS ending the session -- the page hears this and tells the
+// node. Nothing here knows that, which is the point: this raises the event and
+// the page decides what closing means.
+DEFINE_WORK_FUNC(PaintVisitors, Close)
+{
+    (void)ctx; (void)data;
+    self.Close();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, Promote, (uint32_t, row))
+{
+    (void)ctx;
+    self.Promote(row);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, Demote, (uint32_t, row))
+{
+    (void)ctx;
+    self.Demote(row);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintVisitors, Remove, (uint32_t, row))
+{
+    (void)ctx;
+    self.Remove(row);
+}
+
+DEFINE_WORK_FUNC(PaintVisitors, Delete)
+{
+    (void)ctx;
+    data.writeString(self.DeleteConcrete() ? "deleted" : "FAILED");
+}
+
+// ── PaintNode ───────────────────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC(PaintNode, Mount)
+{
+    (void)ctx;
+    const std::string m = data.restAsString();
+    if (!m.empty()) self.SetMount(m);
+    data.writeString(self.MountPath().c_str());
+}
+
+/*
+ * THE ROUTE TARGET, and a STRUCTURED one -- registered with AddRequestRoute
+ * rather than AddRoute, because this node needs two things a path string cannot
+ * carry: the METHOD, to tell a push from a read, and the BODY, to receive one.
+ *
+ * It answers by REFERENCE (RouteRef), which is the other half of the same
+ * change: a read of a session's entries is routinely tens of kilobytes and the
+ * work-function buffer is 256 bytes. The bytes it points at are this node's own
+ * `m_answer`, held until the next request, which is the lifetime contract
+ * DispatchRoute states and the same one a mounted file already lives under.
+ */
+DEFINE_WORK_FUNC(PaintNode, Request)
+{
+    (void)ctx;
+    uint64_t p = 0;
+    data.readRaw(&p, sizeof(p));
+    const RouteRequest* req = reinterpret_cast<const RouteRequest*>(
+        static_cast<uintptr_t>(p));
+    if (!req)
+    {
+        ETCS_LOG("PaintNode::Request", "no request handed over -- is this route "
+                 "registered with AddRoute instead of AddRequestRoute?");
+        data.writeString("FAILED");
+        return;
+    }
+    self.setAnswer(self.Request(*req));
+    const std::string& body = self.lastAnswer();
+    RouteRef::Emit(data, body.data(), body.size(), "text/plain");
+}
+
+DEFINE_WORK_FUNC(PaintNode, Filter)
+{
+    (void)ctx;
+    self.Accepts(data);
+}
+
+DEFINE_WORK_FUNC(PaintNode, Delete)
+{
+    (void)ctx;
+    data.writeString(self.DeleteConcrete() ? "deleted" : "FAILED");
 }
 
 #endif // PAINTPROVIDER_H__
