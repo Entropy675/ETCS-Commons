@@ -75,16 +75,14 @@
  * (W-size)/2, (H-size)/2 puts the ring's centre on the canvas's -- no second
  * number to get right (boot_paint_panels.etcs).
  *
- * ON A PLATE, by default. This is shown over whatever is on the sheet, and
- * on the paint page that is white paper: off-white text and a pale tail on
- * white are not there at all (measured -- the label vanished). The plate is
- * the square, filled with the ruler band's colour at 0.85, which is the
- * colour every other piece of furniture on that page already has
- * (paint_layers.etcs), so the throbber reads as a panel rather than as a
- * mark on the picture. A square rather than a disc because a disc on an
- * even-sized grid has no centre pixel to be symmetric about; the ring is
- * inset from the plate's edge by a margin so the dots do not touch it.
- * SetPlate with alpha 0 removes it for a caller with a dark pane of its own.
+ * NO PLATE, by default: it goes straight over whatever is there, and reads as
+ * belonging to it rather than as a panel dropped on it. The cost is stated
+ * so a caller can decide: over white paper the off-white label and the pale
+ * tail nearly vanish (measured), and a caller who shows it there can
+ * SetPlate a backing square -- the ruler band at 0.85 is the one that
+ * matches the paint page's furniture. A square rather than a disc because a
+ * disc on an even-sized grid has no centre pixel to be symmetric about; the
+ * ring is inset from the box's edge by a small margin either way.
  *
  * ON A DISCRETE GRID, symmetry is a choice of centre: a box of even size has
  * no centre pixel, so the ring is laid out about (size-1)/2 -- half a pixel
@@ -242,7 +240,7 @@ public:
         repaint();
     }
 
-    // The square behind the ring -- see the header. Alpha 0 is no plate.
+    // A square behind the ring -- see the header. Alpha 0, the default, is none.
     void SetPlate(float r, float g, float b, float a)
     {
         m_plate[0] = r; m_plate[1] = g; m_plate[2] = b; m_plate[3] = a;
@@ -398,7 +396,7 @@ private:
 
     // The ring's geometry, stated once for SetSize and repaint. Dots sit on a
     // circle inside the box, pulled in by their own radius plus a margin from
-    // the plate's edge; the hole is what is left inside them.
+    // the box's edge; the hole is what is left inside them.
     uint32_t dotRadius() const
     {
         const float r = static_cast<float>(m_ring) * 0.08f;
@@ -419,8 +417,10 @@ private:
  * a 40-point stroke cost a compositor 23,746 marks (ontology/ObservableBase.h),
  * and this runs every frame forever.
  *
- * Transparent clear, then the plate: the plate is drawn rather than cleared
- * to so that alpha 0 leaves the corners see-through as well as the middle.
+ * Transparent clear, not a background fill: a throbber goes over whatever is
+ * already there. The plate, when a caller asked for one, is drawn rather than
+ * cleared to so that alpha 0 leaves the corners see-through as well as the
+ * middle.
  */
     void repaint()
     {
@@ -499,7 +499,7 @@ private:
     float m_head[3]  = { 0.35f, 0.55f, 0.95f };
     float m_tail[3]  = { 0.58f, 0.40f, 0.95f };
     float m_ink[4]   = { 0.94f, 0.89f, 0.78f, 1.0f };
-    float m_plate[4] = { 0.106f, 0.110f, 0.078f, 0.85f };   // the ruler band -- see the header
+    float m_plate[4] = { 0.0f, 0.0f, 0.0f, 0.0f };   // none unless SetPlate -- see the header
 };
 
 #endif

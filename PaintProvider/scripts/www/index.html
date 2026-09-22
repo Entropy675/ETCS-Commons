@@ -909,8 +909,8 @@
    *
    * THE SAME PICTURE AS THE RUNTIME'S, deliberately: twelve dots, the head
    * bright blue fading back through violet, "ETCS" inside the ring in
-   * off-white, all on a square plate the ruler band's colour, the element
-   * exactly that square so that centring the element centres the ring
+   * off-white, straight over the sheet with no plate, the element exactly
+   * the ring's square so that centring the element centres the ring
    * (Throbber.h has the same argument). The blue and
    * the violet are the canvas's own box-shadow (rgba(0,0,255) and
    * rgba(100,0,228) in the CSS above), so the wait indicator and the frame
@@ -942,8 +942,6 @@
     function frame() {
       if (stopped) return;
       g.clearRect(0, 0, el.width, el.height);
-      g.fillStyle = 'rgba(27, 28, 20, 0.85)';       // the plate: the ruler band, as Throbber.h
-      g.fillRect(0, 0, el.width, el.height);
       g.fillStyle = 'rgba(240, 227, 199, 0.95)';    // the off-white the runtime uses
       g.letterSpacing = '2px';
       // +1 x: letterSpacing trails the last glyph too; +2 y: 'middle' is the
