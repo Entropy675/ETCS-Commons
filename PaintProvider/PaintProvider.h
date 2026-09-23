@@ -12572,11 +12572,22 @@ private:
      * when the coalesce interval elapses and again on button-up so the final
      * tip is never discarded. Between flushes, motion events only update the
      * pending coordinates.
+     *
+     * THE WINDOW RESTARTS WHEN THE FLUSH ENDS, not when it began. Stamped at
+     * the start only, a flush slower than the interval left every motion queued
+     * behind it already "due", so each one paid for a full preview of its own
+     * and the backlog never collapsed: an anchored drag whose preview took
+     * 400ms against a 100ms window handled all twelve samples of a short drag
+     * one by one, and the press after it waited two seconds for its turn.
+     * Measured from the end, what queued during a slow flush arrives inside
+     * the window and only moves the pending point -- the queue drains at
+     * routing speed and the next flush draws where the pointer is now.
      */
     void flush_coalesced_motion()
     {
         if (!m_motion_pending) return;
         m_motion_pending = false;
+        struct Restamp { PaintInput& in; ~Restamp() { in.m_last_motion_ms = now_ms(); } } restamp{ *this };
 
         if (m_motion_kind == MotionKind::Pan)
         {
@@ -12679,6 +12690,11 @@ private:
         if (target == 0) return;
         Surface_* view = ETCS::resolve_in_family<Surface_>("Surface", target);
         if (!view || !m_tool) return;
+        // ONE statement for the whole outline. Every DrawRect is a FillRect that
+        // marks, and unbatched each mark walks to the root (ontology/
+        // ObservableBase.h) -- an outline is hundreds of rects, which made the
+        // marking, not the pixels, most of what a preview cost.
+        etcs_observed_batch outline(static_cast<ETCS::Entity*>(view));
 
         /*
      * BACK INTO VIEW SPACE TO DRAW IT. The anchor and the cursor are document
@@ -13061,6 +13077,19 @@ private:
     static void preview_line(Surface_* view, int32_t x0, int32_t y0,
                              int32_t x1, int32_t y1, const PaintColor& c, int w)
     {
+        // A horizontal or vertical run is exactly the union of the squares the
+        // walk below would stamp along it, so it is drawn as that one rect.
+        // Every edge of a rectangle, a text box and the animation frame is one
+        // of these, and the walk spends a rect per half-nib -- per PIXEL at the
+        // 2px width the frame uses.
+        if (x0 == x1 || y0 == y1)
+        {
+            view->DrawRect(std::min(x0, x1) - w / 2, std::min(y0, y1) - w / 2,
+                           static_cast<uint32_t>(std::abs(x1 - x0) + w),
+                           static_cast<uint32_t>(std::abs(y1 - y0) + w),
+                           c.r, c.g, c.b, c.a);
+            return;
+        }
         const int dx = std::abs(x1 - x0), dy = std::abs(y1 - y0);
         const int steps = std::max(1, std::max(dx, dy) / std::max(1, w / 2));
         for (int i = 0; i <= steps; ++i)
