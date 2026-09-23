@@ -1539,6 +1539,26 @@ public:
     float dim() const { return m_dim; }
 
     /*
+ * A HIDDEN LAYER, SHOWN FOR A MOMENT: the hover over a shut eye.
+ *
+ * Isolation dims every other layer and leaves the subject at full strength --
+ * which for a hidden subject is nothing, so hovering the eye of the one layer
+ * you could not see faded out everything you could and showed you an empty
+ * page. The peek is how strongly a hidden layer draws while its eye is under
+ * the pointer (PaintDocument::IsolateLayer sets it); 0 is hidden, as before.
+ *
+ * View state like the dim and for the same reason: it reaches the screen and
+ * nothing else. Exports, thumbnails and the eyedropper ask visible(), and a
+ * peeked layer is still not visible.
+ */
+    void SetPeek(float peek) { m_peek = std::clamp(peek, 0.0f, 1.0f); }
+    float peek() const { return m_peek; }
+    bool  onScreen() const { return m_visible || m_peek > 0.0f; }
+    // The view's multiplier for this layer: the dim when it is shown, the peek
+    // when it is not.
+    float viewStrength() const { return m_visible ? m_dim : m_peek; }
+
+    /*
  * HOW MUCH OF THIS LAYER HAS BEEN PAINTED ON, counted rather than described.
  *
  * The only honest answer to "did this pane receive that stroke" -- a stack that
@@ -2119,12 +2139,12 @@ public:
                 float opacity, float zoom = 1.0f)
     {
         Surface_* surface = ETCS::resolve_in_family<Surface_>("Surface", target);
-        if (!surface || !m_visible) return;
+        if (!surface || !onScreen()) return;
 
         const uint8_t* px = this->PixelData();
         if (!px) return;
 
-        const float alpha = std::clamp(opacity, 0.0f, 1.0f) * m_opacity * m_dim;
+        const float alpha = std::clamp(opacity, 0.0f, 1.0f) * m_opacity * viewStrength();
         if (alpha <= 0.0f) return;
 
         const uint32_t pw = this->PixelWidth();
@@ -2217,6 +2237,7 @@ private:
     // View state, not document state -- see SetDim. 1.0 is "not dimmed", which
     // is what every layer is until a row is hovered.
     float m_dim = 1.0f;
+    float m_peek = 0.0f;   // see SetPeek
     // NOT OWNED. The document's selection, bound on the way out of
     // activeLayer() -- see BindClip. Null until a document hands one over,
     // which is also what a layer spawned by a script has until it is drawn on.
@@ -3802,6 +3823,7 @@ public:
         Touch();
         if (m_active_layer == layer) m_active_layer = nullptr;
         layer->SetDim(1.0f);          // it is nobody's hover target now
+        layer->SetPeek(0.0f);
         layer->detachFromParent();
     }
 
@@ -3827,7 +3849,13 @@ public:
         std::vector<PaintLayer*> stack;
         OrderedLayers(stack);
         for (auto* l : stack)
+        {
             l->SetDim((subject && l == subject) ? 1.0f : (subject ? other : 1.0f));
+            // A hidden subject comes up as the rest goes down, to the strength
+            // they left: at the panel's 0.25 it shows at 0.75 -- plainly there,
+            // and still plainly not a layer that is switched on.
+            l->SetPeek((subject && l == subject && !l->visible()) ? 1.0f - other : 0.0f);
+        }
     }
 
     void ClearIsolate() { IsolateLayer(0, 1.0f); }
@@ -4757,7 +4785,7 @@ public:
         OrderedLayers(stack);
         for (auto* layer : stack)
         {
-            if (!layer->visible()) continue;
+            if (!layer->onScreen()) continue;   // a peek draws a hidden layer -- see PaintLayer::SetPeek
             // 1.0, NOT layer->opacity(): BlitTo multiplies by m_opacity itself
             // (see its alpha), so passing it here drew every layer at opacity
             // SQUARED -- a layer set to 50% showed at 25% on screen while the
@@ -5409,7 +5437,7 @@ public:
         const int32_t vy = oy + static_cast<int32_t>(std::lround(ly * z));
         const uint32_t dw = std::max(1u, static_cast<uint32_t>(bw * z + 0.5f));
         const uint32_t dh = std::max(1u, static_cast<uint32_t>(bh * z + 0.5f));
-        const float alpha = layer->opacity() * layer->dim();
+        const float alpha = layer->opacity() * layer->viewStrength();
 
         if (Pixels_* dpx = ETCS::resolve_in_family<Pixels_>("Pixels", target))
         {
@@ -6861,6 +6889,7 @@ public:
     bool Save()
     {
         if (!m_document) return false;
+        Waiting wait(*this);
         ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
         if (!db) { ETCS_LOG("PaintPages", "Save: the database is gone."); return false; }
 
@@ -7157,6 +7186,11 @@ public:
  * anything else that watched. Nothing crosses a module boundary on the input
  * thread to make the indicator appear.
  *
+ * Every operation that writes the store raises it, not only the page switch:
+ * a Save is the same encode, and a Delete drops a page's megabytes of layer
+ * rows -- a second of nothing after pressing an x is the same hang-shaped
+ * silence.
+ *
  * A depth rather than a bare raise because step() lands in Load() or NewAt(),
  * and the flag should come down when the outermost one does.
  */
@@ -7200,6 +7234,7 @@ public:
     // typed into Delete cost the work in front of you.
     bool Delete(int64_t id)
     {
+        Waiting wait(*this);
         ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
         if (!db) { ETCS_LOG("PaintPages", "Delete: the database is gone."); return false; }
         auto guard = db->Transaction();
@@ -9439,6 +9474,11 @@ public:
         else if (what == "label") { row.label = node; m_regions[node] = Hit{ idx, Region::Label }; }
         else if (what == "del")   { row.del   = node; m_regions[node] = Hit{ idx, Region::Delete }; }
         else if (what == "grip")  { row.grip  = node; m_regions[node] = Hit{ idx, Region::Drag }; }
+        // THE DOTS ARE THE GRIP, for the reason the iris is the eye: they are
+        // drawn over it and the pick takes the topmost node, so as decoration
+        // they made the middle of the handle -- the part that says "hold here"
+        // -- the one place on it a press did not start a drag.
+        else if (what == "dots")  { m_regions[node] = Hit{ idx, Region::Drag }; row.trim.push_back(node); }
         else if (what == "up")    { row.mup   = node; m_regions[node] = Hit{ idx, Region::MergeUp }; }
         else if (what == "down")  { row.mdn   = node; m_regions[node] = Hit{ idx, Region::MergeDown }; }
         // DECORATION, by any of the names a row script has for it. Not a
@@ -9446,7 +9486,7 @@ public:
         // polygon cannot inherit from a parent it does not have. Any number of
         // them, because a row keeps growing ornaments and each one that has no
         // slot is one that stays on screen over an empty panel.
-        else if (what == "dots" || what == "trim")
+        else if (what == "trim")
             row.trim.push_back(node);
         else
         {
@@ -9550,6 +9590,26 @@ public:
         m_row_sel[0] = sr; m_row_sel[1] = sg; m_row_sel[2] = sb;
         m_row_idle[0] = ur; m_row_idle[1] = ug; m_row_idle[2] = ub;
     }
+
+    // The colour a row takes while it is being dragged, and its ghost with it.
+    void SetDragColor(float r, float g, float b) { m_row_drag[0] = r; m_row_drag[1] = g; m_row_drag[2] = b; }
+
+    /*
+ * THE GHOST: a row-sized pane that follows the pointer while a row is dragged,
+ * showing the layer being carried (its thumb and name), and the mark: a bar
+ * in the gap the layer will land in. Both are the script's nodes, spawned in
+ * the window and passed through by the pick (SetPassthrough), so what is under
+ * the pointer is still the row it is over. Neither is required -- without them
+ * a drag still restacks, it just shows only the colour of the row.
+ */
+    void BindGhost(ETCS::RID pane) { m_ghost = pane; paint_node_hidden(pane, true); }
+    void GhostNode(const std::string& what, ETCS::RID node)
+    {
+        if      (what == "thumb") m_ghost_thumb = node;
+        else if (what == "label") m_ghost_label = node;
+        else ETCS_LOG("PaintLayerPanel", "GhostNode: '" << what << "' is not a part of the ghost (thumb label).");
+    }
+    void BindDropMark(ETCS::RID node) { m_drop_mark = node; paint_node_hidden(node, true); }
 
     /*
  * SCROLL MOVES THE FRAME OF REFERENCE, not the rows. `delta` is in rows, so a
@@ -9688,10 +9748,9 @@ public:
             }
 
             const bool selected = (m_document->activeLayer() == layer);
-            paint_node_fill(row.bg,
-                    selected ? m_row_sel[0] : m_row_idle[0],
-                    selected ? m_row_sel[1] : m_row_idle[1],
-                    selected ? m_row_sel[2] : m_row_idle[2], 1.0f);
+            const bool carried  = m_drag_live && row.layer == m_dragging;
+            const float* tint = carried ? m_row_drag : (selected ? m_row_sel : m_row_idle);
+            paint_node_fill(row.bg, tint[0], tint[1], tint[2], 1.0f);
             // EVERY layer has an eye, including the base one: hiding the paper
             // to see what is under it is exactly what the control is for, and
             // it is the delete that the base refuses, not the eye.
@@ -9814,6 +9873,9 @@ public:
             end_edit(false);
             m_document->SetActiveLayer(row.layer);
             m_dragging = row.layer;
+            m_drag_live = false;
+            m_drag_press = window_local(at);
+            m_drag_grab_dy = m_drag_press.y - row_rect(hit.row).y;
             repaint();
             break;
 
@@ -9871,44 +9933,89 @@ public:
     }
 
     /*
- * THE DROP, which is the whole of reordering: the dragged layer takes the
- * depth of the row it was released over.
+ * ── dragging a row ───────────────────────────────────────────────────────
  *
- * Depth counted from the BOTTOM, because that is what PaintDocument::MoveLayerTo
- * takes and what the order key means; the row index counts from the top, so it
- * is turned around here rather than in the document -- one place converts
- * between the two conventions and it is the one that knows both.
+ * A PRESS ON THE GRIP IS NOT YET A DRAG. It chooses the row (Apply), and only
+ * a pointer that has moved DRAG_START_PX from where it went down makes it one:
+ * then the row takes the drag colour, the ghost appears under the pointer and
+ * the mark shows where the layer would land. A press and release that never
+ * moved is a click, and moves nothing.
+ *
+ * BY POSITION, NOT BY NODE. Where a live drag lands is the row under the
+ * pointer's height in the window, clamped to the rows that hold layers -- so a
+ * release on a row's dots, in the two-pixel gap between rows, over the title
+ * bar or over the empty slots below the stack all land somewhere sensible. By
+ * node, each of those was a release over something that was not a row, and
+ * each silently cancelled the drag. Released outside the window it is still a
+ * cancel: putting a layer somewhere the user did not point at is worse than
+ * doing nothing.
  */
-    bool Drop(ETCS::RID node)
+    static constexpr int32_t DRAG_START_PX = 4;
+
+    bool draggingRow() const { return m_dragging != 0; }
+
+    // Motion while the grip is held. True when it was the drag's, which is
+    // also what keeps it from hovering the eyes it passes over.
+    bool DragRow(Point2D at)
     {
         if (m_dragging == 0) return false;
-        auto it = m_regions.find(node);
-        if (it == m_regions.end() || it->second.row >= m_rows.size()) { m_dragging = 0; return false; }
-        if (!m_document) { m_dragging = 0; return true; }
+        const Point2D l = window_local(at);
+        if (!m_drag_live)
+        {
+            if (std::abs(l.x - m_drag_press.x) < DRAG_START_PX
+                && std::abs(l.y - m_drag_press.y) < DRAG_START_PX) return true;
+            m_drag_live = true;
+            show_ghost();
+            Refresh();                 // the carried row in the drag colour
+        }
+        const int32_t from = row_of_layer(m_dragging);
+        const int32_t last = last_layer_row();
+        if (last < 0) return true;
+        if (m_ghost)
+        {
+            const Rect2D first_r = row_rect(0), last_r = row_rect(static_cast<size_t>(last));
+            const int32_t gy = std::clamp(l.y - m_drag_grab_dy, first_r.y, last_r.y);
+            paint_node_moved(m_ghost, first_r.x, gy);
+        }
+        place_mark(from, row_at(l.y));
+        return true;
+    }
 
-        /*
-     * RELEASED OVER THE ROW IT STARTED ON IS NOT A DRAG, it is the second half
-     * of a click. Without this a plain selection ends in a MoveLayerTo -- which
-     * lands the layer back where it already was, so it looks harmless, and
-     * quietly renumbers the whole stack on every click. That is the kind of
-     * no-op that only becomes visible once something else depends on the
-     * numbers not moving.
-     */
-        if (m_rows[it->second.row].layer == m_dragging) { m_dragging = 0; return true; }
+    bool Drop(Point2D at)
+    {
+        if (m_dragging == 0) return false;
+        const bool live = m_drag_live;
+        const ETCS::RID layer = m_dragging;
+        end_row_drag();
+        if (!live || !m_document || !Contains(at)) { Refresh(); return true; }
 
+        const int32_t target = row_at(window_local(at).y);
         std::vector<PaintLayer*> stack;
         m_document->OrderedLayers(stack);
         const size_t total = stack.size();
-        const size_t from_top = it->second.row + static_cast<size_t>(m_scroll);
-        if (from_top < total)
+        const size_t from_top = static_cast<size_t>(target) + static_cast<size_t>(m_scroll);
+        if (target >= 0 && from_top < total && m_rows[static_cast<size_t>(target)].layer != layer)
         {
+            // Depth counts from the BOTTOM (PaintDocument::MoveLayerTo, the
+            // order key); rows count from the top. Turned round here, the one
+            // place that knows both conventions.
             const int32_t depth = static_cast<int32_t>(total - 1 - from_top);
-            m_document->MoveLayerTo(m_dragging, depth);
+            m_document->MoveLayerTo(layer, depth);
+            ETCS_LOG("PaintLayerPanel", "dropped on row " << target << " -- depth " << depth);
         }
-        m_dragging = 0;
         Refresh();
         repaint();                     // a different stack composites differently
         return true;
+    }
+
+    // The button came up somewhere this panel never heard about (another
+    // pane took the release): whatever was being carried is put down.
+    void CancelRowDrag()
+    {
+        if (m_dragging == 0) return;
+        const bool live = m_drag_live;
+        end_row_drag();
+        if (live) Refresh();
     }
 
     /*
@@ -10197,7 +10304,7 @@ public:
  */
     void Left()
     {
-        m_dragging = 0;
+        CancelRowDrag();
         m_moving = false;
         HoverRow(-1);
     }
@@ -10280,6 +10387,91 @@ private:
 
     float m_iris_open[3] = { 0.35f, 0.55f, 0.95f };
     float m_iris_shut[3] = { 0.106f, 0.110f, 0.078f };
+    float m_row_drag[3]  = { 0.86f, 0.60f, 0.22f };
+
+    // ── the row drag's geometry, all in the window's own space ───────────
+    ETCS::RID m_ghost = 0, m_ghost_thumb = 0, m_ghost_label = 0, m_drop_mark = 0;
+    bool      m_drag_live = false;
+    Point2D   m_drag_press{ 0, 0 };
+    int32_t   m_drag_grab_dy = 0;      // where in its row the grip was taken
+
+    Point2D window_local(Point2D at) const
+    {
+        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
+        if (!w) return at;
+        const Rect2D b = w->Bounds();
+        return Point2D{ at.x - b.x, at.y - b.y };
+    }
+
+    // A row's plate is its pane, so its box in the window is the row's.
+    Rect2D row_rect(size_t i) const
+    {
+        if (i >= m_rows.size()) return Rect2D{ 0, 0, 0, 0 };
+        ETCS::Held<Drawable2D_> r = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_rows[i].bg);
+        return r ? r->Bounds() : Rect2D{ 0, 0, 0, 0 };
+    }
+
+    int32_t last_layer_row() const
+    {
+        int32_t last = -1;
+        for (size_t i = 0; i < m_rows.size(); ++i) if (m_rows[i].layer) last = static_cast<int32_t>(i);
+        return last;
+    }
+
+    int32_t row_of_layer(ETCS::RID layer) const
+    {
+        for (size_t i = 0; i < m_rows.size(); ++i) if (m_rows[i].layer == layer) return static_cast<int32_t>(i);
+        return -1;
+    }
+
+    // The row a height lands on: the first whose bottom edge is below it, so
+    // the gap under a row belongs to that row, and anything past the last
+    // layer is the last layer.
+    int32_t row_at(int32_t ly) const
+    {
+        const int32_t last = last_layer_row();
+        for (int32_t i = 0; i <= last; ++i)
+        {
+            const Rect2D r = row_rect(static_cast<size_t>(i));
+            if (ly < r.y + static_cast<int32_t>(r.h) + 2) return i;
+        }
+        return last;
+    }
+
+    void show_ghost()
+    {
+        if (!m_ghost) return;
+        PaintLayer* layer = nullptr;
+        if (ETCS::Entity* raw = paint_resolve_tag("PaintLayer", m_dragging))
+            layer = static_cast<PaintLayer*>(raw->getTrueType());
+        if (layer)
+        {
+            if (m_ghost_thumb) paint_thumb(m_ghost_thumb, layer);
+            if (m_ghost_label) paint_node_text(m_ghost_label, layer->name());
+        }
+        paint_node_fill(m_ghost, m_row_drag[0], m_row_drag[1], m_row_drag[2], 0.92f);
+        paint_node_hidden(m_ghost, false);
+    }
+
+    // The bar goes in the gap the layer will land in: above the target when
+    // it moves up, below it when it moves down, nowhere when it would not move.
+    void place_mark(int32_t from, int32_t target)
+    {
+        if (!m_drop_mark) return;
+        if (target < 0 || target == from) { paint_node_hidden(m_drop_mark, true); return; }
+        const Rect2D r = row_rect(static_cast<size_t>(target));
+        const int32_t y = (from >= 0 && target < from) ? r.y - 2 : r.y + static_cast<int32_t>(r.h);
+        paint_node_moved(m_drop_mark, r.x, y);
+        paint_node_hidden(m_drop_mark, false);
+    }
+
+    void end_row_drag()
+    {
+        m_dragging = 0;
+        m_drag_live = false;
+        if (m_ghost) paint_node_hidden(m_ghost, true);
+        if (m_drop_mark) paint_node_hidden(m_drop_mark, true);
+    }
 
     /*
  * Closing the field, keeping the name or not. Rename goes through the document
@@ -11745,8 +11937,16 @@ public:
             // change; the compose walk redraws what the window was covering.
             if (ev.action == INPUT_MOTION && m_panel->DragWindow(pane_pt)) return;
             if (is_release && m_panel->EndWindowDrag()) { m_on_panel = false; return; }
+            // A row being carried takes the motion ahead of the hover, so the
+            // eyes it passes over do not isolate their layers on the way. A
+            // motion that says the button is up ends a drag whose release some
+            // other pane took.
+            if (ev.action == INPUT_MOTION && m_panel->draggingRow()
+                && input_button_state(ev, PAINT_BUTTON_LEFT) == 0)
+                m_panel->CancelRowDrag();
+            if (ev.action == INPUT_MOTION && m_panel->DragRow(pane_pt)) return;
             if (ev.action == INPUT_MOTION) m_panel->Hover(hit_rid);
-            if (is_release && m_panel->Drop(hit_rid)) { m_on_panel = false; return; }
+            if (is_release && m_panel->Drop(pane_pt)) { m_on_panel = false; return; }
             if (is_press && m_panel->Apply(hit_rid, true, pane_pt)) { m_on_panel = true; return; }
             if (is_release && m_on_panel) { m_on_panel = false; return; }
         }
@@ -15710,6 +15910,33 @@ DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, SetRowColors,
 {
     (void)ctx;
     self.SetRowColors(sr, sg, sb, ur, ug, ub);
+}
+
+// SetDragColor <r> <g> <b> -- the carried row and its ghost (PaintLayerPanel::DragRow).
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, SetDragColor, (float, r), (float, g), (float, b))
+{
+    (void)ctx;
+    self.SetDragColor(r, g, b);
+}
+
+// BindGhost <pane> / GhostNode <thumb|label> <node> / BindDropMark <node> --
+// what a row drag shows (PaintLayerPanel::BindGhost).
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindGhost, (ETCS::RID, pane))
+{
+    (void)ctx;
+    self.BindGhost(pane);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, GhostNode, (std::string, what), (ETCS::RID, node))
+{
+    (void)ctx;
+    self.GhostNode(what, node);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindDropMark, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindDropMark(node);
 }
 
 // In ROWS, so a wheel notch is +/-1 and nothing outside has to know the row

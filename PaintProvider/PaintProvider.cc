@@ -103,7 +103,8 @@ ETCS_TAG_BLOCK_BASIC(PaintPagePanel,
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
 ETCS_TAG_BLOCK_BASIC(PaintLayerPanel,
     Create, BindDocument, BeginRow, RowNode, BeginTitle, BindView, BindBody, BindAdd, BindTitle, BindWindow, BindSurface,
-    SetHoverDim, SetEyeColors, SetIrisColors, SetRowColors,
+    SetHoverDim, SetEyeColors, SetIrisColors, SetRowColors, SetDragColor,
+    BindGhost, GhostNode, BindDropMark,
     Scroll, Refresh, CommitRename,
     SelectRow, ToggleRow, RemoveRow, MoveRow, ArmRename, HoverRow,
     Report, Delete)

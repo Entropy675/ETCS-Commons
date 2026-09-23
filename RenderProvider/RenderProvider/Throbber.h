@@ -282,6 +282,22 @@ public:
         m_watch_flag = flag;
     }
 
+    /*
+ * Keep the ring centred on another node, re-read every frame it shows.
+ *
+ * A position typed into a script is the centre of the size the script was
+ * written against; the layout resizes the panes afterwards (FollowResize), so
+ * a throbber placed once sat where the middle of a 1024x768 sheet used to be
+ * rather than over the canvas it was waiting on. Reading the node's bounds on
+ * the frame edge, as Watch reads its flag, follows every resize with no one
+ * having to tell the throbber one happened -- and costs nothing while hidden.
+ *
+ * The node has to be in this throbber's parent's subtree: its box is summed up
+ * to that parent, which is the space SetPosition is in. A node elsewhere is
+ * ignored rather than guessed at, and 0 unbinds.
+ */
+    void CenterOn(ETCS::RID node) { m_center_on = node; if (!this->Hidden()) follow_center(); }
+
     // ── Animated_ ────────────────────────────────────────────────────────
     //
     // Hidden is the whole answer -- and with a watch bound, Hidden follows
@@ -300,6 +316,7 @@ public:
             }
             if (raised == this->Hidden()) this->SetHidden(!raised);
         }
+        if (!this->Hidden()) follow_center();
         return !this->Hidden();
     }
 
@@ -530,6 +547,29 @@ private:
 
     ETCS::RID   m_watch = 0;           // see Watch
     std::string m_watch_flag;
+    ETCS::RID   m_center_on = 0;       // see CenterOn
+
+    void follow_center()
+    {
+        if (m_center_on == 0) return;
+        ETCS::Held<Drawable2D_> t = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_center_on);
+        if (!t) return;
+        const Rect2D b = t->Bounds();
+        int32_t ox = b.x, oy = b.y;
+        ETCS::Entity* const stop = this->getParent();
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(t.get())->getParent();
+        for (; e && e != stop; e = e->getParent())
+        {
+            void* d2 = e->getInterfacePointer(ETCS::Buffer("Drawable2D"));
+            if (!d2) return;
+            const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
+            ox += pb.x; oy += pb.y;
+        }
+        if (e != stop) return;
+        const int32_t x = ox + (static_cast<int32_t>(b.w) - static_cast<int32_t>(m_w)) / 2;
+        const int32_t y = oy + (static_cast<int32_t>(b.h) - static_cast<int32_t>(m_h)) / 2;
+        if (x != m_x || y != m_y) SetPosition(x, y);
+    }
 
     int32_t  m_x = 0, m_y = 0;
     uint32_t m_w = 0, m_h = 0;        // always m_ring square -- see the header

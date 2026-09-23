@@ -5,22 +5,22 @@
 #
 #     run PaintProvider/scripts/paint_eye.etcs pane=<Drawable2D> list=<PaintLayerPanel>
 #
-# A flat oblong, an iris centred in it whose top and bottom touch the oblong's,
+# An oval white, an iris centred in it whose top and bottom touch the white's,
 # and a pupil in the iris. Drawn at LOCAL coordinates inside whatever pane it is handed,
 # which is the only reason one file can serve every row: `run` carries RIDs and
 # not numbers (resolve_run_bindings), so a script cannot be told "draw at y=54"
 # -- but it can be handed a pane that is already there, and a pane is a
 # coordinate origin.
 #
-# WHY IT IS ITS OWN FILE. The same fourteen points were written out once per
-# row, seven times in paint_layers.etcs, which is seven places to change the
+# WHY IT IS ITS OWN FILE. The same shape was written out once per row, seven
+# times in paint_layers.etcs, which is seven places to change the
 # glyph and six of them to forget. A shape is a thing, not a paragraph repeated.
 #
 # IT REGISTERS ITSELF, into whichever row is currently open (PaintLayerPanel::
 # BeginRow). It has to: a script cannot hand its spawned nodes back to its
 # caller, so if the caller had to name them this file could not exist.
 #
-# THE PANEL TINTS THE OBLONG AND THE IRIS: the oblong takes the shown/hidden
+# THE PANEL TINTS THE WHITE AND THE IRIS: the white takes the shown/hidden
 # colours (SetEyeColors) and the iris the open/shut ones (SetIrisColors), so an
 # open eye has the page's highlight in it and a shut one is a single dark
 # shape with its pupil lost in it. All three parts are the eye to a press or a
@@ -36,50 +36,35 @@
 requires pane [Drawable2D]
 requires list [PaintLayerPanel]
 
-# The oblong: 22 across, 12 tall, centred at (19, 13) in the row's own space.
-# Six points rather than a rectangle so the ends read as rounded at this size
-# without costing a circle's worth of vertices.
+# OVALS, ALL THREE, and smooth: SetOval fills the true curve and draws the
+# pixels its edge crosses at the share of them it covers
+# (PolygonDrawable2D::SetOval). Not points: a point list is filled a pixel in or
+# out, so a curve through points is a staircase, and a shape ten pixels tall is
+# mostly edge.
+#
+# The white: 22 across and 10 tall, its box at (8, 8) in the row's own space,
+# so its centre is (19, 13).
 pane.spawn(RenderProvider::PolygonDrawable2D eye)
 eye.Create()
-eye.AddPoint(8, 13)
-eye.AddPoint(11, 8)
-eye.AddPoint(27, 8)
-eye.AddPoint(30, 13)
-eye.AddPoint(27, 18)
-eye.AddPoint(11, 18)
+eye.SetOval(8, 8, 22, 10)
 eye.SetFill(0.94, 0.89, 0.78, 1.0)
 eye.SetOrder(2)
 
-# The iris: radius 5, which is half the oblong's height, so its top and bottom
-# touch. Ten points is enough of a circle at this diameter and cheap enough to
-# draw once per row. The colour here is only what it is until the panel's
-# first Refresh; the panel owns it from then on.
+# The iris: a circle as tall as the white, so its top and bottom touch it. The
+# colour here is only what it is until the panel's first Refresh; the panel
+# owns it from then on.
 pane.spawn(RenderProvider::PolygonDrawable2D iris)
 iris.Create()
-iris.AddPoint(24, 13)
-iris.AddPoint(23, 16)
-iris.AddPoint(21, 18)
-iris.AddPoint(17, 18)
-iris.AddPoint(15, 16)
-iris.AddPoint(14, 13)
-iris.AddPoint(15, 10)
-iris.AddPoint(17, 8)
-iris.AddPoint(21, 8)
-iris.AddPoint(23, 10)
+iris.SetOval(14, 8, 10, 10)
 iris.SetFill(0.35, 0.55, 0.95, 1.0)
 iris.SetOrder(3)
 
-# The pupil: a dot of radius 2 in the middle of the iris, which is what makes
-# the shape read as an eye rather than as a bead. Dark, and it stays dark: on a
-# shut eye the iris sinks to the band's colour and the dot goes with it.
+# The pupil: a dot in the middle of the iris, which is what makes the shape
+# read as an eye rather than as a bead. Dark, and it stays dark: on a shut eye
+# the iris sinks to the band's colour and the dot goes with it.
 pane.spawn(RenderProvider::PolygonDrawable2D pupil)
 pupil.Create()
-pupil.AddPoint(21, 13)
-pupil.AddPoint(20, 15)
-pupil.AddPoint(18, 15)
-pupil.AddPoint(17, 13)
-pupil.AddPoint(18, 11)
-pupil.AddPoint(20, 11)
+pupil.SetOval(17, 11, 4, 4)
 pupil.SetFill(0.06, 0.06, 0.05, 1.0)
 pupil.SetOrder(4)
 

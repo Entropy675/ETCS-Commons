@@ -388,6 +388,14 @@ DEFINE_WORK_FUNC(PolygonDrawable2D, ClearPoints)
     self.ClearPoints();
 }
 
+// SetOval <x> <y> <w> <h> -- an oval filling that box of the parent's space,
+// with smooth edges. See PolygonDrawable2D::SetOval.
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, SetOval, (int32_t, x), (int32_t, y), (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    self.SetOval(x, y, w, h);
+}
+
 DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, SetFill,
                        (float, r), (float, g), (float, b), (float, a))
 {
@@ -1331,6 +1339,14 @@ DEFINE_WORK_FUNC_TYPED(Throbber, Watch, (ETCS::RID, entity), (std::string, flag)
 }
 
 // SetPlate r g b a -- a square behind the ring; alpha 0 (the default) is none.
+// CenterOn <@node> -- keep the ring centred on that node as it moves and
+// resizes; see Throbber::CenterOn. 0 unbinds.
+DEFINE_WORK_FUNC_TYPED(Throbber, CenterOn, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.CenterOn(node);
+}
+
 DEFINE_WORK_FUNC_TYPED(Throbber, SetPlate, (float, r), (float, g), (float, b), (float, a))
 {
     (void)ctx;

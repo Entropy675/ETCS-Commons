@@ -402,14 +402,26 @@ before any tool runs, so nothing else was asking the surface to draw, and the
 rows updated while the canvas kept showing the arrangement from before the
 press.
 
-Dragging a row onto another restacks. **Hovering an EYE** isolates that layer --
+**Dragging a row by its grip** (the `::` strip, dots included) restacks. It
+becomes a drag once the pointer has moved four pixels; before that a press and
+release on the grip only chooses the row. While it is live the row turns amber,
+a ghost of it -- thumb and name -- follows the pointer, and a bar sits in the
+gap the layer will land in. Where it lands is read from the pointer's HEIGHT in
+the window, clamped to the rows that hold layers, so a release in the gap
+between two rows, on a row's dots, over the title or below the last layer still
+lands; a release outside the window cancels (`PaintLayerPanel::DragRow`/`Drop`).
+
+**Hovering an EYE** isolates that layer --
 everything else fades to 0.25 -- so a layer can be found by looking. The eye and
 not the row: isolating on the row meant the picture faded whenever the pointer
 crossed the window on its way to anything, so the answer to "which layer is
 this" arrived constantly and uninvited, and the thing being looked at was the
 thing being hidden. The eye is the control that is ABOUT visibility, so hovering
 it is the one moment where "show me only this layer" is what the hand is already
-asking.
+asking. A SHUT eye answers too: the hidden layer fades in to 0.75 as the rest
+fades out (`PaintLayer::SetPeek`), so a layer you switched off can be looked at
+without switching it back on. The peek is the screen's only -- an export, a
+thumbnail and the eyedropper still see the layer as hidden.
 
 It FADES rather than snaps, over about 150ms each way. A hover has a
 duration -- the pointer rests on the eye for as long as the question is being
@@ -509,15 +521,17 @@ than as its dimensions. Verified end to end in the browser: a mark on page 1,
 `new`, a different mark on page 2, then the page-1 row -- and the first mark is
 back and the second is gone.
 
-Saving and loading those bytes takes a moment -- a second or so in the
-browser -- on the thread the press arrived on, so the pointer is not answered
-until it is done. The store raises a `busy` state tag on itself for exactly
-that interval (`PaintPages::Waiting`), and the session's throbber follows the
+Saving, loading and deleting those bytes takes a moment -- a second or so in
+the browser -- on the thread the press arrived on, so the pointer is not
+answered until it is done. The store raises a `busy` state tag on itself for
+exactly that interval (`PaintPages::Waiting`), and the session's throbber follows the
 flag (`main_throbber.Watch(@pages, busy)` in `boot_paint_panels.etcs`,
 `Throbber::Watch`): the frame edge is another thread and reads the flag once a
 frame, so the ring turns while the store works and goes when the page is up.
 Neither side knows the other exists -- anything else that raises `busy` gets
-the same indicator.
+the same indicator. It sits over the middle of the canvas whatever size the
+window made it: `main_throbber.CenterOn(@paper_pane)` has it read the pane's box
+each frame it shows.
 
 ## Sizes, and 1920x1080
 

@@ -108,7 +108,8 @@ sheet_root.SetHidden(1)
 # No SetOrder: the type defaults to the top (Throbber::ORDER_ON_TOP), because
 # for a wait indicator that is not a layout choice but what the thing is.
 # 464,336 is (1024-96)/2, (768-96)/2: the raster is exactly the ring's square
-# (the caption sits inside it), so this is the centre of the sheet.
+# (the caption sits inside it), so this is the centre of the sheet -- until the
+# canvas exists, when CenterOn (below, beside the Watch) takes over.
 stage.spawn(RenderProvider::Throbber main_throbber)
 main_throbber.Create(96)
 main_throbber.SetPosition(464, 336)
@@ -546,13 +547,17 @@ spawn PaintProvider::PaintPages pages
 pages.Create(@doc, @db)
 pages.BindSurface(@canvas)
 # THE THROBBER FOLLOWS THE STORE'S FLAG. PaintPages raises `busy` on itself
-# for as long as a page is saved, loaded or made -- the one wait in this
+# for as long as a page is saved, loaded, made or deleted -- the one wait in this
 # session long enough to see (PaintPages::Waiting has the numbers) -- and the
 # throbber shows exactly while the flag is up (Throbber::Watch, read on the
 # frame edge). The store never learns there is a throbber; the throbber never
 # learns what the work is; a flag is what a state tag is for. This is what
 # the throbber above was kept for.
 main_throbber.Watch(@pages, busy)
+# AND IT SITS OVER THE CANVAS, not over the middle of the sheet it was placed
+# on above: the layout moves and resizes the canvas pane with the window, so
+# the throbber reads the pane's box each frame it shows (Throbber::CenterOn).
+main_throbber.CenterOn(@paper_pane)
 input.BindPages(@pages)
 
 spawn PaintProvider::PaintInput wheel_input

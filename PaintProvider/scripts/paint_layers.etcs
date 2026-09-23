@@ -256,6 +256,52 @@ row6.SetOrder(1)
 row6.SetBackground(0.15, 0.16, 0.11, 1.0)
 run paint_layer_row.etcs pane=row6 list=list
 
+# ── carrying a row ───────────────────────────────────────────────────────
+#
+# What a drag by the grip shows once it has moved (PaintLayerPanel::DragRow):
+# the carried row turns the drag colour, a GHOST of it -- the layer's thumb and
+# name on the same colour -- follows the pointer up and down the rows, and a
+# MARK sits in the gap the layer will land in. Both are passthrough, so the pick
+# under them is still the row the pointer is over, and both stay hidden until a
+# drag is live. Amber because it is neither the selection's blue nor the
+# window's olive: a carried row has to read as "in the hand", not "chosen".
+list.SetDragColor(0.86, 0.60, 0.22)
+
+panel.spawn(RenderProvider::CompositeDrawable2D row_ghost)
+row_ghost.Create(232, 26)
+row_ghost.SetPosition(4, 26)
+row_ghost.SetOrder(8)
+row_ghost.SetPassthrough(1)
+row_ghost.SetBackground(0.86, 0.60, 0.22, 0.92)
+
+row_ghost.spawn(RenderProvider::CompositeDrawable2D row_ghost_thumb)
+row_ghost_thumb.Create(24, 24)
+row_ghost_thumb.SetPosition(34, 1)
+row_ghost_thumb.SetOrder(2)
+row_ghost_thumb.SetRetain(1)
+
+row_ghost.spawn(RenderProvider::TextLabel row_ghost_name)
+row_ghost_name.Create()
+row_ghost_name.SetPosition(64, 7)
+row_ghost_name.SetSize(2)
+row_ghost_name.SetColor(0.10, 0.09, 0.06, 1.0)
+row_ghost_name.SetText(-)
+row_ghost_name.SetOrder(2)
+
+list.BindGhost(@row_ghost)
+list.GhostNode(thumb, @row_ghost_thumb)
+list.GhostNode(label, @row_ghost_name)
+
+# The mark: the rows are 28 apart and 26 tall, so the gap between two is
+# exactly this bar's height.
+panel.spawn(RenderProvider::CompositeDrawable2D row_drop_mark)
+row_drop_mark.Create(232, 2)
+row_drop_mark.SetPosition(4, 24)
+row_drop_mark.SetOrder(9)
+row_drop_mark.SetPassthrough(1)
+row_drop_mark.SetBackground(0.98, 0.86, 0.55, 1.0)
+list.BindDropMark(@row_drop_mark)
+
 
 # Bind the stack to the rows now that all of them exist. Called again by the
 # panel itself after anything that changes what the window should say, so a
