@@ -882,7 +882,6 @@
       }
       if (answer === 'NO SUCH SESSION') { leaveSession(); return; }
       if (/^\d+/.test(answer)) {
-        callVerb('doc', 'TextSent', '');           // the boxes in it are the room's now
         if (!isNaN(lastSeq) && lastSeq > 0) share.sent = lastSeq;
         const nodeHead = parseInt(answer.split(' ')[0], 10);
         if (!isNaN(nodeHead)) share.head = Math.max(share.head, nodeHead);
@@ -1399,6 +1398,9 @@
     const scripts = (j && Array.isArray(j.scripts) ? j.scripts : [])
       .map(function (s) { return String(s).trim().replace(/^\.\//, ''); })
       .filter(Boolean);
+    const assets = (j && Array.isArray(j.assets) ? j.assets : [])
+      .map(function (s) { return String(s).trim().replace(/^\.\//, ''); })
+      .filter(Boolean);
     const boot = (j && j.boot) ? String(j.boot).trim().replace(/^\.\//, '') : '';
     const glue = (j && j.glue) ? String(j.glue).trim().replace(/^\.\//, '') : '';
     // Optional. Naming it skips the candidate walk in resolveWasmBase, for a
@@ -1409,7 +1411,7 @@
     if (scripts.length) log('[etcs] scripts -> ' + scripts.join(', ') + '\n');
     // Kept for explainWorkerDeath: the per-Worker cost is proportional to it.
     man_module_count = wasm.length;
-    return { wasm: wasm, scripts: scripts, boot: boot, glue: glue, base: base };
+    return { wasm: wasm, scripts: scripts, assets: assets, boot: boot, glue: glue, base: base };
   }
 
   /*
@@ -1439,6 +1441,7 @@
   const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
 
   function checkStaged(name, kind, buf) {
+    if (kind === 'asset') return;          // binary by design: a font is not markup or a script
     if (kind === 'module') {
       const ok = buf.byteLength >= 4 && WASM_MAGIC.every((b, i) => buf[i] === b);
       if (!ok) throw new Error(name + ' is not a WebAssembly module -- it starts '
@@ -1561,8 +1564,16 @@
       setStatus('fetch ' + name);
       const url = base ? joinBase(base, name) : name;
       const r = await fetch(url, { cache: 'no-store' });
+      const buf = r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      // An asset is optional: a font that did not arrive leaves its slot to the
+      // pixel font (PaintFonts::Load answers "missing") instead of stopping the
+      // page. A script or module that did not arrive is a broken install.
+      if (kind === 'asset' && !(buf && buf.byteLength)) {
+        log('[etcs] skipped ' + name + ' (' + (r.ok ? 'empty' : 'HTTP ' + r.status)
+            + '; see its folder README)\n', 'warn');
+        continue;
+      }
       if (!r.ok) throw new Error('fetch ' + url + ' failed HTTP ' + r.status);
-      const buf = new Uint8Array(await r.arrayBuffer());
       if (!buf.byteLength) throw new Error(url + ' is empty');
       checkStaged(name, kind, buf);
       out[name] = buf;
@@ -1588,7 +1599,8 @@
     setStatus('locating runtime…');
     await resolveWasmBase(man.base, man.wasm[0]);
     const blobs = Object.assign({}, await fetchAll(man.wasm, 'module', wasm_base),
-                                    await fetchAll(man.scripts, 'script', null));
+                                    await fetchAll(man.scripts, 'script', null),
+                                    await fetchAll(man.assets, 'asset', null));
 
     if (man.boot && !blobs[man.boot])
       throw new Error('modules.json boot="' + man.boot + '" is not in its scripts list');

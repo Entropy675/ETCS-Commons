@@ -156,7 +156,19 @@ doc.SetActiveLayer(@ink)
 # never positioned or drawn, it is asked to rasterise into somebody else's pixels.
 spawn RenderProvider::TextLabel glyph_src
 glyph_src.Create()
-doc.BindGlyphs(@glyph_src)
+
+# THE TEXT BOXES' FONTS: the label above as font 0, the sheet's own pixel face,
+# and the TrueType files after it in this order -- the order is the number the
+# text bar's buttons name (paint_textbar.etcs), so a font added here goes at the
+# end. The files are staged beside the scripts (modules.json, "assets").
+spawn PaintProvider::PaintFonts fonts
+fonts.Create()
+fonts.BindPixel(@glyph_src)
+fonts.Load(sans, PaintProvider/fonts/InstrumentSans-Regular.ttf)
+fonts.Load(serif, PaintProvider/fonts/YoungSerif-Regular.ttf)
+fonts.Load(mono, PaintProvider/fonts/RedHatMono-Regular.ttf)
+fonts.Load(hand, PaintProvider/fonts/NothingYouCouldDo-Regular.ttf)
+doc.BindGlyphs(@fonts)
 
 spawn PaintProvider::PaintTool brush
 brush.SetRadius(6.0)
@@ -462,6 +474,22 @@ anim_edge_right.SetHidden(1)
 anim.BindOutline(@anim_edge_right)
 run PaintProvider/scripts/paint_anim.etcs panel=anim_pane anim=anim palette=palette
 
+# ── the text bar ─────────────────────────────────────────────────────────────
+#
+# Over the open text box, and only while there is one (PaintTextBar::Follow):
+# font, size, colour, remove, ok. Order 13, over the paper and its outlines and
+# under the windows. The sheet's own input places it whenever it repaints the
+# view (input.BindTextBar, below); it checks itself on the frame edge too.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D textbar_pane)
+textbar_pane.Create(480, 28)
+textbar_pane.SetOrder(13)
+textbar_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
+spawn PaintProvider::PaintTextBar textbar
+textbar.Create(@doc)
+textbar.BindSurface(@canvas)
+textbar.BindWindow(@textbar_pane)
+run PaintProvider/scripts/paint_textbar.etcs pane=textbar_pane bar=textbar palette=palette
+
 # THE CLOCK THE FADE RIDES IS NOT SPAWNED HERE ANY MORE. The isolation fade used
 # to need a node in the tree -- a drawable that drew nothing, present only so the
 # compose walk would reach it -- because the walk was the only per-frame edge in
@@ -526,6 +554,7 @@ input.BindPanel(@layers)
 # The animation tool's drag frames the reel, and the reel's window rows and
 # wheel are this input's too (PaintInput::BindAnimation).
 input.BindAnimation(@anim)
+input.BindTextBar(@textbar)
 input.BindWheel(@wheel)
 input.SetWheelPane(0)
 

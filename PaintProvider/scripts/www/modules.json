@@ -52,7 +52,21 @@
     "PaintProvider/scripts/paint_anim.etcs",
     "PaintProvider/scripts/paint_anim_row.etcs",
     "PaintProvider/scripts/paint_visitor_row.etcs",
+    "PaintProvider/scripts/paint_textbar.etcs",
     "RenderProvider/scripts/render_frames.etcs"
+  ],
+  "_assets": [
+    "Files that are not scripts but are read by one, staged exactly as the",
+    "scripts are and mounted from the same list: the text boxes' fonts",
+    "(PaintFonts::Load in boot_paint_panels.etcs). Binary, so they skip the",
+    "is-this-markup check the scripts get; optional, so one that is not there",
+    "is skipped and its font draws in the pixel font (fonts/README.md)."
+  ],
+  "assets": [
+    "PaintProvider/fonts/InstrumentSans-Regular.ttf",
+    "PaintProvider/fonts/YoungSerif-Regular.ttf",
+    "PaintProvider/fonts/RedHatMono-Regular.ttf",
+    "PaintProvider/fonts/NothingYouCouldDo-Regular.ttf"
   ],
   "boot": "boot_paint_panels.etcs",
   "_glue": [

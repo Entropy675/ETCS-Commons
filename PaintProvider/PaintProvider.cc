@@ -1,6 +1,7 @@
 // The image codecs' one compiled copy -- see the include note in the header.
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_TRUETYPE_IMPLEMENTATION
 #define STBI_NO_HDR
 #define STBI_NO_PIC
 #define STBI_NO_PNM
@@ -12,7 +13,8 @@
 // thread / OS event pump affinity).
 ETCS_MODULE_EXPORT_MAIN(PaintProvider,
     "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette "
-    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages PaintPagePanel PaintAnimation PaintNode PaintVisitors")
+    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages PaintPagePanel PaintAnimation PaintNode PaintVisitors "
+    "PaintFonts PaintTextBar")
 
 // SetKind is what makes one tool eight: radius/colour/hardness vary
 // independently of it, and the kind is the shape of the whole gesture rather
@@ -47,7 +49,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
     CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo,
     ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
     ExportOps, ExportBaseline, ImportOps, NotebookHead, SetAuthor, SetReadOnly,
-    TextDenied, TextSent,
+    TextDenied, SetTextFont, SetTextSize, SetTextColor,
     MergeDown, MergeUp,
     Report, Delete)
 
@@ -61,7 +63,7 @@ ETCS_TAG_BLOCK_BASIC(PaintSurface,
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
-     BindRoot, BindCanvas, BindPalette, BindPanel, BindPagePanel, BindVisitors, BindAnimation, BindGlyphs, SetHoldCapacity, BindPages,
+     BindRoot, BindCanvas, BindPalette, BindPanel, BindPagePanel, BindVisitors, BindTextBar, BindAnimation, BindGlyphs, SetHoldCapacity, BindPages,
      BindWheel, SetWheelPane,
      Pointer, Press, Release, Report, Delete),
     (ConsumeInput, ConsumePointer, ConsumeRouted, ConsumeRoutedPointer))
@@ -87,6 +89,17 @@ ETCS_TAG_BLOCK_BASIC(PaintPalette,
 // The pages of this session, kept in a database -- see PaintPages.
 ETCS_TAG_BLOCK_BASIC(PaintPages,
     Create, BindSurface, Save, Stash, Load, New, Next, Prev, List, Rename, Delete, Destroy)
+
+// The text boxes' faces: the sheet's pixel font as font 0, TrueType files after
+// it, all behind the one Glyphs family the document draws with. See PaintFonts.
+ETCS_TAG_BLOCK_BASIC(PaintFonts,
+    Create, BindPixel, Load, Report, Delete)
+
+// The bar over an open text box: font, size, colour, ok and remove, as palette
+// calls; it shows exactly while a box is open. See PaintTextBar.
+ETCS_TAG_BLOCK_BASIC(PaintTextBar,
+    Create, BindSurface, BindWindow, BindFont, BindSizeLabel, BindColor, SetFontTints,
+    PickFont, StepSize, PickColor, Done, Remove, Delete)
 
 // Frames cut from a region of the page and put back; a reel that plays in its
 // window and travels as a GIF. See PaintAnimation.

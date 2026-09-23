@@ -363,6 +363,36 @@ the hover dim, not the selection outline, and not the text boxes, which are stri
 drawn through a `Glyphs` target by RID; the export log counts those so a file that
 lost its captions says so.
 
+## Text boxes
+
+The `text` tool drags a box; the box is a COLUMN. What is typed into it is set
+in the box's font at the box's size and wraps where the box's width runs out --
+between words, or inside one wider than the whole box -- and Enter starts a new
+line. Lines that would pass the bottom of the box are not drawn; the open box
+has a handle on its bottom-right corner that resizes it, and the text reflows as
+it goes (`PaintDocument::wrap_text`). A press inside a box opens it; a drag from
+inside moves it. Shift works: capitals and the shifted symbols of a US layout.
+
+**The bar.** While a box is open a bar sits over it (`PaintTextBar`,
+`paint_textbar.etcs`): the five fonts, the size (a ladder from 8 to 400, the
+height of a line in the page's pixels), eight colours, `x` to remove the box and
+`ok` to let it go. The fonts are the sheet's own pixel face and four TrueType
+files that ship with the program (`PaintProvider/fonts`, each with its OFL
+licence), drawn antialiased by `PaintFonts` through stb_truetype -- files rather
+than the machine's fonts because a box has to wrap at the same words on every
+page in a shared session. A font whose file is missing keeps its number and
+draws in the pixel font (`PaintProvider/fonts/README.md` says where the files
+come from). A new box starts in the last font and size the bar set.
+
+**Undo.** An edit is a step: from opening a box to letting it go -- the typing,
+the font, the size, the colour, a move, a resize -- is recorded when it ends as
+one `text` entry on the notebook (`PaintOpKind::Text`), carrying the whole box.
+Undo and redo rebuild the boxes from those entries along the path, the same
+walk that restores the pixels, so ctrl+z after typing a caption takes the
+caption away and ctrl+y brings it back. Removing a box is a step; a box placed
+and let go empty is not recorded at all. Ctrl+z with a box open ends the edit
+first, then undoes it.
+
 ## The layer window
 
 Top-right of the paper: a title bar with a **+** on it and seven rows, built by
@@ -659,13 +689,13 @@ page asks the node, which gives each box to the first person who asks and to
 nobody else until they let go (`claim/<key>`; a box is named in the room by who
 made it and their number for it, `PaintTextBox::key`). Someone else pressing a
 held box is told who has it, and anything they typed into it is put back
-(`PaintDocument::TextDenied`). Letting go -- Enter, Escape, a press elsewhere,
-or twenty seconds without a key -- is the submission: the box as it stands is
-pushed, and only then released, so it is in the room before anyone else can
-take it. The node refuses a box line from anyone but the holder, and a claim
-nobody has touched for twenty seconds lapses. What travels is each finished
-edit, not the keystrokes. Boxes go beside the notebook rather than in it, so
-undo, which walks the pixels, is unchanged.
+(`PaintDocument::TextDenied`). The text bar being up IS the claim. Letting go
+-- Escape, `ok`, a press elsewhere, or twenty seconds without a key -- ends the
+edit, which is recorded as one `text` entry and pushed like any stroke, and
+only then released, so it is in the room before anyone else can take it. The
+node refuses a box entry from anyone but the holder, and a claim nobody has
+touched for twenty seconds lapses. What travels is each finished edit, not the
+keystrokes.
 
 **Pushes of any size.** A request to the node is bounded (64 KB with its
 headers, `ETCS_NETWORK_MAX_HEADER_SIZE`) and a keyframe is a layer's PNG, so a

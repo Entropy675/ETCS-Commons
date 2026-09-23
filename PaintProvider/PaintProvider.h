@@ -20,6 +20,7 @@
 #include <thread>
 #include <string>
 #include <map>
+#include <memory>
 #include <cctype>
 #include <unordered_map>
 #include <vector>
@@ -47,6 +48,9 @@
  */
 #include "stb_image.h"
 #include "stb_image_write.h"
+// Outline fonts for the text boxes (PaintFonts), compiled once in the .cc
+// like the codecs above.
+#include "stb_truetype.h"
 
 #if defined(__EMSCRIPTEN__)
 // For MAIN_THREAD_EM_ASM: the canvas menu's save/load reach the page's own
@@ -596,7 +600,7 @@ static inline void paint_composite_raw_scaled(Pixels_& dst,
  *   ANCHORED     Line, Rect, Ellipse   two points; preview while dragging,
  *                                      committed on release
  *   PLACED       Fill               one point, one commit, no drag at all
- *   ANCHORED     Glyph              drag a box; text is prompted and fitted in it
+ *   ANCHORED     Glyph              drag a box; text is typed into it and wraps
  *   ANCHORED     Select             drag a region; nothing lands until it is MOVED
  *   MEASURED     Ruler              nothing is ever committed
  *
@@ -629,6 +633,23 @@ static inline char paint_key_to_char(uint16_t key)
     if (key >= 'A' && key <= 'Z') return static_cast<char>(key - 'A' + 'a');
     if (key >= 32 && key <= 126)  return static_cast<char>(key);
     return 0;
+}
+
+/*
+ * THE SAME KEY WITH SHIFT HELD, for the one place that takes prose -- a text
+ * box. A US layout, because GLFW's printable codes are the US key caps and a
+ * layout table is the only way from a key to what its cap says with shift; a
+ * name field keeps the plain mapping, since a name wants neither.
+ */
+static inline char paint_key_to_char_shifted(uint16_t key, bool shift)
+{
+    const char c = paint_key_to_char(key);
+    if (!shift || c == 0) return c;
+    if (c >= 'a' && c <= 'z') return static_cast<char>(c - 'a' + 'A');
+    static const char* from = "1234567890-=[]\\;',./`";
+    static const char* to   = "!@#$%^&*()_+{}|:\"<>?~";
+    for (size_t i = 0; from[i]; ++i) if (from[i] == c) return to[i];
+    return c;
 }
 
 /*
@@ -2856,6 +2877,226 @@ static inline std::string paint_path_stem(const std::string& path)
 
 
 /*
+ * ── FONTS FOR TEXT BOXES ─────────────────────────────────────────────────────
+ *
+ * A Glyphs provider with more than one face. Font 0 is the pixel font the rest
+ * of the sheet is lettered in (RenderProvider::TextLabel, bound with
+ * BindPixel), kept because it is the look this program already has; fonts 1
+ * and up are TrueType files loaded by path (Load), measured and drawn with
+ * stb_truetype at any size, antialiased.
+ *
+ * FILES, NOT THE BROWSER'S FONTS. A text box in a shared session wraps where
+ * the box's width says, and every page in the room has to wrap it at the same
+ * words -- which only holds if every page measures with the same outlines. A
+ * font from the operating system or the browser would be a different font on
+ * each machine. So the faces ship with the program (PaintProvider/fonts, each
+ * beside its licence) and are staged like the scripts are.
+ *
+ * SIZE IS THE LINE: size_px is the height from the highest ascender to the
+ * lowest descender, the same meaning the pixel font's size has, so switching a
+ * box's font keeps its lines about as tall as they were.
+ *
+ * Glyph bitmaps are cached per font, size and character: a text box is drawn
+ * again on every render of the view, which is every stroke's sample.
+ */
+class PaintFonts : public GlyphsBase<PaintFonts>,
+                   public DeletableBase<PaintFonts>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintFonts);
+
+    PaintFonts() = default;
+    bool DeleteConcrete() override { return true; }
+
+    bool Create() { this->addTag("active"); return true; }
+
+    // Font 0: whatever Glyphs leaf draws the sheet's own lettering.
+    void BindPixel(ETCS::RID glyphs) { m_pixel = glyphs; }
+
+    /*
+     * A FONT THAT DID NOT LOAD STILL TAKES ITS NUMBER. The number is what a box
+     * stores and what the bar's buttons name, so a missing file must not shift
+     * every font after it onto the wrong face -- the slot is kept, and a box in
+     * it is drawn in the pixel font until the file is there.
+     */
+    bool Load(const std::string& name, const std::string& path)
+    {
+        auto face = std::make_unique<Face>();
+        face->name = name;
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+            ETCS_LOG("PaintFonts", "Load " << name << ": cannot open '" << path
+                     << "' -- font " << (m_faces.size() + 1) << " draws in the pixel font.");
+        else
+        {
+            face->bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            const int offset = face->bytes.empty() ? -1 : stbtt_GetFontOffsetForIndex(face->bytes.data(), 0);
+            face->loaded = offset >= 0 && stbtt_InitFont(&face->info, face->bytes.data(), offset);
+            if (face->loaded) stbtt_GetFontVMetrics(&face->info, &face->ascent, &face->descent, &face->gap);
+            else ETCS_LOG("PaintFonts", "Load " << name << ": '" << path << "' is not a font stb_truetype can read"
+                          " -- font " << (m_faces.size() + 1) << " draws in the pixel font.");
+        }
+        const bool ok = face->loaded;
+        std::lock_guard<std::mutex> g(m_mu);
+        m_faces.push_back(std::move(face));
+        if (ok) ETCS_LOG("PaintFonts", "font " << m_faces.size() << " '" << name << "' from '" << path << "'.");
+        return ok;
+    }
+
+    uint32_t count() const { return static_cast<uint32_t>(m_faces.size()) + 1; }
+    std::string nameOf(uint32_t font) const
+    {
+        if (font == 0 || font > m_faces.size()) return "pixel";
+        return m_faces[font - 1]->name;
+    }
+
+    void Report() const
+    {
+        ETCS_LOG("PaintFonts", "0 pixel" << (m_pixel ? "" : " (unbound)"));
+        for (size_t i = 0; i < m_faces.size(); ++i)
+            ETCS_LOG("PaintFonts", (i + 1) << " " << m_faces[i]->name << (m_faces[i]->loaded ? "" : " (not loaded: pixel font)"));
+    }
+
+    TextExtent MeasureTextConcrete(const char* text, uint32_t font, uint32_t size_px) override
+    {
+        Face* f = face(font);
+        if (!f) return pixel_measure(text, size_px);
+        const float scale = stbtt_ScaleForPixelHeight(&f->info, static_cast<float>(std::max<uint32_t>(1, size_px)));
+        float w = 0.0f;
+        int prev = 0;
+        for (const char* c = text ? text : ""; *c; ++c)
+        {
+            const int cp = static_cast<unsigned char>(*c);
+            int adv = 0, lsb = 0;
+            stbtt_GetCodepointHMetrics(&f->info, cp, &adv, &lsb);
+            if (prev) w += scale * stbtt_GetCodepointKernAdvance(&f->info, prev, cp);
+            w += scale * adv;
+            prev = cp;
+        }
+        const float asc = f->ascent * scale, desc = -f->descent * scale;
+        return TextExtent{ static_cast<uint32_t>(std::ceil(w)),
+                           static_cast<uint32_t>(std::ceil(asc + desc)),
+                           static_cast<uint32_t>(std::ceil(asc)) };
+    }
+
+    TextExtent RasterizeTextConcrete(ETCS::RID target, const char* text, uint32_t font, uint32_t size_px,
+                                     int32_t x, int32_t y, float r, float g, float b, float a) override
+    {
+        Face* f = face(font);
+        if (!f)
+        {
+            ETCS::Held<Glyphs_> px = ETCS::resolve_held<Glyphs_>("Glyphs", m_pixel);
+            if (!px) return TextExtent{ 0, 0, 0 };
+            return px->RasterizeText(target, text, 0, size_px, x, y, r, g, b, a);
+        }
+        const TextExtent e = MeasureTextConcrete(text, font, size_px);
+        Pixels_* dst = ETCS::resolve_in_family<Pixels_>("Pixels", target);
+        if (!dst || !dst->PixelData() || !text) return e;
+        const float scale = stbtt_ScaleForPixelHeight(&f->info, static_cast<float>(std::max<uint32_t>(1, size_px)));
+        const int32_t base = y + static_cast<int32_t>(e.baseline);
+        float pen = static_cast<float>(x);
+        int prev = 0;
+        std::lock_guard<std::mutex> lock(m_mu);
+        for (const char* c = text; *c; ++c)
+        {
+            const int cp = static_cast<unsigned char>(*c);
+            if (prev) pen += scale * stbtt_GetCodepointKernAdvance(&f->info, prev, cp);
+            const Glyph& gl = glyph(*f, font, size_px, scale, cp);
+            blend(*dst, gl, static_cast<int32_t>(std::lround(pen)) + gl.xoff, base + gl.yoff, r, g, b, a);
+            pen += gl.advance;
+            prev = cp;
+        }
+        etcs_mark_observed(static_cast<ETCS::Entity*>(dst));
+        return e;
+    }
+
+private:
+    struct Face
+    {
+        std::string name;
+        std::vector<unsigned char> bytes;     // stb_truetype reads the file in place
+        bool loaded = false;                  // a kept slot for a file that was not there
+        stbtt_fontinfo info{};
+        int ascent = 0, descent = 0, gap = 0;
+    };
+    struct Glyph
+    {
+        int32_t w = 0, h = 0, xoff = 0, yoff = 0;
+        float advance = 0.0f;
+        std::vector<uint8_t> cover;
+    };
+
+    Face* face(uint32_t font) const
+    {
+        if (font == 0 || font > m_faces.size()) return nullptr;
+        Face* f = m_faces[font - 1].get();
+        return f->loaded ? f : nullptr;
+    }
+
+    TextExtent pixel_measure(const char* text, uint32_t size_px)
+    {
+        ETCS::Held<Glyphs_> px = ETCS::resolve_held<Glyphs_>("Glyphs", m_pixel);
+        if (!px) return TextExtent{ 0, 0, 0 };
+        return px->MeasureText(text, 0, size_px);
+    }
+
+    const Glyph& glyph(Face& f, uint32_t font, uint32_t size_px, float scale, int cp)
+    {
+        const uint64_t key = (static_cast<uint64_t>(font) << 48) | (static_cast<uint64_t>(size_px) << 24)
+                           | static_cast<uint64_t>(cp);
+        auto it = m_cache.find(key);
+        if (it != m_cache.end()) return it->second;
+        if (m_cache.size() > 8192) m_cache.clear();   // a bound, not a policy: sizes come and go
+        Glyph gl;
+        int adv = 0, lsb = 0;
+        stbtt_GetCodepointHMetrics(&f.info, cp, &adv, &lsb);
+        gl.advance = adv * scale;
+        int w = 0, h = 0, xo = 0, yo = 0;
+        unsigned char* bm = stbtt_GetCodepointBitmap(&f.info, scale, scale, cp, &w, &h, &xo, &yo);
+        if (bm)
+        {
+            gl.w = w; gl.h = h; gl.xoff = xo; gl.yoff = yo;
+            gl.cover.assign(bm, bm + static_cast<size_t>(w) * h);
+            stbtt_FreeBitmap(bm, nullptr);
+        }
+        return m_cache.emplace(key, std::move(gl)).first->second;
+    }
+
+    // Source-over, coverage times the colour's alpha, into straight RGBA --
+    // the blend every raster in this module uses.
+    static void blend(Pixels_& dst, const Glyph& gl, int32_t x0, int32_t y0, float r, float g, float b, float a)
+    {
+        uint8_t* px = dst.PixelData();
+        const int32_t W = static_cast<int32_t>(dst.PixelWidth()), H = static_cast<int32_t>(dst.PixelHeight());
+        for (int32_t gy = 0; gy < gl.h; ++gy)
+        {
+            const int32_t ty = y0 + gy;
+            if (ty < 0 || ty >= H) continue;
+            for (int32_t gx = 0; gx < gl.w; ++gx)
+            {
+                const int32_t tx = x0 + gx;
+                if (tx < 0 || tx >= W) continue;
+                const float sa = a * (gl.cover[static_cast<size_t>(gy) * gl.w + gx] / 255.0f);
+                if (sa <= 0.0f) continue;
+                uint8_t* d = px + (static_cast<size_t>(ty) * W + tx) * 4;
+                const float da = d[3] / 255.0f;
+                const float oa = sa + da * (1.0f - sa);
+                auto mix = [&](float sc, uint8_t dc)
+                { return paint_to_byte((sc * sa + (dc / 255.0f) * da * (1.0f - sa)) / oa); };
+                d[0] = mix(r, d[0]); d[1] = mix(g, d[1]); d[2] = mix(b, d[2]);
+                d[3] = paint_to_byte(oa);
+            }
+        }
+    }
+
+    ETCS::RID m_pixel = 0;
+    std::vector<std::unique_ptr<Face>> m_faces;
+    std::unordered_map<uint64_t, Glyph> m_cache;
+    std::mutex m_mu;
+};
+
+
+/*
  * ── A TEXT BOX ───────────────────────────────────────────────────────────────
  *
  * TEXT THAT IS STILL TEXT. The glyph tool used to prompt for a string, rasterise
@@ -2873,10 +3114,12 @@ static inline std::string paint_path_stem(const std::string& path)
  * it. What it is, is a second kind of thing the document contains, which is why
  * the document holds them.
  *
- * ONE STRING, NO WRAPPING. The run is scaled to the largest size that fits the
- * box (see fit_text_px), so the box is the type size control -- drag a tall box
- * for big text. Wrapping would need a line breaker and a notion of leading, and
- * neither exists here yet; a second line today is a second box.
+ * THE BOX IS THE COLUMN, THE SIZE IS THE TYPE. Text is set in the box's font at
+ * its size and wraps where the box's width runs out -- at a space when there is
+ * one, inside a word that is wider than the whole box -- and Enter starts a new
+ * line. Lines past the bottom of the box are not drawn; drag the corner to make
+ * room (PaintInput, the resize handle). Font, size and colour are the box's own,
+ * set from the bar that opens over it while it is selected (PaintTextBar).
  */
 struct PaintTextBox
 {
@@ -2895,6 +3138,16 @@ struct PaintTextBox
     // draw time, because the tool's colour moves on and this text should not: two
     // captions placed with different colours stay different.
     float       rgba[4] = { 0.08f, 0.08f, 0.10f, 1.0f };
+    uint32_t    font = 0;           // a Glyphs font handle -- see PaintFonts
+    uint32_t    size = 24;          // the line's height, in document pixels
+
+    bool same_as(const PaintTextBox& o) const
+    {
+        return x == o.x && y == o.y && w == o.w && h == o.h && text == o.text
+            && font == o.font && size == o.size
+            && rgba[0] == o.rgba[0] && rgba[1] == o.rgba[1]
+            && rgba[2] == o.rgba[2] && rgba[3] == o.rgba[3];
+    }
 };
 
 /*
@@ -2972,6 +3225,15 @@ enum class PaintOpKind : uint8_t
      * notebook; it is what a notebook starts from.
      */
     Page,
+    /*
+     * ONE TEXT BOX, AS IT STANDS AFTER AN EDIT -- or its removal. A box is a
+     * string and a place, not pixels, so the entry carries the whole box and
+     * replay folds these along the path (PaintDocument::replayTo): the boxes a
+     * point in history has are the last word each entry said about its key.
+     * One entry per edit, written when the edit ends (SelectTextBox), so undo
+     * takes back a whole edit -- the typing, the font, the move -- in one step.
+     */
+    Text,
 };
 
 static inline const char* paint_op_name(PaintOpKind k)
@@ -2987,6 +3249,7 @@ static inline const char* paint_op_name(PaintOpKind k)
     case PaintOpKind::Fill:     return "fill";
     case PaintOpKind::Layers:   return "layers";
     case PaintOpKind::Page:     return "page";
+    case PaintOpKind::Text:     return "text";
     }
     return "snap";
 }
@@ -3001,6 +3264,7 @@ static inline PaintOpKind paint_op_from(const std::string& s)
     if (s == "fill")    return PaintOpKind::Fill;
     if (s == "layers")  return PaintOpKind::Layers;
     if (s == "page")    return PaintOpKind::Page;
+    if (s == "text")    return PaintOpKind::Text;
     return PaintOpKind::Snapshot;
 }
 
@@ -3164,6 +3428,11 @@ struct PaintOp
      * same failure stepping over pixel keyframes was added to avoid.
      */
     bool keyframe = false;
+
+    // Text only: the box after the edit, or that it went. The key is its name
+    // everywhere (PaintTextBox::key); the id means nothing past this document.
+    PaintTextBox box;
+    bool         removed = false;
 
     // "Did this change the picture." A structural entry that changed the stack
     // did -- undoing it puts a layer back -- so it steps like a mark.
@@ -3444,6 +3713,28 @@ static inline std::string paint_op_encode(const PaintOp& op)
     out += ' ';
     out += std::to_string(op.order);
 
+    /*
+     * A box: its key first -- the one field past the author the node reads, to
+     * refuse a box somebody else is holding -- then its place, its type, its
+     * colour, the two flags, and the string in base64 ("-" when empty), since
+     * a caption may hold every character the line format uses.
+     */
+    if (op.kind == PaintOpKind::Text)
+    {
+        const PaintTextBox& b = op.box;
+        out += ' ' + (b.key.empty() ? std::string("-") : b.key);
+        out += ' ' + std::to_string(b.x) + ' ' + std::to_string(b.y)
+             + ' ' + std::to_string(b.w) + ' ' + std::to_string(b.h)
+             + ' ' + std::to_string(b.font) + ' ' + std::to_string(b.size);
+        for (float c : b.rgba) out += ' ' + std::to_string(c);
+        out += op.removed  ? " 1" : " 0";
+        out += op.keyframe ? " 1" : " 0";
+        out += ' ';
+        out += b.text.empty() ? std::string("-")
+                              : paint_b64_encode(reinterpret_cast<const uint8_t*>(b.text.data()), b.text.size());
+        return out;
+    }
+
     if (op.kind == PaintOpKind::Layers || op.kind == PaintOpKind::Page)
     {
         if (op.kind == PaintOpKind::Page)
@@ -3512,6 +3803,25 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
     if (!(in >> out.seq >> kind >> author >> out.layer >> out.order)) return false;
     out.kind   = paint_op_from(kind);
     out.author = (author == "-") ? std::string() : author;
+
+    if (out.kind == PaintOpKind::Text)
+    {
+        PaintTextBox& b = out.box;
+        int removed = 0, keyframe = 0;
+        std::string body;
+        if (!(in >> b.key >> b.x >> b.y >> b.w >> b.h >> b.font >> b.size
+                 >> b.rgba[0] >> b.rgba[1] >> b.rgba[2] >> b.rgba[3] >> removed >> keyframe >> body))
+            return false;
+        out.removed  = (removed != 0);
+        out.keyframe = (keyframe != 0);
+        if (body != "-")
+        {
+            std::vector<uint8_t> raw;
+            if (!paint_b64_decode(body, raw)) return false;
+            b.text.assign(raw.begin(), raw.end());
+        }
+        return true;
+    }
 
     if (out.kind == PaintOpKind::Layers || out.kind == PaintOpKind::Page)
     {
@@ -3989,18 +4299,29 @@ public:
         return AddTextBoxColoured(x, y, w, h, 0.08f, 0.08f, 0.10f, 1.0f);
     }
 
+    /*
+ * A NEW BOX IS AN EDIT THAT HAS NOT ENDED: it is recorded when it is let go
+ * (SelectTextBox), with whatever was typed into it, so placing a box and typing
+ * a caption is one step of undo -- and a box let go empty is simply dropped,
+ * never recorded, because an empty box is a click that missed. Its font and
+ * size are the last ones the bar set, so a second caption matches the first.
+ */
     uint32_t AddTextBoxColoured(int32_t x, int32_t y, int32_t w, int32_t h,
                                 float r, float g, float bl, float a)
     {
+        if (refuse_read_only("add text")) return 0;
         Touch();
         PaintTextBox b;
         b.rgba[0] = r; b.rgba[1] = g; b.rgba[2] = bl; b.rgba[3] = a;
         b.x = x; b.y = y;
         b.w = (w < 1) ? 1 : w;
         b.h = (h < 1) ? 1 : h;
+        b.font = m_text_font;
+        b.size = m_text_size;
         b.id = ++m_text_seq;
         b.key = (m_author.empty() ? std::string("-") : m_author) + "." + std::to_string(b.id);
         m_text.push_back(b);
+        m_text_fresh = b.key;
         ETCS_LOG("PaintDocument", "text box " << b.id << " at " << b.x << "," << b.y
                  << " " << b.w << "x" << b.h);
         return b.id;
@@ -4011,29 +4332,43 @@ public:
         for (auto& b : m_text) if (b.id == id) return &b;
         return nullptr;
     }
+    const PaintTextBox* FindTextBox(uint32_t id) const
+    {
+        for (const auto& b : m_text) if (b.id == id) return &b;
+        return nullptr;
+    }
 
+    // By verb: the whole string at once, recorded as an edit of its own unless
+    // the box is open, in which case it is part of that edit.
     bool SetTextBoxText(uint32_t id, const std::string& text)
     {
-        Touch();
+        if (refuse_read_only("edit text")) return false;
         PaintTextBox* b = FindTextBox(id);
         if (!b) return false;
         b->text = text;
+        if (id != m_text_sel) record_text(*b, false);
+        Touch();
         return true;
     }
 
+    /*
+ * GONE, AS ONE STEP OF UNDO. A box that was never recorded -- placed and not
+ * yet let go -- just goes; there is nothing in the history to undo.
+ */
     bool RemoveTextBox(uint32_t id)
     {
-        Touch();
+        if (refuse_read_only("remove text")) return false;
         for (auto it = m_text.begin(); it != m_text.end(); ++it)
             if (it->id == id)
             {
-                if (sharing())
-                {
-                    note_text(it->key, true);
-                    if (m_text_sel == id) text_event("release:" + it->key);
-                }
-                if (m_text_sel == id) m_text_sel = 0;
+                const PaintTextBox gone = *it;
+                const bool was_open = (m_text_sel == id);
+                if (was_open) m_text_sel = 0;
                 m_text.erase(it);
+                if (gone.key == m_text_fresh) m_text_fresh.clear();
+                else record_text(gone, true);
+                if (was_open && sharing()) text_event("release:" + gone.key);
+                Touch();
                 return true;
             }
         return false;
@@ -4052,10 +4387,45 @@ public:
 
     size_t textBoxCount() const { return m_text.size(); }
 
+    /*
+ * ── the open box's type ──────────────────────────────────────────────────
+ *
+ * What the text bar sets (PaintTextBar). Each changes the box in place -- part
+ * of the edit that ends when the box is let go -- and becomes the style the
+ * next new box starts with.
+ */
+    static constexpr uint32_t TEXT_SIZE_MIN = 6, TEXT_SIZE_MAX = 400;
+
+    bool SetTextFont(uint32_t id, uint32_t font)
+    {
+        PaintTextBox* b = FindTextBox(id);
+        if (!b || readOnly()) return false;
+        b->font = m_text_font = font;
+        Touch();
+        return true;
+    }
+    bool SetTextSize(uint32_t id, uint32_t size)
+    {
+        PaintTextBox* b = FindTextBox(id);
+        if (!b || readOnly()) return false;
+        b->size = m_text_size = std::clamp(size, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
+        Touch();
+        return true;
+    }
+    bool SetTextColor(uint32_t id, float r, float g, float bl, float a)
+    {
+        PaintTextBox* b = FindTextBox(id);
+        if (!b || readOnly()) return false;
+        b->rgba[0] = r; b->rgba[1] = g; b->rgba[2] = bl; b->rgba[3] = a;
+        Touch();
+        return true;
+    }
+
     // Whatever leaf claiming Glyphs draws them -- the document needs its own,
     // because it is what renders them, and it may be rendered with no input
     // machine attached at all.
     void BindGlyphs(ETCS::RID glyphs) { m_glyphs = glyphs; }
+    ETCS::RID glyphs() const { return m_glyphs; }
 
     /*
  * EDITING AFFORDANCES ARE A VIEW STATE, so they are set from outside rather than
@@ -4066,43 +4436,36 @@ public:
     void ShowTextBoxes(bool on)   { m_text_show = on; }
 
     /*
- * ── TEXT IN A SHARED SESSION: ONE HAND ON A BOX AT A TIME ────────────────
+ * ── OPENING AND LETTING GO OF A BOX ──────────────────────────────────────
  *
- * Selecting a box is CLAIMING it. The page asks the node, which gives each box
- * to the first person who asks and to nobody else until they let go; a claim
- * refused comes back as TextDenied and the box goes back to how it was.
- * Letting go -- Enter, Escape, a press elsewhere, or the page's idle timer --
- * is the SUBMISSION: the box as it stands goes to the room, and the claim is
- * released after it lands. What travels is the box's state, not keystrokes,
- * so the room sees each edit when it is finished and never half of one.
+ * Selecting a box OPENS it: the keys go into it and the bar comes up over it.
+ * Letting go -- Escape, a press elsewhere, the bar's `ok`, another box, the
+ * page's idle timer in a session -- ENDS THE EDIT, and that is the moment it
+ * is recorded: one Text entry with the box as it now stands, if anything about
+ * it changed. So undo takes back a whole edit, and a session sees each edit
+ * when it is finished and never half of one.
  *
- * Not in the notebook. A box is a string, not pixels, and undo is a walk over
- * the pixel history (replayTo); a text entry among the marks would be one more
- * thing that walk has to step over. Shared boxes travel beside the notebook --
- * the pending set below, drained into the same push (ExportOps).
+ * IN A SHARED SESSION, OPEN IS CLAIMED. The page asks the node, which gives
+ * each box to the first person who asks and to nobody else until they let go;
+ * a claim refused comes back as TextDenied and the box goes back to how it was.
+ * Letting go releases the claim after the edit has been pushed.
  */
     void SelectTextBox(uint32_t id)
     {
         if (id == m_text_sel) return;
         const uint32_t was = m_text_sel;
+        m_text_sel = 0;
+        if (was) end_text_edit(was);
+        if (id == 0) return;
+        const PaintTextBox* b = FindTextBox(id);
+        if (!b) return;
         m_text_sel = id;
-        if (!sharing()) return;
-        if (was)
-            if (const PaintTextBox* b = FindTextBox(was))
-            {
-                note_text(b->key, false);
-                text_event("release:" + b->key);
-            }
-        if (id)
-            if (const PaintTextBox* b = FindTextBox(id))
-            {
-                m_text_before = *b;
-                text_event("claim:" + b->key);
-            }
+        m_text_before = *b;
+        if (sharing()) text_event("claim:" + b->key);
     }
     uint32_t selectedTextBox() const { return m_text_sel; }
 
-    // A key went into the selected box: the page keeps the claim alive while
+    // A key went into the open box: the page keeps the claim alive while
     // someone is typing (and lets it lapse when they stop).
     void TextEdited(uint32_t id)
     {
@@ -4112,8 +4475,8 @@ public:
 
     /*
  * THE NODE SAID NO: somebody else is holding this box. It goes back to what it
- * was when it was selected -- anything typed since was typed into a box that
- * was never ours -- and the selection with it, and nothing is sent.
+ * was when it was opened -- anything typed since was typed into a box that was
+ * never ours -- and closes, and nothing is recorded or sent.
  */
     void TextDenied(const std::string& key, const std::string& holder)
     {
@@ -4126,19 +4489,71 @@ public:
             *b = m_text_before;
             b->id = id;
             m_text_sel = 0;
-            m_text_out.erase(key);
         }
         Touch();
         ETCS_LOG("PaintDocument", "text box " << key << " is " << (holder.empty() ? std::string("someone else") : holder)
                  << "'s until they let go of it.");
     }
 
-    // The pending boxes up to the last export reached the room.
-    void TextSent()
+    /*
+ * ── LAYING A BOX OUT ─────────────────────────────────────────────────────
+ *
+ * The box's lines, at its own size, as the Glyphs provider measures them:
+ * each paragraph (split at the Enters) filled word by word until the next word
+ * would pass the box's width, a word wider than the whole box broken where it
+ * runs out. In DOCUMENT units, so where a line breaks does not depend on the
+ * zoom it is looked at through -- every page in a session wraps a box at the
+ * same words because they all measure with the same font files (PaintFonts).
+ */
+    static void wrap_text(Glyphs_* g, const PaintTextBox& b, std::vector<std::string>& lines)
     {
-        for (auto it = m_text_out.begin(); it != m_text_out.end(); )
-            it = (it->second.ver <= m_text_exported) ? m_text_out.erase(it) : std::next(it);
+        lines.clear();
+        auto width = [&](const std::string& t)
+        { return static_cast<int32_t>(g->MeasureText(t.c_str(), b.font, b.size).width); };
+        size_t start = 0;
+        while (true)
+        {
+            const size_t nl = b.text.find('\n', start);
+            const std::string para = b.text.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+            std::string line;
+            size_t i = 0;
+            while (i < para.size())
+            {
+                // The next word, with the spaces in front of it.
+                size_t j = i;
+                while (j < para.size() && para[j] == ' ') ++j;
+                while (j < para.size() && para[j] != ' ') ++j;
+                const std::string word = para.substr(i, j - i);
+                if (width(line + word) <= b.w || line.empty())
+                {
+                    if (width(line + word) <= b.w) { line += word; i = j; continue; }
+                    // One word wider than the box: as much of it as fits.
+                    size_t k = i;
+                    std::string part;
+                    while (k < j && (part.empty() || width(part + para[k]) <= b.w)) part += para[k++];
+                    lines.push_back(part);
+                    i = k;
+                    continue;
+                }
+                lines.push_back(line);
+                line.clear();
+                i = para.find_first_not_of(' ', i);          // a new line starts at its word
+                if (i == std::string::npos) i = para.size();
+            }
+            lines.push_back(line);
+            if (nl == std::string::npos) break;
+            start = nl + 1;
+        }
     }
+
+    // From one line's top to the next's: the size, and a sixth of it between.
+    static int32_t line_step(const PaintTextBox& b)
+    {
+        return static_cast<int32_t>(b.size) + static_cast<int32_t>(b.size) / 6;
+    }
+
+    uint32_t textFont() const { return m_text_font; }
+    uint32_t textSize() const { return m_text_size; }
 
     /*
  * ── the selection ────────────────────────────────────────────────────────
@@ -4549,6 +4964,14 @@ public:
         m_open_live = false;
         m_book.Clear();
         m_cursor    = 0;
+        m_text_fresh.clear();
+        /*
+     * THE BOXES THAT OUTLIVE THE HISTORY ARE STATED AT ITS START -- a resize
+     * keeps its captions -- as keyframes, which undo steps over. Without them
+     * the first undo afterwards would rebuild the boxes from a path that never
+     * mentions them, and take every caption away.
+     */
+        for (const PaintTextBox& b : m_text) record_text(b, false, true);
     }
 
     // Who authors entries made on this document from now on. Empty means this
@@ -4623,7 +5046,6 @@ public:
                 ++n;
             }
         }
-        n += write_text_out(o);
         if (!o) { ETCS_LOG("PaintDocument", "ExportOps: write to '" << path << "' failed."); return 0; }
         ETCS_LOG("PaintDocument", "ExportOps: " << n << " entr(ies) after " << since
                  << " along a " << chain.size() << "-entry path -> '" << path << "'.");
@@ -4675,17 +5097,6 @@ public:
         {
             if (line.empty()) continue;
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            {
-                // A text box, not a notebook entry (SelectTextBox says why).
-                std::istringstream k(line);
-                std::string seq, kind;
-                k >> seq >> kind;
-                if (kind == "text" || kind == "untext")
-                {
-                    if (apply_text_line(line)) ++taken; else ++bad;
-                    continue;
-                }
-            }
             PaintOp op;
             if (!paint_op_decode(line, op)) { ++bad; continue; }
             AcceptOp(std::move(op));
@@ -4730,6 +5141,9 @@ public:
     bool Undo()
     {
         if (refuse_read_only("undo")) return false;
+        // An open box's edit is a step like any other: ended, and so recorded,
+        // before the undo that may take it back.
+        if (m_text_sel) SelectTextBox(0);
         sealOpenOp();
         // NOT "0 means the head". Every append sets the cursor, so zero is
         // genuinely "before anything" -- and reading it as the head would make
@@ -4753,6 +5167,7 @@ public:
     bool Redo()
     {
         if (refuse_read_only("redo")) return false;
+        if (m_text_sel) SelectTextBox(0);
         sealOpenOp();
         // Down the most-recent child each time, until something that marked
         // lands under us. A run of keyframes has one child each, so this is
@@ -4823,6 +5238,9 @@ public:
  */
     bool ApplyOp(const PaintOp& op)
     {
+        // A box names no layer; neither does a page.
+        if (op.kind == PaintOpKind::Text) { apply_text_state(op.box, op.removed); return true; }
+        if (op.kind == PaintOpKind::Page) return true;
         PaintLayer* layer = layerFor(op);
         if (!layer)
         {
@@ -4877,8 +5295,9 @@ public:
             return true;
         }
 
-        case PaintOpKind::Page:
-            return true;                 // AcceptOp's, never a replay's
+        case PaintOpKind::Page:          // both answered above
+        case PaintOpKind::Text:
+            return true;
 
         case PaintOpKind::Layers:
             // The roster half is applied by reconcileLayers, before any raster.
@@ -5507,25 +5926,25 @@ public:
         }
 
         const float z = (zoom <= 0.0f) ? 1.0f : zoom;
+        std::vector<std::string> lines;
         for (const PaintTextBox& b : m_text)
         {
             const int32_t vx = ox + static_cast<int32_t>(b.x * z);
             const int32_t vy = oy + static_cast<int32_t>(b.y * z);
             const int32_t vw = std::max(1, static_cast<int32_t>(b.w * z));
             const int32_t vh = std::max(1, static_cast<int32_t>(b.h * z));
+            const bool sel = (b.id == m_text_sel);
 
-            if (m_text_show)
+            if (m_text_show || sel)
             {
                 /*
              * A one-pixel frame, as four thin rects -- that is what a surface can
-             * draw. Coloured rather than pale: the first version was near-white
-             * with low alpha, which is invisible on the paper it is drawn on, and
-             * an affordance you cannot see is not one. Blue reads against both
-             * white paper and dark ink; the one being typed into is stronger and
-             * fully opaque, the rest are dimmer, so "which box has the keyboard"
-             * is answerable at a glance.
+             * draw. Coloured rather than pale: near-white with low alpha is
+             * invisible on the paper it is drawn on, and an affordance you cannot
+             * see is not one. The open box is stronger and fully opaque, the rest
+             * are dimmer, so "which box has the keyboard" is answerable at a
+             * glance -- and it carries the corner handle that resizes it.
              */
-                const bool sel = (b.id == m_text_sel);
                 const float r0 = sel ? 0.15f : 0.35f;
                 const float g0 = sel ? 0.50f : 0.45f;
                 const float b0 = sel ? 0.95f : 0.60f;
@@ -5534,41 +5953,40 @@ public:
                 surface->DrawRect(vx, vy + vh - 1, static_cast<uint32_t>(vw), 1u, r0, g0, b0, a);
                 surface->DrawRect(vx, vy, 1u, static_cast<uint32_t>(vh), r0, g0, b0, a);
                 surface->DrawRect(vx + vw - 1, vy, 1u, static_cast<uint32_t>(vh), r0, g0, b0, a);
+                if (sel)
+                    surface->DrawRect(vx + vw - TEXT_HANDLE_PX, vy + vh - TEXT_HANDLE_PX,
+                                      static_cast<uint32_t>(TEXT_HANDLE_PX), static_cast<uint32_t>(TEXT_HANDLE_PX),
+                                      r0, g0, b0, a);
             }
 
-            if (!g || b.text.empty()) continue;
-
-            TextExtent e{ 0, 0, 0 };
-            const uint32_t px = fit_text_px(g.get(), b.text, vw, vh, e);
-            const int32_t tx = vx + (vw - static_cast<int32_t>(e.width))  / 2;
-            const int32_t ty = vy + (vh - static_cast<int32_t>(e.height)) / 2;
-            g->RasterizeText(target, b.text.c_str(), 0, px, tx, ty,
-                             b.rgba[0], b.rgba[1], b.rgba[2], b.rgba[3]);
+            if (!g) continue;
+            wrap_text(g.get(), b, lines);
+            const uint32_t px = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(b.size * z)));
+            const int32_t step = line_step(b);
+            int32_t caret_x = vx, caret_y = vy;
+            for (size_t i = 0; i < lines.size(); ++i)
+            {
+                const int32_t top = static_cast<int32_t>(i) * step;
+                // Lines past the box's bottom are not drawn: the box is the page.
+                if (top + static_cast<int32_t>(b.size) > b.h) break;
+                const int32_t ly = vy + static_cast<int32_t>(top * z);
+                if (!lines[i].empty())
+                    g->RasterizeText(target, lines[i].c_str(), b.font, px, vx, ly,
+                                     b.rgba[0], b.rgba[1], b.rgba[2], b.rgba[3]);
+                caret_x = vx + static_cast<int32_t>(g->MeasureText(lines[i].c_str(), b.font, px).width);
+                caret_y = ly;
+            }
+            // Where the next character goes, on the open box: typing always
+            // lands at the end, so the end is the one place a caret can be.
+            if (sel)
+                surface->DrawRect(caret_x + 1, caret_y, std::max(1u, px / 12u), px,
+                                  b.rgba[0], b.rgba[1], b.rgba[2], 0.85f);
         }
     }
 
-    /*
- * The largest size whose run fits the box, which is what "the glyph that fits
- * inside of it" means. The font is cell-based, so the sizes are discrete and a
- * linear walk up finds the boundary in a few steps; once a size does not fit,
- * no larger one will.
- */
-    static uint32_t fit_text_px(Glyphs_* g, const std::string& text,
-                                int32_t box_w, int32_t box_h, TextExtent& out)
-    {
-        uint32_t best = 1;
-        out = g->MeasureText(text.c_str(), 0, 1);
-        const uint32_t max_px = static_cast<uint32_t>(std::max(1, box_h));
-        for (uint32_t px = 1; px <= max_px; ++px)
-        {
-            const TextExtent e = g->MeasureText(text.c_str(), 0, px);
-            if (static_cast<int32_t>(e.width) <= box_w
-             && static_cast<int32_t>(e.height) <= box_h)
-            { best = px; out = e; }
-            else if (px > 1) break;
-        }
-        return best;
-    }
+    // The open box's corner handle, in VIEW pixels -- a press in it resizes
+    // the box rather than moving it (PaintInput).
+    static constexpr int32_t TEXT_HANDLE_PX = 8;
 
     /*
  * A NEW SELECTION STARTS FROM NOTHING, and never from a lift still in the air:
@@ -5771,14 +6189,13 @@ private:
     std::vector<PaintTextBox> m_text;
     uint32_t  m_text_seq  = 0;
     uint32_t  m_text_sel  = 0;
-    // Shared text (SelectTextBox): the selected box as it was when claimed, and
-    // the boxes waiting to be pushed -- by key, removed or not, with the
-    // version that says whether the last export already carried them.
-    struct TextOut { uint64_t ver = 0; bool removed = false; };
+    // The open box as it was when it was opened, the key of one placed and not
+    // yet recorded, and the style the next new box starts with (SelectTextBox,
+    // AddTextBoxColoured).
     PaintTextBox m_text_before;
-    std::map<std::string, TextOut> m_text_out;
-    uint64_t m_text_ver = 0;
-    mutable uint64_t m_text_exported = 0;
+    std::string  m_text_fresh;
+    uint32_t     m_text_font = 0;
+    uint32_t     m_text_size = 24;
     bool      m_text_show = false;
     bool      m_text_warned = false;
     ETCS::RID m_glyphs = 0;
@@ -5853,13 +6270,6 @@ private:
     // And the roster AFTER it, which is the entry undo actually walks over.
     bool sharing() const { return !m_author.empty(); }
 
-    void note_text(const std::string& key, bool removed)
-    {
-        TextOut& o = m_text_out[key];
-        o.ver = ++m_text_ver;
-        o.removed = removed;
-    }
-
     // Up to the page, which holds the node: claim, touch, release.
     void text_event(const std::string& what) const
     {
@@ -5871,84 +6281,94 @@ private:
         ETCS_LOG("PaintDocument", "text " << what);
     }
 
-    /*
-     * A BOX ON THE WIRE: "<seq> text <author> 0 0 <key> x y w h r g b a <text>"
-     * with the text in base64 ("-" when empty), or "<seq> untext <author> 0 0
-     * <key>". The two zeros stand where a notebook line has its layer and order,
-     * so the node reads the author and the key from the same places in both.
-     */
-    static std::string text_line(const PaintTextBox& b, const std::string& author)
+    // One Text entry on the path -- see PaintOpKind::Text.
+    void record_text(const PaintTextBox& b, bool removed, bool keyframe = false)
     {
-        std::string out = "0 text " + (author.empty() ? std::string("-") : author) + " 0 0 " + b.key;
-        out += ' ' + std::to_string(b.x) + ' ' + std::to_string(b.y) + ' ' + std::to_string(b.w) + ' ' + std::to_string(b.h);
-        for (float c : b.rgba) out += ' ' + std::to_string(c);
-        out += ' ';
-        out += b.text.empty() ? std::string("-")
-                              : paint_b64_encode(reinterpret_cast<const uint8_t*>(b.text.data()), b.text.size());
-        return out;
+        sealOpenOp();
+        PaintOp op;
+        op.kind     = PaintOpKind::Text;
+        op.author   = m_author;
+        op.box      = b;
+        op.box.id   = 0;               // this document's number, not the room's
+        op.removed  = removed;
+        op.keyframe = keyframe;
+        m_cursor = m_book.Append(std::move(op), m_cursor);
     }
 
-    // The pending boxes, after the notebook's lines (ExportOps).
-    size_t write_text_out(std::ostream& o) const
+    // The edit on box `id` is over: recorded if anything about it changed,
+    // dropped if it was placed and never written in, released in a session.
+    void end_text_edit(uint32_t id)
     {
-        size_t n = 0;
-        for (const auto& [key, out] : m_text_out)
+        PaintTextBox* b = FindTextBox(id);
+        if (!b) return;
+        const bool fresh = (b->key == m_text_fresh);
+        m_text_fresh.clear();
+        const std::string key = b->key;
+        if (fresh && b->text.empty())
         {
-            if (out.removed) o << "0 untext " << m_author << " 0 0 " << key << "\n";
-            else
-            {
-                const PaintTextBox* b = nullptr;
-                for (const auto& t : m_text) if (t.key == key) b = &t;
-                if (!b) continue;
-                o << text_line(*b, m_author) << "\n";
-            }
-            ++n;
-            m_text_exported = std::max(m_text_exported, out.ver);
-        }
-        return n;
-    }
-
-    // A box line from the room. The box this page is holding is left alone --
-    // nobody else can have submitted it (the node refuses them), so a line for
-    // it is an old one.
-    bool apply_text_line(const std::string& line)
-    {
-        std::istringstream in(line);
-        std::string seq, kind, author, layer, order, key;
-        if (!(in >> seq >> kind >> author >> layer >> order >> key)) return false;
-        PaintTextBox* b = nullptr;
-        for (auto& t : m_text) if (t.key == key) b = &t;
-        if (b && b->id == m_text_sel) return true;
-        if (kind == "untext")
-        {
-            if (b) for (auto it = m_text.begin(); it != m_text.end(); ++it)
-                if (it->key == key) { m_text.erase(it); break; }
+            for (auto it = m_text.begin(); it != m_text.end(); ++it)
+                if (it->id == id) { m_text.erase(it); break; }
             Touch();
-            return true;
         }
-        PaintTextBox got;
-        std::string body;
-        if (!(in >> got.x >> got.y >> got.w >> got.h >> got.rgba[0] >> got.rgba[1] >> got.rgba[2] >> got.rgba[3] >> body))
-            return false;
-        if (body != "-")
+        else if (fresh || !b->same_as(m_text_before))
         {
-            std::vector<uint8_t> raw;
-            if (!paint_b64_decode(body, raw)) return false;
-            got.text.assign(raw.begin(), raw.end());
+            record_text(*b, false);
+            ETCS_LOG("PaintDocument", "text box " << id << " edited: \"" << b->text << "\"");
         }
-        if (!b)
-        {
-            got.id = ++m_text_seq;
-            got.key = key;
-            m_text.push_back(got);
-        }
-        else
-        {
-            got.id = b->id; got.key = key;
-            *b = got;
-        }
+        if (sharing()) text_event("release:" + key);
+    }
+
+    // A box as an entry says it is, by key: made, changed or gone.
+    void apply_text_state(const PaintTextBox& s, bool removed)
+    {
+        for (auto it = m_text.begin(); it != m_text.end(); ++it)
+            if (it->key == s.key)
+            {
+                if (removed)
+                {
+                    if (m_text_sel == it->id) m_text_sel = 0;
+                    m_text.erase(it);
+                }
+                else { const uint32_t id = it->id; *it = s; it->id = id; }
+                Touch();
+                return;
+            }
+        if (removed) return;
+        PaintTextBox b = s;
+        b.id = ++m_text_seq;
+        m_text.push_back(b);
         Touch();
-        return true;
+    }
+
+    /*
+     * THE BOXES AS OF A POINT IN HISTORY: every Text entry on the path, in
+     * order, each the last word on its key. The boxes that stay keep their
+     * numbers, so nothing holding one is surprised; the open box closes if its
+     * key is gone.
+     */
+    bool rebuild_text(const std::vector<const PaintOp*>& chain)
+    {
+        std::vector<PaintTextBox> next;
+        for (const PaintOp* o : chain)
+        {
+            if (o->kind != PaintOpKind::Text) continue;
+            auto it = std::find_if(next.begin(), next.end(),
+                                   [&](const PaintTextBox& t) { return t.key == o->box.key; });
+            if (o->removed) { if (it != next.end()) next.erase(it); }
+            else if (it != next.end()) *it = o->box;
+            else next.push_back(o->box);
+        }
+        bool changed = next.size() != m_text.size();
+        for (PaintTextBox& b : next)
+        {
+            const PaintTextBox* was = nullptr;
+            for (const auto& t : m_text) if (t.key == b.key) was = &t;
+            b.id = was ? was->id : ++m_text_seq;
+            if (!was || !was->same_as(b)) changed = true;
+        }
+        m_text = std::move(next);
+        if (m_text_sel && !FindTextBox(m_text_sel)) m_text_sel = 0;
+        return changed;
     }
 
     // True, and said once, when this document is view only (SetReadOnly).
@@ -5987,7 +6407,20 @@ private:
             o << paint_op_encode(snap) << "\n";
             ++n;
         }
-        for (const PaintTextBox& b : m_text) { o << text_line(b, m_author) << "\n"; ++n; }
+        // The boxes, as statements rather than edits: keyframes, which undo on
+        // the other side steps over.
+        for (const PaintTextBox& b : m_text)
+        {
+            PaintOp t;
+            t.kind = PaintOpKind::Text;
+            t.seq = m_cursor;
+            t.author = m_author;
+            t.box = b;
+            t.box.id = 0;
+            t.keyframe = true;
+            o << paint_op_encode(t) << "\n";
+            ++n;
+        }
         return n;
     }
 
@@ -6173,8 +6606,10 @@ private:
         std::vector<ETCS::RID> touched;
         for (const PaintOp* o : chain)
         {
-            // A structural entry names no layer UNLESS it carries one's bytes.
+            // A structural entry names no layer UNLESS it carries one's bytes,
+            // and a box never does (rebuild_text, below).
             if (o->structural() && o->bytes.empty()) continue;
+            if (o->kind == PaintOpKind::Text) continue;
             bool seen = false;
             for (ETCS::RID r : touched) if (r == o->layer) { seen = true; break; }
             if (!seen) touched.push_back(o->layer);
@@ -6201,11 +6636,14 @@ private:
             }
         }
 
+        // THE TEXT, from the same path: every box as its last entry left it.
+        const bool text = rebuild_text(chain);
+
         Touch();
         ETCS_LOG("PaintDocument", what << " to " << seq << ": " << restored
                  << " layer(s) restored, " << replayed << " op(s) replayed along a "
-                 << chain.size() << "-entry path.");
-        return restored > 0;
+                 << chain.size() << "-entry path" << (text ? ", text boxes changed" : "") << ".");
+        return restored > 0 || text;
     }
 
     // What the paper is cleared to -- the page's convention, stated once here
@@ -8594,6 +9032,186 @@ private:
     int32_t  m_scroll = 0;
     float m_row_sel[3]  = { 0.35f, 0.55f, 0.95f };
     float m_row_idle[3] = { 0.15f, 0.16f, 0.11f };
+};
+
+/*
+ * ── THE TEXT BAR ─────────────────────────────────────────────────────────────
+ *
+ * What opens over a text box while it is open: its font, its size, its colour,
+ * and the two ways out -- `ok`, which ends the edit, and `x`, which removes the
+ * box. The bar being up IS the box being open, which in a shared session IS
+ * the box being claimed (PaintDocument::SelectTextBox): nothing here decides
+ * any of that, it only follows the document's answer.
+ *
+ * THE LOOK IS THE SCRIPT'S (paint_textbar.etcs) and every control is a palette
+ * call naming a verb here with the node pressed, as in the other windows. A
+ * press on the bar is the palette's, so it never reaches the canvas and never
+ * counts as the press elsewhere that would close the box.
+ *
+ * IT FOLLOWS THE BOX: above it, or below when the box is at the top of the
+ * view, kept inside the view. Placed whenever the view is repainted
+ * (PaintInput::repaint_view) and checked on the frame edge too (Animated), for
+ * the changes that arrive without a stroke -- a claim refused, an undo.
+ */
+class PaintTextBar : public DeletableBase<PaintTextBar>,
+                     public AnimatedBase<PaintTextBar>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintTextBar);
+
+    PaintTextBar() = default;
+    bool DeleteConcrete() override { return true; }
+
+    bool Create(ETCS::RID document)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintDocument", document);
+        if (!raw) { ETCS_LOG("PaintTextBar", "Create: RID:" << document << " is not a PaintDocument."); return false; }
+        m_document = static_cast<PaintDocument*>(raw->getTrueType());
+        this->addTag("active");
+        return true;
+    }
+
+    void BindSurface(ETCS::RID surface)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintSurface", surface);
+        if (raw) m_surface = static_cast<PaintSurface*>(raw->getTrueType());
+    }
+    void BindWindow(ETCS::RID pane) { m_window = pane; paint_node_hidden(pane, true); }
+
+    // A button meaning a font (its plate, and the word on it: both register).
+    void BindFont(ETCS::RID node, uint32_t font) { if (node) m_fonts[node] = font; }
+    void BindSizeLabel(ETCS::RID node) { m_size_label = node; }
+    void BindColor(ETCS::RID node, float r, float g, float b)
+    {
+        if (!node) return;
+        m_colors[node] = { r, g, b };
+        paint_node_fill(node, r, g, b, 1.0f);
+    }
+    void SetFontTints(float r0, float g0, float b0, float r1, float g1, float b1)
+    {
+        m_idle[0] = r0; m_idle[1] = g0; m_idle[2] = b0;
+        m_lit[0] = r1;  m_lit[1] = g1;  m_lit[2] = b1;
+    }
+
+    // ── what the controls do ─────────────────────────────────────────────
+    void PickFont(ETCS::RID node)
+    {
+        auto it = m_fonts.find(node);
+        if (it == m_fonts.end() || !m_document) return;
+        m_document->SetTextFont(m_document->selectedTextBox(), it->second);
+        changed();
+    }
+    void StepSize(int32_t by)
+    {
+        if (!m_document) return;
+        const PaintTextBox* b = m_document->FindTextBox(m_document->selectedTextBox());
+        if (!b) return;
+        static const uint32_t STEPS[] = { 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48, 56, 64,
+                                          72, 80, 96, 112, 128, 160, 192, 240, 300, 400 };
+        const size_t n = sizeof(STEPS) / sizeof(STEPS[0]);
+        size_t at = 0;
+        while (at + 1 < n && STEPS[at] < b->size) ++at;          // the step at or above now
+        if (by > 0) at = (STEPS[at] > b->size) ? at : std::min(n - 1, at + 1);
+        else        at = (at == 0) ? 0 : at - 1;
+        m_document->SetTextSize(b->id, STEPS[at]);
+        changed();
+    }
+    void PickColor(ETCS::RID node)
+    {
+        auto it = m_colors.find(node);
+        if (it == m_colors.end() || !m_document) return;
+        m_document->SetTextColor(m_document->selectedTextBox(), it->second.r, it->second.g, it->second.b, 1.0f);
+        changed();
+    }
+    void Done()
+    {
+        if (!m_document) return;
+        m_document->SelectTextBox(0);
+        changed();
+    }
+    void Remove()
+    {
+        if (!m_document) return;
+        m_document->RemoveTextBox(m_document->selectedTextBox());
+        changed();
+    }
+
+    /*
+     * WHERE THE BAR GOES, and whether it shows. Only a pane that moved or a
+     * style that changed costs a verb: the answer is kept and compared.
+     */
+    void Follow()
+    {
+        if (!m_document || !m_surface || !m_window) return;
+        const PaintTextBox* b = m_document->FindTextBox(m_document->selectedTextBox());
+        const bool want = (b != nullptr) && !m_document->readOnly();
+        if (!want)
+        {
+            if (m_shown) { paint_node_hidden(m_window, true); m_shown = false; m_for = 0; }
+            return;
+        }
+        Rect2D view{ 0, 0, 0, 0 }, bar{ 0, 0, 0, 0 };
+        {
+            ETCS::Held<Drawable2D_> v = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_surface->target());
+            if (!v) return;
+            view = v->Bounds();
+        }
+        {
+            ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
+            if (!w) return;
+            bar = w->Bounds();
+        }
+        const int32_t bx = view.x + m_surface->DocToViewX(b->x);
+        const int32_t top = view.y + m_surface->DocToViewY(b->y);
+        const int32_t bottom = view.y + m_surface->DocToViewY(b->y + b->h);
+        int32_t y = top - static_cast<int32_t>(bar.h) - 4;
+        if (y < view.y) y = bottom + 4;                           // no room above: under it
+        const int32_t x = std::clamp(bx, view.x, std::max(view.x, view.x + static_cast<int32_t>(view.w) - static_cast<int32_t>(bar.w)));
+        y = std::clamp(y, view.y, std::max(view.y, view.y + static_cast<int32_t>(view.h) - static_cast<int32_t>(bar.h)));
+        if (!m_shown) { paint_node_hidden(m_window, false); m_shown = true; }
+        if (x != m_x || y != m_y) { paint_node_moved(m_window, x, y); m_x = x; m_y = y; }
+        if (b->id != m_for || b->font != m_font || b->size != m_size)
+        {
+            m_for = b->id; m_font = b->font; m_size = b->size;
+            for (const auto& [node, font] : m_fonts)
+            {
+                const float* c = (font == b->font) ? m_lit : m_idle;
+                paint_node_fill(node, c[0], c[1], c[2], 1.0f);
+            }
+            paint_node_text(m_size_label, std::to_string(b->size));
+        }
+    }
+
+    // The frame edge asks every frame; the answer is whether the bar is out of
+    // step with the document, which is cheap to tell.
+    bool AnimatingConcrete() override
+    {
+        if (!m_document) return false;
+        const uint32_t sel = m_document->selectedTextBox();
+        return (sel != 0) != m_shown || (sel != 0 && sel != m_for);
+    }
+    void AdvanceConcrete(double) override { Follow(); }
+
+private:
+    struct Rgb { float r, g, b; };
+
+    // A control changed the box: show it, and put the bar where it now goes.
+    void changed()
+    {
+        if (m_surface) m_surface->Render();
+        Follow();
+    }
+
+    PaintDocument* m_document = nullptr;
+    PaintSurface*  m_surface  = nullptr;
+    ETCS::RID m_window = 0, m_size_label = 0;
+    std::unordered_map<ETCS::RID, uint32_t> m_fonts;
+    std::unordered_map<ETCS::RID, Rgb>      m_colors;
+    float m_idle[3] = { 0.17f, 0.18f, 0.13f };
+    float m_lit[3]  = { 0.35f, 0.55f, 0.95f };
+    bool     m_shown = false;
+    int32_t  m_x = INT32_MIN, m_y = INT32_MIN;
+    uint32_t m_for = 0, m_font = UINT32_MAX, m_size = 0;
 };
 
 /*
@@ -12556,6 +13174,15 @@ public:
         m_page_panel = static_cast<PaintPagePanel*>(raw->getTrueType());
     }
 
+    // The bar over an open text box, placed whenever this input repaints the
+    // view (PaintTextBar::Follow).
+    void BindTextBar(ETCS::RID bar)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintTextBar", bar);
+        if (!raw) return;
+        m_text_bar = static_cast<PaintTextBar*>(raw->getTrueType());
+    }
+
     // The sharing window, for the pane it is: its title drags it and the keys
     // go to it while a name is open (PaintVisitors).
     void BindVisitors(ETCS::RID visitors)
@@ -13001,7 +13628,7 @@ public:
         if (m_panning && !(own_button_edge && ev.key == m_pan_button)
             && !still_held(m_pan_hold, m_pan_button, ev))
             release_lapsed(m_pan_button);
-        const bool primary_live = (m_tool && m_tool->active()) || m_text_drag != 0 || m_sel_carry;
+        const bool primary_live = (m_tool && m_tool->active()) || m_text_drag != 0 || m_text_resize != 0 || m_sel_carry;
         if (primary_live && !(own_button_edge && ev.key == m_stroke_button)
             && !still_held(m_stroke_hold, m_stroke_button, ev))
             release_lapsed(m_stroke_button);
@@ -13089,6 +13716,18 @@ public:
         // straight on the tool. So it is reconciled here, where every event
         // passes, rather than by a notification that does not exist.
         sync_text_affordance();
+
+        if (ev.action == INPUT_MOTION && m_text_resize != 0 && m_document)
+        {
+            // Its corner, following the pointer. The width is what the lines
+            // wrap to, so the text reflows as it goes.
+            PaintTextBox* b = m_document->FindTextBox(m_text_resize);
+            if (!b) { m_text_resize = 0; return; }
+            b->w = std::max(8, to_doc_x(ev.x) - b->x);
+            b->h = std::max(8, to_doc_y(ev.y) - b->y);
+            repaint_view();
+            return;
+        }
 
         if (ev.action == INPUT_MOTION && m_text_drag != 0 && m_document)
         {
@@ -13191,6 +13830,22 @@ public:
              && m_tool->kind() == PaintToolKind::Glyph)
             {
                 const uint32_t hit_box = m_document->TextBoxAt(m_cursor_x, m_cursor_y);
+                /*
+             * THE OPEN BOX'S CORNER RESIZES IT. Measured in view pixels, like the
+             * handle it is drawn as, so it is the same target at any zoom.
+             */
+                if (hit_box != 0 && hit_box == m_document->selectedTextBox() && m_surface)
+                    if (const PaintTextBox* b = m_document->FindTextBox(hit_box))
+                    {
+                        const int32_t cx = m_surface->DocToViewX(b->x + b->w), cy = m_surface->DocToViewY(b->y + b->h);
+                        const int32_t vx = m_surface->DocToViewX(m_cursor_x), vy = m_surface->DocToViewY(m_cursor_y);
+                        if (vx >= cx - PaintDocument::TEXT_HANDLE_PX - 2 && vy >= cy - PaintDocument::TEXT_HANDLE_PX - 2)
+                        {
+                            m_text_resize = hit_box;
+                            repaint_view();
+                            return;
+                        }
+                    }
                 if (hit_box != 0)
                 {
                     m_document->SelectTextBox(hit_box);
@@ -13362,6 +14017,12 @@ public:
             {
                 ETCS_LOG("PaintInput", "text box " << m_text_drag << " moved");
                 m_text_drag = 0;
+                return;
+            }
+            if (m_text_resize != 0)
+            {
+                ETCS_LOG("PaintInput", "text box " << m_text_resize << " resized");
+                m_text_resize = 0;
                 return;
             }
             /*
@@ -13641,10 +14302,21 @@ public:
         PaintTextBox* b = m_document->FindTextBox(sel);
         if (!b) { m_document->SelectTextBox(0); return false; }
 
-        if (key == KEY_ESCAPE || key == KEY_ENTER)
+        /*
+     * ESCAPE LETS GO, ENTER STARTS A LINE. The box is a column now, and a
+     * caption of two lines is typed, not made of two boxes. Letting go is also
+     * the bar's `ok` and any press off the box.
+     */
+        if (key == KEY_ESCAPE)
         {
             m_document->SelectTextBox(0);
-            ETCS_LOG("PaintInput", "text box " << sel << " done: \"" << b->text << "\"");
+            repaint_view();
+            return true;
+        }
+        if (key == KEY_ENTER)
+        {
+            b->text.push_back('\n');
+            m_document->TextEdited(sel);
             repaint_view();
             return true;
         }
@@ -13659,12 +14331,11 @@ public:
         {
             // The box itself, since there is no caret to delete forward from.
             m_document->RemoveTextBox(sel);
-            m_document->SelectTextBox(0);
             repaint_view();
             return true;
         }
 
-        const char ch = paint_key_to_char(key);
+        const char ch = paint_key_to_char_shifted(key, paint_modifiers().shift());
         if (ch == 0) return true;          // consumed: a modifier or a function key
         b->text.push_back(ch);
         m_document->TextEdited(sel);
@@ -14104,7 +14775,8 @@ private:
      */
         const PaintColor c = m_tool ? m_tool->brush().color
                                     : PaintColor{ 0.08f, 0.08f, 0.10f, 1.0f };
-        m_document->Remember();
+        // No snapshot in front of it: a box is recorded as a Text entry when it
+        // is let go (PaintDocument::SelectTextBox), which is its undo step.
         const uint32_t id = m_document->AddTextBoxColoured(x0, y0, w, h,
                                                            c.r, c.g, c.b, c.a);
         m_document->SelectTextBox(id);
@@ -14206,6 +14878,7 @@ private:
     {
         if (m_surface) m_surface->Render();
         if (m_anim) m_anim->FollowView();
+        if (m_text_bar) m_text_bar->Follow();
     }
 
     // A preview segment, as a run of small rects rather than brush dabs -- the
@@ -14331,6 +15004,8 @@ private:
     PaintLayerPanel* m_panel = nullptr;
     PaintPagePanel*  m_page_panel = nullptr;   // see BindPagePanel
     PaintVisitors*   m_visitors   = nullptr;   // see BindVisitors
+    PaintTextBar*    m_text_bar   = nullptr;   // see BindTextBar
+    uint32_t         m_text_resize = 0;         // a box whose corner is being dragged
     PaintAnimation*  m_anim = nullptr;         // see BindAnimation
     uint64_t         m_panel_rev = 0;      // the document revision the panel last showed
     // Whether the document is currently showing its text-box outlines, so the
@@ -15797,11 +16472,25 @@ DEFINE_WORK_FUNC_TYPED(PaintDocument, TextDenied, (std::string, key), (std::stri
     self.TextDenied(key, holder);
 }
 
-// TextSent -- the boxes the last export carried reached the room.
-DEFINE_WORK_FUNC(PaintDocument, TextSent)
+
+// SetTextFont <id> <font> / SetTextSize <id> <px> / SetTextColor <id> <r> <g> <b> <a>
+// -- the open box's type, as the text bar sets it (PaintDocument::SetTextFont).
+DEFINE_WORK_FUNC_TYPED(PaintDocument, SetTextFont, (uint32_t, id), (uint32_t, font))
 {
-    (void)ctx; (void)data;
-    self.TextSent();
+    (void)ctx;
+    self.SetTextFont(id, font);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintDocument, SetTextSize, (uint32_t, id), (uint32_t, size))
+{
+    (void)ctx;
+    self.SetTextSize(id, size);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintDocument, SetTextColor, (uint32_t, id), (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetTextColor(id, r, g, b, a);
 }
 
 // SetReadOnly <0|1> -- view only while a shared session says so.
@@ -17337,6 +18026,13 @@ DEFINE_WORK_FUNC_TYPED(PaintInput, BindAnimation, (ETCS::RID, anim))
     self.BindAnimation(anim);
 }
 
+// BindTextBar <bar> -- the bar over an open text box (PaintInput::BindTextBar).
+DEFINE_WORK_FUNC_TYPED(PaintInput, BindTextBar, (ETCS::RID, bar))
+{
+    (void)ctx;
+    self.BindTextBar(bar);
+}
+
 // BindVisitors <visitors> -- the sharing window on this pane (PaintInput::BindVisitors).
 DEFINE_WORK_FUNC_TYPED(PaintInput, BindVisitors, (ETCS::RID, visitors))
 {
@@ -17581,6 +18277,127 @@ DEFINE_WORK_FUNC(PaintInput, Delete)
 {
     (void)ctx; (void)data;
     self.DeleteConcrete();
+}
+
+// ── PaintFonts ──────────────────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC(PaintFonts, Create)
+{
+    (void)ctx; (void)data;
+    self.Create();
+}
+
+// BindPixel <glyphs> -- font 0, the sheet's own lettering.
+DEFINE_WORK_FUNC_TYPED(PaintFonts, BindPixel, (ETCS::RID, glyphs))
+{
+    (void)ctx;
+    self.BindPixel(glyphs);
+}
+
+// Load <name> <path> -- a TrueType file, as the next font number.
+DEFINE_WORK_FUNC(PaintFonts, Load)
+{
+    (void)ctx;
+    std::istringstream in(data.restAsString());
+    std::string name, path;
+    in >> name >> path;
+    if (!name.empty() && name.back() == ',') name.pop_back();
+    const bool ok = self.Load(name, path);
+    data.writeString(ok ? std::to_string(self.count() - 1).c_str() : "missing");
+}
+
+DEFINE_WORK_FUNC(PaintFonts, Report)
+{
+    (void)ctx; (void)data;
+    self.Report();
+}
+
+DEFINE_WORK_FUNC(PaintFonts, Delete)
+{
+    (void)ctx;
+    data.writeString(self.DeleteConcrete() ? "deleted" : "FAILED");
+}
+
+// ── PaintTextBar ────────────────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, Create, (ETCS::RID, document))
+{
+    (void)ctx;
+    self.Create(document);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, BindSurface, (ETCS::RID, surface))
+{
+    (void)ctx;
+    self.BindSurface(surface);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, BindWindow, (ETCS::RID, pane))
+{
+    (void)ctx;
+    self.BindWindow(pane);
+}
+
+// BindFont <node> <font> -- a button meaning that font.
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, BindFont, (ETCS::RID, node), (uint32_t, font))
+{
+    (void)ctx;
+    self.BindFont(node, font);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, BindSizeLabel, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindSizeLabel(node);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, BindColor, (ETCS::RID, node), (float, r), (float, g), (float, b))
+{
+    (void)ctx;
+    self.BindColor(node, r, g, b);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, SetFontTints,
+                       (float, r0), (float, g0), (float, b0), (float, r1), (float, g1), (float, b1))
+{
+    (void)ctx;
+    self.SetFontTints(r0, g0, b0, r1, g1, b1);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, PickFont, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.PickFont(node);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, StepSize, (int32_t, by))
+{
+    (void)ctx;
+    self.StepSize(by);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintTextBar, PickColor, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.PickColor(node);
+}
+
+DEFINE_WORK_FUNC(PaintTextBar, Done)
+{
+    (void)ctx; (void)data;
+    self.Done();
+}
+
+DEFINE_WORK_FUNC(PaintTextBar, Remove)
+{
+    (void)ctx; (void)data;
+    self.Remove();
+}
+
+DEFINE_WORK_FUNC(PaintTextBar, Delete)
+{
+    (void)ctx;
+    data.writeString(self.DeleteConcrete() ? "deleted" : "FAILED");
 }
 
 // ── PaintVisitors ───────────────────────────────────────────────────────────
