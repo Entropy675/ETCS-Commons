@@ -8792,6 +8792,10 @@ public:
     void AdvanceConcrete(double dt_ms) override
     {
         stretchArrows();                 // cheap, and a no-op once they agree
+        // Nothing held: this visit was for the arrows. Spending the charge
+        // below would "release" a hold that never began and say so in the log
+        // on every tick while a cell is still stretching.
+        if (m_held == 0) return;
         m_access_ms += dt_ms;
         while (m_access_ms >= HOLD_ACCESS_MS)
         {
