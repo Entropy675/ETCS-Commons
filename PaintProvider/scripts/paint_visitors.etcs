@@ -1,24 +1,24 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# ── WHO IS IN THE SESSION ────────────────────────────────────────────────────
+# ── THE SHARING WINDOW ───────────────────────────────────────────────────────
 #
 #     run PaintProvider/scripts/paint_visitors.etcs pane=<Drawable2D> palette=<PaintPalette> visitors=<PaintVisitors>
 #
+# EVERYONE IN THE SESSION HAS ONE, and it says the same things to all of them:
+# who you are in the room (your name, pressed to rename it, and the colour your
+# frame is drawn in on everyone else's canvas), and who else is here. The host's
+# window adds the host's controls -- a button per person to let them draw, take
+# drawing back or put them out, and the link to hand out -- and its end button
+# ends the session; a guest's leaves it (PaintVisitors::OpenAs picks the half).
+#
 # THE LOOK IS HERE, THE MEANING IS C++ -- the same split paint_menu.etcs and
-# paint_toolbar.etcs already use. This file draws eight rows and binds their
-# three buttons to PaintVisitors verbs with the ROW INDEX as the argument; the
-# runtime fills the two labels on each row from the node's roster and hides the
-# rows nobody is standing in.
+# paint_toolbar.etcs already use. The buttons are palette calls naming a
+# PaintVisitors verb with the node pressed, as every control in the menu is.
 #
-# EIGHT, AND THE NUMBER IS THE POINT. A fixed pool means a roster change costs
-# no allocation and no spawning on a timer, which is what PaintLayerPanel's
-# rows already do. A session with more than eight people shows the first eight;
-# a scroll is the same verb the layer panel has and is not built here yet.
-#
-# THE BUTTONS ARE PALETTE CALLS, not a second panel type on the input path --
-# AddCall(node, target, Tag.Action, args) is how every control in the menu works,
-# so a press on a row's button is routed by the machinery that is already there.
+# EIGHT ROWS, AND THE NUMBER IS THE POINT. A fixed pool means a roster change
+# costs no allocation and no spawning on a timer, which is what PaintLayerPanel's
+# rows already do. A session with more than eight people shows the first eight.
 #
 # Colours come off the edge ruler like every other piece of furniture: the band
 # is 0.106/0.110/0.078, a control one step up from it, the ink 0.94/0.89/0.78.
@@ -27,115 +27,273 @@ requires pane      [Drawable2D]
 requires palette   [PaintPalette]
 requires visitors  [PaintVisitors]
 
-# ── the title, and the close that ends the session ───────────────────────────
+# ── the title bar: the handle, and the way out ───────────────────────────────
 #
-# CLOSING THIS WINDOW CLOSES THE SHARE. That is the whole gesture: there is no
-# separate 'stop sharing', because a visitor list that is up IS the statement
-# that the canvas is shared, and taking it down is the statement that it is not.
-# Everyone keeps the canvas they have -- it is theirs, and a copy of this one.
+# THE BAR MOVES THE WINDOW: press it and the window follows the pointer until
+# the release (PaintVisitors::PressTitle), as the layer window's does -- it
+# opens over the gear menu's corner and has to be able to get out of the way.
+pane.spawn(RenderProvider::PolygonDrawable2D vis_bar)
+vis_bar.Create()
+vis_bar.AddPoint(0, 0)
+vis_bar.AddPoint(300, 0)
+vis_bar.AddPoint(300, 26)
+vis_bar.AddPoint(0, 26)
+vis_bar.SetFill(0.14, 0.15, 0.11, 1.0)
+vis_bar.SetOrder(1)
+visitors.BindTitle(@vis_bar)
+
 pane.spawn(RenderProvider::TextLabel vis_title)
 vis_title.Create()
-vis_title.SetPosition(10, 8)
+vis_title.SetPosition(10, 9)
 vis_title.SetSize(1)
 vis_title.SetColor(0.79, 0.71, 0.35, 1.0)
 vis_title.SetText(sharing)
 vis_title.SetOrder(2)
+visitors.BindTitle(@vis_title)
 
-pane.spawn(RenderProvider::PolygonDrawable2D vis_close)
-vis_close.Create()
-vis_close.AddPoint(270, 6)
-vis_close.AddPoint(290, 6)
-vis_close.AddPoint(290, 24)
-vis_close.AddPoint(270, 24)
-vis_close.SetFill(0.32, 0.18, 0.16, 1.0)
-vis_close.SetOrder(1)
-palette.AddCall(@vis_close, @visitors, PaintVisitors.Close, 0)
-pane.spawn(RenderProvider::TextLabel vis_close_word)
-vis_close_word.Create()
-vis_close_word.SetPosition(274, 11)
-vis_close_word.SetSize(1)
-vis_close_word.SetColor(0.94, 0.89, 0.78, 1.0)
-vis_close_word.SetText(x)
-vis_close_word.SetOrder(2)
-palette.AddCall(@vis_close_word, @visitors, PaintVisitors.Close, 0)
+# THE HOST'S END CLOSES THE SHARE: there is no separate 'stop sharing', because
+# the window being up IS the statement that the canvas is shared. Everyone keeps
+# the canvas they have. A guest's is `leave`, in the same place.
+pane.spawn(RenderProvider::PolygonDrawable2D vis_end)
+vis_end.Create()
+vis_end.AddPoint(236, 4)
+vis_end.AddPoint(294, 4)
+vis_end.AddPoint(294, 22)
+vis_end.AddPoint(236, 22)
+vis_end.SetFill(0.32, 0.18, 0.16, 1.0)
+vis_end.SetOrder(2)
+palette.AddCall(@vis_end, @visitors, PaintVisitors.Close, 0)
 
-# ── the rows ─────────────────────────────────────────────────────────────────
+pane.spawn(RenderProvider::TextLabel vis_end_word)
+vis_end_word.Create()
+vis_end_word.SetPosition(254, 9)
+vis_end_word.SetSize(1)
+vis_end_word.SetColor(0.94, 0.89, 0.78, 1.0)
+vis_end_word.SetText(end)
+vis_end_word.SetOrder(3)
+palette.AddCall(@vis_end_word, @visitors, PaintVisitors.Close, 0)
+visitors.BindHostOnly(@vis_end_word)
+
+pane.spawn(RenderProvider::TextLabel vis_leave_word)
+vis_leave_word.Create()
+vis_leave_word.SetPosition(250, 9)
+vis_leave_word.SetSize(1)
+vis_leave_word.SetColor(0.94, 0.89, 0.78, 1.0)
+vis_leave_word.SetText(leave)
+vis_leave_word.SetOrder(3)
+palette.AddCall(@vis_leave_word, @visitors, PaintVisitors.Close, 0)
+visitors.BindGuestOnly(@vis_leave_word)
+
+# ── you ──────────────────────────────────────────────────────────────────────
 #
-# Each row: a plate, the name, the role, and three controls -- let write, read
-# only, remove. All three exist on every row and the runtime decides nothing
-# about which to show: a roster that changed a button's presence under the
-# pointer would move the other two out from under it mid-click.
+# Your name in the room, pressed to rename it: the field opens with the name in
+# it and takes every key until Enter or Escape (PaintVisitors::EditName). The
+# node refuses a name somebody else has, and the page says so. Beside it, the
+# colour your frame is drawn in on everyone else's canvas; the swatches under it
+# change it.
+pane.spawn(RenderProvider::TextLabel vis_you)
+vis_you.Create()
+vis_you.SetPosition(10, 39)
+vis_you.SetSize(1)
+vis_you.SetColor(0.55, 0.57, 0.50, 1.0)
+vis_you.SetText(you)
+vis_you.SetOrder(2)
 
-# EIGHT PANES, ONE SCRIPT -- the same shape the layer window uses, and for the
-# same reason: `run` carries RIDs and not numbers, so a row script cannot be
-# told where to draw, but it can be handed a pane that is already there.
+pane.spawn(RenderProvider::PolygonDrawable2D vis_me_chip)
+vis_me_chip.Create()
+vis_me_chip.AddPoint(48, 34)
+vis_me_chip.AddPoint(66, 34)
+vis_me_chip.AddPoint(66, 52)
+vis_me_chip.AddPoint(48, 52)
+vis_me_chip.SetFill(0.35, 0.53, 0.88, 1.0)
+vis_me_chip.SetOrder(2)
+
+pane.spawn(RenderProvider::PolygonDrawable2D vis_me_plate)
+vis_me_plate.Create()
+vis_me_plate.AddPoint(72, 32)
+vis_me_plate.AddPoint(294, 32)
+vis_me_plate.AddPoint(294, 54)
+vis_me_plate.AddPoint(72, 54)
+vis_me_plate.SetFill(0.17, 0.18, 0.13, 1.0)
+vis_me_plate.SetOrder(1)
+palette.AddCall(@vis_me_plate, @visitors, PaintVisitors.EditName, 0)
+
+pane.spawn(RenderProvider::TextLabel vis_me_name)
+vis_me_name.Create()
+vis_me_name.SetPosition(78, 39)
+vis_me_name.SetSize(1)
+vis_me_name.SetColor(0.94, 0.89, 0.78, 1.0)
+vis_me_name.SetText(-)
+vis_me_name.SetOrder(2)
+palette.AddCall(@vis_me_name, @visitors, PaintVisitors.EditName, 0)
+visitors.BindMe(@vis_me_name, @vis_me_chip)
+
+# Eight colours, bright enough to read over any picture as a frame outline.
+pane.spawn(RenderProvider::PolygonDrawable2D vis_sw_red)
+vis_sw_red.Create()
+vis_sw_red.AddPoint(74, 62)
+vis_sw_red.AddPoint(94, 62)
+vis_sw_red.AddPoint(94, 78)
+vis_sw_red.AddPoint(74, 78)
+vis_sw_red.SetOrder(2)
+visitors.BindSwatch(@vis_sw_red, 0.88, 0.32, 0.29)
+palette.AddCall(@vis_sw_red, @visitors, PaintVisitors.PickColor, @vis_sw_red)
+
+pane.spawn(RenderProvider::PolygonDrawable2D vis_sw_orange)
+vis_sw_orange.Create()
+vis_sw_orange.AddPoint(100, 62)
+vis_sw_orange.AddPoint(120, 62)
+vis_sw_orange.AddPoint(120, 78)
+vis_sw_orange.AddPoint(100, 78)
+vis_sw_orange.SetOrder(2)
+visitors.BindSwatch(@vis_sw_orange, 0.91, 0.60, 0.24)
+palette.AddCall(@vis_sw_orange, @visitors, PaintVisitors.PickColor, @vis_sw_orange)
+
+pane.spawn(RenderProvider::PolygonDrawable2D vis_sw_yellow)
+vis_sw_yellow.Create()
+vis_sw_yellow.AddPoint(126, 62)
+vis_sw_yellow.AddPoint(146, 62)
+vis_sw_yellow.AddPoint(146, 78)
+vis_sw_yellow.AddPoint(126, 78)
+vis_sw_yellow.SetOrder(2)
+visitors.BindSwatch(@vis_sw_yellow, 0.91, 0.81, 0.29)
+palette.AddCall(@vis_sw_yellow, @visitors, PaintVisitors.PickColor, @vis_sw_yellow)
+
+pane.spawn(RenderProvider::PolygonDrawable2D vis_sw_green)
+vis_sw_green.Create()
+vis_sw_green.AddPoint(152, 62)
+vis_sw_green.AddPoint(172, 62)
+vis_sw_green.AddPoint(172, 78)
+vis_sw_green.AddPoint(152, 78)
+vis_sw_green.SetOrder(2)
+visitors.BindSwatch(@vis_sw_green, 0.42, 0.76, 0.42)
+palette.AddCall(@vis_sw_green, @visitors, PaintVisitors.PickColor, @vis_sw_green)
+
+pane.spawn(RenderProvider::PolygonDrawable2D vis_sw_teal)
+vis_sw_teal.Create()
+vis_sw_teal.AddPoint(178, 62)
+vis_sw_teal.AddPoint(198, 62)
+vis_sw_teal.AddPoint(198, 78)
+vis_sw_teal.AddPoint(178, 78)
+vis_sw_teal.SetOrder(2)
+visitors.BindSwatch(@vis_sw_teal, 0.29, 0.72, 0.79)
+palette.AddCall(@vis_sw_teal, @visitors, PaintVisitors.PickColor, @vis_sw_teal)
+
+pane.spawn(RenderProvider::PolygonDrawable2D vis_sw_blue)
+vis_sw_blue.Create()
+vis_sw_blue.AddPoint(204, 62)
+vis_sw_blue.AddPoint(224, 62)
+vis_sw_blue.AddPoint(224, 78)
+vis_sw_blue.AddPoint(204, 78)
+vis_sw_blue.SetOrder(2)
+visitors.BindSwatch(@vis_sw_blue, 0.35, 0.53, 0.88)
+palette.AddCall(@vis_sw_blue, @visitors, PaintVisitors.PickColor, @vis_sw_blue)
+
+pane.spawn(RenderProvider::PolygonDrawable2D vis_sw_violet)
+vis_sw_violet.Create()
+vis_sw_violet.AddPoint(230, 62)
+vis_sw_violet.AddPoint(250, 62)
+vis_sw_violet.AddPoint(250, 78)
+vis_sw_violet.AddPoint(230, 78)
+vis_sw_violet.SetOrder(2)
+visitors.BindSwatch(@vis_sw_violet, 0.60, 0.42, 0.88)
+palette.AddCall(@vis_sw_violet, @visitors, PaintVisitors.PickColor, @vis_sw_violet)
+
+pane.spawn(RenderProvider::PolygonDrawable2D vis_sw_pink)
+vis_sw_pink.Create()
+vis_sw_pink.AddPoint(256, 62)
+vis_sw_pink.AddPoint(276, 62)
+vis_sw_pink.AddPoint(276, 78)
+vis_sw_pink.AddPoint(256, 78)
+vis_sw_pink.SetOrder(2)
+visitors.BindSwatch(@vis_sw_pink, 0.88, 0.42, 0.66)
+palette.AddCall(@vis_sw_pink, @visitors, PaintVisitors.PickColor, @vis_sw_pink)
+
+# ── the link (the host's) ────────────────────────────────────────────────────
+pane.spawn(RenderProvider::PolygonDrawable2D vis_copy)
+vis_copy.Create()
+vis_copy.AddPoint(10, 86)
+vis_copy.AddPoint(120, 86)
+vis_copy.AddPoint(120, 106)
+vis_copy.AddPoint(10, 106)
+vis_copy.SetFill(0.17, 0.26, 0.15, 1.0)
+vis_copy.SetOrder(2)
+palette.AddCall(@vis_copy, @visitors, PaintVisitors.CopyLink, 0)
+visitors.BindHostOnly(@vis_copy)
+
+pane.spawn(RenderProvider::TextLabel vis_copy_word)
+vis_copy_word.Create()
+vis_copy_word.SetPosition(20, 92)
+vis_copy_word.SetSize(1)
+vis_copy_word.SetColor(0.94, 0.89, 0.78, 1.0)
+vis_copy_word.SetText(copy link)
+vis_copy_word.SetOrder(3)
+palette.AddCall(@vis_copy_word, @visitors, PaintVisitors.CopyLink, 0)
+visitors.BindHostOnly(@vis_copy_word)
+
+# ── who is here ──────────────────────────────────────────────────────────────
+pane.spawn(RenderProvider::TextLabel vis_here)
+vis_here.Create()
+vis_here.SetPosition(10, 116)
+vis_here.SetSize(1)
+vis_here.SetColor(0.55, 0.57, 0.50, 1.0)
+vis_here.SetText(in the session)
+vis_here.SetOrder(2)
 
 pane.spawn(RenderProvider::CompositeDrawable2D vrow0)
 vrow0.Create(288, 26)
-vrow0.SetPosition(6, 34)
+vrow0.SetPosition(6, 130)
 vrow0.SetOrder(1)
 vrow0.SetBackground(0.14, 0.15, 0.11, 1.0)
-#
-# NAMED AS A SIBLING, not by its path from the module root, and that is not a
-# style choice. resolve_script_path tries the caller's OWN directory first and
-# falls back to the caller's #IMPORT target; a nested run spelled
-# "PaintProvider/scripts/x.etcs" from inside PaintProvider/scripts/ asks for
-# PaintProvider/scripts/PaintProvider/scripts/x.etcs, misses, and is saved only
-# by the #IMPORT fallback -- which exists natively and does NOT in the browser,
-# where the scripts are staged into MEMFS at their relative paths and ACE_ROOT
-# means nothing. Spelled as a sibling it resolves on the FIRST candidate in both
-# places. A top-level run from the boot script still names the full path,
-# because from there it is not a sibling.
 run paint_visitor_row.etcs pane=vrow0 palette=palette visitors=visitors
 
 pane.spawn(RenderProvider::CompositeDrawable2D vrow1)
 vrow1.Create(288, 26)
-vrow1.SetPosition(6, 64)
+vrow1.SetPosition(6, 160)
 vrow1.SetOrder(1)
 vrow1.SetBackground(0.14, 0.15, 0.11, 1.0)
 run paint_visitor_row.etcs pane=vrow1 palette=palette visitors=visitors
 
 pane.spawn(RenderProvider::CompositeDrawable2D vrow2)
 vrow2.Create(288, 26)
-vrow2.SetPosition(6, 94)
+vrow2.SetPosition(6, 190)
 vrow2.SetOrder(1)
 vrow2.SetBackground(0.14, 0.15, 0.11, 1.0)
 run paint_visitor_row.etcs pane=vrow2 palette=palette visitors=visitors
 
 pane.spawn(RenderProvider::CompositeDrawable2D vrow3)
 vrow3.Create(288, 26)
-vrow3.SetPosition(6, 124)
+vrow3.SetPosition(6, 220)
 vrow3.SetOrder(1)
 vrow3.SetBackground(0.14, 0.15, 0.11, 1.0)
 run paint_visitor_row.etcs pane=vrow3 palette=palette visitors=visitors
 
 pane.spawn(RenderProvider::CompositeDrawable2D vrow4)
 vrow4.Create(288, 26)
-vrow4.SetPosition(6, 154)
+vrow4.SetPosition(6, 250)
 vrow4.SetOrder(1)
 vrow4.SetBackground(0.14, 0.15, 0.11, 1.0)
 run paint_visitor_row.etcs pane=vrow4 palette=palette visitors=visitors
 
 pane.spawn(RenderProvider::CompositeDrawable2D vrow5)
 vrow5.Create(288, 26)
-vrow5.SetPosition(6, 184)
+vrow5.SetPosition(6, 280)
 vrow5.SetOrder(1)
 vrow5.SetBackground(0.14, 0.15, 0.11, 1.0)
 run paint_visitor_row.etcs pane=vrow5 palette=palette visitors=visitors
 
 pane.spawn(RenderProvider::CompositeDrawable2D vrow6)
 vrow6.Create(288, 26)
-vrow6.SetPosition(6, 214)
+vrow6.SetPosition(6, 310)
 vrow6.SetOrder(1)
 vrow6.SetBackground(0.14, 0.15, 0.11, 1.0)
 run paint_visitor_row.etcs pane=vrow6 palette=palette visitors=visitors
 
 pane.spawn(RenderProvider::CompositeDrawable2D vrow7)
 vrow7.Create(288, 26)
-vrow7.SetPosition(6, 244)
+vrow7.SetPosition(6, 340)
 vrow7.SetOrder(1)
 vrow7.SetBackground(0.14, 0.15, 0.11, 1.0)
 run paint_visitor_row.etcs pane=vrow7 palette=palette visitors=visitors
-
 
 visitors.SetInk(0.79, 0.71, 0.35, 0.55, 0.57, 0.50)

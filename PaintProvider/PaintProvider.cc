@@ -60,7 +60,7 @@ ETCS_TAG_BLOCK_BASIC(PaintSurface,
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
-     BindRoot, BindCanvas, BindPalette, BindPanel, BindPagePanel, BindAnimation, BindGlyphs, SetHoldCapacity, BindPages,
+     BindRoot, BindCanvas, BindPalette, BindPanel, BindPagePanel, BindVisitors, BindAnimation, BindGlyphs, SetHoldCapacity, BindPages,
      BindWheel, SetWheelPane,
      Pointer, Press, Release, Report, Delete),
     (ConsumeInput, ConsumePointer, ConsumeRouted, ConsumeRoutedPointer))
@@ -145,11 +145,13 @@ ETCS_TAG_BLOCK_HYBRID(PaintRouter,
 ETCS_TAG_BLOCK_BASIC(PaintNode,
     Mount, Request, Filter, Delete)
 
-// PaintVisitors -- who is in the session, as a pane on the sheet. Rows are
-// declared by the script and filled here; the row buttons are ordinary palette
-// calls naming Promote/Demote/Remove with the row index, so nothing about this
-// window touches the input path. It never reaches the node: a press raises an
-// event and the PAGE performs the verb, because a fetch is the page's.
+// PaintVisitors -- who is in the session, as a pane on the sheet, for the host
+// and for everyone who joined. Rows are declared by the script and filled here;
+// the buttons are ordinary palette calls naming the node pressed. The title
+// moves it (PaintInput, PressTitle). It never reaches the node: a press raises
+// an event and the PAGE performs the verb, because a fetch is the page's.
 ETCS_TAG_BLOCK_BASIC(PaintVisitors,
-    Create, BeginRow, RowNode, BindWindow, SetRowColors, SetInk,
-    SetRoster, Open, Close, Promote, Demote, Remove, Delete)
+    Create, BeginRow, RowNode, BindWindow, BindTitle, BindHostOnly, BindGuestOnly,
+    BindMe, BindSwatch, SetRowColors, SetInk,
+    SetRoster, SetMe, Open, OpenAs, Close, Hide, CopyLink, PickColor, EditName,
+    Promote, Demote, Remove, Delete)

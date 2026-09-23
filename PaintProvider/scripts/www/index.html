@@ -708,15 +708,27 @@
 
   // A name that survives a reload, because the roster is keyed by it: coming
   // back as somebody else after a refresh means appearing twice in the host's
-  // list, once as a ghost.
+  // list, once as a ghost. Made up the first time -- two words and a number,
+  // which people can say to each other -- and changed from the sharing window
+  // (keepName).
+  const NAME_A = ['amber', 'brisk', 'calm', 'deep', 'eager', 'fern', 'gold', 'hazy',
+                  'ivory', 'jade', 'keen', 'lunar', 'mossy', 'north', 'opal', 'plum',
+                  'quiet', 'rusty', 'sly', 'tidal', 'umber', 'vivid', 'wild', 'zesty'];
+  const NAME_B = ['otter', 'heron', 'lynx', 'wren', 'moth', 'finch', 'badger', 'newt',
+                  'crane', 'fox', 'marten', 'owl', 'raven', 'seal', 'stoat', 'swift',
+                  'toad', 'vole', 'yak', 'gecko', 'ibis', 'koi', 'lark', 'mole'];
   function myName() {
     try {
       const kept = window.localStorage.getItem('etcs-paint-name');
       if (kept) return kept;
     } catch (e) {}
-    const made = 'artist-' + Math.floor(Math.random() * 9000 + 1000);
-    try { window.localStorage.setItem('etcs-paint-name', made); } catch (e) {}
+    const pick = function (a) { return a[Math.floor(Math.random() * a.length)]; };
+    const made = pick(NAME_A) + '-' + pick(NAME_B) + '-' + Math.floor(Math.random() * 90 + 10);
+    keepName(made);
     return made;
+  }
+  function keepName(n) {
+    try { window.localStorage.setItem('etcs-paint-name', n); } catch (e) {}
   }
 
   function shareLinkFor(id) { return window.location.origin + window.location.pathname + '?s=' + id; }
@@ -826,7 +838,17 @@
   // the room and the two pictures would differ from then on.
   function setRole(r) {
     share.role = r;
-    if (runtimeUp()) callVerb('doc', 'SetReadOnly', r === 'reader' ? '1' : '0');
+    if (!runtimeUp()) return;
+    callVerb('doc', 'SetReadOnly', r === 'reader' ? '1' : '0');
+    // The sharing window is the role's too: the host's half or a guest's.
+    if (r) { callVerb('visitors', 'OpenAs', r); tellWindowWhoIAm(); }
+  }
+
+  // The "you" line: the name this page goes by in the room and its colour.
+  function tellWindowWhoIAm() {
+    if (!runtimeUp() || !share.self) return;
+    const hue = (shareHueEl.value || myHue()).replace('#', '');
+    callVerb('visitors', 'SetMe', share.self + ', ' + hue);
   }
 
   async function pushMine() {
@@ -918,7 +940,7 @@
   // the row is that window's, and the page deciding what a row says would be
   // the page owning a piece of the canvas.
   async function refreshRoster() {
-    if (share.role !== 'owner' || !share.token || !runtimeUp()) return;
+    if (!share.token || !runtimeUp()) return;
     const who = await nodeGet(tokenPath('who'));
     if (who !== null && who !== 'FORBIDDEN' && who !== 'NO SUCH SESSION')
       callVerb('visitors', 'SetRoster', who);
@@ -1008,8 +1030,8 @@
     share.read = setInterval(readTheirs, SHARE_READ_MS);
     if (share.role === 'owner' || share.role === 'writer')
       share.push = setInterval(pushMine, SHARE_PUSH_MS);
-    if (share.role === 'owner') share.who = setInterval(refreshRoster, SHARE_WHO_MS);
-    else                        share.role_t = setInterval(refreshRole, SHARE_ROLE_MS);
+    share.who = setInterval(refreshRoster, SHARE_WHO_MS);
+    if (share.role !== 'owner') share.role_t = setInterval(refreshRole, SHARE_ROLE_MS);
   }
 
   function leaveSession() {
@@ -1019,7 +1041,7 @@
     setRole(null);                      // editable again: the canvas is theirs now
     if (runtimeUp()) {
       callVerb('doc', 'SetAuthor', '');
-      callVerb('visitors', 'Close', '');          // idempotent; already shut is fine
+      callVerb('visitors', 'Hide', '');           // idempotent; already shut is fine
     }
     shareLinkEl.hidden = true;
     shareHueEl.hidden = true;
@@ -1063,7 +1085,6 @@
     if (!(await pushBaseline())) log('[etcs] share: the page could not be sent -- joiners start blank\n', 'err');
 
     showLink();
-    callVerb('visitors', 'Open', '');
     await refreshRoster();
     shareTimers(true);
     log('[etcs] sharing -- the link in the header is the invitation\n', 'ok');
@@ -1098,22 +1119,25 @@
     setRole(bits[1] || 'reader');
     callVerb('doc', 'SetAuthor', share.self);
 
-    // No visitor list for a visitor: there is nothing in it they may do, and a
-    // row of buttons that answer FORBIDDEN tells them something false.
+    // The sharing window opens for a guest too (setRole): their name, their
+    // colour and who else is here, without the host's buttons.
     shareLinkEl.textContent = 'in a shared canvas';
     shareLinkEl.hidden = false;
     shareHueEl.hidden = false;        // a viewer picks their colour too
     shareBtnEl.hidden = true;
 
     await readTheirs();
+    await refreshRoster();
     shareTimers(true);
-    log('[etcs] joined a shared canvas as a ' + share.role + '\n', 'ok');
+    log('[etcs] joined a shared canvas as ' + share.self + ', a ' + share.role
+        + ' -- the sharing window has your name and colour\n', 'ok');
   }
 
   shareHueEl.value = myHue();
   shareHueEl.addEventListener('change', function () {
     keepHue(shareHueEl.value);
     share.sent_view = '';          // force the next tick to state the new colour
+    tellWindowWhoIAm();
   });
 
   shareBtnEl.addEventListener('click', function () {
@@ -1157,6 +1181,39 @@
       await nodeGet(tokenPath('close'));
       leaveSession();
       log('[etcs] sharing ended -- everyone keeps the canvas they have\n');
+      return;
+    }
+    if (what === 'leave') {
+      leaveSession();
+      log('[etcs] you left the shared canvas -- this canvas is yours to keep\n');
+      return;
+    }
+    if (what === 'copy') { shareLinkEl.click(); log('[etcs] link copied: ' + shareLinkFor(share.id) + '\n'); return; }
+    if (what.startsWith('hue:')) {
+      const hex = '#' + what.slice(4).replace(/[^0-9a-f]/gi, '').slice(0, 6);
+      shareHueEl.value = hex;
+      keepHue(hex);
+      share.sent_view = '';        // the next presence tick carries it
+      tellWindowWhoIAm();
+      return;
+    }
+    if (what.startsWith('name:')) {
+      /*
+       * A NEW NAME IS THE NODE'S TO GRANT: the roster is keyed by it, so one
+       * somebody else has is refused. Granted, it is this page's from then on
+       * -- kept for the next visit, and the author of what it pushes.
+       */
+      const want = what.slice(5);
+      const got = await nodeGet(tokenPath('rename', encodeURIComponent(want)));
+      if (got === 'TAKEN') log('[etcs] somebody here is already called ' + want + '\n', 'err');
+      else if (got && got !== 'BAD NAME' && got !== 'FORBIDDEN' && got !== 'NO SUCH SESSION') {
+        share.self = got.trim();
+        keepName(share.self);
+        callVerb('doc', 'SetAuthor', share.self);
+        log('[etcs] you are ' + share.self + ' in this session\n', 'ok');
+      }
+      tellWindowWhoIAm();
+      await refreshRoster();
       return;
     }
     const colon = what.indexOf(':');

@@ -640,6 +640,20 @@ your picture and everyone else's would differ from then on. Pan and zoom still
 work; so do the layer eyes, which change only what you see. Promotion lifts it
 within a few seconds (the page asks the node for its role on a timer).
 
+**Everyone has a sharing window** (`PaintVisitors`, drawn by
+`paint_visitors.etcs`), opened as the host's or a guest's (`OpenAs`). Its top
+line is you: the name you go by in the room -- two words and a number made up
+the first time, kept in the browser -- pressed to rename it (the field takes
+every key until Enter or Escape; the node refuses a name somebody there
+already has), and the colour your frame is drawn in on everyone else's canvas,
+with eight swatches to change it. Under that, who is here, each with their
+colour and role, your own row lit. The host's window adds `copy link` and, on
+every row but their own, `draw` (make a writer), `view` (back to reader) and
+`out`; its `end` ends the session. A guest's has `leave` instead. The title bar
+moves the window: the router holds the pointer on it for the length of the drag
+(`PaintRouter::Route`, the capture), because it is its own pane and a fast
+flick would otherwise leave it behind.
+
 **Pushes of any size.** A request to the node is bounded (64 KB with its
 headers, `ETCS_NETWORK_MAX_HEADER_SIZE`) and a keyframe is a layer's PNG, so a
 push bigger than one request goes as numbered parts the node joins back

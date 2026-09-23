@@ -683,12 +683,13 @@ palette.AddPopup(@gear_word, @menu_pane, @menu_input)
 # menu, because it is opened FROM a header button rather than from the gear and
 # should not end up behind whatever was last up.
 #
-# Hidden until the page opens it (PaintVisitors.Open), which the page does the
-# moment a session exists. Closing it is what ends the session: the runtime
-# raises the event, the page tells the node, and every other page's next read
-# answers NO SUCH SESSION and falls back to the canvas it already has.
+# Hidden until the page opens it (PaintVisitors.OpenAs), which the page does the
+# moment a session exists -- as the host's window or a guest's. The host's end
+# button ends the session: the runtime raises the event, the page tells the
+# node, and every other page's next read answers NO SUCH SESSION and falls back
+# to the canvas it already has. A guest's leaves it.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D visitors_pane)
-visitors_pane.Create(300, 300)
+visitors_pane.Create(300, 372)
 visitors_pane.SetPosition(4, 18)
 visitors_pane.SetOrder(30)
 visitors_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
@@ -702,6 +703,9 @@ spawn PaintProvider::PaintInput visitors_input
 visitors_input.Create(@doc, @brush, @canvas)
 visitors_input.BindRoot(@visitors_pane)
 visitors_input.BindPalette(@palette)
+# The two things a palette call cannot carry: where the pointer is, for dragging
+# the window by its title, and the keys while a name is being typed.
+visitors_input.BindVisitors(@visitors)
 
 run PaintProvider/scripts/paint_visitors.etcs pane=visitors_pane palette=palette visitors=visitors
 
