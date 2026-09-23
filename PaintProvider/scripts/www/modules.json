@@ -50,6 +50,8 @@
     "PaintProvider/scripts/paint_cell_arrow.etcs",
     "PaintProvider/scripts/paint_layer_row.etcs",
     "PaintProvider/scripts/paint_page_row.etcs",
+    "PaintProvider/scripts/paint_anim.etcs",
+    "PaintProvider/scripts/paint_anim_row.etcs",
     "PaintProvider/scripts/paint_visitor_row.etcs",
     "RenderProvider/scripts/render_frames.etcs"
   ],

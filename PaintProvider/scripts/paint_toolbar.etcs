@@ -1,7 +1,7 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# Toolbar: sixteen cells in a ROW THE LAYOUT SOLVES, not sixteen rectangles at
+# Toolbar: seventeen cells in a ROW THE LAYOUT SOLVES, not seventeen rectangles at
 # typed-in coordinates.
 #
 # Every slice used to be a PolygonDrawable2D with its corners written out --
@@ -195,6 +195,27 @@ label_select_mode.SetOrder(2)
 palette.AddTool(@label_select_mode, select)
 palette.SetModeReadout(@label_select_mode)
 run paint_cell_arrow.etcs cell=tool_select palette=palette
+
+# ── anim ─────────────────────────────────────────────────────────────────────
+#
+# THE ANIMATION TOOL: a drag on the page frames the reel (PaintAnimation::
+# SetRegion, from PaintInput's release) and brings up the animation window.
+# Marks nothing, like move and select. Beside select because it is the same
+# gesture -- two corners -- put to a different use.
+bar.spawn(RenderProvider::CompositeDrawable2D tool_anim)
+tool_anim.Create(60, 64)
+tool_anim.SetOrder(1)
+tool_anim.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_anim, @bar, 1, 0.0, 1, 0.0)
+palette.AddTool(@tool_anim, anim)
+tool_anim.spawn(RenderProvider::TextLabel label_anim)
+label_anim.Create()
+label_anim.SetPosition(8, 28)
+label_anim.SetSize(1)
+label_anim.SetColor(0.90, 0.90, 0.88, 1.0)
+label_anim.SetText(anim)
+label_anim.SetOrder(2)
+palette.AddTool(@label_anim, anim)
 
 bar.spawn(RenderProvider::CompositeDrawable2D tool_line)
 tool_line.Create(60, 64)

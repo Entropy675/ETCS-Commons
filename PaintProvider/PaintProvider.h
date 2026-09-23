@@ -763,8 +763,9 @@ enum class PaintToolKind : uint8_t
     Select,     // drag a region; drag INSIDE it to carry its pixels elsewhere
     Shape,      // the two corners again, as whichever outline PaintShapeMode names
     Move,       // drag the picture under the pointer; marks nothing
-    Eyedrop     // one press: the colour under it becomes the tool's, then the
+    Eyedrop,    // one press: the colour under it becomes the tool's, then the
                 // previous kind comes back (PaintColorWheel::BeginPick)
+    Animate     // drag a region; it becomes the animation's frame (PaintAnimation)
 };
 
 /*
@@ -860,6 +861,7 @@ inline const char* paint_tool_kind_name(PaintToolKind k)
     case PaintToolKind::Glyph:   return "glyph";
     case PaintToolKind::Select:  return "select";
     case PaintToolKind::Move:    return "move";
+    case PaintToolKind::Animate: return "anim";
     }
     return "brush";
 }
@@ -880,6 +882,7 @@ inline PaintToolKind paint_tool_kind_from(const std::string& name)
     if (name == "shape")   return PaintToolKind::Shape;
     if (name == "eyedrop") return PaintToolKind::Eyedrop;
     if (name == "move")    return PaintToolKind::Move;
+    if (name == "anim")    return PaintToolKind::Animate;
     if (name != "brush")
         ETCS_LOG("PaintTool", "unknown tool kind '" << name << "' -- using the brush.");
     return PaintToolKind::Brush;
@@ -954,7 +957,7 @@ inline bool paint_kind_is_anchored(PaintToolKind k)
     return k == PaintToolKind::Line || k == PaintToolKind::Rect
         || k == PaintToolKind::Ellipse || k == PaintToolKind::Ruler
         || k == PaintToolKind::Glyph || k == PaintToolKind::Select
-        || k == PaintToolKind::Shape;
+        || k == PaintToolKind::Shape || k == PaintToolKind::Animate;
 }
 inline bool paint_kind_is_placed(PaintToolKind k)
 {
@@ -970,7 +973,7 @@ inline bool paint_is_pan_button(uint16_t key)
 // gesture with its own commit (PaintDocument::DropSelection).
 inline bool paint_kind_commits(PaintToolKind k)
 {
-    return k != PaintToolKind::Ruler && k != PaintToolKind::Select;
+    return k != PaintToolKind::Ruler && k != PaintToolKind::Select && k != PaintToolKind::Animate;
 }
 
 /*
@@ -2464,6 +2467,279 @@ static inline bool paint_image_parse(const uint8_t* p, size_t n, PaintImage& out
     return true;
 }
 
+/*
+ * ── GIF, both ways ───────────────────────────────────────────────────────
+ *
+ * IN through stb_image, which already reads a GIF's frames and their delays
+ * (stbi_load_gif_from_memory) -- an animated GIF is the one file format that
+ * carries a frame sequence and a rate, so it is how frames arrive from
+ * outside (PaintAnimation::ImportGif). OUT through the encoder below, because
+ * stb_image_write has none and a frame sequence that can be brought in but
+ * not taken out is half a feature.
+ *
+ * THE ENCODER IS THE SMALL ONE: one global 256-colour table for the whole
+ * sequence, found by median cut over a sample of every frame's pixels, and
+ * plain LZW at up to 12 bits, which is the format's own ceiling. No per-frame
+ * tables, no transparency, no inter-frame difference: every frame is written
+ * whole. That is more bytes than a good encoder writes and a fraction of the
+ * code, and what a paint program's sprite sheet needs is the file to be a
+ * correct GIF that every viewer plays, not a small one.
+ */
+namespace paint_gif {
+
+struct Box { uint8_t lo[3], hi[3]; std::vector<uint32_t> px; };
+
+// Median cut: split the widest axis of the box with the most pixels until
+// there are `want` boxes; each box's average is a palette entry.
+static inline void median_cut(std::vector<uint32_t> sample, size_t want, std::vector<uint32_t>& palette)
+{
+    palette.clear();
+    if (sample.empty()) { palette.push_back(0); return; }
+    std::vector<Box> boxes(1);
+    boxes[0].px = std::move(sample);
+    auto bounds = [](Box& b)
+    {
+        b.lo[0] = b.lo[1] = b.lo[2] = 255; b.hi[0] = b.hi[1] = b.hi[2] = 0;
+        for (uint32_t c : b.px)
+            for (int k = 0; k < 3; ++k)
+            {
+                const uint8_t v = static_cast<uint8_t>(c >> (16 - 8 * k));
+                b.lo[k] = std::min(b.lo[k], v); b.hi[k] = std::max(b.hi[k], v);
+            }
+    };
+    bounds(boxes[0]);
+    while (boxes.size() < want)
+    {
+        // The box to split: the most pixels among those that can still split.
+        size_t at = boxes.size(); size_t most = 1;
+        for (size_t i = 0; i < boxes.size(); ++i)
+        {
+            const Box& b = boxes[i];
+            const int span = std::max({ b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2] });
+            if (span > 0 && b.px.size() > most) { most = b.px.size(); at = i; }
+        }
+        if (at == boxes.size()) break;
+        Box& b = boxes[at];
+        int axis = 0; int span = b.hi[0] - b.lo[0];
+        for (int k = 1; k < 3; ++k) if (b.hi[k] - b.lo[k] > span) { span = b.hi[k] - b.lo[k]; axis = k; }
+        const int shift = 16 - 8 * axis;
+        std::sort(b.px.begin(), b.px.end(), [shift](uint32_t a, uint32_t c)
+                  { return ((a >> shift) & 255) < ((c >> shift) & 255); });
+        Box other;
+        const size_t mid = b.px.size() / 2;
+        other.px.assign(b.px.begin() + mid, b.px.end());
+        b.px.resize(mid);
+        bounds(b); bounds(other);
+        boxes.push_back(std::move(other));
+    }
+    for (const Box& b : boxes)
+    {
+        uint64_t r = 0, g = 0, bl = 0;
+        for (uint32_t c : b.px) { r += (c >> 16) & 255; g += (c >> 8) & 255; bl += c & 255; }
+        const size_t n = std::max<size_t>(1, b.px.size());
+        palette.push_back((static_cast<uint32_t>(r / n) << 16) | (static_cast<uint32_t>(g / n) << 8)
+                          | static_cast<uint32_t>(bl / n));
+    }
+}
+
+// Nearest palette entry, cached on the top five bits of each channel: a
+// 1024x768 frame asks this 786k times and the cache answers most of them.
+struct Mapper
+{
+    const std::vector<uint32_t>& pal;
+    std::vector<int16_t> cache;
+    explicit Mapper(const std::vector<uint32_t>& p) : pal(p), cache(32 * 32 * 32, -1) {}
+    uint8_t operator()(uint8_t r, uint8_t g, uint8_t b)
+    {
+        const size_t key = (static_cast<size_t>(r >> 3) << 10) | (static_cast<size_t>(g >> 3) << 5) | (b >> 3);
+        if (cache[key] >= 0) return static_cast<uint8_t>(cache[key]);
+        int best = 0; int64_t bd = INT64_MAX;
+        for (size_t i = 0; i < pal.size(); ++i)
+        {
+            const int dr = static_cast<int>((pal[i] >> 16) & 255) - r;
+            const int dg = static_cast<int>((pal[i] >> 8) & 255) - g;
+            const int db = static_cast<int>(pal[i] & 255) - b;
+            const int64_t d = static_cast<int64_t>(dr) * dr + static_cast<int64_t>(dg) * dg + static_cast<int64_t>(db) * db;
+            if (d < bd) { bd = d; best = static_cast<int>(i); }
+        }
+        cache[key] = static_cast<int16_t>(best);
+        return static_cast<uint8_t>(best);
+    }
+};
+
+// LZW with a variable code width, the GIF flavour: clear and end codes after
+// the alphabet, the table reset at 4096. Bits are packed least-significant
+// first and the stream is cut into sub-blocks of at most 255 bytes.
+struct LzwOut
+{
+    std::vector<uint8_t>& out;
+    std::vector<uint8_t> block;
+    uint32_t acc = 0; int bits = 0;
+    explicit LzwOut(std::vector<uint8_t>& o) : out(o) {}
+    void code(uint32_t c, int width)
+    {
+        acc |= c << bits; bits += width;
+        while (bits >= 8) { byte(static_cast<uint8_t>(acc & 255)); acc >>= 8; bits -= 8; }
+    }
+    void byte(uint8_t b) { block.push_back(b); if (block.size() == 255) flush(); }
+    void flush()
+    {
+        if (block.empty()) return;
+        out.push_back(static_cast<uint8_t>(block.size()));
+        out.insert(out.end(), block.begin(), block.end());
+        block.clear();
+    }
+    void finish() { if (bits > 0) byte(static_cast<uint8_t>(acc & 255)); flush(); out.push_back(0); }
+};
+
+static inline void lzw_encode(const std::vector<uint8_t>& idx, std::vector<uint8_t>& out)
+{
+    constexpr int MIN = 8;
+    constexpr uint32_t CLEAR = 1u << MIN, END = CLEAR + 1;
+    out.push_back(MIN);
+    LzwOut w(out);
+    // prefix code * 256 + next byte -> code; 4096 * 256 entries of int16.
+    std::vector<int16_t> table(4096 * 256);
+    auto reset = [&]() { std::fill(table.begin(), table.end(), -1); };
+    reset();
+    uint32_t next = END + 1; int width = MIN + 1;
+    w.code(CLEAR, width);
+    if (idx.empty()) { w.code(END, width); w.finish(); return; }
+    uint32_t prefix = idx[0];
+    for (size_t i = 1; i < idx.size(); ++i)
+    {
+        const uint8_t c = idx[i];
+        const size_t key = static_cast<size_t>(prefix) * 256 + c;
+        if (table[key] >= 0) { prefix = static_cast<uint32_t>(table[key]); continue; }
+        w.code(prefix, width);
+        if (next < 4096)
+        {
+            table[key] = static_cast<int16_t>(next);
+            if (next == (1u << width) && width < 12) ++width;
+            ++next;
+        }
+        else
+        {
+            w.code(CLEAR, width);
+            reset();
+            next = END + 1; width = MIN + 1;
+        }
+        prefix = c;
+    }
+    w.code(prefix, width);
+    w.code(END, width);
+    w.finish();
+}
+
+// The whole file: frames of one size, a delay per frame in hundredths of a
+// second, looping forever.
+static inline bool encode(const std::vector<PaintImage>& frames, uint32_t delay_cs,
+                          std::vector<uint8_t>& out, std::string& why)
+{
+    if (frames.empty()) { why = "no frames"; return false; }
+    const uint32_t w = frames[0].w, h = frames[0].h;
+    if (w == 0 || h == 0 || w > 65535 || h > 65535) { why = "bad frame size"; return false; }
+    for (const PaintImage& f : frames)
+        if (f.w != w || f.h != h || f.rgba.size() < static_cast<size_t>(w) * h * 4)
+        { why = "frames differ in size"; return false; }
+
+    // The palette, from every frame, sampled so a long sequence does not
+    // cost a sort of every pixel it has.
+    std::vector<uint32_t> sample;
+    {
+        const size_t total = static_cast<size_t>(w) * h * frames.size();
+        const size_t step = std::max<size_t>(1, total / 65536);
+        size_t k = 0;
+        for (const PaintImage& f : frames)
+            for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i, ++k)
+                if (k % step == 0)
+                {
+                    const uint8_t* p = f.rgba.data() + i * 4;
+                    sample.push_back((static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) | p[2]);
+                }
+    }
+    std::vector<uint32_t> palette;
+    median_cut(std::move(sample), 256, palette);
+    Mapper map(palette);
+
+    out.clear();
+    auto u16 = [&](uint32_t v) { out.push_back(static_cast<uint8_t>(v & 255)); out.push_back(static_cast<uint8_t>((v >> 8) & 255)); };
+    const char* sig = "GIF89a";
+    out.insert(out.end(), sig, sig + 6);
+    u16(w); u16(h);
+    out.push_back(0xF7);            // global table, 8 bits per colour, 256 entries
+    out.push_back(0); out.push_back(0);
+    for (size_t i = 0; i < 256; ++i)
+    {
+        const uint32_t c = i < palette.size() ? palette[i] : 0;
+        out.push_back(static_cast<uint8_t>((c >> 16) & 255));
+        out.push_back(static_cast<uint8_t>((c >> 8) & 255));
+        out.push_back(static_cast<uint8_t>(c & 255));
+    }
+    // Loop forever (the Netscape extension every viewer honours).
+    const uint8_t loop[] = { 0x21, 0xFF, 0x0B, 'N','E','T','S','C','A','P','E','2','.','0', 0x03, 0x01, 0x00, 0x00, 0x00 };
+    out.insert(out.end(), loop, loop + sizeof(loop));
+
+    std::vector<uint8_t> idx(static_cast<size_t>(w) * h);
+    for (const PaintImage& f : frames)
+    {
+        const uint8_t gce[] = { 0x21, 0xF9, 0x04, 0x00 };
+        out.insert(out.end(), gce, gce + 4);
+        u16(delay_cs); out.push_back(0); out.push_back(0);
+        out.push_back(0x2C); u16(0); u16(0); u16(w); u16(h); out.push_back(0);
+        for (size_t i = 0; i < idx.size(); ++i)
+        {
+            const uint8_t* p = f.rgba.data() + i * 4;
+            idx[i] = map(p[0], p[1], p[2]);
+        }
+        lzw_encode(idx, out);
+    }
+    out.push_back(0x3B);
+    return true;
+}
+
+// The frames of a GIF, and its rate as the mean delay in milliseconds. A
+// still GIF is one frame; a file that is not a GIF at all is refused with the
+// decoder's reason.
+static inline bool decode(const uint8_t* bytes, size_t n, std::vector<PaintImage>& frames,
+                          int& delay_ms, std::string& why)
+{
+    int* delays = nullptr; int w = 0, h = 0, z = 0, comp = 0;
+    stbi_uc* px = stbi_load_gif_from_memory(bytes, static_cast<int>(n), &delays, &w, &h, &z, &comp, 4);
+    if (!px) { why = std::string("decode failed: ") + stbi_failure_reason(); return false; }
+    frames.clear();
+    const size_t per = static_cast<size_t>(w) * h * 4;
+    int64_t sum = 0;
+    for (int i = 0; i < z; ++i)
+    {
+        PaintImage f; f.w = static_cast<uint32_t>(w); f.h = static_cast<uint32_t>(h);
+        f.rgba.assign(px + per * i, px + per * (i + 1));
+        frames.push_back(std::move(f));
+        if (delays) sum += delays[i];
+    }
+    delay_ms = (z > 0 && sum > 0) ? static_cast<int>(sum / z) : 100;
+    stbi_image_free(px);
+    if (delays) stbi_image_free(delays);
+    return !frames.empty();
+}
+
+} // namespace paint_gif
+
+// How many frames a file has as a GIF: 0 for a file that is not one (by its
+// magic, so nothing else is decoded), else the count. Decodes the whole GIF
+// to answer, which is the price of stb's one entry point; a reel is decoded
+// again on import, and a sprite sheet is small.
+static inline size_t paint_gif_frames_in(const std::string& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return 0;
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (bytes.size() < 6 || std::memcmp(bytes.data(), "GIF8", 4) != 0) return 0;
+    std::vector<PaintImage> frames; int delay = 0; std::string why;
+    if (!paint_gif::decode(bytes.data(), bytes.size(), frames, delay, why)) return 0;
+    return frames.size();
+}
+
 static inline bool paint_image_read(const std::string& path, PaintImage& out, std::string& why)
 {
     std::ifstream in(path, std::ios::binary);
@@ -3906,6 +4182,19 @@ public:
         m_sel.Shift(m_sel.dx, m_sel.dy);
         m_sel.lift.clear();
         m_sel.dx = m_sel.dy = 0;
+        return true;
+    }
+
+    // Pixels from outside the document onto the active layer at a place, as
+    // one undoable step: a snapshot of the layer lands first, then the bytes
+    // go over what is there (PaintLayer::DropPixels). The animation window's
+    // "put" is this.
+    bool PastePixels(const uint8_t* rgba, uint32_t w, uint32_t h, int32_t x, int32_t y)
+    {
+        if (!m_active_layer || !rgba || w == 0 || h == 0) return false;
+        appendSnapshot(m_active_layer);
+        m_active_layer->DropPixels(rgba, w, h, x, y);
+        Touch();
         return true;
     }
 
@@ -7407,6 +7696,489 @@ private:
 };
 
 /*
+ * ── PaintAnimation ───────────────────────────────────────────────────────
+ *
+ * FRAMES CUT FROM THE PICTURE, AND PUT BACK. A region of the page, chosen by
+ * the animation tool's drag (PaintInput), and a sequence of frames the size
+ * of that region: `snap` takes a frame from what is visible in the region
+ * now, `put` lays the current frame back onto the active layer there. Between
+ * those two the page is the drawing board and the frames are the reel -- draw,
+ * snap, draw, snap, then scrub or play the reel in the window. A GIF comes in
+ * as frames (ImportGif, stb's decoder, the region resized to the file's) and
+ * the reel goes out as one (ExportGif, the encoder above).
+ *
+ * THE WINDOW IS THE LAYER WINDOW'S SHAPE AGAIN: rows of [thumb][#][x] from a
+ * row script, a preview raster the current frame is fitted into, and controls
+ * on the bar that are palette calls (PaintPalette::AddCall) to the verbs
+ * below. This type maps the rows to frames and draws none of it.
+ *
+ * PLAYING IS ANIMATED, the family (ontology/Animated.h): while playing, the
+ * frame edge advances the reel at the rate set, and the preview follows. dt
+ * is honoured here, unlike the throbber's, because a rate in frames per
+ * second is a real duration and "twelve a second" must mean the same on
+ * every display.
+ *
+ * THE OUTLINE is four thin panes on the view (BindOutline), placed from the
+ * region through the surface's projection and re-placed when the pan or the
+ * zoom moves under them -- checked once a frame, so a drag of the picture
+ * carries the outline with it.
+ */
+class PaintAnimation : public DeletableBase<PaintAnimation>,
+                       public AnimatedBase<PaintAnimation>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintAnimation);
+
+    PaintAnimation() = default;
+    bool DeleteConcrete() override { return true; }
+
+    enum class Region : uint8_t { Body, Delete };
+
+    static constexpr int32_t MIN_FPS = 1, MAX_FPS = 60;
+
+    bool Create(ETCS::RID document)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintDocument", document);
+        if (!raw) { ETCS_LOG("PaintAnimation", "Create: RID:" << document << " is not a PaintDocument."); return false; }
+        m_document = static_cast<PaintDocument*>(raw->getTrueType());
+        this->addTag("active");
+        return true;
+    }
+
+    void BindSurface(ETCS::RID surface)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintSurface", surface);
+        if (raw) m_surface = static_cast<PaintSurface*>(raw->getTrueType());
+    }
+
+    // The window (shown when a region exists), the preview raster, and the
+    // readout label ("12 fps  3/8").
+    void BindWindow(ETCS::RID pane)   { m_window = pane; paint_node_hidden(pane, !m_has_region); }
+    void BindPreview(ETCS::RID node)  { m_preview = node; }
+    void BindReadout(ETCS::RID node)  { m_readout = node; }
+    // The four outline bars, in the order top, bottom, left, right.
+    void BindOutline(ETCS::RID node)  { if (node && m_outline.size() < 4) m_outline.push_back(node); }
+
+    void BeginRow() { m_rows.push_back(Row{}); }
+    void RowNode(const std::string& what, ETCS::RID node)
+    {
+        if (node == 0) return;
+        if (m_rows.empty()) { ETCS_LOG("PaintAnimation", "RowNode before BeginRow -- ignored."); return; }
+        const size_t idx = m_rows.size() - 1;
+        Row& row = m_rows[idx];
+        if      (what == "bg")    { row.bg    = node; m_regions[node] = Hit{ idx, Region::Body }; }
+        else if (what == "thumb") { row.thumb = node; m_regions[node] = Hit{ idx, Region::Body }; }
+        else if (what == "label") { row.label = node; m_regions[node] = Hit{ idx, Region::Body }; }
+        else if (what == "del")   { row.del   = node; m_regions[node] = Hit{ idx, Region::Delete }; }
+        else ETCS_LOG("PaintAnimation", "RowNode: '" << what << "' is not a part of a row "
+                      "(bg thumb label del) -- RID:" << node << " is attached to nothing.");
+    }
+
+    void SetRowColors(float sr, float sg, float sb, float ur, float ug, float ub)
+    {
+        m_row_sel[0] = sr; m_row_sel[1] = sg; m_row_sel[2] = sb;
+        m_row_idle[0] = ur; m_row_idle[1] = ug; m_row_idle[2] = ub;
+    }
+
+    // ── the region ───────────────────────────────────────────────────────
+
+    /*
+ * The region, in document pixels. Normalised and clipped to the page; a
+ * region under 2x2 is a click, not a frame, and clears nothing -- the tool's
+ * drag has to mean something before it replaces what was there. A change of
+ * SIZE drops the frames, because a frame is the region's size by definition
+ * and a reel of mixed sizes is not one reel; a move keeps them.
+ */
+    bool SetRegion(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+    {
+        if (!m_document) return false;
+        int32_t lx = std::min(x0, x1), rx = std::max(x0, x1);
+        int32_t ty = std::min(y0, y1), by = std::max(y0, y1);
+        lx = std::clamp(lx, 0, static_cast<int32_t>(m_document->width()));
+        rx = std::clamp(rx, 0, static_cast<int32_t>(m_document->width()));
+        ty = std::clamp(ty, 0, static_cast<int32_t>(m_document->height()));
+        by = std::clamp(by, 0, static_cast<int32_t>(m_document->height()));
+        if (rx - lx < 2 || by - ty < 2) return false;
+        const uint32_t w = static_cast<uint32_t>(rx - lx), h = static_cast<uint32_t>(by - ty);
+        if (m_has_region && (w != m_w || h != m_h) && !m_frames.empty())
+        {
+            ETCS_LOG("PaintAnimation", "region resized " << m_w << "x" << m_h << " -> " << w << "x" << h
+                     << "; " << m_frames.size() << " frame(s) of the old size dropped.");
+            m_frames.clear();
+            m_at = 0;
+        }
+        m_x = lx; m_y = ty; m_w = w; m_h = h;
+        m_has_region = true;
+        paint_node_hidden(m_window, false);
+        place_outline(true);
+        Refresh();
+        ETCS_LOG("PaintAnimation", "region " << m_w << "x" << m_h << " at " << m_x << "," << m_y);
+        return true;
+    }
+
+    bool hasRegion() const { return m_has_region; }
+
+    // ── the reel ─────────────────────────────────────────────────────────
+
+    // A frame from what is visible in the region now, after the current one
+    // (so snapping in sequence builds the reel in order), and it becomes the
+    // current frame.
+    bool Snap()
+    {
+        if (!m_document || !m_has_region) { ETCS_LOG("PaintAnimation", "snap: no region -- drag one with the animation tool."); return false; }
+        std::vector<uint8_t> px;
+        if (!m_document->CompositeVisible(px)) return false;
+        const uint32_t dw = m_document->width();
+        PaintImage f; f.w = m_w; f.h = m_h; f.rgba.resize(static_cast<size_t>(m_w) * m_h * 4);
+        for (uint32_t y = 0; y < m_h; ++y)
+            std::memcpy(f.rgba.data() + static_cast<size_t>(y) * m_w * 4,
+                        px.data() + (static_cast<size_t>(m_y + y) * dw + m_x) * 4,
+                        static_cast<size_t>(m_w) * 4);
+        const size_t at = m_frames.empty() ? 0 : std::min(m_frames.size(), m_at + 1);
+        m_frames.insert(m_frames.begin() + static_cast<std::ptrdiff_t>(at), std::move(f));
+        m_at = at;
+        Refresh();
+        ETCS_LOG("PaintAnimation", "snapped frame " << (m_at + 1) << " of " << m_frames.size());
+        return true;
+    }
+
+    // The current frame onto the active layer, in the region, as one
+    // undoable step (PaintDocument::PastePixels).
+    bool Put()
+    {
+        if (!m_document || m_frames.empty() || !m_has_region) return false;
+        const PaintImage& f = m_frames[m_at];
+        if (!m_document->PastePixels(f.rgba.data(), f.w, f.h, m_x, m_y)) return false;
+        if (m_surface) m_surface->Render();
+        ETCS_LOG("PaintAnimation", "put frame " << (m_at + 1) << " at " << m_x << "," << m_y);
+        return true;
+    }
+
+    void Remove(size_t index)
+    {
+        if (index >= m_frames.size()) return;
+        m_frames.erase(m_frames.begin() + static_cast<std::ptrdiff_t>(index));
+        if (m_at >= m_frames.size()) m_at = m_frames.empty() ? 0 : m_frames.size() - 1;
+        Refresh();
+    }
+
+    void Select(size_t index) { if (index < m_frames.size()) { m_at = index; Refresh(); } }
+    void Next() { if (!m_frames.empty()) { m_at = (m_at + 1) % m_frames.size(); Refresh(); } }
+    void Prev() { if (!m_frames.empty()) { m_at = (m_at + m_frames.size() - 1) % m_frames.size(); Refresh(); } }
+
+    void SetFps(int32_t fps) { m_fps = std::clamp(fps, MIN_FPS, MAX_FPS); Refresh(); }
+    void StepFps(int32_t by) { SetFps(m_fps + by); }
+    void Play()  { m_playing = !m_frames.empty(); m_clock = 0.0; Refresh(); }
+    void Pause() { m_playing = false; Refresh(); }
+    void Toggle() { if (m_playing) Pause(); else Play(); }
+
+    /*
+ * A GIF's frames become the reel and its size becomes the region's, at the
+ * region's corner (or the page's, with no region yet): the file is the
+ * authority on its own size. Its delay sets the rate.
+ */
+    bool ImportGif(const std::string& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) { ETCS_LOG("PaintAnimation", "import " << path << ": cannot open."); return false; }
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::vector<PaintImage> frames; int delay_ms = 100; std::string why;
+        if (!paint_gif::decode(bytes.data(), bytes.size(), frames, delay_ms, why))
+        { ETCS_LOG("PaintAnimation", "import " << path << ": " << why); return false; }
+        if (!m_document) return false;
+        const uint32_t w = frames[0].w, h = frames[0].h;
+        const int32_t x = m_has_region ? m_x : 0, y = m_has_region ? m_y : 0;
+        if (x + static_cast<int32_t>(w) > static_cast<int32_t>(m_document->width())
+            || y + static_cast<int32_t>(h) > static_cast<int32_t>(m_document->height()))
+        {
+            ETCS_LOG("PaintAnimation", "import " << path << ": " << w << "x" << h << " does not fit the page at "
+                     << x << "," << y << " -- resize the page or move the region.");
+            return false;
+        }
+        m_frames = std::move(frames);
+        m_at = 0;
+        m_x = x; m_y = y; m_w = w; m_h = h; m_has_region = true;
+        m_fps = std::clamp(static_cast<int32_t>(std::lround(1000.0 / std::max(1, delay_ms))), MIN_FPS, MAX_FPS);
+        paint_node_hidden(m_window, false);
+        place_outline(true);
+        Refresh();
+        ETCS_LOG("PaintAnimation", "imported " << path << ": " << m_frames.size() << " frame(s) " << w << "x" << h
+                 << " at " << m_fps << " fps");
+        return true;
+    }
+
+    // The reel to the user as a file. In the browser that is the page's job
+    // -- it reads what ExportGif wrote and hands it to the download -- so this
+    // raises the same event the menu's file verbs do (PaintCanvasMenu::
+    // page_event) and the page calls ExportGif with a path of its own.
+    void Download()
+    {
+#if defined(__EMSCRIPTEN__)
+        MAIN_THREAD_EM_ASM({
+            window.dispatchEvent(new CustomEvent('etcs-menu', { detail: 'gif' }));
+        });
+#else
+        ETCS_LOG("PaintAnimation", "download: no file dialog on this substrate. From the terminal: anim.ExportGif(<path>)");
+#endif
+    }
+
+    bool ExportGif(const std::string& path)
+    {
+        if (m_frames.empty()) { ETCS_LOG("PaintAnimation", "export " << path << ": no frames."); return false; }
+        std::vector<uint8_t> out; std::string why;
+        const uint32_t delay_cs = static_cast<uint32_t>(std::max(1, static_cast<int>(std::lround(100.0 / m_fps))));
+        if (!paint_gif::encode(m_frames, delay_cs, out, why))
+        { ETCS_LOG("PaintAnimation", "export " << path << ": " << why); return false; }
+        std::ofstream o(path, std::ios::binary | std::ios::trunc);
+        if (!o) { ETCS_LOG("PaintAnimation", "export " << path << ": cannot open for writing."); return false; }
+        o.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+        ETCS_LOG("PaintAnimation", "exported " << path << ": " << m_frames.size() << " frame(s) " << m_w << "x" << m_h
+                 << ", " << out.size() << " bytes, " << m_fps << " fps");
+        return true;
+    }
+
+    // ── the rows ─────────────────────────────────────────────────────────
+
+    bool owns(ETCS::RID node) const { return node != 0 && m_regions.find(node) != m_regions.end(); }
+
+    bool Contains(Point2D at) const
+    {
+        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
+        if (!w) return false;
+        const Rect2D b = w->Bounds();
+        return at.x >= b.x && at.y >= b.y
+            && at.x < b.x + static_cast<int32_t>(b.w) && at.y < b.y + static_cast<int32_t>(b.h);
+    }
+
+    void Scroll(int32_t delta)
+    {
+        const int32_t rows = static_cast<int32_t>(m_rows.size());
+        const int32_t total = static_cast<int32_t>(m_frames.size());
+        const int32_t most = (total > rows) ? (total - rows) : 0;
+        m_scroll = std::clamp(m_scroll + delta, 0, most);
+        Refresh();
+    }
+
+    bool Apply(ETCS::RID node, bool is_press)
+    {
+        auto it = m_regions.find(node);
+        if (it == m_regions.end()) return false;
+        if (!is_press) return true;
+        const Hit hit = it->second;
+        if (hit.row >= m_rows.size()) return true;
+        const size_t index = static_cast<size_t>(m_scroll) + hit.row;
+        if (index >= m_frames.size()) return true;
+        if (hit.region == Region::Delete) Remove(index);
+        else                              Select(index);
+        return true;
+    }
+
+    /*
+ * Everything the window says, restated: the rows against the reel from the
+ * scroll offset, the current one highlighted, the preview fitted with the
+ * current frame, the readout. After any change rather than on a clock --
+ * except while playing, when Advance calls it once per frame step.
+ */
+    void Refresh()
+    {
+        {
+            const int32_t most = (m_frames.size() > m_rows.size())
+                               ? static_cast<int32_t>(m_frames.size() - m_rows.size()) : 0;
+            m_scroll = std::clamp(m_scroll, 0, most);
+        }
+        // Keep the current frame in the window while playing.
+        if (m_playing && !m_rows.empty())
+        {
+            if (m_at < static_cast<size_t>(m_scroll)) m_scroll = static_cast<int32_t>(m_at);
+            else if (m_at >= static_cast<size_t>(m_scroll) + m_rows.size())
+                m_scroll = static_cast<int32_t>(m_at + 1 - m_rows.size());
+        }
+        for (size_t i = 0; i < m_rows.size(); ++i)
+        {
+            Row& row = m_rows[i];
+            const size_t at = static_cast<size_t>(m_scroll) + i;
+            if (at >= m_frames.size())
+            {
+                paint_node_fill(row.bg, m_row_idle[0], m_row_idle[1], m_row_idle[2], 0.0f);
+                paint_node_hidden(row.thumb, true);
+                paint_node_hidden(row.del, true);
+                paint_node_text(row.label, "");
+                continue;
+            }
+            const float* c = (at == m_at) ? m_row_sel : m_row_idle;
+            paint_node_fill(row.bg, c[0], c[1], c[2], 1.0f);
+            paint_node_hidden(row.thumb, false);
+            paint_node_hidden(row.del, false);
+            paint_fit(row.thumb, m_frames[at]);
+            paint_node_text(row.label, std::to_string(at + 1));
+        }
+        if (m_preview)
+        {
+            if (m_frames.empty()) paint_fit(m_preview, PaintImage{});
+            else                  paint_fit(m_preview, m_frames[m_at]);
+        }
+        if (m_readout)
+        {
+            std::string t = std::to_string(m_fps) + " fps  ";
+            t += m_frames.empty() ? "no frames" : (std::to_string(m_at + 1) + "/" + std::to_string(m_frames.size()));
+            if (m_playing) t += "  playing";
+            paint_node_text(m_readout, t);
+        }
+    }
+
+    void Report() const
+    {
+        ETCS_LOG("PaintAnimation", (m_has_region ? std::to_string(m_w) + "x" + std::to_string(m_h) + " at "
+                                    + std::to_string(m_x) + "," + std::to_string(m_y) : std::string("no region"))
+                 << ", " << m_frames.size() << " frame(s), at " << (m_frames.empty() ? 0 : m_at + 1)
+                 << ", " << m_fps << " fps" << (m_playing ? ", playing" : ""));
+    }
+
+    // ── Animated_ ────────────────────────────────────────────────────────
+
+    bool AnimatingConcrete() override { return m_playing && m_frames.size() > 1; }
+
+    // dt honoured: the rate is a duration. The outline is re-placed here too,
+    // playing or not -- see the header -- which is why Animating answers true
+    // only while playing: one virtual call a frame is the cost of the check.
+    void AdvanceConcrete(double dt_ms) override
+    {
+        if (!m_playing || m_frames.size() < 2) return;
+        m_clock += dt_ms;
+        const double per = 1000.0 / m_fps;
+        bool stepped = false;
+        while (m_clock >= per) { m_clock -= per; m_at = (m_at + 1) % m_frames.size(); stepped = true; }
+        if (stepped) Refresh();
+    }
+
+    // Called by the surface's owner each render (PaintInput::repaint_view) so
+    // the outline follows a pan or a zoom.
+    void FollowView() { place_outline(false); }
+
+private:
+    struct Row { ETCS::RID bg = 0, thumb = 0, label = 0, del = 0; };
+    struct Hit { size_t row; Region region; };
+
+    // The frame fitted into a raster, box-averaged, over the checker; an empty
+    // frame is the checker alone.
+    static void paint_fit(ETCS::RID node, const PaintImage& f)
+    {
+        if (node == 0) return;
+        Pixels_* dst = ETCS::resolve_in_family<Pixels_>("Pixels", node);
+        if (!dst) return;
+        uint8_t* out = dst->PixelData();
+        if (!out) return;
+        const int32_t tw = static_cast<int32_t>(dst->PixelWidth()), th = static_cast<int32_t>(dst->PixelHeight());
+        if (tw <= 0 || th <= 0) return;
+        const int32_t lw = static_cast<int32_t>(f.w), lh = static_cast<int32_t>(f.h);
+        const bool have = lw > 0 && lh > 0 && f.rgba.size() >= static_cast<size_t>(lw) * lh * 4;
+        const float scale = have ? std::max(static_cast<float>(lw) / tw, static_cast<float>(lh) / th) : 0.0f;
+        const int32_t ox = have ? (tw - static_cast<int32_t>(lw / scale)) / 2 : 0;
+        const int32_t oy = have ? (th - static_cast<int32_t>(lh / scale)) / 2 : 0;
+        for (int32_t y = 0; y < th; ++y)
+            for (int32_t x = 0; x < tw; ++x)
+            {
+                const bool light = (((x >> 2) + (y >> 2)) & 1) != 0;
+                float r = light ? 0.44f : 0.34f, g = r, b = r;
+                if (have)
+                {
+                    const int32_t sx0 = static_cast<int32_t>((x - ox) * scale), sy0 = static_cast<int32_t>((y - oy) * scale);
+                    const int32_t sx1 = std::min(static_cast<int32_t>((x - ox + 1) * scale), lw);
+                    const int32_t sy1 = std::min(static_cast<int32_t>((y - oy + 1) * scale), lh);
+                    if (sx0 >= 0 && sy0 >= 0 && sx0 < lw && sy0 < lh && sx1 > sx0 && sy1 > sy0)
+                    {
+                        const int32_t stepx = std::max(1, (sx1 - sx0) / 8), stepy = std::max(1, (sy1 - sy0) / 8);
+                        float ar = 0, ag = 0, ab = 0, aa = 0; int taps = 0;
+                        for (int32_t sy = sy0; sy < sy1; sy += stepy)
+                            for (int32_t sx = sx0; sx < sx1; sx += stepx)
+                            {
+                                const uint8_t* sp = f.rgba.data() + (static_cast<size_t>(sy) * lw + sx) * 4;
+                                const float a = sp[3] / 255.0f;
+                                ar += (sp[0] / 255.0f) * a; ag += (sp[1] / 255.0f) * a; ab += (sp[2] / 255.0f) * a; aa += a; ++taps;
+                            }
+                        if (taps > 0 && aa > 0.0f)
+                        {
+                            const float cover = aa / taps;
+                            r = r * (1.0f - cover) + (ar / aa) * cover;
+                            g = g * (1.0f - cover) + (ag / aa) * cover;
+                            b = b * (1.0f - cover) + (ab / aa) * cover;
+                        }
+                    }
+                }
+                uint8_t* dp = out + (static_cast<size_t>(y) * tw + x) * 4;
+                dp[0] = paint_to_byte(r); dp[1] = paint_to_byte(g); dp[2] = paint_to_byte(b); dp[3] = 255;
+            }
+        etcs_mark_observed(dst);
+    }
+
+    /*
+ * The four bars around the region, in the SHEET's space: the view's origin
+ * plus the region projected through pan and zoom, clipped to the view so a
+ * region panned half off the page does not draw its edge over the ruler.
+ * On the sheet and not in the view pane, because the view pane is the
+ * surface's raster -- retained and cleared by Render -- and a child of a pane
+ * that somebody else clears is drawn only when the tree changes, which is why
+ * every pane the surface writes has no children (paint_layers.etcs says the
+ * same of the thumbs). Skipped when nothing moved since the last placement
+ * unless forced: each bar is three verbs across a module boundary.
+ */
+    void place_outline(bool force)
+    {
+        if (m_outline.size() < 4 || !m_surface) return;
+        if (!m_has_region) { for (ETCS::RID n : m_outline) paint_node_hidden(n, true); return; }
+        Rect2D pane{ 0, 0, 0, 0 };
+        {
+            ETCS::Held<Drawable2D_> v = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_surface->target());
+            if (!v) return;
+            pane = v->Bounds();
+        }
+        const int32_t pw = static_cast<int32_t>(pane.w), ph = static_cast<int32_t>(pane.h);
+        const int32_t vx0 = std::clamp(m_surface->DocToViewX(m_x), 0, pw);
+        const int32_t vy0 = std::clamp(m_surface->DocToViewY(m_y), 0, ph);
+        const int32_t vx1 = std::clamp(m_surface->DocToViewX(m_x + static_cast<int32_t>(m_w)), 0, pw);
+        const int32_t vy1 = std::clamp(m_surface->DocToViewY(m_y + static_cast<int32_t>(m_h)), 0, ph);
+        if (!force && vx0 == m_ox0 && vy0 == m_oy0 && vx1 == m_ox1 && vy1 == m_oy1
+            && pane.x == m_opx && pane.y == m_opy) return;
+        m_ox0 = vx0; m_oy0 = vy0; m_ox1 = vx1; m_oy1 = vy1; m_opx = pane.x; m_opy = pane.y;
+        const int32_t t = 2;
+        const bool visible = (vx1 - vx0) >= t && (vy1 - vy0) >= t;
+        const uint32_t w = static_cast<uint32_t>(std::max(t, vx1 - vx0)), h = static_cast<uint32_t>(std::max(t, vy1 - vy0));
+        auto bar = [&](ETCS::RID n, int32_t x, int32_t y, uint32_t bw, uint32_t bh)
+        {
+            paint_node_hidden(n, !visible);
+            paint_node_verb(n, "ResizeTo", std::to_string(bw) + ", " + std::to_string(bh));
+            paint_node_verb(n, "MoveTo", std::to_string(pane.x + x) + ", " + std::to_string(pane.y + y));
+        };
+        bar(m_outline[0], vx0, vy0, w, t);
+        bar(m_outline[1], vx0, vy1 - t, w, t);
+        bar(m_outline[2], vx0, vy0, t, h);
+        bar(m_outline[3], vx1 - t, vy0, t, h);
+    }
+
+    PaintDocument* m_document = nullptr;
+    PaintSurface*  m_surface  = nullptr;
+    ETCS::RID m_window = 0, m_preview = 0, m_readout = 0;
+    std::vector<ETCS::RID> m_outline;
+    int32_t m_ox0 = INT32_MIN, m_oy0 = 0, m_ox1 = 0, m_oy1 = 0, m_opx = 0, m_opy = 0;
+
+    bool     m_has_region = false;
+    int32_t  m_x = 0, m_y = 0;
+    uint32_t m_w = 0, m_h = 0;
+
+    std::vector<PaintImage> m_frames;
+    size_t   m_at = 0;
+    int32_t  m_fps = 12;
+    bool     m_playing = false;
+    double   m_clock = 0.0;
+
+    std::vector<Row> m_rows;
+    std::unordered_map<ETCS::RID, Hit> m_regions;
+    int32_t  m_scroll = 0;
+    float m_row_sel[3]  = { 0.35f, 0.55f, 0.95f };
+    float m_row_idle[3] = { 0.15f, 0.16f, 0.11f };
+};
+
+/*
  * ── PaintPalette ─────────────────────────────────────────────────────────
  *
  * A TOOLBAR THAT OWNS NO PIXELS.
@@ -10360,6 +11132,9 @@ public:
         refresh_pages();
     }
 
+    // The reel a multi-frame GIF goes to on arrival (OfferImport).
+    void BindAnimation(ETCS::RID anim) { m_anim = anim; }
+
     // The list on this pane, told to re-read the store after this type
     // changed it (a new page, a save). By verb, for the ordering reason above.
     void BindPagePanel(ETCS::RID panel) { m_page_panel = panel; }
@@ -10395,6 +11170,20 @@ public:
 
     void OfferImport(const std::string& path)
     {
+        /*
+     * A GIF WITH MORE THAN ONE FRAME IS A REEL, not a picture, and it goes to
+     * the animation without asking: the one thing the file can be for is the
+     * one thing it is. A still GIF is a picture and takes the ordinary
+     * question below. Decided here rather than by the page, because "a file
+     * came in" is the same event on every substrate and this is where the
+     * canvas decides what a file is for.
+     */
+        if (m_anim != 0 && paint_gif_frames_in(path) > 1)
+        {
+            if (ETCS::Entity* a = paint_resolve_tag("PaintAnimation", m_anim))
+                static_cast<PaintAnimation*>(a->getTrueType())->ImportGif(path);
+            return;
+        }
         m_pending = path;
         if (m_prompt_palette == 0 || m_prompt_pane == 0 || m_prompt_input == 0)
         {
@@ -10570,6 +11359,7 @@ private:
     PaintTool*  m_tool = nullptr;
     PaintPages* m_pages = nullptr;
     ETCS::RID   m_page_panel = 0;        // the list on this pane -- see BindPagePanel
+    ETCS::RID   m_anim = 0;              // where a multi-frame GIF goes -- see OfferImport
     std::string m_pending;
 };
 
@@ -10673,6 +11463,15 @@ public:
         m_panel = static_cast<PaintLayerPanel*>(raw->getTrueType());
     }
 
+    // The animation: the tool's drag hands it the region, its window's rows
+    // are its, and the outline follows the view (PaintAnimation).
+    void BindAnimation(ETCS::RID anim)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintAnimation", anim);
+        if (!raw) return;
+        m_anim = static_cast<PaintAnimation*>(raw->getTrueType());
+    }
+
     // The page list, for the pane it lives on (the gear menu's): a press on
     // one of its parts is its, the wheel over it scrolls it, and the keys go
     // to it while a name is open. Same seams as the layer panel's.
@@ -10743,7 +11542,7 @@ public:
             // else on the pane it is the zoom (HandleEvent). The position is
             // the last one routed, translated into the pane's space the same
             // way a picked event's is below.
-            if ((m_panel || m_page_panel) && m_root != 0)
+            if ((m_panel || m_page_panel || m_anim) && m_root != 0)
             {
                 const Point2D pane_at = paint_root_origin(m_root);
                 const Point2D at{ RoutedCursorX() - pane_at.x, RoutedCursorY() - pane_at.y };
@@ -10755,6 +11554,11 @@ public:
                 if (m_page_panel && m_page_panel->Contains(at))
                 {
                     m_page_panel->Scroll(ev.y > 0 ? -1 : +1);
+                    return;
+                }
+                if (m_anim && m_anim->Contains(at))
+                {
+                    m_anim->Scroll(ev.y > 0 ? -1 : +1);
                     return;
                 }
             }
@@ -10848,6 +11652,8 @@ public:
         // the menu's buttons and a press on one is the list's, the release
         // swallowed with it so the sheet under the menu never sees half a click.
         if ((is_press || is_release) && m_page_panel && m_page_panel->Apply(hit_rid, is_press))
+            return;
+        if ((is_press || is_release) && m_anim && m_anim->Apply(hit_rid, is_press))
             return;
 
         if (m_palette && ev.action == INPUT_MOTION)
@@ -11465,6 +12271,9 @@ public:
                 else if (m_tool->active() && k == PaintToolKind::Select)
                     end_selection(m_tool->anchorX(), m_tool->anchorY(),
                                   m_cursor_x, m_cursor_y);
+                else if (m_tool->active() && k == PaintToolKind::Animate && m_anim)
+                    m_anim->SetRegion(m_tool->anchorX(), m_tool->anchorY(),
+                                      m_cursor_x, m_cursor_y);
                 m_tool->EndStroke();
                 /*
                  * THE PREVIEW LIVES ON THE VIEW, so whatever the drag drew
@@ -11933,6 +12742,17 @@ private:
             preview_line(view, vbx, vby, vax, vby, c, w);
             preview_line(view, vax, vby, vax, vay, c, w);
             break;
+        case PaintToolKind::Animate:
+        {
+            // The frame being chosen, in the page's highlight rather than the
+            // brush's colour: this drag marks nothing.
+            const PaintColor hi{ 0.35f, 0.55f, 0.95f, 1.0f };
+            preview_line(view, vax, vay, vbx, vay, hi, 2);
+            preview_line(view, vbx, vay, vbx, vby, hi, 2);
+            preview_line(view, vbx, vby, vax, vby, hi, 2);
+            preview_line(view, vax, vby, vax, vay, hi, 2);
+            break;
+        }
         default: break;
         }
         paint_mark_pixel_path(target);
@@ -12231,6 +13051,7 @@ private:
     void repaint_view()
     {
         if (m_surface) m_surface->Render();
+        if (m_anim) m_anim->FollowView();
     }
 
     // A preview segment, as a run of small rects rather than brush dabs -- the
@@ -12342,6 +13163,7 @@ private:
     bool    m_cursor_seen = false;
     PaintLayerPanel* m_panel = nullptr;
     PaintPagePanel*  m_page_panel = nullptr;   // see BindPagePanel
+    PaintAnimation*  m_anim = nullptr;         // see BindAnimation
     uint64_t         m_panel_rev = 0;      // the document revision the panel last showed
     // Whether the document is currently showing its text-box outlines, so the
     // reconcile above is a comparison rather than a call per event.
@@ -14562,6 +15384,131 @@ DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindDocument, (ETCS::RID, document))
     self.BindDocument(document);
 }
 
+// ── PaintAnimation ─────────────────────────────────────────────────────────
+//
+// A region of the page and a reel of frames its size; see PaintAnimation. The
+// window's buttons are palette calls to these verbs (paint_anim.etcs).
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, Create, (ETCS::RID, document))
+{
+    (void)ctx;
+    self.Create(document);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindSurface, (ETCS::RID, surface))
+{
+    (void)ctx;
+    self.BindSurface(surface);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindWindow, (ETCS::RID, pane))
+{
+    (void)ctx;
+    self.BindWindow(pane);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindPreview, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindPreview(node);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindReadout, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindReadout(node);
+}
+
+// BindOutline <node> -- four times, top, bottom, left, right: the bars that
+// mark the region on the view.
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindOutline, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindOutline(node);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, SetRowColors,
+    (float, sr), (float, sg), (float, sb), (float, ur), (float, ug), (float, ub))
+{
+    (void)ctx;
+    self.SetRowColors(sr, sg, sb, ur, ug, ub);
+}
+
+DEFINE_WORK_FUNC(PaintAnimation, BeginRow)
+{
+    (void)ctx; (void)data;
+    self.BeginRow();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, RowNode, (std::string, what), (ETCS::RID, node))
+{
+    (void)ctx;
+    self.RowNode(what, node);
+}
+
+// SetRegion x0 y0 x1 y1 -- the frame, in document pixels; what the tool's
+// drag calls, and a script's way of saying the same.
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, SetRegion, (int32_t, x0), (int32_t, y0), (int32_t, x1), (int32_t, y1))
+{
+    (void)ctx;
+    self.SetRegion(x0, y0, x1, y1);
+}
+
+DEFINE_WORK_FUNC(PaintAnimation, Snap)   { (void)ctx; (void)data; self.Snap(); }
+DEFINE_WORK_FUNC(PaintAnimation, Put)    { (void)ctx; (void)data; self.Put(); }
+DEFINE_WORK_FUNC(PaintAnimation, Next)   { (void)ctx; (void)data; self.Next(); }
+DEFINE_WORK_FUNC(PaintAnimation, Prev)   { (void)ctx; (void)data; self.Prev(); }
+DEFINE_WORK_FUNC(PaintAnimation, Play)   { (void)ctx; (void)data; self.Play(); }
+DEFINE_WORK_FUNC(PaintAnimation, Pause)  { (void)ctx; (void)data; self.Pause(); }
+DEFINE_WORK_FUNC(PaintAnimation, Toggle) { (void)ctx; (void)data; self.Toggle(); }
+DEFINE_WORK_FUNC(PaintAnimation, Refresh){ (void)ctx; (void)data; self.Refresh(); }
+DEFINE_WORK_FUNC(PaintAnimation, Download){ (void)ctx; (void)data; self.Download(); }
+DEFINE_WORK_FUNC(PaintAnimation, Report) { (void)ctx; (void)data; self.Report(); }
+DEFINE_WORK_FUNC(PaintAnimation, Delete) { (void)ctx; (void)data; self.DeleteConcrete(); }
+
+// Remove <index> / Select <index> -- one-based, as the rows show them.
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, Remove, (int32_t, index))
+{
+    (void)ctx;
+    if (index >= 1) self.Remove(static_cast<size_t>(index - 1));
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, Select, (int32_t, index))
+{
+    (void)ctx;
+    if (index >= 1) self.Select(static_cast<size_t>(index - 1));
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, SetFps, (int32_t, fps))
+{
+    (void)ctx;
+    self.SetFps(fps);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, StepFps, (int32_t, by))
+{
+    (void)ctx;
+    self.StepFps(by);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, Scroll, (int32_t, delta))
+{
+    (void)ctx;
+    self.Scroll(delta);
+}
+
+// ImportGif <path> / ExportGif <path> -- the reel in and out as a GIF.
+DEFINE_WORK_FUNC(PaintAnimation, ImportGif)
+{
+    (void)ctx;
+    self.ImportGif(data.restAsString());
+}
+
+DEFINE_WORK_FUNC(PaintAnimation, ExportGif)
+{
+    (void)ctx;
+    self.ExportGif(data.restAsString());
+}
+
 // ── PaintPagePanel ─────────────────────────────────────────────────────────
 //
 // The store as a list: rows assembled by paint_page_row.etcs, a press on a
@@ -15033,6 +15980,13 @@ DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindPages, (ETCS::RID, pages))
     self.BindPages(pages);
 }
 
+// BindAnimation <anim> -- where a multi-frame GIF goes on upload.
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindAnimation, (ETCS::RID, anim))
+{
+    (void)ctx;
+    self.BindAnimation(anim);
+}
+
 // BindPagePanel <panel> -- the PaintPagePanel on this pane, re-read after a
 // new page or a save.
 DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindPagePanel, (ETCS::RID, panel))
@@ -15265,6 +16219,13 @@ DEFINE_WORK_FUNC_TYPED(PaintInput, SetHoldCapacity, (int32_t, n))
 {
     (void)ctx;
     self.SetHoldCapacity(static_cast<uint16_t>(n < 1 ? 1 : n));
+}
+
+// BindAnimation <anim> -- the reel the animation tool's drag frames (PaintInput::BindAnimation).
+DEFINE_WORK_FUNC_TYPED(PaintInput, BindAnimation, (ETCS::RID, anim))
+{
+    (void)ctx;
+    self.BindAnimation(anim);
 }
 
 // BindPagePanel <panel> -- the page list on this pane (PaintInput::BindPagePanel).

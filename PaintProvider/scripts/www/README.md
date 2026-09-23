@@ -232,8 +232,8 @@ exported verb, a page load, an import.
 
 The `move` slice is the first tool, between the last swatch and `brush` -- the
 one tool that does not mark comes before the ones that do. The `select` slice
-sits between `brush` and `line` in the bar, which is now
-sixteen 60px slices (960x64, 32px in from either edge of the 1024 sheet; rect and
+sits between `brush` and `anim` in the bar, which is now
+seventeen slices (960x64, 32px in from either edge of the 1024 sheet; rect and
 oval share one `shape` slice whose arrow steps rect, oval, triangle, diamond, star,
 with the current outline's name under the word in gold, as `select`'s mode is
 under its word; the two steppers at the end carry `size` and `opacity` captions
@@ -438,6 +438,45 @@ By verb:
 
     layers.SelectRow(1)   layers.ToggleRow(0)   layers.RemoveRow(0)   layers.MoveRow(0, 1)
     doc.NewLayer()        layers.CommitRename(backdrop)               layers.Report()
+
+## Animation: frames cut from the page and put back
+
+The `anim` tool (beside `select`) drags a region on the page. That region is
+the frame: the animation window comes up under the layer window, the region is
+outlined on the sheet in the page's highlight, and from then on the page is the
+drawing board and the window is the reel (`PaintAnimation`,
+`PaintProvider/scripts/paint_anim.etcs`, rows from `paint_anim_row.etcs`).
+
+    snap    a frame from what is visible in the region now, after the current
+            one -- draw, snap, draw, snap builds the reel in order
+    put     the current frame back onto the active layer, in the region, as one
+            undo step (PaintDocument::PastePixels)
+    < >     step the current frame; a press on a row does the same
+    play    run the reel at the rate; the same button pauses. The window claims
+            Animated (ontology/Animated.h) and honours dt, unlike the throbber,
+            because "12 a second" is a duration and must mean the same on every
+            display
+    - +     the rate, 1..60 frames a second
+    x       remove that frame
+    gif     the reel as a GIF, to the page's download (`anim.gif`)
+
+The window onto the reel is four rows; the wheel over it scrolls, and playing
+keeps the current frame in view. Resizing the region drops the frames (a frame
+is the region's size by definition); moving it keeps them. The outline is four
+bars on the sheet placed through the surface's projection, re-placed as the
+view pans or zooms -- on the sheet and not in the view pane, because the view
+pane is the surface's raster and a child of a pane somebody else clears is
+drawn only when the tree changes.
+
+**GIF both ways.** An uploaded GIF with more than one frame goes straight to the
+reel rather than to the layer-or-canvas question (`PaintCanvasMenu::OfferImport`
+decides, since "a file came in" is the same event on every substrate): the
+region takes the file's size at its own corner, the frames replace the reel,
+and the file's delay sets the rate. A still GIF is a picture and takes the
+question. Out is the encoder in `PaintProvider.h` (`paint_gif`), since stb has
+none: one global 256-colour table by median cut over every frame, plain LZW,
+every frame whole, looping. Not small, and every viewer plays it -- verified by
+exporting a reel and reading it back through the same upload.
 
 ## Pages: `new` keeps the one you were on
 

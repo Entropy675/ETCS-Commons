@@ -33,7 +33,10 @@ web.AddHeader(Access-Control-Allow-Origin *)
 # anything but a form content type. The page sends text/plain deliberately to
 # stay a simple request; these two lines are what keep that true if it ever
 # stops being.
-web.AddHeader(Access-Control-Allow-Methods GET, POST, OPTIONS)
+# QUOTED, because a comma is a delimiter to the argument reader (core/Buffer.h,
+# operator>>): unquoted, the value stopped at the first one and the header went
+# out as "GET". A quoted span is one value, commas and all.
+web.AddHeader(Access-Control-Allow-Methods "GET, POST, OPTIONS")
 web.AddHeader(Access-Control-Allow-Headers Content-Type)
 
 web.Start()

@@ -213,7 +213,7 @@
            and README.md). -->
       <span class="files">
         <label class="btn" for="upload" title="PNG, JPEG, BMP, GIF, TGA, PAM or PPM -- a new layer or a new canvas">upload</label>
-        <input id="upload" type="file" accept=".png,.jpg,.jpeg,.bmp,.gif,.tga,.pam,.ppm,image/png,image/jpeg"/>
+        <input id="upload" type="file" accept=".png,.jpg,.jpeg,.bmp,.gif,.tga,.pam,.ppm,image/png,image/jpeg,image/gif"/>
         <button id="download" class="btn" type="button" title="the visible layers, composited, as PNG">download</button>
         <!-- SHARE, AND THEN THE LINK ITSELF. One control with two states: press
              it to open a session, after which it IS the link and pressing it
@@ -1128,10 +1128,33 @@
    * does nothing, that is why; the header's upload button is the same upload
    * from a real click and always works.
    */
+  // The reel as a GIF: the animation window's button raises this
+  // (PaintAnimation::Download), the encoder writes the file here, and the
+  // page hands it over the same way the PNG goes.
+  function downloadGif() {
+    if (!runtimeUp()) { log('[etcs] gif: runtime is not up yet\n', 'err'); return; }
+    try {
+      const fs = etcsFS();
+      const path = '/exports/anim.gif';
+      try { fs.mkdirTree('/exports'); } catch (e) {}
+      try { fs.unlink(path); } catch (e) {}
+      callVerb('anim', 'ExportGif', path);
+      const bytes = fs.readFile(path);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/gif' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'anim.gif';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (e) {
+      log('[etcs] gif download failed: ' + e + '\n', 'err');
+    }
+  }
+
   window.addEventListener('etcs-menu', function (ev) {
     const what = ev && ev.detail;
     if (what === 'save') { downloadComposite(); return; }
     if (what === 'load') { uploadEl.click(); return; }
+    if (what === 'gif')  { downloadGif(); return; }
     log('[etcs] menu: unknown request "' + what + '"\n', 'err');
   });
 
