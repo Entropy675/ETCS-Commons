@@ -2955,6 +2955,14 @@ enum class PaintOpKind : uint8_t
      * structural entry costs nothing next to the snapshots around it.
      */
     Layers,
+    /*
+     * THE WHOLE PAGE, stated rather than changed: its extent and its stack. It
+     * begins a baseline (PaintDocument::ExportBaseline) -- one of these, then a
+     * keyframe per layer -- and a document that takes one in BECOMES that page
+     * (AcceptOp): same size, same layers, nothing else. Never kept in a
+     * notebook; it is what a notebook starts from.
+     */
+    Page,
 };
 
 static inline const char* paint_op_name(PaintOpKind k)
@@ -2969,6 +2977,7 @@ static inline const char* paint_op_name(PaintOpKind k)
     case PaintOpKind::Poly:     return "poly";
     case PaintOpKind::Fill:     return "fill";
     case PaintOpKind::Layers:   return "layers";
+    case PaintOpKind::Page:     return "page";
     }
     return "snap";
 }
@@ -2982,6 +2991,7 @@ static inline PaintOpKind paint_op_from(const std::string& s)
     if (s == "poly")    return PaintOpKind::Poly;
     if (s == "fill")    return PaintOpKind::Fill;
     if (s == "layers")  return PaintOpKind::Layers;
+    if (s == "page")    return PaintOpKind::Page;
     return PaintOpKind::Snapshot;
 }
 
@@ -3425,8 +3435,10 @@ static inline std::string paint_op_encode(const PaintOp& op)
     out += ' ';
     out += std::to_string(op.order);
 
-    if (op.kind == PaintOpKind::Layers)
+    if (op.kind == PaintOpKind::Layers || op.kind == PaintOpKind::Page)
     {
+        if (op.kind == PaintOpKind::Page)
+            out += ' ' + std::to_string(op.w) + ' ' + std::to_string(op.h);
         out += ' ';
         out += std::to_string(op.roster.size());
         for (const PaintOp::Face& f : op.roster)
@@ -3492,8 +3504,9 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
     out.kind   = paint_op_from(kind);
     out.author = (author == "-") ? std::string() : author;
 
-    if (out.kind == PaintOpKind::Layers)
+    if (out.kind == PaintOpKind::Layers || out.kind == PaintOpKind::Page)
     {
+        if (out.kind == PaintOpKind::Page && !(in >> out.w >> out.h)) return false;
         size_t n = 0;
         if (!(in >> n)) return false;
         for (size_t i = 0; i < n; ++i)
@@ -3621,6 +3634,7 @@ public:
  */
     void MoveLayerTo(ETCS::RID layer_rid, int32_t depth)
     {
+        if (refuse_read_only("restack")) return;
         Touch();
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
@@ -3670,6 +3684,7 @@ public:
  */
     bool MergeLayer(ETCS::RID layer_rid, int direction)
     {
+        if (refuse_read_only("merge")) return false;
         std::vector<PaintLayer*> stack;
         OrderedLayers(stack);
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
@@ -3771,6 +3786,7 @@ public:
 
     void RenameLayer(ETCS::RID layer_rid, const std::string& name)
     {
+        if (refuse_read_only("rename")) return;
         Touch();
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
@@ -3795,6 +3811,7 @@ public:
  */
     void RemoveLayer(ETCS::RID layer_rid)
     {
+        if (refuse_read_only("remove a layer")) return;
         // The public verb is the recorded one. MergeLayer uses the quiet form
         // below, because it has already recorded the structure for the pair it
         // is collapsing and a second pass would write the same keyframes twice.
@@ -3941,6 +3958,7 @@ public:
 
     void ClearLayer(ETCS::RID layer_rid, float r, float g, float b, float a)
     {
+        if (refuse_read_only("clear a layer")) return;
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
         auto* layer = static_cast<PaintLayer*>(raw->getTrueType());
@@ -4219,6 +4237,7 @@ public:
     // "put" is this.
     bool PastePixels(const uint8_t* rgba, uint32_t w, uint32_t h, int32_t x, int32_t y)
     {
+        if (refuse_read_only("paste")) return false;
         if (!m_active_layer || !rgba || w == 0 || h == 0) return false;
         appendSnapshot(m_active_layer);
         m_active_layer->DropPixels(rgba, w, h, x, y);
@@ -4303,6 +4322,7 @@ public:
 
     bool PasteSelection()
     {
+        if (refuse_read_only("paste")) return false;
         if (m_clip.lift.empty() || !m_active_layer) return false;
         Remember();
         if (m_sel.lifted()) DropSelection();      // a carry in flight lands first
@@ -4332,6 +4352,7 @@ public:
     // can be filled or pasted into next. Cut without the copy.
     bool DeleteSelection()
     {
+        if (refuse_read_only("delete")) return false;
         if (m_sel.empty() || !m_active_layer) return false;
         Remember();
         if (m_sel.lifted()) { m_sel.lift.clear(); m_sel.dx = m_sel.dy = 0; return true; }
@@ -4343,6 +4364,7 @@ public:
     // Copy, then take the pixels: the lift clears them and the buffer is let go.
     bool CutSelection()
     {
+        if (refuse_read_only("cut")) return false;
         if (!CopySelection()) return false;
         Remember();
         if (!LiftSelection()) return false;
@@ -4488,34 +4510,22 @@ public:
         if (!on_path)
         {
             ETCS_LOG("PaintDocument", "ExportOps: " << since << " is not on this path "
-                     "any more -- re-baselining with a keyframe per layer.");
-            std::vector<ETCS::RID> done;
-            for (const PaintOp* op : chain)
-            {
-                bool seen = false;
-                for (ETCS::RID r : done) if (r == op->layer) { seen = true; break; }
-                if (seen) continue;
-                done.push_back(op->layer);
-                PaintLayer* l = layerByRID(op->layer);
-                if (!l) continue;
-                PaintOp snap;
-                snap.kind   = PaintOpKind::Snapshot;
-                snap.layer  = op->layer;
-                snap.order  = l->order();
-                snap.author = m_author;
-                snap.w      = l->PixelWidth();
-                snap.h      = l->PixelHeight();
-                if (!l->SnapshotBytes(snap.bytes)) continue;
-                snap.seq = 0;                 // the node numbers it
-                o << paint_op_encode(snap) << "\n";
-                ++n;
-            }
+                     "any more -- re-baselining the room with this whole page.");
+            n = write_baseline(o);
         }
         else
         {
             for (const PaintOp* op : chain)
             {
                 if (op->seq <= since) continue;
+                /*
+             * ONLY WHAT THIS PAGE MADE. Entries that arrived from the session
+             * are on this path too -- AcceptOp keeps them, so undo and a late
+             * keyframe have the whole picture -- but they are the room's
+             * already, and sending them back is how a joiner promoted to
+             * writer used to push the host's own history at the host.
+             */
+                if (!m_author.empty() && op->author != m_author) continue;
                 o << paint_op_encode(*op) << "\n";
                 ++n;
             }
@@ -4523,6 +4533,30 @@ public:
         if (!o) { ETCS_LOG("PaintDocument", "ExportOps: write to '" << path << "' failed."); return 0; }
         ETCS_LOG("PaintDocument", "ExportOps: " << n << " entr(ies) after " << since
                  << " along a " << chain.size() << "-entry path -> '" << path << "'.");
+        return n;
+    }
+
+    /*
+ * THE WHOLE PAGE, FOR A ROOM THAT HAS NOTHING OF IT YET: a Page entry (extent
+ * and stack) and a keyframe of every layer, bottom to top. What a session
+ * opens with, and what a divergence re-sends (ExportOps).
+ *
+ * Every layer, not every layer the notebook touched: a page loaded from the
+ * store or opened from a file has pixels no entry describes, and a history
+ * pushed from zero sent none of them -- the joiner got the strokes and not the
+ * picture under them.
+ *
+ * Each line carries the cursor as its sequence, so the page that pushed it
+ * reads back where the next ExportOps should start from.
+ */
+    size_t ExportBaseline(const std::string& path) const
+    {
+        std::ofstream o(path, std::ios::binary | std::ios::trunc);
+        if (!o) { ETCS_LOG("PaintDocument", "ExportBaseline: cannot open '" << path << "'."); return 0; }
+        const size_t n = write_baseline(o);
+        if (!o) { ETCS_LOG("PaintDocument", "ExportBaseline: write to '" << path << "' failed."); return 0; }
+        ETCS_LOG("PaintDocument", "ExportBaseline: " << m_width << "x" << m_height << ", "
+                 << (n ? n - 1 : 0) << " layer keyframe(s) at " << m_cursor << " -> '" << path << "'.");
         return n;
     }
 
@@ -4590,6 +4624,7 @@ public:
  */
     bool Undo()
     {
+        if (refuse_read_only("undo")) return false;
         sealOpenOp();
         // NOT "0 means the head". Every append sets the cursor, so zero is
         // genuinely "before anything" -- and reading it as the head would make
@@ -4612,6 +4647,7 @@ public:
 
     bool Redo()
     {
+        if (refuse_read_only("redo")) return false;
         sealOpenOp();
         // Down the most-recent child each time, until something that marked
         // lands under us. A run of keyframes has one child each, so this is
@@ -4736,6 +4772,9 @@ public:
             return true;
         }
 
+        case PaintOpKind::Page:
+            return true;                 // AcceptOp's, never a replay's
+
         case PaintOpKind::Layers:
             // The roster half is applied by reconcileLayers, before any raster.
             // What is left here is the raster half, which only a merge has.
@@ -4766,11 +4805,46 @@ public:
     // history, so a viewer and a reload are the same code path.
     bool AcceptOp(PaintOp op)
     {
+        /*
+     * A PAGE ENTRY REPLACES THE DOCUMENT rather than adding to it: the size,
+     * the stack and nothing on it, history and text boxes gone. The keyframes
+     * that follow it in the same baseline fill the layers. Not appended -- it
+     * is where this notebook now starts.
+     */
+        if (op.kind == PaintOpKind::Page)
+        {
+            become_page(op);
+            return true;
+        }
+        // A change to the STACK made elsewhere has to change this stack too;
+        // the raster half of the entry (a merge's) lands on the result.
+        if (op.structural()) reconcileLayers(&op);
         const bool ok = ApplyOp(op);
         m_cursor = m_book.AppendAt(std::move(op), m_cursor);
         Touch();
         return ok;
     }
+
+    /*
+ * ── VIEW ONLY ────────────────────────────────────────────────────────────
+ *
+ * A reader in a shared session sees the host's page and must not change it:
+ * the room would never hear of the change, and from then on this picture and
+ * everybody else's differ in a way nothing puts right. A lowercase state flag
+ * on the document, raised by the page while its role is reader, and every
+ * verb that edits refuses while it is up (refuse_read_only). What ARRIVES is
+ * not an edit made here -- AcceptOp works below these verbs -- so the room's
+ * changes still land.
+ */
+    void SetReadOnly(bool on)
+    {
+        if (on) this->addTag("readonly");
+        else    this->removeTag(ETCS::Buffer("readonly"));
+        const char* said = on ? "view only -- this page follows the session and takes no edits."
+                              : "editable.";
+        ETCS_LOG("PaintDocument", said);
+    }
+    bool readOnly() const { return const_cast<PaintDocument*>(this)->hasTag(ETCS::Buffer("readonly")); }
 
     // Where this document stands in the record, which on a viewer is where it
     // stands in the NODE's record -- the `since` of its next read.
@@ -4832,6 +4906,7 @@ public:
  */
     bool ImportImage(const std::string& path)
     {
+        if (refuse_read_only("import")) return false;
         PaintImage img;
         std::string why;
         if (!paint_image_read(path, img, why))
@@ -4853,6 +4928,7 @@ public:
  */
     bool ImportCanvas(const std::string& path)
     {
+        if (refuse_read_only("open as canvas")) return false;
         PaintImage img;
         std::string why;
         if (!paint_image_read(path, img, why))
@@ -5088,6 +5164,7 @@ public:
  */
     bool Resize(uint32_t w, uint32_t h, int anchor)
     {
+        if (refuse_read_only("resize")) return false;
         Touch();
         if (!extent_ok(w, h, "resize")) return false;
         if (m_sel.lifted()) DropSelection();
@@ -5134,6 +5211,14 @@ public:
  * stays. Not undoable, for the reason Resize gives.
  */
     bool New(uint32_t w, uint32_t h)
+    {
+        if (refuse_read_only("new")) return false;
+        return renew(w, h);
+    }
+
+    // New without the view-only guard: what a session's Page entry does to a
+    // follower (become_page), which is the room's change and not an edit here.
+    bool renew(uint32_t w, uint32_t h)
     {
         Touch();
         if (!extent_ok(w, h, "new")) return false;
@@ -5228,6 +5313,7 @@ public:
  */
     ETCS::RID NewLayer()
     {
+        if (refuse_read_only("add a layer")) return 0;
         recordStructure("new layer");
         PaintLayer* layer = this->addTag<PaintLayer>();
         if (!layer)
@@ -5652,6 +5738,57 @@ private:
     }
 
     // And the roster AFTER it, which is the entry undo actually walks over.
+    // True, and said once, when this document is view only (SetReadOnly).
+    bool refuse_read_only(const char* what) const
+    {
+        if (!readOnly()) return false;
+        ETCS_LOG("PaintDocument", what << ": view only -- the host has not given this page drawing.");
+        return true;
+    }
+
+    // The Page entry and the keyframes after it -- see ExportBaseline.
+    size_t write_baseline(std::ostream& o) const
+    {
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        PaintOp page;
+        page.kind   = PaintOpKind::Page;
+        page.seq    = m_cursor;
+        page.author = m_author;
+        page.w = m_width; page.h = m_height;
+        for (PaintLayer* l : stack)
+            page.roster.push_back(PaintOp::Face{ l->order(), l->opacity(), l->visible(), l->name() });
+        o << paint_op_encode(page) << "\n";
+        size_t n = 1;
+        for (PaintLayer* l : stack)
+        {
+            PaintOp snap;
+            snap.kind   = PaintOpKind::Snapshot;
+            snap.seq    = m_cursor;
+            snap.layer  = l->getRID();
+            snap.order  = l->order();
+            snap.author = m_author;
+            snap.w      = l->PixelWidth();
+            snap.h      = l->PixelHeight();
+            if (!l->SnapshotBytes(snap.bytes)) continue;
+            o << paint_op_encode(snap) << "\n";
+            ++n;
+        }
+        return n;
+    }
+
+    // Be the page a Page entry describes -- see AcceptOp.
+    void become_page(const PaintOp& page)
+    {
+        if (m_sel.lifted()) DropSelection();
+        renew(page.w, page.h);            // clears layers, text and history
+        reconcileLayers(&page);
+        for (PaintLayer* l : layers())
+            if (l->PixelWidth() != page.w || l->PixelHeight() != page.h) l->Allocate(page.w, page.h);
+        ETCS_LOG("PaintDocument", "following the session's page: " << page.w << "x" << page.h
+                 << ", " << page.roster.size() << " layer(s).");
+    }
+
     /*
      * `carries` is a layer whose RASTER changed as part of this structural act,
      * and a merge is the reason it exists. The merge's pixel effect has to live
@@ -6988,6 +7125,11 @@ public:
      */
     bool Load(int64_t id)
     {
+        if (m_document && m_document->readOnly())
+        {
+            ETCS_LOG("PaintPages", "view only -- this page follows a shared session; leave it to switch pages.");
+            return false;
+        }
         if (!m_document) return false;
         Waiting wait(*this);
         struct Row { int64_t ord; std::string name; bool visible; float opacity; bool active; std::vector<uint8_t> pam; };
@@ -7141,6 +7283,11 @@ public:
  */
     bool NewAt(uint32_t want_w, uint32_t want_h)
     {
+        if (m_document && m_document->readOnly())
+        {
+            ETCS_LOG("PaintPages", "view only -- this page follows a shared session; leave it to switch pages.");
+            return false;
+        }
         if (!m_document) return false;
         Waiting wait(*this);
         flush();
@@ -7226,6 +7373,23 @@ public:
         }
         ETCS_LOG("PaintPages", n << " page(s)"
                  << (m_current == 0 ? "; the present is not in a slot yet" : ""));
+    }
+
+    /*
+ * THE PRESENT PUT AWAY AND LET GO OF: saved to its slot if it changed, and
+ * then in no slot at all, so whatever replaces it on screen is a new page
+ * rather than an overwrite of this one. What joining a shared canvas does
+ * first -- the joiner's page is kept, and the session's page arrives into a
+ * document that no longer answers to that slot.
+ */
+    bool Stash()
+    {
+        if (!m_document) return false;
+        if (dirty() && !Save()) return false;
+        if (m_current != 0)
+            ETCS_LOG("PaintPages", "page " << m_current << " put away; the present is in no slot now.");
+        m_current = 0;
+        return true;
     }
 
     // The slot goes; the picture on screen does not. Deleting the current page
@@ -7390,6 +7554,11 @@ private:
  */
     bool step(int dir)
     {
+        if (m_document && m_document->readOnly())
+        {
+            ETCS_LOG("PaintPages", "view only -- this page follows a shared session; leave it to switch pages.");
+            return false;
+        }
         if (!m_document) return false;
         Waiting wait(*this);
         flush();
@@ -12229,6 +12398,17 @@ public:
         else if (ev.action == INPUT_DOWN || ev.action == INPUT_BUTTON_DOWN)
         {
             /*
+         * NOTHING STARTS ON A VIEW-ONLY PAGE (PaintDocument::SetReadOnly). The
+         * verbs refuse too, but a stroke is drawn as it goes and committed at
+         * the end, so refusing here is what keeps the pointer from leaving ink
+         * the room never sees. Pan and zoom were handled above and still work.
+         */
+            if (m_document && m_document->readOnly())
+            {
+                ETCS_LOG("PaintInput", "view only -- ask the host for drawing.");
+                return;
+            }
+            /*
          * A BUTTON BRINGS ITS OWN POSITION (ontology/InputSource.h), so it
          * does not have to wait for one to have arrived -- and should not,
          * since a click on a fresh window is a perfectly ordinary first
@@ -14128,6 +14308,8 @@ private:
          * It costs one string per member and nothing per pan.
          */
         std::string view;
+        // A push arriving in parts (the `part` verb), held until the last one.
+        std::string pending;
         Role        role = Role::Reader;
         // Last time this member was heard from, so a roster does not fill with
         // names that walked away. Refreshed by every verb they reach.
@@ -14447,6 +14629,33 @@ private:
             if (!req.posted()) return "POST REQUIRED";
             const size_t n = pushLocked(*s, self, req.bodyString());
             return std::to_string(s->seq) + " " + std::to_string(n);
+        }
+
+        /*
+     * A PUSH IN PARTS: part/<i>/<n>, each body appended to the member's
+     * pending buffer, the whole taken as one push when the last part lands.
+     *
+     * Because a request is bounded (ETCS_NETWORK_MAX_HEADER_SIZE, 64 KB for
+     * headers and body together) and one entry is not: a keyframe is a layer's
+     * PNG, and a page with a photograph on it is megabytes. A line cannot be
+     * split by the page into two entries, so the node joins the bytes back
+     * before it reads a single line. Part 0 starts over, so a push abandoned
+     * half way leaves nothing behind but the next one's first part.
+     */
+        if (verb == "part")
+        {
+            if (me->role != Role::Writer && me->role != Role::Owner) return "READ ONLY";
+            if (!req.posted()) return "POST REQUIRED";
+            const unsigned long i = std::strtoul(arg.c_str(), nullptr, 10);
+            const unsigned long n = std::strtoul(req.at(6).c_str(), nullptr, 10);
+            if (n == 0 || i >= n) return "BAD PART";
+            if (i == 0) me->pending.clear();
+            me->pending += req.bodyString();
+            if (i + 1 < n) return "more";
+            std::string whole;
+            whole.swap(me->pending);
+            const size_t taken = pushLocked(*s, self, whole);
+            return std::to_string(s->seq) + " " + std::to_string(taken);
         }
 
         // ── the host's own verbs ────────────────────────────────────────
@@ -14969,6 +15178,25 @@ DEFINE_WORK_FUNC(PaintDocument, ExportOps)
     data.writeString((std::to_string(n) + " " + std::to_string(self.notebookHead())).c_str());
 }
 
+// ExportBaseline <path> -- the whole page as a session's starting point
+// (PaintDocument::ExportBaseline). Answers the line count.
+DEFINE_WORK_FUNC(PaintDocument, ExportBaseline)
+{
+    (void)ctx;
+    std::istringstream in(data.restAsString());
+    std::string path;
+    in >> path;
+    if (path.empty()) { ETCS_LOG("PaintDocument", "ExportBaseline needs a path."); data.writeString("0"); return; }
+    data.writeString(std::to_string(self.ExportBaseline(path)).c_str());
+}
+
+// SetReadOnly <0|1> -- view only while a shared session says so.
+DEFINE_WORK_FUNC_TYPED(PaintDocument, SetReadOnly, (int32_t, on))
+{
+    (void)ctx;
+    self.SetReadOnly(on != 0);
+}
+
 DEFINE_WORK_FUNC(PaintDocument, ImportOps)
 {
     (void)ctx;
@@ -15366,6 +15594,13 @@ DEFINE_WORK_FUNC(PaintPages, Save)
 {
     (void)ctx; (void)data;
     self.Save();
+}
+
+// Stash -- save the present if it changed, then leave its slot (PaintPages::Stash).
+DEFINE_WORK_FUNC(PaintPages, Stash)
+{
+    (void)ctx;
+    data.writeString(self.Stash() ? "ok" : "failed");
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintPages, Load, (int64_t, id))

@@ -764,6 +764,71 @@
    * that, including re-baselining the room with a keyframe when an undo has
    * wound past what was already sent -- see its own comment.
    */
+  /*
+   * A PUSH OF ANY SIZE. A request to the node is bounded (64 KB, headers
+   * included) and a keyframe is a layer's PNG -- a page with a photograph on it
+   * is megabytes -- so anything bigger than one comfortable request goes as
+   * numbered parts that the node joins back together before it reads a line
+   * (PaintNode's `part` verb). The answer is the last part's, which is the
+   * push's.
+   */
+  const SHARE_PART_CHARS = 48000;
+  async function pushText(text) {
+    if (text.length <= SHARE_PART_CHARS) return await nodePost(tokenPath('push'), text);
+    const n = Math.ceil(text.length / SHARE_PART_CHARS);
+    let answer = null;
+    for (let i = 0; i < n; i++) {
+      answer = await nodePost(tokenPath('part', String(i), String(n)),
+                              text.slice(i * SHARE_PART_CHARS, (i + 1) * SHARE_PART_CHARS));
+      if (answer === null) return null;
+      if (i + 1 < n && answer !== 'more') return answer;     // READ ONLY, or the session went
+    }
+    return answer;
+  }
+
+  function highestSeq(text) {
+    let top = NaN;
+    for (const line of text.trim().split('\n')) {
+      const n = parseInt(line.split(' ')[0], 10);
+      if (!isNaN(n) && (isNaN(top) || n > top)) top = n;
+    }
+    return top;
+  }
+
+  /*
+   * THE WHOLE PAGE, ONCE, as the session's first entries: its size, its
+   * layers and every layer's pixels (PaintDocument::ExportBaseline). Pushing
+   * the history from zero instead sent the strokes and not the picture they
+   * were made on -- a page loaded from the store, or opened from a file, is
+   * pixels no entry describes -- so a joiner saw marks floating on their own
+   * paper.
+   */
+  async function pushBaseline() {
+    const fs = etcsFS();
+    const path = '/share/out.txt';
+    try { fs.mkdirTree('/share'); } catch (e) {}
+    try { fs.unlink(path); } catch (e) {}
+    callVerb('doc', 'ExportBaseline', path);
+    let text = '';
+    try { text = new TextDecoder().decode(fs.readFile(path)); } catch (e) { return false; }
+    if (!text.trim()) return false;
+    const answer = await pushText(text);
+    if (answer === null || !/^\d+/.test(answer)) return false;
+    const seq = highestSeq(text);
+    share.sent = isNaN(seq) ? 0 : seq;
+    const nodeHead = parseInt(answer.split(' ')[0], 10);
+    if (!isNaN(nodeHead)) share.head = Math.max(share.head, nodeHead);
+    return true;
+  }
+
+  // The role, and what it means for this page: a reader's canvas is view only
+  // (PaintDocument::SetReadOnly), because a mark made here would never reach
+  // the room and the two pictures would differ from then on.
+  function setRole(r) {
+    share.role = r;
+    if (runtimeUp()) callVerb('doc', 'SetReadOnly', r === 'reader' ? '1' : '0');
+  }
+
   async function pushMine() {
     if (share.busy || !share.token || !runtimeUp()) return;
     if (share.role !== 'owner' && share.role !== 'writer') return;
@@ -780,17 +845,16 @@
       if (!text.trim()) return;
 
       // The local head we are about to have sent, read off the entries
-      // themselves rather than asked for separately: the last line's sequence
-      // is exactly where ExportOps stopped.
-      const lines = text.trim().split('\n');
-      const lastSeq = parseInt(lines[lines.length - 1].split(' ')[0], 10);
+      // themselves rather than asked for separately: the highest sequence in
+      // them is where ExportOps stopped (a baseline's lines all carry it).
+      const lastSeq = highestSeq(text);
 
-      const answer = await nodePost(tokenPath('push'), text);
+      const answer = await pushText(text);
       if (answer === null) return;
       if (answer === 'READ ONLY') {
         // Elevation taken away between one stroke and the next, which is what
         // revocation is supposed to feel like rather than an error.
-        share.role = 'reader';
+        setRole('reader');
         shareTimers(true);
         return;
       }
@@ -869,7 +933,7 @@
     if (r === 'writer' || r === 'reader')
     {
       if (r !== share.role) {
-        share.role = r;
+        setRole(r);
         log('[etcs] you are now a ' + r + ' in this session\n', r === 'writer' ? 'ok' : null);
         shareTimers(true);
       }
@@ -950,8 +1014,9 @@
 
   function leaveSession() {
     shareTimers(false);
-    share.token = null; share.role = null; share.id = null;
+    share.token = null; share.id = null;
     share.head = 0; share.sent = 0;
+    setRole(null);                      // editable again: the canvas is theirs now
     if (runtimeUp()) {
       callVerb('doc', 'SetAuthor', '');
       callVerb('visitors', 'Close', '');          // idempotent; already shut is fine
@@ -988,15 +1053,14 @@
 
     share.id    = bits[0];
     share.token = bits[1];
-    share.role  = 'owner';
+    setRole('owner');
     share.sent  = 0;
     share.head  = 0;
     callVerb('doc', 'SetAuthor', share.self);
 
-    // EVERYTHING SO FAR, so a session opened on a canvas that is already
-    // painted starts from that picture rather than from the next stroke. The
-    // notebook's own keyframes make that one push rather than a whole history.
-    await pushMine();
+    // THE PICTURE AS IT STANDS, so a session opened on a canvas that is
+    // already painted starts from that picture rather than from the next stroke.
+    if (!(await pushBaseline())) log('[etcs] share: the page could not be sent -- joiners start blank\n', 'err');
 
     showLink();
     callVerb('visitors', 'Open', '');
@@ -1020,9 +1084,18 @@
     const bits = answer.trim().split(' ');
     share.id    = id;
     share.token = bits[0];
-    share.role  = bits[1] || 'reader';
     share.head  = 0;                    // from the beginning: give us the picture
     share.sent  = 0;
+
+    /*
+     * WHAT WAS ON THIS CANVAS IS PUT AWAY FIRST, into the page store, and the
+     * canvas leaves its slot (PaintPages::Stash) -- so the session's page,
+     * which replaces the document when it arrives, is a new page rather than
+     * an overwrite of theirs. Then the role, which may make it view only.
+     */
+    const kept = await callResult('pages', 'Stash', '');
+    if (kept && kept.trim() === 'ok') log('[etcs] your page is kept in the page list\n');
+    setRole(bits[1] || 'reader');
     callVerb('doc', 'SetAuthor', share.self);
 
     // No visitor list for a visitor: there is nothing in it they may do, and a
@@ -1094,13 +1167,16 @@
     await refreshRoster();
   });
 
-  // A link opened cold. Waits for the runtime, because a join that lands before
-  // the document exists has nowhere to replay into.
+  // A link opened cold. Waits for the BOOT, not only the runtime: the runtime
+  // is up seconds before boot_paint_panels.etcs has spawned the document and
+  // the page store, and a join that lands in between replays into nothing --
+  // the joiner kept their own blank page and never got the host's. The import
+  // prompt's input is one of the last names the boot script makes.
   (function () {
     const id = new URLSearchParams(window.location.search).get('s');
     if (!id) return;
     const t = setInterval(function () {
-      if (!runtimeUp()) return;
+      if (!runtimeUp() || !nameLive('import_input') || !nameLive('pages')) return;
       clearInterval(t);
       joinFromLink(id.replace(/[^0-9a-f]/g, '').slice(0, 40));
     }, 500);

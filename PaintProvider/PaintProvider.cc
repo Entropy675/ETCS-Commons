@@ -46,7 +46,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
     SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
     CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo,
     ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
-    ExportOps, ImportOps, NotebookHead, SetAuthor,
+    ExportOps, ExportBaseline, ImportOps, NotebookHead, SetAuthor, SetReadOnly,
     MergeDown, MergeUp,
     Report, Delete)
 
@@ -85,7 +85,7 @@ ETCS_TAG_BLOCK_BASIC(PaintPalette,
 
 // The pages of this session, kept in a database -- see PaintPages.
 ETCS_TAG_BLOCK_BASIC(PaintPages,
-    Create, BindSurface, Save, Load, New, Next, Prev, List, Rename, Delete, Destroy)
+    Create, BindSurface, Save, Stash, Load, New, Next, Prev, List, Rename, Delete, Destroy)
 
 // Frames cut from a region of the page and put back; a reel that plays in its
 // window and travels as a GIF. See PaintAnimation.

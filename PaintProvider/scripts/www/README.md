@@ -607,6 +607,44 @@ layer `Rebase` holds while it copies) and refuse with the numbers -- `needs 832
 MB and the page has 264 MB to spare` -- rather than letting `malloc` abort the
 tab, which is what `unreachable executed` on a two-axis resize was.
 
+## Sharing a canvas
+
+`share` in the header opens a session on the node that served the page (`/art`,
+`PaintNode`, started by `paint_lobby.etcs`) and puts the link in the header.
+Whoever opens the link joins. Everything travels as notebook lines through that
+node: each page pushes what it made and reads what everyone else made, on a
+timer (`index.html`, `pushMine` / `readTheirs`).
+
+**Joining takes the host's page, and keeps yours.** The session opens with a
+BASELINE, not with history: a `page` line (the page's size and its layer stack)
+and a keyframe of every layer (`PaintDocument::ExportBaseline`). A page loaded
+from the store or opened from a file is pixels no entry describes, so pushing
+the history from zero sent the strokes without the picture under them. A
+joiner first puts their own canvas away (`PaintPages::Stash`: saved to the page
+list if it changed, and then in no slot), and the `page` line then makes their
+document the host's -- same size, same layers -- before the keyframes fill it
+(`PaintDocument::AcceptOp`). A change to the layer stack made later travels the
+same way and changes every stack in the room.
+
+**What you push is what you made.** Lines that arrived from the session sit in
+your notebook too, so undo and keyframes see the whole picture, but
+`ExportOps` sends only the lines with your name on them -- a joiner promoted to
+writer used to send the host's own history back to the host. An undo that winds
+back past what was already sent re-sends the whole page as a new baseline.
+
+**A reader's canvas is view only.** Joining makes you a reader; the host
+promotes. While you are a reader the document refuses every edit
+(`PaintDocument::SetReadOnly`, raised by the page from your role) and the
+canvas starts no stroke -- a mark made there would never reach the room, and
+your picture and everyone else's would differ from then on. Pan and zoom still
+work; so do the layer eyes, which change only what you see. Promotion lifts it
+within a few seconds (the page asks the node for its role on a timer).
+
+**Pushes of any size.** A request to the node is bounded (64 KB with its
+headers, `ETCS_NETWORK_MAX_HEADER_SIZE`) and a keyframe is a layer's PNG, so a
+push bigger than one request goes as numbered parts the node joins back
+together before reading a line (`part/<i>/<n>`).
+
 ## Deploying
 
 `ace make loader etcs` and `ace make loaders` both produce the INTERACTIVE
