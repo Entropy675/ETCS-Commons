@@ -90,8 +90,8 @@ ETCS_TAG_BLOCK_BASIC(PaintPages,
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
 ETCS_TAG_BLOCK_BASIC(PaintLayerPanel,
-    Create, BindDocument, BeginRow, RowNode, BindView, BindAdd, BindTitle, BindWindow, BindSurface,
-    SetHoverDim, SetEyeColors, SetRowColors,
+    Create, BindDocument, BeginRow, RowNode, BeginTitle, BindView, BindBody, BindAdd, BindTitle, BindWindow, BindSurface,
+    SetHoverDim, SetEyeColors, SetIrisColors, SetRowColors,
     Scroll, Refresh, CommitRename,
     SelectRow, ToggleRow, RemoveRow, MoveRow, ArmRename, HoverRow,
     Report, Delete)

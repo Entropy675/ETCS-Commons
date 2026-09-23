@@ -85,6 +85,8 @@ list.BindDocument(@doc)
 # same ink sunk most of the way into the band, so "off" is the same colour
 # turned down rather than a second, greyer one.
 list.SetEyeColors(0.94, 0.89, 0.78, 0.35, 0.36, 0.28)
+# The iris: the page's highlight while the eye is open, the band while shut.
+list.SetIrisColors(0.35, 0.55, 0.95, 0.106, 0.110, 0.078)
 list.SetRowColors(0.35, 0.55, 0.95, 0.15, 0.16, 0.11)
 list.SetHoverDim(0.25)
 
@@ -130,28 +132,25 @@ layers_title_word.SetColor(0.94, 0.89, 0.78, 1.0)
 layers_title_word.SetText(layers)
 layers_title_word.SetOrder(2)
 
-# ── the view toggle, beside the + ────────────────────────────────────────────
+# ── the view toggle, beside the +: AN EYE ────────────────────────────────────
 #
 # COLLAPSES EVERYTHING BUT THE BAR, and pressing it again brings the list back.
 # Not a close: a window with a cross on it is one somebody shuts by accident and
 # then cannot reopen, and the bar left on screen is both the way back and the
 # reminder that there is one (PaintLayerPanel::BindView says the same).
-panel.spawn(RenderProvider::PolygonDrawable2D layers_view)
-layers_view.Create()
-layers_view.AddPoint(190, 3)
-layers_view.AddPoint(210, 3)
-layers_view.AddPoint(210, 19)
-layers_view.AddPoint(190, 19)
-layers_view.SetFill(0.19, 0.20, 0.14, 1.0)
+#
+# It is the same eye the rows have, from the same file, because it means the
+# same thing here -- shown or not -- and a "-" meant nothing: open while the
+# rows show, shut while the window is its bar. paint_eye.etcs draws at (8..30,
+# 8..18) in the pane it is given, so a small pane puts it beside the +; run
+# between BeginTitle and the first BeginRow, its two nodes register as the view
+# toggle rather than as a row's (PaintLayerPanel::RowNode).
+panel.spawn(RenderProvider::CompositeDrawable2D layers_view)
+layers_view.Create(38, 26)
+layers_view.SetPosition(182, -2)
 layers_view.SetOrder(2)
-
-panel.spawn(RenderProvider::TextLabel layers_view_word)
-layers_view_word.Create()
-layers_view_word.SetPosition(196, 7)
-layers_view_word.SetSize(1)
-layers_view_word.SetColor(0.94, 0.89, 0.78, 1.0)
-layers_view_word.SetText(-)
-layers_view_word.SetOrder(3)
+list.BeginTitle()
+run paint_eye.etcs pane=layers_view list=list
 
 panel.spawn(RenderProvider::PolygonDrawable2D layers_add)
 layers_add.Create()
@@ -177,8 +176,8 @@ list.BindTitle(@layers_title_word)
 list.BindWindow(@panel)
 list.BindAdd(@layers_add)
 list.BindAdd(@layers_add_word)
-list.BindView(@layers_view)
-list.BindView(@layers_view_word)
+# The plate goes with the rows when the window collapses to its bar.
+list.BindBody(@layers_back)
 
 # ── the rows ─────────────────────────────────────────────────────────────
 #

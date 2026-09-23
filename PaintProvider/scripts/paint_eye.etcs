@@ -5,8 +5,8 @@
 #
 #     run PaintProvider/scripts/paint_eye.etcs pane=<Drawable2D> list=<PaintLayerPanel>
 #
-# A flat oblong with a pupil centred in it, the pupil's top and bottom touching
-# the oblong's. Drawn at LOCAL coordinates inside whatever pane it is handed,
+# A flat oblong, an iris centred in it whose top and bottom touch the oblong's,
+# and a pupil in the iris. Drawn at LOCAL coordinates inside whatever pane it is handed,
 # which is the only reason one file can serve every row: `run` carries RIDs and
 # not numbers (resolve_run_bindings), so a script cannot be told "draw at y=54"
 # -- but it can be handed a pane that is already there, and a pane is a
@@ -20,10 +20,18 @@
 # BeginRow). It has to: a script cannot hand its spawned nodes back to its
 # caller, so if the caller had to name them this file could not exist.
 #
-# THE PANEL TINTS THE OBLONG, not the pupil: shown and hidden are its two
-# colours (SetEyeColors), and the pupil rides along on the row so the state
-# still reads at a glance. That is why the oblong is `eye` and the pupil is an
-# separate part -- see PaintLayerPanel::RowNode.
+# THE PANEL TINTS THE OBLONG AND THE IRIS: the oblong takes the shown/hidden
+# colours (SetEyeColors) and the iris the open/shut ones (SetIrisColors), so an
+# open eye has the page's highlight in it and a shut one is a single dark
+# shape with its pupil lost in it. All three parts are the eye to a press or a
+# hover -- the iris and pupil sit on top and the pick takes the topmost node,
+# so an iris that was only decoration made the middle of every eye the one
+# place on it that did nothing. Separate nodes because they are three colours
+# -- see PaintLayerPanel::RowNode.
+#
+# ON THE TITLE BAR TOO: run between BeginTitle and the first BeginRow, the same
+# two nodes become the window's view toggle, open while the rows show and shut
+# while the window is collapsed to its bar.
 
 requires pane [Drawable2D]
 requires list [PaintLayerPanel]
@@ -42,25 +50,40 @@ eye.AddPoint(11, 18)
 eye.SetFill(0.94, 0.89, 0.78, 1.0)
 eye.SetOrder(2)
 
-# The pupil: radius 5, which is half the oblong's height, so its top and bottom
+# The iris: radius 5, which is half the oblong's height, so its top and bottom
 # touch. Ten points is enough of a circle at this diameter and cheap enough to
-# draw once per row.
+# draw once per row. The colour here is only what it is until the panel's
+# first Refresh; the panel owns it from then on.
+pane.spawn(RenderProvider::PolygonDrawable2D iris)
+iris.Create()
+iris.AddPoint(24, 13)
+iris.AddPoint(23, 16)
+iris.AddPoint(21, 18)
+iris.AddPoint(17, 18)
+iris.AddPoint(15, 16)
+iris.AddPoint(14, 13)
+iris.AddPoint(15, 10)
+iris.AddPoint(17, 8)
+iris.AddPoint(21, 8)
+iris.AddPoint(23, 10)
+iris.SetFill(0.35, 0.55, 0.95, 1.0)
+iris.SetOrder(3)
+
+# The pupil: a dot of radius 2 in the middle of the iris, which is what makes
+# the shape read as an eye rather than as a bead. Dark, and it stays dark: on a
+# shut eye the iris sinks to the band's colour and the dot goes with it.
 pane.spawn(RenderProvider::PolygonDrawable2D pupil)
 pupil.Create()
-pupil.AddPoint(24, 13)
-pupil.AddPoint(23, 16)
-pupil.AddPoint(21, 18)
-pupil.AddPoint(17, 18)
-pupil.AddPoint(15, 16)
-pupil.AddPoint(14, 13)
-pupil.AddPoint(15, 10)
-pupil.AddPoint(17, 8)
-pupil.AddPoint(21, 8)
-pupil.AddPoint(23, 10)
-pupil.SetFill(0.106, 0.110, 0.078, 1.0)
-pupil.SetOrder(3)
+pupil.AddPoint(21, 13)
+pupil.AddPoint(20, 15)
+pupil.AddPoint(18, 15)
+pupil.AddPoint(17, 13)
+pupil.AddPoint(18, 11)
+pupil.AddPoint(20, 11)
+pupil.SetFill(0.06, 0.06, 0.05, 1.0)
+pupil.SetOrder(4)
 
-# Into the open row. The oblong is the part the panel tints for shown/hidden;
-# the pupil is listed so that hiding one hides both.
+# Into the open row, or onto the title bar -- the panel knows which is open.
 list.RowNode(eye, @eye)
+list.RowNode(iris, @iris)
 list.RowNode(pupil, @pupil)

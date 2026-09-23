@@ -8197,19 +8197,42 @@ public:
  */
     void BeginRow()
     {
+        m_title_open = false;
         m_rows.push_back(Row{});
     }
 
     void RowNode(const std::string& what, ETCS::RID node)
     {
-        if (m_rows.empty()) { ETCS_LOG("PaintLayerPanel", "RowNode before BeginRow -- ignored."); return; }
         if (node == 0) return;
+        /*
+     * THE TITLE BAR'S EYE arrives through the same script the rows use
+     * (paint_eye.etcs registers by RowNode, since a script cannot hand its
+     * nodes back), so between BeginTitle and the first BeginRow the eye and
+     * its pupil are the window's view toggle rather than a row's control.
+     */
+        if (m_title_open)
+        {
+            if      (what == "eye")   { m_view_eye  = node; BindView(node); }
+            else if (what == "iris")  { m_view_iris = node; BindView(node); }
+            else if (what == "pupil") { m_view_trim.push_back(node); BindView(node); }
+            else ETCS_LOG("PaintLayerPanel", "RowNode: '" << what << "' between BeginTitle and BeginRow -- "
+                          "only an eye goes on the title bar; RID:" << node << " is attached to nothing.");
+            return;
+        }
+        if (m_rows.empty()) { ETCS_LOG("PaintLayerPanel", "RowNode before BeginRow -- ignored."); return; }
         const size_t idx = m_rows.size() - 1;
         Row& row = m_rows[idx];
 
         // The parts that are picked, and what a press on each one means.
         if      (what == "bg")    { row.bg    = node; m_regions[node] = Hit{ idx, Region::Body }; }
         else if (what == "eye")   { row.eye   = node; m_regions[node] = Hit{ idx, Region::Eye }; }
+        // THE IRIS AND THE PUPIL ARE THE EYE for a press or a hover. They are
+        // drawn OVER the oblong, and the pick takes the topmost node -- so with
+        // them listed as decoration only, the middle of every eye was the one
+        // place on it that did nothing. The iris is tinted with the eye
+        // (Refresh); the pupil keeps the colour the script gave it.
+        else if (what == "iris")  { row.iris = node; m_regions[node] = Hit{ idx, Region::Eye }; row.trim.push_back(node); }
+        else if (what == "pupil") { m_regions[node] = Hit{ idx, Region::Eye }; row.trim.push_back(node); }
         else if (what == "thumb") { row.thumb = node; m_regions[node] = Hit{ idx, Region::Body }; }
         else if (what == "label") { row.label = node; m_regions[node] = Hit{ idx, Region::Label }; }
         else if (what == "del")   { row.del   = node; m_regions[node] = Hit{ idx, Region::Delete }; }
@@ -8221,15 +8244,24 @@ public:
         // polygon cannot inherit from a parent it does not have. Any number of
         // them, because a row keeps growing ornaments and each one that has no
         // slot is one that stays on screen over an empty panel.
-        else if (what == "pupil" || what == "dots" || what == "trim")
+        else if (what == "dots" || what == "trim")
             row.trim.push_back(node);
         else
         {
             ETCS_LOG("PaintLayerPanel", "RowNode: '" << what << "' is not a part of a row "
-                     "(bg eye thumb label del grip up down, or pupil/dots/trim) -- RID:" << node
+                     "(bg eye iris pupil thumb label del grip up down, or dots/trim) -- RID:" << node
                      << " is attached to nothing.");
         }
     }
+
+    // Opens the title bar for an eye (see RowNode); the first BeginRow closes it.
+    void BeginTitle() { m_title_open = true; }
+
+    // The window's body: the backing plate and anything else that is not the
+    // title bar, hidden with the rows when the window is collapsed -- a
+    // collapsed window IS its title bar, and a plate left behind is a window
+    // that only looks collapsed.
+    void BindBody(ETCS::RID node) { if (node) m_body.push_back(node); }
 
     // The + on the title bar. A control of the WINDOW rather than of a row, so
     // it is bound like the title handle is and carries no row index.
@@ -8301,6 +8333,16 @@ public:
         m_eye_hidden[0] = hr; m_eye_hidden[1] = hg; m_eye_hidden[2] = hb;
     }
 
+    // The iris, open and shut. Open is the page's highlight so an eye that is
+    // looking reads as looking; shut sinks into the band, the same way the
+    // oblong does, so a closed eye is one dark shape rather than a bright dot
+    // on a dim one.
+    void SetIrisColors(float vr, float vg, float vb, float hr, float hg, float hb)
+    {
+        m_iris_open[0] = vr; m_iris_open[1] = vg; m_iris_open[2] = vb;
+        m_iris_shut[0] = hr; m_iris_shut[1] = hg; m_iris_shut[2] = hb;
+    }
+
     void SetRowColors(float sr, float sg, float sb, float ur, float ug, float ub)
     {
         m_row_sel[0] = sr; m_row_sel[1] = sg; m_row_sel[2] = sb;
@@ -8360,6 +8402,7 @@ public:
      * the press because a Refresh from anywhere else -- a page switch, a
      * delete -- must not quietly bring the rows back.
      */
+        tint_view_eye();
         if (m_collapsed)
         {
             for (Row& row : m_rows)
@@ -8370,8 +8413,10 @@ public:
                     if (n) paint_node_hidden(n, true);
                 for (ETCS::RID n : row.trim) paint_node_hidden(n, true);
             }
+            for (ETCS::RID n : m_body) paint_node_hidden(n, true);
             return;
         }
+        for (ETCS::RID n : m_body) paint_node_hidden(n, false);
 
         /*
      * THE HOVER DIM CANNOT OUTLIVE THE ROW IT CAME FROM. Hovering a row dims
@@ -8414,6 +8459,14 @@ public:
                               ? stack[total - 1 - from_top] : nullptr;
             row.layer = layer ? layer->getRID() : 0;
 
+            // THE ROW ITSELF COMES BACK FIRST. Collapsing hides the row pane
+            // and every part on it; the parts below are unhidden one by one as
+            // the row is re-bound, but the pane is their parent and was never
+            // unhidden -- so expanding brought back nothing, and the window
+            // looked broken until a page switch. An empty slot keeps its pane
+            // shown too: it is drawn transparent, not absent.
+            paint_node_hidden(row.bg, false);
+            paint_node_hidden(row.label, false);
             if (!layer)
             {
                 // An empty slot is drawn as nothing rather than hidden: the
@@ -8441,10 +8494,7 @@ public:
             // to see what is under it is exactly what the control is for, and
             // it is the delete that the base refuses, not the eye.
             paint_node_hidden(row.eye, false);
-            paint_node_fill(row.eye,
-                    layer->visible() ? m_eye_shown[0] : m_eye_hidden[0],
-                    layer->visible() ? m_eye_shown[1] : m_eye_hidden[1],
-                    layer->visible() ? m_eye_shown[2] : m_eye_hidden[2], 1.0f);
+            tint_eye(row.eye, row.iris, layer->visible());
             paint_node_hidden(row.thumb, false);
             paint_thumb(row.thumb, layer);
             // The base layer has no delete: it is the page's ground and the
@@ -8997,9 +9047,37 @@ private:
      */
     struct Row { ETCS::RID bg, eye, thumb, label, del; ETCS::RID layer;
                  ETCS::RID grip = 0, mup = 0, mdn = 0;
+                 ETCS::RID iris = 0;             // tinted with the eye -- see RowNode
                  std::vector<ETCS::RID> trim; };
     struct Hit { size_t row; Region region; };
     bool m_collapsed = false;
+    // The title bar's own eye (BeginTitle), tinted open or shut with the
+    // window, and the window's body parts, hidden with the rows.
+    bool      m_title_open = false;
+    ETCS::RID m_view_eye   = 0;
+    ETCS::RID m_view_iris  = 0;
+    std::vector<ETCS::RID> m_view_trim;
+    std::vector<ETCS::RID> m_body;
+
+    void tint_eye(ETCS::RID eye, ETCS::RID iris, bool open)
+    {
+        const float* o = open ? m_eye_shown : m_eye_hidden;
+        const float* i = open ? m_iris_open : m_iris_shut;
+        paint_node_fill(eye,  o[0], o[1], o[2], 1.0f);
+        if (iris) paint_node_fill(iris, i[0], i[1], i[2], 1.0f);
+    }
+
+    // The title bar's eye says whether the rows are showing; shut, its pupil
+    // goes with the iris it sits on.
+    void tint_view_eye()
+    {
+        if (!m_view_eye) return;
+        tint_eye(m_view_eye, m_view_iris, !m_collapsed);
+        for (ETCS::RID n : m_view_trim) paint_node_hidden(n, m_collapsed);
+    }
+
+    float m_iris_open[3] = { 0.35f, 0.55f, 0.95f };
+    float m_iris_shut[3] = { 0.106f, 0.110f, 0.078f };
 
     /*
  * Closing the field, keeping the name or not. Rename goes through the document
@@ -9798,15 +9876,26 @@ public:
     }
 
     /*
- * SAVE AND LOAD ARE THE PAGE'S, and this only says so. The file verbs take a
- * path (PaintDocument::ExportImage / ImportImage) and a path is something the
- * SUBSTRATE produces: in the browser it is the page's download and upload
- * controls that turn a path into a file the user can see, and there is no file
- * dialog on the desktop side yet. So under emscripten this raises a DOM event
- * the page listens for and answers with the same code its header buttons run;
- * natively it names the verb to type.
+ * SAVE IS THE STORE'S. With a page store bound, the menu's save puts the
+ * present page in its slot (PaintPages::Save, the same sqlite the page list
+ * below reads) rather than handing a PNG to the browser -- the header's
+ * download button is where a file leaves the page, and a second control that
+ * did the same thing under the word "save" read as the store not working.
+ * Without a store (a native session with no database) it falls back to the
+ * page's download, which is then the only place a picture can go.
+ *
+ * LOAD IS STILL THE PAGE'S: it takes a file, and a path is something the
+ * SUBSTRATE produces -- in the browser the upload control's dialog turns one
+ * into a file, and there is no dialog on the desktop side yet. So under
+ * emscripten this raises a DOM event the page answers with the same code its
+ * header button runs; natively it names the verb to type. Loading a STORED
+ * page is a press on its row in the list below.
  */
-    void Save() { page_event("save"); }
+    void Save()
+    {
+        if (m_pages) { if (m_pages->Save()) RefreshPages(); return; }
+        page_event("save");
+    }
     void Load() { page_event("load"); }
 
     /*
@@ -14090,6 +14179,21 @@ DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindView, (ETCS::RID, node))
     self.BindView(node);
 }
 
+// BeginTitle -- until the first BeginRow, an eye registered by RowNode is the
+// title bar's view toggle rather than a row's. See RowNode.
+DEFINE_WORK_FUNC(PaintLayerPanel, BeginTitle)
+{
+    (void)ctx; (void)data;
+    self.BeginTitle();
+}
+
+// BindBody <node> -- hidden with the rows when the window is collapsed.
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindBody, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindBody(node);
+}
+
 // BindAdd <node> -- pressing it adds a layer above the active one
 // (PaintDocument::NewLayer).
 // BindSurface <surface> -- what to re-render when the window changes the
@@ -14131,6 +14235,13 @@ DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, SetEyeColors,
 {
     (void)ctx;
     self.SetEyeColors(vr, vg, vb, hr, hg, hb);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, SetIrisColors,
+    (float, vr), (float, vg), (float, vb), (float, hr), (float, hg), (float, hb))
+{
+    (void)ctx;
+    self.SetIrisColors(vr, vg, vb, hr, hg, hb);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, SetRowColors,

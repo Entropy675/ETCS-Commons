@@ -104,6 +104,31 @@ layout.AddBox(@swatch_paper, @bar, 1, 0.0, 1, 0.0)
 palette.AddColor(@swatch_paper, 1.0, 1.0, 1.0, 1.0)
 run paint_cell_arrow.etcs cell=swatch_paper palette=palette
 
+# ── move ─────────────────────────────────────────────────────────────────────
+#
+# THE PAN, AS A TOOL, AND IT EXISTS FOR TOUCH. Panning has always been the right
+# or middle button (paint_is_pan_button), and a phone has neither -- so on a
+# tablet the picture could not be moved at all. This is the same pan reached by
+# an ordinary drag, which is the one gesture a single contact point can make.
+#
+# FIRST OF THE TOOLS, between the colours and the brush: it is the one that
+# does not mark, and a hand reaching past the swatches meets it before anything
+# that would. The bar is laid out in AddBox order, so its place is this file's.
+bar.spawn(RenderProvider::CompositeDrawable2D tool_move)
+tool_move.Create(60, 64)
+tool_move.SetOrder(1)
+tool_move.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_move, @bar, 1, 0.0, 1, 0.0)
+palette.AddTool(@tool_move, move)
+tool_move.spawn(RenderProvider::TextLabel label_move)
+label_move.Create()
+label_move.SetPosition(8, 28)
+label_move.SetSize(1)
+label_move.SetColor(0.90, 0.90, 0.88, 1.0)
+label_move.SetText(move)
+label_move.SetOrder(2)
+palette.AddTool(@label_move, move)
+
 # ── brush ────────────────────────────────────────────────────────────────────
 #
 # ONE SLICE, THREE NIBS, the select slice's arrangement for the same reason:
@@ -231,27 +256,6 @@ label_fill.SetColor(0.90, 0.90, 0.88, 1.0)
 label_fill.SetText(fill)
 label_fill.SetOrder(2)
 palette.AddTool(@label_fill, fill)
-
-# ── move ─────────────────────────────────────────────────────────────────────
-#
-# THE PAN, AS A TOOL, AND IT EXISTS FOR TOUCH. Panning has always been the right
-# or middle button (paint_is_pan_button), and a phone has neither -- so on a
-# tablet the picture could not be moved at all. This is the same pan reached by
-# an ordinary drag, which is the one gesture a single contact point can make.
-bar.spawn(RenderProvider::CompositeDrawable2D tool_move)
-tool_move.Create(60, 64)
-tool_move.SetOrder(1)
-tool_move.SetBackground(0.16, 0.16, 0.20, 1.0)
-layout.AddBox(@tool_move, @bar, 1, 0.0, 1, 0.0)
-palette.AddTool(@tool_move, move)
-tool_move.spawn(RenderProvider::TextLabel label_move)
-label_move.Create()
-label_move.SetPosition(8, 28)
-label_move.SetSize(1)
-label_move.SetColor(0.90, 0.90, 0.88, 1.0)
-label_move.SetText(move)
-label_move.SetOrder(2)
-palette.AddTool(@label_move, move)
 
 bar.spawn(RenderProvider::CompositeDrawable2D tool_smudge)
 tool_smudge.Create(60, 64)

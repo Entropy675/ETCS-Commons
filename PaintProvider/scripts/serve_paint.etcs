@@ -77,3 +77,8 @@ tree.ListPaths()
 
 web.Start()
 web.IsStarted()
+
+# The session host for the share button, on this same server: the page asks
+# /art on its own origin (defaultNode in www/index.html). paint_lobby.etcs
+# ensures `web` and adds the route; after Start, so it joins the running one.
+detach paint_lobby.etcs

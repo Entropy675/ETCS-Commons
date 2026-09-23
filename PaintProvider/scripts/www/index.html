@@ -1109,12 +1109,15 @@
   /*
    * ── the sheet's menu, reaching the page's file controls ────────────────
    *
-   * The gear's menu has "save" and "load", and a save or a load is a thing
-   * only the PAGE can finish: the verbs take a path, and turning a path into a
-   * file the user can see is the download above and the upload's file dialog.
-   * So the runtime raises an event naming which (PaintCanvasMenu::Save, a
-   * MAIN_THREAD_EM_ASM dispatch) and this answers with the same code the
-   * header buttons run -- there is one download and one upload on this page.
+   * The gear's menu has "save" and "load". Save goes to the page STORE when
+   * one is bound (PaintCanvasMenu::Save -> PaintPages::Save) and reaches here
+   * only on a runtime with no store, where the download is the one place a
+   * picture can go. Load takes a file, and a file is a thing only the PAGE can
+   * produce: the verb takes a path, and turning a path into a file the user
+   * can see is the upload's dialog. So the runtime raises an event naming
+   * which (a MAIN_THREAD_EM_ASM dispatch) and this answers with the same code
+   * the header buttons run -- there is one download and one upload on this
+   * page.
    *
    * "load" is the one to watch. A file dialog opens only on transient user
    * activation, and the press that reached the menu was a mousedown on the

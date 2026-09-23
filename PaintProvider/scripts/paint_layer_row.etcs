@@ -16,16 +16,18 @@
 # SetBackground where a polygon takes SetFill -- so the plate and the pane are
 # one node rather than two.
 #
-# A ROW IS [eye][thumb][name .....][:::][^][v][x] and each part answers one
+# A ROW IS [eye][thumb][name .....][::][^] [v][x] and each part answers one
 # complaint the old row earned:
 #
-#   :::  THE GRIP. A restack used to begin on the row BODY, and the body is also
+#   ::   THE GRIP. A restack used to begin on the row BODY, and the body is also
 #        the second half of the double click that opens the name -- so on a wide
 #        window, where the body is most of the row, the rename won the gesture
 #        every time. A strip that says hold-here takes the drag.
-#   ^ v  MERGE UP / MERGE DOWN, because the direction IS the verb. The panel
-#        hides the arrow at each end of the stack rather than drawing one that
-#        could only ever be refused.
+#   ^ v  MERGE UP / MERGE DOWN, because the direction IS the verb. Side by
+#        side with a gap, not stacked: two triangles sharing a column read as
+#        one glyph, and a merge is two different things. The panel hides the
+#        arrow at each end of the stack rather than drawing one that could
+#        only ever be refused.
 #
 # The parts are ordered above the pane so a press on a control hits the control:
 # PickAt walks the ordered list backwards, so higher wins.
@@ -79,31 +81,35 @@ grip.SetFill(0.20, 0.21, 0.15, 1.0)
 grip.SetOrder(2)
 list.RowNode(grip, @grip)
 
+# Two colons, not three: the strip is 16 wide and a glyph cell is 6, so three
+# ran past its right edge (17 px); two are 11 and sit centred.
 pane.spawn(RenderProvider::TextLabel grip_dots)
 grip_dots.Create()
 grip_dots.SetPosition(153, 9)
 grip_dots.SetSize(1)
 grip_dots.SetColor(0.60, 0.61, 0.54, 1.0)
-grip_dots.SetText(:::)
+grip_dots.SetText(::)
 grip_dots.SetOrder(3)
 # With the row, not on its own: the dots are decoration, so they ride the
 # row's trim list rather than being a control (PaintLayerPanel::RowNode).
 list.RowNode(dots, @grip_dots)
 
+# Up on the left, down on the right, 6 px of row between them: 12 wide and 10
+# tall each, in the 50 px between the grip and the delete.
 pane.spawn(RenderProvider::PolygonDrawable2D merge_up)
 merge_up.Create()
-merge_up.AddPoint(178, 6)
-merge_up.AddPoint(186, 14)
-merge_up.AddPoint(170, 14)
+merge_up.AddPoint(178, 7)
+merge_up.AddPoint(184, 17)
+merge_up.AddPoint(172, 17)
 merge_up.SetFill(0.55, 0.60, 0.45, 1.0)
 merge_up.SetOrder(2)
 list.RowNode(up, @merge_up)
 
 pane.spawn(RenderProvider::PolygonDrawable2D merge_down)
 merge_down.Create()
-merge_down.AddPoint(178, 20)
-merge_down.AddPoint(170, 12)
-merge_down.AddPoint(186, 12)
+merge_down.AddPoint(196, 19)
+merge_down.AddPoint(190, 9)
+merge_down.AddPoint(202, 9)
 merge_down.SetFill(0.55, 0.60, 0.45, 1.0)
 merge_down.SetOrder(2)
 list.RowNode(down, @merge_down)

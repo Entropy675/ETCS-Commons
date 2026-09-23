@@ -230,7 +230,9 @@ exported verb, a page load, an import.
 
 ## Selecting, and moving what is selected
 
-The `select` slice sits between `brush` and `line` in the bar, which is now
+The `move` slice is the first tool, between the last swatch and `brush` -- the
+one tool that does not mark comes before the ones that do. The `select` slice
+sits between `brush` and `line` in the bar, which is now
 sixteen 60px slices (960x64, 32px in from either edge of the 1024 sheet; rect and
 oval share one `shape` slice whose arrow steps rect, oval, triangle, diamond, star,
 with the current outline's name under the word in gold, as `select`'s mode is
@@ -494,7 +496,9 @@ settings menu over the sheet. It holds a width and a height stepped by 64
              which is the bottom layer when nothing shows through it
              (PaintDocument::Resize)
     new      a NEW PAGE at the size shown, the present one saved first
-    save     the header's download, from inside the sheet
+    save     the present page into its slot in the store (`PaintPages::Save`),
+             the same store the page list below the buttons reads; the header's
+             download is where a PNG leaves the page
     load     the header's upload -- see below
 
 Neither `resize` nor `new` is an undo step: the history is three whole-layer
@@ -515,10 +519,12 @@ the way the colour wheel opens (into the router and drawn, one fact), and a
 press anywhere outside the pane closes it and is swallowed, so putting the menu
 away never leaves a dab.
 
-`save` and `load` cannot finish in the runtime -- a path becomes a file the user
-can see only through the page -- so the verbs raise a DOM event (`etcs-menu`)
-and `index.html` answers with the same download and upload the header buttons
-run (so `load` ends in the same layer-or-canvas prompt). `load` clicks the file
+`load` cannot finish in the runtime -- a path becomes a file the user can see
+only through the page -- so the verb raises a DOM event (`etcs-menu`) and
+`index.html` answers with the same upload the header button runs (so `load`
+ends in the same layer-or-canvas prompt); `save` raises the same event only on
+a runtime with no store bound, where the download is the one place a picture
+can go. `load` clicks the file
 input from a call proxied off the router's Worker; a file dialog needs transient
 user activation, and whether the canvas press that opened the menu still counts
 by then is the browser's decision and is untested from this path. The header's
