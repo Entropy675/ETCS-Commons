@@ -570,7 +570,7 @@ gear_word.SetOrder(21)
 # until opened, for the reason wheel_pane is. Not retained: its contents are
 # nodes (paint_menu.etcs) and the compositor draws them from the tree.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D menu_pane)
-menu_pane.Create(200, 372)
+menu_pane.Create(200, 414)
 menu_pane.SetPosition(4, 18)
 menu_pane.SetOrder(29)
 menu_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
@@ -593,10 +593,19 @@ menu_input.Create(@doc, @brush, @canvas)
 menu_input.BindRoot(@menu_pane)
 menu_input.BindPalette(@palette)
 
-run PaintProvider/scripts/paint_menu.etcs pane=menu_pane palette=palette menu=menu
+# THE PAGE LIST on the menu's pane: the store as rows you can press, scroll,
+# rename and delete (PaintPagePanel, paint_page_row.etcs). Bound to the pane's
+# own input for its presses and its wheel, to the store for what it lists, and
+# to the menu so a load moves the size readouts.
+spawn PaintProvider::PaintPagePanel page_list
+page_list.Create()
+page_list.BindPages(@pages)
+page_list.BindMenu(@menu)
+menu_input.BindPagePanel(@page_list)
+menu.BindPagePanel(@page_list)
+run PaintProvider/scripts/paint_menu.etcs pane=menu_pane palette=palette menu=menu pages=page_list
 
-# The store the menu lists and that `new` adds to. Bound after the script has
-# declared the rows, so the first RefreshPages has somewhere to write.
+# The store `new` adds to and `save` writes.
 menu.BindPages(@pages)
 
 palette.BindRouter(@router)

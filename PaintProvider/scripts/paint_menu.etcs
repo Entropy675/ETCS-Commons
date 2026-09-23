@@ -30,6 +30,7 @@
 requires pane    [Drawable2D]
 requires palette [PaintPalette]
 requires menu    [PaintCanvasMenu]
+requires pages   [PaintPagePanel]
 
 pane.spawn(RenderProvider::TextLabel menu_title)
 menu_title.Create()
@@ -503,11 +504,14 @@ palette.AddCall(@menu_pre_word_2, @menu, PaintCanvasMenu.SetExtent, 1024 768)
 
 # ── the pages kept in the store ──────────────────────────────────────────────
 #
-# Every `new` saves the page it leaves and opens a fresh one (ApplyNew), so the
-# list below is the session's history: newest first, the one on screen
-# highlighted, and a press on a row loads that page. The rows are bound by
-# INDEX -- which page is in which row changes whenever one is added, so the id
-# is the menu's to remember and not this file's (BindPageRow).
+# Every `new` saves the page it leaves and opens a fresh one (ApplyNew), and
+# `save` puts the present in its slot, so the list below is the session's
+# history: newest first, the one on screen highlighted, with the picture the
+# store took at save time beside each name. The rows are the layer window's
+# bargain (paint_page_row.etcs, one file run per row); PaintPagePanel maps
+# them to load, rename and delete, and the wheel over the list scrolls it a
+# row per notch (PaintInput::RouteEvent) -- five rows is the resident set, not
+# how many pages there can be.
 
 pane.spawn(RenderProvider::TextLabel menu_pages_word)
 menu_pages_word.Create()
@@ -517,97 +521,48 @@ menu_pages_word.SetColor(0.79, 0.71, 0.35, 1.0)
 menu_pages_word.SetText(pages)
 menu_pages_word.SetOrder(2)
 
-pane.spawn(RenderProvider::PolygonDrawable2D menu_page_0)
-menu_page_0.Create()
-menu_page_0.AddPoint(8, 266)
-menu_page_0.AddPoint(192, 266)
-menu_page_0.AddPoint(192, 284)
-menu_page_0.AddPoint(8, 284)
-menu_page_0.SetFill(0.17, 0.18, 0.13, 1.0)
-menu_page_0.SetOrder(1)
-palette.AddCall(@menu_page_0, @menu, PaintCanvasMenu.LoadPage, 0)
-pane.spawn(RenderProvider::TextLabel menu_page_word_0)
-menu_page_word_0.Create()
-menu_page_word_0.SetPosition(14, 271)
-menu_page_word_0.SetSize(1)
-menu_page_word_0.SetColor(0.90, 0.90, 0.88, 1.0)
-menu_page_word_0.SetText(-)
-menu_page_word_0.SetOrder(2)
-palette.AddCall(@menu_page_word_0, @menu, PaintCanvasMenu.LoadPage, 0)
-menu.BindPageRow(0, @menu_page_0, @menu_page_word_0)
+# The list's own pane: what the wheel is tested against, and the origin every
+# row is placed in. Five rows of 26 with 2 between.
+pane.spawn(RenderProvider::CompositeDrawable2D pages_pane)
+pages_pane.Create(184, 140)
+pages_pane.SetPosition(8, 266)
+pages_pane.SetOrder(1)
+pages.BindWindow(@pages_pane)
+pages.SetRowColors(0.35, 0.55, 0.95, 0.15, 0.16, 0.11)
 
-pane.spawn(RenderProvider::PolygonDrawable2D menu_page_1)
-menu_page_1.Create()
-menu_page_1.AddPoint(8, 286)
-menu_page_1.AddPoint(192, 286)
-menu_page_1.AddPoint(192, 304)
-menu_page_1.AddPoint(8, 304)
-menu_page_1.SetFill(0.17, 0.18, 0.13, 1.0)
-menu_page_1.SetOrder(1)
-palette.AddCall(@menu_page_1, @menu, PaintCanvasMenu.LoadPage, 1)
-pane.spawn(RenderProvider::TextLabel menu_page_word_1)
-menu_page_word_1.Create()
-menu_page_word_1.SetPosition(14, 291)
-menu_page_word_1.SetSize(1)
-menu_page_word_1.SetColor(0.90, 0.90, 0.88, 1.0)
-menu_page_word_1.SetText(-)
-menu_page_word_1.SetOrder(2)
-palette.AddCall(@menu_page_word_1, @menu, PaintCanvasMenu.LoadPage, 1)
-menu.BindPageRow(1, @menu_page_1, @menu_page_word_1)
+pages_pane.spawn(RenderProvider::CompositeDrawable2D page_row0)
+page_row0.Create(184, 26)
+page_row0.SetPosition(0, 0)
+page_row0.SetOrder(1)
+page_row0.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_page_row.etcs pane=page_row0 list=pages
 
-pane.spawn(RenderProvider::PolygonDrawable2D menu_page_2)
-menu_page_2.Create()
-menu_page_2.AddPoint(8, 306)
-menu_page_2.AddPoint(192, 306)
-menu_page_2.AddPoint(192, 324)
-menu_page_2.AddPoint(8, 324)
-menu_page_2.SetFill(0.17, 0.18, 0.13, 1.0)
-menu_page_2.SetOrder(1)
-palette.AddCall(@menu_page_2, @menu, PaintCanvasMenu.LoadPage, 2)
-pane.spawn(RenderProvider::TextLabel menu_page_word_2)
-menu_page_word_2.Create()
-menu_page_word_2.SetPosition(14, 311)
-menu_page_word_2.SetSize(1)
-menu_page_word_2.SetColor(0.90, 0.90, 0.88, 1.0)
-menu_page_word_2.SetText(-)
-menu_page_word_2.SetOrder(2)
-palette.AddCall(@menu_page_word_2, @menu, PaintCanvasMenu.LoadPage, 2)
-menu.BindPageRow(2, @menu_page_2, @menu_page_word_2)
+pages_pane.spawn(RenderProvider::CompositeDrawable2D page_row1)
+page_row1.Create(184, 26)
+page_row1.SetPosition(0, 28)
+page_row1.SetOrder(1)
+page_row1.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_page_row.etcs pane=page_row1 list=pages
 
-pane.spawn(RenderProvider::PolygonDrawable2D menu_page_3)
-menu_page_3.Create()
-menu_page_3.AddPoint(8, 326)
-menu_page_3.AddPoint(192, 326)
-menu_page_3.AddPoint(192, 344)
-menu_page_3.AddPoint(8, 344)
-menu_page_3.SetFill(0.17, 0.18, 0.13, 1.0)
-menu_page_3.SetOrder(1)
-palette.AddCall(@menu_page_3, @menu, PaintCanvasMenu.LoadPage, 3)
-pane.spawn(RenderProvider::TextLabel menu_page_word_3)
-menu_page_word_3.Create()
-menu_page_word_3.SetPosition(14, 331)
-menu_page_word_3.SetSize(1)
-menu_page_word_3.SetColor(0.90, 0.90, 0.88, 1.0)
-menu_page_word_3.SetText(-)
-menu_page_word_3.SetOrder(2)
-palette.AddCall(@menu_page_word_3, @menu, PaintCanvasMenu.LoadPage, 3)
-menu.BindPageRow(3, @menu_page_3, @menu_page_word_3)
+pages_pane.spawn(RenderProvider::CompositeDrawable2D page_row2)
+page_row2.Create(184, 26)
+page_row2.SetPosition(0, 56)
+page_row2.SetOrder(1)
+page_row2.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_page_row.etcs pane=page_row2 list=pages
 
-pane.spawn(RenderProvider::PolygonDrawable2D menu_page_4)
-menu_page_4.Create()
-menu_page_4.AddPoint(8, 346)
-menu_page_4.AddPoint(192, 346)
-menu_page_4.AddPoint(192, 364)
-menu_page_4.AddPoint(8, 364)
-menu_page_4.SetFill(0.17, 0.18, 0.13, 1.0)
-menu_page_4.SetOrder(1)
-palette.AddCall(@menu_page_4, @menu, PaintCanvasMenu.LoadPage, 4)
-pane.spawn(RenderProvider::TextLabel menu_page_word_4)
-menu_page_word_4.Create()
-menu_page_word_4.SetPosition(14, 351)
-menu_page_word_4.SetSize(1)
-menu_page_word_4.SetColor(0.90, 0.90, 0.88, 1.0)
-menu_page_word_4.SetText(-)
-menu_page_word_4.SetOrder(2)
-palette.AddCall(@menu_page_word_4, @menu, PaintCanvasMenu.LoadPage, 4)
-menu.BindPageRow(4, @menu_page_4, @menu_page_word_4)
+pages_pane.spawn(RenderProvider::CompositeDrawable2D page_row3)
+page_row3.Create(184, 26)
+page_row3.SetPosition(0, 84)
+page_row3.SetOrder(1)
+page_row3.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_page_row.etcs pane=page_row3 list=pages
+
+pages_pane.spawn(RenderProvider::CompositeDrawable2D page_row4)
+page_row4.Create(184, 26)
+page_row4.SetPosition(0, 112)
+page_row4.SetOrder(1)
+page_row4.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_page_row.etcs pane=page_row4 list=pages
+
+pages.Refresh()

@@ -61,6 +61,7 @@ tree.MountFile(PaintProvider/scripts/paint_visitors.etcs ACE_ROOT/modules/PaintP
 tree.MountFile(PaintProvider/scripts/paint_eye.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_eye.etcs)
 tree.MountFile(PaintProvider/scripts/paint_cell_arrow.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_cell_arrow.etcs)
 tree.MountFile(PaintProvider/scripts/paint_layer_row.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_layer_row.etcs)
+tree.MountFile(PaintProvider/scripts/paint_page_row.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_page_row.etcs)
 tree.MountFile(PaintProvider/scripts/paint_visitor_row.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_visitor_row.etcs)
 tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
 

@@ -448,8 +448,21 @@ stayed empty however many times it was pressed. It goes through the store now
 (`PaintPages::NewAt`) -- the present page is saved to its slot first, then a
 fresh one opens -- which is what makes a second page exist to go back to.
 
-The menu lists the last five, newest first, with the one on screen highlighted;
-a press on a row loads that page. The store is the same sqlite database
+**The list under the buttons is the store**, the layer window's bargain again
+(`PaintPagePanel`, rows from `PaintProvider/scripts/paint_page_row.etcs`): a row
+is `[thumb][name WxH][x]`, newest first, the page on screen highlighted, and
+five rows is the window -- the wheel over the list scrolls it a row per notch.
+The thumbnail is the picture the store took when the page was saved
+(`page_thumbs`, 32x24, every visible layer averaged and composited), kept beside
+the page so the list never decodes one to draw a row.
+
+    thumb / name   load that page (the present is saved to its slot first)
+    name, again    on the page already on screen: opens it for renaming, with
+                   its name in the field -- Enter keeps, Escape drops
+    x              delete that page from the store; the page on screen stays
+                   on screen and gets a new slot at its next save
+
+The store is the same sqlite database
 `ctrl+PageUp` / `ctrl+PageDown` already stepped through, and it holds the
 pixels: each layer goes in as its raw bytes behind a PAM header (about 6 MB for
 a two-layer 1024x768 page), so a page comes back as the picture it was rather

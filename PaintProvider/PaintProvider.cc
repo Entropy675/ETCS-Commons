@@ -12,7 +12,7 @@
 // thread / OS event pump affinity).
 ETCS_MODULE_EXPORT_MAIN(PaintProvider,
     "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette "
-    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages PaintNode PaintVisitors")
+    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages PaintPagePanel PaintNode PaintVisitors")
 
 // SetKind is what makes one tool eight: radius/colour/hardness vary
 // independently of it, and the kind is the shape of the whole gesture rather
@@ -60,7 +60,7 @@ ETCS_TAG_BLOCK_BASIC(PaintSurface,
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
-     BindRoot, BindCanvas, BindPalette, BindPanel, BindGlyphs, SetHoldCapacity, BindPages,
+     BindRoot, BindCanvas, BindPalette, BindPanel, BindPagePanel, BindGlyphs, SetHoldCapacity, BindPages,
      BindWheel, SetWheelPane,
      Pointer, Press, Release, Report, Delete),
     (ConsumeInput, ConsumePointer, ConsumeRouted, ConsumeRoutedPointer))
@@ -85,7 +85,12 @@ ETCS_TAG_BLOCK_BASIC(PaintPalette,
 
 // The pages of this session, kept in a database -- see PaintPages.
 ETCS_TAG_BLOCK_BASIC(PaintPages,
-    Create, BindSurface, Save, Load, New, Next, Prev, List, Delete, Destroy)
+    Create, BindSurface, Save, Load, New, Next, Prev, List, Rename, Delete, Destroy)
+
+// The store as a list: node to page action, nothing drawn. See PaintPagePanel.
+ETCS_TAG_BLOCK_BASIC(PaintPagePanel,
+    Create, BindPages, BindMenu, BindWindow, SetRowColors, BeginRow, RowNode,
+    Scroll, Refresh, Report, Delete)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.
@@ -111,7 +116,7 @@ ETCS_TAG_BLOCK_BASIC(PaintCanvasMenu,
     Create, BindSurface, StepWidth, StepHeight, SetAnchor,
     BindWidthReadout, BindHeightReadout, BindAnchorCell, BindAnchorArrow,
     ApplyResize, ApplyNew, Save, Load, SetExtent,
-    BindTool, BindPages, BindPageRow, LoadPage, RefreshPages,
+    BindTool, BindPages, BindPagePanel, PageChanged,
     BindImportPrompt, OfferImport, ImportAsLayer, ImportAsCanvas, ImportCancel,
     Report, Delete)
 

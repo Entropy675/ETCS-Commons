@@ -6542,6 +6542,14 @@ public:
             " visible INTEGER NOT NULL, opacity REAL NOT NULL, active INTEGER NOT NULL DEFAULT 0,"
             " pam BLOB NOT NULL)",
             "CREATE INDEX IF NOT EXISTS page_layers_by_page ON page_layers(page_id, ord)",
+            // THE THUMBNAIL, made at save time and kept beside the page rather
+            // than derived from it: a list of pages wants a picture per row,
+            // and decoding a page's layers to draw one is 6 MB of PAM per row
+            // per refresh. Its own table so an older store gains it on the
+            // next save without an ALTER.
+            "CREATE TABLE IF NOT EXISTS page_thumbs("
+            " page_id INTEGER PRIMARY KEY, width INTEGER NOT NULL, height INTEGER NOT NULL,"
+            " rgba BLOB NOT NULL)",
         };
         for (const char* sql : schema)
         {
@@ -6614,6 +6622,15 @@ public:
                 || !ins.bind(7, DatabaseValue::blob(pam.data(), pam.size())) || ins.step() < 0)
                 return false;
             bytes += pam.size();
+        }
+        {
+            std::vector<uint8_t> thumb;
+            page_thumb(stack, THUMB_W, THUMB_H, thumb);
+            Stmt th(*db, "INSERT OR REPLACE INTO page_thumbs(page_id, width, height, rgba) VALUES(?, ?, ?, ?)");
+            if (!th || !th.bind(1, DatabaseValue::integer(m_current)) || !th.bind(2, DatabaseValue::integer(THUMB_W))
+                || !th.bind(3, DatabaseValue::integer(THUMB_H))
+                || !th.bind(4, DatabaseValue::blob(thumb.data(), thumb.size())) || th.step() < 0)
+                return false;
         }
         if (!guard.commit()) { ETCS_LOG("PaintPages", "Save: commit failed -- page not saved."); return false; }
 
@@ -6733,6 +6750,43 @@ public:
     // What the store holds, for anything that wants to SHOW the pages rather
     // than step through them -- the gear menu's list (PaintCanvasMenu).
     struct PageInfo { int64_t id = 0; std::string name; int64_t w = 0, h = 0, layers = 0; };
+
+    // The stored thumbnail's size. 4:3 like the default page, and the width a
+    // list row can give a picture beside a name.
+    static constexpr int32_t THUMB_W = 32;
+    static constexpr int32_t THUMB_H = 24;
+
+    // The thumbnail saved with a page, or false for a page saved before there
+    // were any (it gains one on its next save).
+    bool Thumb(int64_t id, int32_t& w, int32_t& h, std::vector<uint8_t>& rgba)
+    {
+        ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+        if (!db) return false;
+        Stmt st(*db, "SELECT width, height, rgba FROM page_thumbs WHERE page_id = ?");
+        if (!st || !st.bind(1, DatabaseValue::integer(id)) || st.step() != 1) return false;
+        w = static_cast<int32_t>(st.col(0).i);
+        h = static_cast<int32_t>(st.col(1).i);
+        const DatabaseValue v = st.col(2);
+        if (v.kind != DatabaseValue::Blob || !v.p || w <= 0 || h <= 0
+            || v.n != static_cast<size_t>(w) * h * 4) return false;
+        rgba.assign(static_cast<const uint8_t*>(v.p), static_cast<const uint8_t*>(v.p) + v.n);
+        return true;
+    }
+
+    // A page's name in the store, and on the document too when it is the one
+    // on screen -- otherwise the next save would write the old name back.
+    bool Rename(int64_t id, const std::string& name)
+    {
+        if (name.empty()) return false;
+        ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_db);
+        if (!db) return false;
+        Stmt up(*db, "UPDATE pages SET name = ? WHERE id = ?");
+        if (!up || !up.bind(1, text(name)) || !up.bind(2, DatabaseValue::integer(id)) || up.step() < 0) return false;
+        if (id == m_current && m_document) m_document->SetName(name);
+        persist();
+        ETCS_LOG("PaintPages", "page " << id << " renamed '" << name << "'");
+        return true;
+    }
 
     bool Pages(std::vector<PageInfo>& out)
     {
@@ -6868,6 +6922,10 @@ public:
             Stmt del(*db, "DELETE FROM pages WHERE id = ?");
             if (!del || !del.bind(1, DatabaseValue::integer(id)) || del.step() < 0) return false;
         }
+        {
+            Stmt del(*db, "DELETE FROM page_thumbs WHERE page_id = ?");
+            if (!del || !del.bind(1, DatabaseValue::integer(id)) || del.step() < 0) return false;
+        }
         if (!guard.commit()) return false;
         if (id == m_current) m_current = 0;
         ETCS_LOG("PaintPages", "deleted page " << id
@@ -6905,6 +6963,64 @@ private:
         int  step() { return db.Step(s); }
         DatabaseValue col(int c) { DatabaseValue v; db.Column(s, c, v); return v; }
     };
+
+    /*
+ * THE PICTURE OF A PAGE, small. Every visible layer, bottom first, each cell
+ * of the thumbnail the average of the source block under it, composited in
+ * order at the layer's opacity -- the same arithmetic PaintLayerPanel's
+ * paint_thumb does for one layer, done for the stack, over the checker so a
+ * transparent page still shows as a page. Written at save time, once.
+ */
+    static void page_thumb(const std::vector<PaintLayer*>& stack, int32_t tw, int32_t th,
+                           std::vector<uint8_t>& out)
+    {
+        out.assign(static_cast<size_t>(tw) * th * 4, 0);
+        std::vector<float> acc(static_cast<size_t>(tw) * th * 3, 0.0f);
+        for (int32_t y = 0; y < th; ++y)
+            for (int32_t x = 0; x < tw; ++x)
+            {
+                const bool light = (((x >> 2) + (y >> 2)) & 1) != 0;
+                float* c = &acc[(static_cast<size_t>(y) * tw + x) * 3];
+                c[0] = c[1] = c[2] = light ? 0.44f : 0.34f;
+            }
+        for (PaintLayer* l : stack)
+        {
+            if (!l || !l->visible()) continue;
+            const int32_t lw = static_cast<int32_t>(l->width()), lh = static_cast<int32_t>(l->height());
+            const uint8_t* src = l->PixelData();
+            if (!src || lw <= 0 || lh <= 0) continue;
+            const float opacity = std::clamp(l->opacity(), 0.0f, 1.0f);
+            for (int32_t y = 0; y < th; ++y)
+                for (int32_t x = 0; x < tw; ++x)
+                {
+                    const int32_t sx0 = x * lw / tw, sx1 = std::max(sx0 + 1, (x + 1) * lw / tw);
+                    const int32_t sy0 = y * lh / th, sy1 = std::max(sy0 + 1, (y + 1) * lh / th);
+                    const int32_t stepx = std::max(1, (sx1 - sx0) / 8), stepy = std::max(1, (sy1 - sy0) / 8);
+                    float ar = 0, ag = 0, ab = 0, aa = 0; int taps = 0;
+                    for (int32_t sy = sy0; sy < sy1 && sy < lh; sy += stepy)
+                        for (int32_t sx = sx0; sx < sx1 && sx < lw; sx += stepx)
+                        {
+                            const uint8_t* sp = src + (static_cast<size_t>(sy) * lw + sx) * 4;
+                            const float a = sp[3] / 255.0f;
+                            ar += (sp[0] / 255.0f) * a; ag += (sp[1] / 255.0f) * a;
+                            ab += (sp[2] / 255.0f) * a; aa += a; ++taps;
+                        }
+                    if (taps == 0 || aa <= 0.0f) continue;
+                    const float cover = (aa / taps) * opacity;
+                    float* c = &acc[(static_cast<size_t>(y) * tw + x) * 3];
+                    c[0] = c[0] * (1.0f - cover) + (ar / aa) * cover;
+                    c[1] = c[1] * (1.0f - cover) + (ag / aa) * cover;
+                    c[2] = c[2] * (1.0f - cover) + (ab / aa) * cover;
+                }
+        }
+        for (size_t i = 0; i < static_cast<size_t>(tw) * th; ++i)
+        {
+            out[i * 4 + 0] = paint_to_byte(acc[i * 3 + 0]);
+            out[i * 4 + 1] = paint_to_byte(acc[i * 3 + 1]);
+            out[i * 4 + 2] = paint_to_byte(acc[i * 3 + 2]);
+            out[i * 4 + 3] = 255;
+        }
+    }
 
     static DatabaseValue text(const std::string& s) { return DatabaseValue::text(s.data(), s.size()); }
     static std::string str(const DatabaseValue& v)
@@ -6978,6 +7094,316 @@ private:
         if (target == m_current) { ETCS_LOG("PaintPages", "switch: page " << m_current << " is the first."); return false; }
         return Load(target);
     }
+};
+
+/*
+ * ── PaintPagePanel ───────────────────────────────────────────────────────
+ *
+ * THE STORE, AS A LIST YOU CAN SEE -- the layer window's bargain, for pages.
+ * A row is [thumb][name ....][x] assembled by a script (paint_page_row.etcs)
+ * from RenderProvider's own leaves in the caller's tree; this type maps those
+ * nodes to what a press on each means and draws none of them. The rows are a
+ * window onto the store's pages, newest first, and the wheel over the list
+ * moves that window a row per notch (PaintInput::RouteEvent), so the count of
+ * rows is the resident set and not a cap on how many pages there are -- the
+ * same argument paint_layers.etcs makes for layers.
+ *
+ * The picture per row is the thumbnail the store made when the page was saved
+ * (PaintPages::Thumb), copied into the row's retained raster: a list that
+ * decoded a page's layers to draw a row would cost 6 MB of PAM per row per
+ * refresh, which is why the store keeps one.
+ *
+ *   thumb / body  load that page (PaintPages::Load); the present is flushed
+ *                 to its slot first, as every switch does
+ *   name          the same, and pressed again on the page already on screen
+ *                 it opens the name for typing -- Enter keeps, Escape drops
+ *   x             delete that page from the store (PaintPages::Delete). The
+ *                 page on screen stays on screen; it is only no longer in a
+ *                 slot, and the next save gives it a new one
+ *
+ * Bound into the gear menu's own input (PaintInput::BindPagePanel), because
+ * that is the pane it lives on; it could as easily sit in a window of its
+ * own. Tells the menu after a load (PaintCanvasMenu.PageChanged, by verb, as
+ * that type is declared below this one) so the width and height readouts
+ * follow the page.
+ */
+class PaintPagePanel : public DeletableBase<PaintPagePanel>
+{
+public:
+    WIRE_TYPE_IDENTITY(PaintPagePanel);
+
+    PaintPagePanel() = default;
+    bool DeleteConcrete() override { return true; }
+
+    enum class Region : uint8_t { Body, Label, Delete };
+
+    bool Create()
+    {
+        m_rows.clear();
+        m_regions.clear();
+        this->addTag("active");
+        return true;
+    }
+
+    void BindPages(ETCS::RID pages)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintPages", pages);
+        if (raw) m_pages = static_cast<PaintPages*>(raw->getTrueType());
+        Refresh();
+    }
+
+    // The menu whose readouts follow a load, reached by verb -- see the header.
+    void BindMenu(ETCS::RID menu)    { m_menu = menu; }
+    // The list's own pane, for the wheel's containment test (Contains).
+    void BindWindow(ETCS::RID pane)  { m_window = pane; }
+
+    void SetRowColors(float sr, float sg, float sb, float ur, float ug, float ub)
+    {
+        m_row_sel[0] = sr; m_row_sel[1] = sg; m_row_sel[2] = sb;
+        m_row_idle[0] = ur; m_row_idle[1] = ug; m_row_idle[2] = ub;
+    }
+
+    // A row is assembled the way a layer row is: opened, then parts by name.
+    void BeginRow() { m_rows.push_back(Row{}); }
+
+    void RowNode(const std::string& what, ETCS::RID node)
+    {
+        if (node == 0) return;
+        if (m_rows.empty()) { ETCS_LOG("PaintPagePanel", "RowNode before BeginRow -- ignored."); return; }
+        const size_t idx = m_rows.size() - 1;
+        Row& row = m_rows[idx];
+        if      (what == "bg")    { row.bg    = node; m_regions[node] = Hit{ idx, Region::Body }; }
+        else if (what == "thumb") { row.thumb = node; m_regions[node] = Hit{ idx, Region::Body }; }
+        else if (what == "label") { row.label = node; m_regions[node] = Hit{ idx, Region::Label }; }
+        else if (what == "del")   { row.del   = node; m_regions[node] = Hit{ idx, Region::Delete }; }
+        else ETCS_LOG("PaintPagePanel", "RowNode: '" << what << "' is not a part of a row "
+                      "(bg thumb label del) -- RID:" << node << " is attached to nothing.");
+    }
+
+    bool owns(ETCS::RID node) const { return node != 0 && m_regions.find(node) != m_regions.end(); }
+
+    bool Contains(Point2D at) const
+    {
+        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
+        if (!w) return false;
+        const Rect2D b = w->Bounds();
+        return at.x >= b.x && at.y >= b.y
+            && at.x < b.x + static_cast<int32_t>(b.w) && at.y < b.y + static_cast<int32_t>(b.h);
+    }
+
+    // Rows, top first; negative toward the newest page. Clamped, as the layer
+    // window's is: a list that wraps is one you cannot find anything in.
+    void Scroll(int32_t delta)
+    {
+        const int32_t rows  = static_cast<int32_t>(m_rows.size());
+        const int32_t total = static_cast<int32_t>(m_ids.size());
+        const int32_t most  = (total > rows) ? (total - rows) : 0;
+        m_scroll = std::clamp(m_scroll + delta, 0, most);
+        Refresh();
+    }
+
+    /*
+ * A press on one of the parts. `is_press` false is a release, which is ours
+ * to swallow (so the sheet under the menu does not see the second half of a
+ * click) and does nothing.
+ */
+    bool Apply(ETCS::RID node, bool is_press)
+    {
+        auto it = m_regions.find(node);
+        if (it == m_regions.end()) return false;
+        if (!is_press) return true;
+        if (!m_pages) return true;
+        const Hit hit = it->second;
+        if (hit.row >= m_rows.size()) return true;
+        const int64_t id = m_rows[hit.row].id;
+        if (id == 0) return true;                       // an empty slot is still ours
+        // The row being typed into keeps the keys whatever part of it is
+        // pressed; only its x, or a press somewhere else, ends the field.
+        if (m_editing && m_renaming == id && hit.region != Region::Delete) return true;
+
+        switch (hit.region)
+        {
+        case Region::Label:
+            // On the page already on screen a press is the first half of a
+            // rename; anywhere else it is a load, like the body.
+            if (id == m_pages->current()) { begin_edit(id); return true; }
+            [[fallthrough]];
+        case Region::Body:
+            end_edit(false);
+            if (id != m_pages->current() && m_pages->Load(id)) page_changed();
+            break;
+        case Region::Delete:
+            if (m_editing && m_renaming == id) end_edit(false);
+            m_pages->Delete(id);
+            break;
+        }
+        Refresh();
+        return true;
+    }
+
+    bool KeyIn(uint16_t key)
+    {
+        if (!m_editing) return false;
+        constexpr uint16_t KEY_ESCAPE = 256, KEY_ENTER = 257, KEY_BACKSPACE = 259;
+        if (key == KEY_ENTER)     { end_edit(true);  return true; }
+        if (key == KEY_ESCAPE)    { end_edit(false); return true; }
+        if (key == KEY_BACKSPACE) { if (!m_edit.empty()) m_edit.pop_back(); Refresh(); return true; }
+        const char ch = paint_key_to_char(key);
+        if (ch == 0) return true;
+        if (m_edit.size() < 48) m_edit.push_back(ch);
+        Refresh();
+        return true;
+    }
+
+    bool editing() const { return m_editing; }
+    void CloseEdit() { end_edit(true); }
+
+    /*
+ * Re-bind the rows to the store's pages, newest first, from the scroll
+ * offset. Called after anything that changes what the list should say -- a
+ * save, a load, a delete, a rename, a scroll -- rather than on a clock.
+ */
+    void Refresh()
+    {
+        m_ids.clear();
+        std::vector<PaintPages::PageInfo> pages;
+        if (m_pages) m_pages->Pages(pages);
+        std::vector<const PaintPages::PageInfo*> newest;
+        for (size_t i = pages.size(); i-- > 0; ) newest.push_back(&pages[i]);
+        for (const auto* p : newest) m_ids.push_back(p->id);
+        const int64_t here = m_pages ? m_pages->current() : 0;
+
+        {
+            const int32_t most = (newest.size() > m_rows.size())
+                               ? static_cast<int32_t>(newest.size() - m_rows.size()) : 0;
+            m_scroll = std::clamp(m_scroll, 0, most);
+        }
+        for (size_t i = 0; i < m_rows.size(); ++i)
+        {
+            Row& row = m_rows[i];
+            const size_t at = i + static_cast<size_t>(m_scroll);
+            const PaintPages::PageInfo* info = (at < newest.size()) ? newest[at] : nullptr;
+            row.id = info ? info->id : 0;
+            if (!info)
+            {
+                // An empty slot is drawn as nothing rather than hidden: the
+                // list is a fixed frame and a gap in it is honest.
+                paint_node_fill(row.bg, m_row_idle[0], m_row_idle[1], m_row_idle[2], 0.0f);
+                paint_node_hidden(row.thumb, true);
+                paint_node_hidden(row.del, true);
+                paint_node_text(row.label, "");
+                continue;
+            }
+            const bool current = (info->id == here && here != 0);
+            const float* c = current ? m_row_sel : m_row_idle;
+            paint_node_fill(row.bg, c[0], c[1], c[2], 1.0f);
+            paint_node_hidden(row.thumb, false);
+            paint_node_hidden(row.del, false);
+            paint_thumb(row.thumb, info->id);
+            const std::string name = info->name.empty() ? ("page " + std::to_string(info->id)) : info->name;
+            if (m_editing && m_renaming == info->id)
+                paint_node_text(row.label, m_edit + "_");
+            else
+                paint_node_text(row.label, name + " " + std::to_string(info->w) + "x" + std::to_string(info->h));
+        }
+    }
+
+    void Report() const
+    {
+        ETCS_LOG("PaintPagePanel", m_rows.size() << " row(s), scroll " << m_scroll << ", "
+                 << m_ids.size() << " page(s)" << (m_editing ? " [renaming]" : ""));
+    }
+
+private:
+    struct Row { ETCS::RID bg = 0, thumb = 0, label = 0, del = 0; int64_t id = 0; };
+    struct Hit { size_t row; Region region; };
+
+    // The stored thumbnail into the row's raster. Sizes usually agree (the
+    // row script makes the raster THUMB_W x THUMB_H); when they do not the
+    // picture is sampled nearest rather than refused, so an old store still
+    // draws. A page saved before there were thumbnails draws the checker.
+    void paint_thumb(ETCS::RID node, int64_t id)
+    {
+        if (node == 0 || !m_pages) return;
+        Pixels_* dst = ETCS::resolve_in_family<Pixels_>("Pixels", node);
+        if (!dst) return;
+        uint8_t* out = dst->PixelData();
+        if (!out) return;
+        const int32_t tw = static_cast<int32_t>(dst->PixelWidth());
+        const int32_t th = static_cast<int32_t>(dst->PixelHeight());
+        if (tw <= 0 || th <= 0) return;
+
+        int32_t sw = 0, sh = 0;
+        std::vector<uint8_t> src;
+        const bool have = m_pages->Thumb(id, sw, sh, src);
+        for (int32_t y = 0; y < th; ++y)
+            for (int32_t x = 0; x < tw; ++x)
+            {
+                uint8_t* dp = out + (static_cast<size_t>(y) * tw + x) * 4;
+                if (have)
+                {
+                    const int32_t sx = std::min(sw - 1, x * sw / tw), sy = std::min(sh - 1, y * sh / th);
+                    const uint8_t* sp = src.data() + (static_cast<size_t>(sy) * sw + sx) * 4;
+                    dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = 255;
+                }
+                else
+                {
+                    const bool light = (((x >> 2) + (y >> 2)) & 1) != 0;
+                    dp[0] = dp[1] = dp[2] = light ? 112 : 87; dp[3] = 255;
+                }
+            }
+        etcs_mark_observed(dst);
+    }
+
+    void page_changed()
+    {
+        if (m_menu == 0) return;
+        if (ETCS::Entity* e = paint_resolve_tag("PaintCanvasMenu", m_menu))
+        {
+            ETCS::Buffer act; act.write("PaintCanvasMenu.PageChanged");
+            ETCS::Buffer arg;
+            try { e->call(act, arg); } catch (...) {}
+        }
+    }
+
+    // The field opens on the name the page has, not empty: a rename is an
+    // edit of it, and a name that vanishes at the first press reads as lost.
+    void begin_edit(int64_t id)
+    {
+        if (m_editing) end_edit(false);
+        m_renaming = id;
+        m_editing  = true;
+        m_edit.clear();
+        std::vector<PaintPages::PageInfo> pages;
+        if (m_pages) m_pages->Pages(pages);
+        for (const auto& p : pages) if (p.id == id) { m_edit = p.name; break; }
+        Refresh();
+    }
+
+    void end_edit(bool keep)
+    {
+        if (!m_editing) { m_renaming = 0; return; }
+        const int64_t id = m_renaming;
+        const std::string text = m_edit;
+        m_editing = false;
+        m_edit.clear();
+        m_renaming = 0;
+        if (keep && m_pages && id != 0 && !text.empty()) m_pages->Rename(id, text);
+        Refresh();
+    }
+
+    PaintPages* m_pages  = nullptr;
+    ETCS::RID   m_menu   = 0;
+    ETCS::RID   m_window = 0;
+    std::vector<Row>  m_rows;
+    std::vector<int64_t> m_ids;             // newest first -- what the rows window onto
+    std::unordered_map<ETCS::RID, Hit> m_regions;
+    int32_t     m_scroll   = 0;
+    bool        m_editing  = false;
+    int64_t     m_renaming = 0;
+    std::string m_edit;
+    float m_row_sel[3]  = { 0.35f, 0.55f, 0.95f };
+    float m_row_idle[3] = { 0.15f, 0.16f, 0.11f };
 };
 
 /*
@@ -9757,10 +10183,6 @@ public:
     PaintCanvasMenu() = default;
     bool DeleteConcrete() override { return true; }
 
-    // How many stored pages the menu shows at once. The store keeps every
-    // page; this is the resident set, the same bargain the layer window makes.
-    static constexpr int32_t PAGE_ROWS = 5;
-
     static constexpr int32_t STEP_PX = 64;
     static constexpr int32_t MIN_PX  = 64;
     static constexpr int32_t MAX_PX  = 8192;
@@ -9871,7 +10293,7 @@ public:
         else
             ok = m_document->New(static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height));
         if (!ok) return;
-        RefreshPages();
+        refresh_pages();
         if (m_surface) m_surface->Render();
     }
 
@@ -9893,7 +10315,7 @@ public:
  */
     void Save()
     {
-        if (m_pages) { if (m_pages->Save()) RefreshPages(); return; }
+        if (m_pages) { if (m_pages->Save()) refresh_pages(); return; }
         page_event("save");
     }
     void Load() { page_event("load"); }
@@ -9913,88 +10335,42 @@ public:
  * goes in as a layer at once: an unanswerable question is not a wait.
  */
     /*
- * ── the pages, shown rather than stepped ─────────────────────────────────
+ * ── the pages ────────────────────────────────────────────────────────────
  *
- * The store already kept every page and ctrl+PageUp/PageDown already walked
- * them (PaintPages), but a history nobody can SEE is one nobody uses: there
- * was no way to find out how many pages there were, what was on them, or to
- * go to one directly. The menu lists them, newest last, and a press on a row
- * loads that page.
- *
- * ROWS ARE THE SCRIPT'S, as everything else here is: it declares the
- * rectangles and the labels and binds them by index, and this fills them in.
- * The ids are held per row rather than baked into the call, because which page
- * is in which row changes every time one is added.
+ * The store keeps every page and ctrl+PageUp/PageDown walks them
+ * (PaintPages); the list you can SEE is PaintPagePanel, on this menu's pane,
+ * bound to the same store. What this type keeps of the pages is `new` (above)
+ * and the two readouts, which have to follow a load made from the list --
+ * PageChanged is how the panel says so, by verb, since it is declared before
+ * this type.
  */
     void BindPages(ETCS::RID pages)
     {
         ETCS::Entity* raw = paint_resolve_tag("PaintPages", pages);
         if (raw) m_pages = static_cast<PaintPages*>(raw->getTrueType());
-        RefreshPages();
     }
 
-    void BindPageRow(int32_t index, ETCS::RID node, ETCS::RID label)
+    // The page on screen changed under the menu: the steppers show its size.
+    void PageChanged()
     {
-        if (index < 0 || index >= PAGE_ROWS) return;
-        m_page_row[index]   = node;
-        m_page_label[index] = label;
-        RefreshPages();
+        if (!m_document) return;
+        m_width  = std::clamp(static_cast<int32_t>(m_document->width()),  MIN_PX, MAX_PX);
+        m_height = std::clamp(static_cast<int32_t>(m_document->height()), MIN_PX, MAX_PX);
+        push_readouts();
+        refresh_pages();
     }
 
-    /*
- * The last PAGE_ROWS pages, newest first, so a long history shows what was
- * most recently worked on rather than what was made first. The current page
- * is marked; an empty row says nothing at all rather than "-", because a row
- * that reads as a page you could press is worse than a gap.
- */
-    void RefreshPages()
+    // The list on this pane, told to re-read the store after this type
+    // changed it (a new page, a save). By verb, for the ordering reason above.
+    void BindPagePanel(ETCS::RID panel) { m_page_panel = panel; }
+    void refresh_pages()
     {
-        std::vector<PaintPages::PageInfo> pages;
-        if (m_pages) m_pages->Pages(pages);
-        const int64_t here = m_pages ? m_pages->current() : 0;
-
-        for (int32_t i = 0; i < PAGE_ROWS; ++i)
+        if (m_page_panel == 0) return;
+        if (ETCS::Entity* e = paint_resolve_tag("PaintPagePanel", m_page_panel))
         {
-            const size_t from_end = static_cast<size_t>(i) + 1;
-            const bool has = pages.size() >= from_end;
-            const PaintPages::PageInfo* info = has ? &pages[pages.size() - from_end] : nullptr;
-            m_page_id[i] = info ? info->id : 0;
-            if (!info)
-            {
-                paint_node_text(m_page_label[i], "");
-                paint_node_fill(m_page_row[i], 0.106f, 0.110f, 0.078f, 1.0f);
-                continue;
-            }
-            const std::string name = info->name.empty()
-                ? ("page " + std::to_string(info->id)) : info->name;
-            paint_node_text(m_page_label[i],
-                name + "  " + std::to_string(info->w) + "x" + std::to_string(info->h));
-            const bool current = (info->id == here && here != 0);
-            // The same two the layer rows use, and for the same reason: this is
-            // furniture in the same window, so an empty slot is the ruler's band,
-            // an idle row is one step up from it, and the current page is the
-            // ruler's in-band highlight. See paint_layers.etcs.
-            if (current) paint_node_fill(m_page_row[i], 0.35f, 0.55f, 0.95f, 1.0f);
-            else         paint_node_fill(m_page_row[i], 0.15f, 0.16f, 0.11f, 1.0f);
-        }
-    }
-
-    // A press on a listed page. By ROW, because that is what the script bound;
-    // the id it means is whatever RefreshPages last put there.
-    void LoadPage(int32_t index)
-    {
-        if (index < 0 || index >= PAGE_ROWS || !m_pages) return;
-        const int64_t id = m_page_id[index];
-        if (id == 0) return;
-        if (m_pages->Load(id))
-        {
-            if (m_document)
-            {
-                m_width  = std::clamp(static_cast<int32_t>(m_document->width()),  MIN_PX, MAX_PX);
-                m_height = std::clamp(static_cast<int32_t>(m_document->height()), MIN_PX, MAX_PX);
-                push_readouts();
-            }
-            RefreshPages();
+            ETCS::Buffer act; act.write("PaintPagePanel.Refresh");
+            ETCS::Buffer arg;
+            try { e->call(act, arg); } catch (...) {}
         }
     }
 
@@ -10193,9 +10569,7 @@ private:
     ETCS::RID   m_prompt_caption = 0;
     PaintTool*  m_tool = nullptr;
     PaintPages* m_pages = nullptr;
-    ETCS::RID   m_page_row[PAGE_ROWS]   = { 0, 0, 0, 0, 0 };
-    ETCS::RID   m_page_label[PAGE_ROWS] = { 0, 0, 0, 0, 0 };
-    int64_t     m_page_id[PAGE_ROWS]    = { 0, 0, 0, 0, 0 };
+    ETCS::RID   m_page_panel = 0;        // the list on this pane -- see BindPagePanel
     std::string m_pending;
 };
 
@@ -10299,6 +10673,16 @@ public:
         m_panel = static_cast<PaintLayerPanel*>(raw->getTrueType());
     }
 
+    // The page list, for the pane it lives on (the gear menu's): a press on
+    // one of its parts is its, the wheel over it scrolls it, and the keys go
+    // to it while a name is open. Same seams as the layer panel's.
+    void BindPagePanel(ETCS::RID panel)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintPagePanel", panel);
+        if (!raw) return;
+        m_page_panel = static_cast<PaintPagePanel*>(raw->getTrueType());
+    }
+
     /*
  * THE POINTER IS NO LONGER OVER THIS PANE, said by the router rather than
  * inferred here.
@@ -10359,13 +10743,18 @@ public:
             // else on the pane it is the zoom (HandleEvent). The position is
             // the last one routed, translated into the pane's space the same
             // way a picked event's is below.
-            if (m_panel && m_root != 0)
+            if ((m_panel || m_page_panel) && m_root != 0)
             {
                 const Point2D pane_at = paint_root_origin(m_root);
                 const Point2D at{ RoutedCursorX() - pane_at.x, RoutedCursorY() - pane_at.y };
-                if (m_panel->Contains(at))
+                if (m_panel && m_panel->Contains(at))
                 {
                     m_panel->Scroll(ev.y > 0 ? -1 : +1);
+                    return;
+                }
+                if (m_page_panel && m_page_panel->Contains(at))
+                {
+                    m_page_panel->Scroll(ev.y > 0 ? -1 : +1);
                     return;
                 }
             }
@@ -10451,6 +10840,15 @@ public:
         if ((is_press || is_release) && m_panel && !m_on_panel
             && m_panel->editing() && !m_panel->owns(hit_rid))
             m_panel->CloseEdit();
+        if ((is_press || is_release) && m_page_panel
+            && m_page_panel->editing() && !m_page_panel->owns(hit_rid))
+            m_page_panel->CloseEdit();
+
+        // THE PAGE LIST, ahead of the palette: its rows are on the same pane as
+        // the menu's buttons and a press on one is the list's, the release
+        // swallowed with it so the sheet under the menu never sees half a click.
+        if ((is_press || is_release) && m_page_panel && m_page_panel->Apply(hit_rid, is_press))
+            return;
 
         if (m_palette && ev.action == INPUT_MOTION)
             m_palette->Hover(hit_rid);
@@ -11191,6 +11589,7 @@ public:
      * Escape (PaintLayerPanel::KeyIn), and only the panel knows it is open.
      */
         if (m_panel && m_panel->KeyIn(key)) return true;
+        if (m_page_panel && m_page_panel->KeyIn(key)) return true;
         // GLFW's codes. Named rather than compared as bare numbers, because a
         // bare 259 in a paint program is unreadable.
         constexpr uint16_t KEY_ESCAPE = 256, KEY_ENTER = 257, KEY_BACKSPACE = 259;
@@ -11942,6 +12341,7 @@ private:
     // before the first motion event would begin a stroke at the origin.
     bool    m_cursor_seen = false;
     PaintLayerPanel* m_panel = nullptr;
+    PaintPagePanel*  m_page_panel = nullptr;   // see BindPagePanel
     uint64_t         m_panel_rev = 0;      // the document revision the panel last showed
     // Whether the document is currently showing its text-box outlines, so the
     // reconcile above is a comparison rather than a call per event.
@@ -13919,6 +14319,14 @@ DEFINE_WORK_FUNC_TYPED(PaintPages, Load, (int64_t, id))
     self.Load(id);
 }
 
+// Rename <id> <rest of line> -- the page's name in the store (and on the
+// document when it is the page on screen).
+DEFINE_WORK_FUNC_TYPED(PaintPages, Rename, (int64_t, id), (std::string, name))
+{
+    (void)ctx;
+    self.Rename(id, name);
+}
+
 DEFINE_WORK_FUNC(PaintPages, New)
 {
     (void)ctx; (void)data;
@@ -14152,6 +14560,79 @@ DEFINE_WORK_FUNC_TYPED(PaintLayerPanel, BindDocument, (ETCS::RID, document))
 {
     (void)ctx;
     self.BindDocument(document);
+}
+
+// ── PaintPagePanel ─────────────────────────────────────────────────────────
+//
+// The store as a list: rows assembled by paint_page_row.etcs, a press on a
+// row loads that page, its x deletes it, a second press on the name of the
+// page on screen renames it. See PaintPagePanel.
+DEFINE_WORK_FUNC(PaintPagePanel, Create)
+{
+    (void)ctx; (void)data;
+    self.Create();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPagePanel, BindPages, (ETCS::RID, pages))
+{
+    (void)ctx;
+    self.BindPages(pages);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPagePanel, BindMenu, (ETCS::RID, menu))
+{
+    (void)ctx;
+    self.BindMenu(menu);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPagePanel, BindWindow, (ETCS::RID, pane))
+{
+    (void)ctx;
+    self.BindWindow(pane);
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPagePanel, SetRowColors,
+    (float, sr), (float, sg), (float, sb), (float, ur), (float, ug), (float, ub))
+{
+    (void)ctx;
+    self.SetRowColors(sr, sg, sb, ur, ug, ub);
+}
+
+DEFINE_WORK_FUNC(PaintPagePanel, BeginRow)
+{
+    (void)ctx; (void)data;
+    self.BeginRow();
+}
+
+DEFINE_WORK_FUNC_TYPED(PaintPagePanel, RowNode, (std::string, what), (ETCS::RID, node))
+{
+    (void)ctx;
+    self.RowNode(what, node);
+}
+
+// Scroll <rows> -- negative toward the newest page.
+DEFINE_WORK_FUNC_TYPED(PaintPagePanel, Scroll, (int32_t, delta))
+{
+    (void)ctx;
+    self.Scroll(delta);
+}
+
+DEFINE_WORK_FUNC(PaintPagePanel, Refresh)
+{
+    (void)ctx; (void)data;
+    self.Refresh();
+}
+
+DEFINE_WORK_FUNC(PaintPagePanel, Report)
+{
+    (void)ctx; (void)data;
+    self.Report();
+}
+
+DEFINE_WORK_FUNC(PaintPagePanel, Delete)
+{
+    (void)ctx; (void)data;
+    self.DeleteConcrete();
 }
 
 // AddRow <bg> <eye> <thumb> <label> <delete> -- top of the window first,
@@ -14527,9 +15008,8 @@ DEFINE_WORK_FUNC(PaintCanvasMenu, Load)
 // BindImportPrompt <palette> <pane> <input> <caption> -- the popup that asks
 // what an arriving file is for; OfferImport <path> asks it. See
 // PaintCanvasMenu::OfferImport.
-// BindPages <pages> -- the store the menu lists and `new` adds to; BindPageRow
-// <index> <node> <label> -- one listed page; LoadPage <index> -- go to it.
-// See PaintCanvasMenu's pages note.
+// BindPages <pages> -- the store `new` adds to and save writes; the list of
+// pages is PaintPagePanel's. See PaintCanvasMenu's pages note.
 // BindAnchorArrow <index> <label> -- the arrow drawn on that cell, pointing
 // away from whichever cell is chosen (PaintCanvasMenu::BindAnchorArrow).
 // SetExtent <w> <h> -- both numbers at once, for the presets
@@ -14553,23 +15033,20 @@ DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindPages, (ETCS::RID, pages))
     self.BindPages(pages);
 }
 
-DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindPageRow,
-    (int32_t, index), (ETCS::RID, node), (ETCS::RID, label))
+// BindPagePanel <panel> -- the PaintPagePanel on this pane, re-read after a
+// new page or a save.
+DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, BindPagePanel, (ETCS::RID, panel))
 {
     (void)ctx;
-    self.BindPageRow(index, node, label);
+    self.BindPagePanel(panel);
 }
 
-DEFINE_WORK_FUNC_TYPED(PaintCanvasMenu, LoadPage, (int32_t, index))
-{
-    (void)ctx;
-    self.LoadPage(index);
-}
-
-DEFINE_WORK_FUNC(PaintCanvasMenu, RefreshPages)
+// PageChanged -- the page on screen was swapped by something else (the list);
+// the readouts follow it.
+DEFINE_WORK_FUNC(PaintCanvasMenu, PageChanged)
 {
     (void)ctx; (void)data;
-    self.RefreshPages();
+    self.PageChanged();
 }
 
 // BindTool <tool> -- what an import leaves selected (PaintCanvasMenu::BindTool).
@@ -14788,6 +15265,13 @@ DEFINE_WORK_FUNC_TYPED(PaintInput, SetHoldCapacity, (int32_t, n))
 {
     (void)ctx;
     self.SetHoldCapacity(static_cast<uint16_t>(n < 1 ? 1 : n));
+}
+
+// BindPagePanel <panel> -- the page list on this pane (PaintInput::BindPagePanel).
+DEFINE_WORK_FUNC_TYPED(PaintInput, BindPagePanel, (ETCS::RID, panel))
+{
+    (void)ctx;
+    self.BindPagePanel(panel);
 }
 
 // BindPages <rid> -- the page store the ctrl+PageUp/PageDown chords switch.
