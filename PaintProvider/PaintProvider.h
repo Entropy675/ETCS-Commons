@@ -19,6 +19,8 @@
 #include <random>
 #include <thread>
 #include <string>
+#include <map>
+#include <cctype>
 #include <unordered_map>
 #include <vector>
 
@@ -2882,6 +2884,13 @@ struct PaintTextBox
     int32_t     w = 1, h = 1;
     std::string text;
     uint32_t    id = 0;             // stable across edits, unlike an index
+    /*
+     * ITS NAME IN A SHARED SESSION. The id is this document's own counter and
+     * means nothing on another page, so a box also carries a key that does:
+     * who made it and their id for it ("alice.3"; "-.3" for one made before
+     * the page was shared). Every page in the room names the box by it.
+     */
+    std::string key;
     // The colour it was placed with. On the box rather than read from the tool at
     // draw time, because the tool's colour moves on and this text should not: two
     // captions placed with different colours stay different.
@@ -3990,6 +3999,7 @@ public:
         b.w = (w < 1) ? 1 : w;
         b.h = (h < 1) ? 1 : h;
         b.id = ++m_text_seq;
+        b.key = (m_author.empty() ? std::string("-") : m_author) + "." + std::to_string(b.id);
         m_text.push_back(b);
         ETCS_LOG("PaintDocument", "text box " << b.id << " at " << b.x << "," << b.y
                  << " " << b.w << "x" << b.h);
@@ -4015,7 +4025,17 @@ public:
     {
         Touch();
         for (auto it = m_text.begin(); it != m_text.end(); ++it)
-            if (it->id == id) { m_text.erase(it); return true; }
+            if (it->id == id)
+            {
+                if (sharing())
+                {
+                    note_text(it->key, true);
+                    if (m_text_sel == id) text_event("release:" + it->key);
+                }
+                if (m_text_sel == id) m_text_sel = 0;
+                m_text.erase(it);
+                return true;
+            }
         return false;
     }
 
@@ -4044,8 +4064,81 @@ public:
  * what makes every existing box visible and therefore selectable.
  */
     void ShowTextBoxes(bool on)   { m_text_show = on; }
-    void SelectTextBox(uint32_t id) { m_text_sel = id; }
+
+    /*
+ * ── TEXT IN A SHARED SESSION: ONE HAND ON A BOX AT A TIME ────────────────
+ *
+ * Selecting a box is CLAIMING it. The page asks the node, which gives each box
+ * to the first person who asks and to nobody else until they let go; a claim
+ * refused comes back as TextDenied and the box goes back to how it was.
+ * Letting go -- Enter, Escape, a press elsewhere, or the page's idle timer --
+ * is the SUBMISSION: the box as it stands goes to the room, and the claim is
+ * released after it lands. What travels is the box's state, not keystrokes,
+ * so the room sees each edit when it is finished and never half of one.
+ *
+ * Not in the notebook. A box is a string, not pixels, and undo is a walk over
+ * the pixel history (replayTo); a text entry among the marks would be one more
+ * thing that walk has to step over. Shared boxes travel beside the notebook --
+ * the pending set below, drained into the same push (ExportOps).
+ */
+    void SelectTextBox(uint32_t id)
+    {
+        if (id == m_text_sel) return;
+        const uint32_t was = m_text_sel;
+        m_text_sel = id;
+        if (!sharing()) return;
+        if (was)
+            if (const PaintTextBox* b = FindTextBox(was))
+            {
+                note_text(b->key, false);
+                text_event("release:" + b->key);
+            }
+        if (id)
+            if (const PaintTextBox* b = FindTextBox(id))
+            {
+                m_text_before = *b;
+                text_event("claim:" + b->key);
+            }
+    }
     uint32_t selectedTextBox() const { return m_text_sel; }
+
+    // A key went into the selected box: the page keeps the claim alive while
+    // someone is typing (and lets it lapse when they stop).
+    void TextEdited(uint32_t id)
+    {
+        if (!sharing()) return;
+        if (const PaintTextBox* b = FindTextBox(id)) text_event("touch:" + b->key);
+    }
+
+    /*
+ * THE NODE SAID NO: somebody else is holding this box. It goes back to what it
+ * was when it was selected -- anything typed since was typed into a box that
+ * was never ours -- and the selection with it, and nothing is sent.
+ */
+    void TextDenied(const std::string& key, const std::string& holder)
+    {
+        PaintTextBox* b = nullptr;
+        for (auto& t : m_text) if (t.key == key) b = &t;
+        if (!b) return;
+        if (b->id == m_text_sel && m_text_before.key == key)
+        {
+            const uint32_t id = b->id;
+            *b = m_text_before;
+            b->id = id;
+            m_text_sel = 0;
+            m_text_out.erase(key);
+        }
+        Touch();
+        ETCS_LOG("PaintDocument", "text box " << key << " is " << (holder.empty() ? std::string("someone else") : holder)
+                 << "'s until they let go of it.");
+    }
+
+    // The pending boxes up to the last export reached the room.
+    void TextSent()
+    {
+        for (auto it = m_text_out.begin(); it != m_text_out.end(); )
+            it = (it->second.ver <= m_text_exported) ? m_text_out.erase(it) : std::next(it);
+    }
 
     /*
  * ── the selection ────────────────────────────────────────────────────────
@@ -4530,6 +4623,7 @@ public:
                 ++n;
             }
         }
+        n += write_text_out(o);
         if (!o) { ETCS_LOG("PaintDocument", "ExportOps: write to '" << path << "' failed."); return 0; }
         ETCS_LOG("PaintDocument", "ExportOps: " << n << " entr(ies) after " << since
                  << " along a " << chain.size() << "-entry path -> '" << path << "'.");
@@ -4581,6 +4675,17 @@ public:
         {
             if (line.empty()) continue;
             if (!line.empty() && line.back() == '\r') line.pop_back();
+            {
+                // A text box, not a notebook entry (SelectTextBox says why).
+                std::istringstream k(line);
+                std::string seq, kind;
+                k >> seq >> kind;
+                if (kind == "text" || kind == "untext")
+                {
+                    if (apply_text_line(line)) ++taken; else ++bad;
+                    continue;
+                }
+            }
             PaintOp op;
             if (!paint_op_decode(line, op)) { ++bad; continue; }
             AcceptOp(std::move(op));
@@ -5666,6 +5771,14 @@ private:
     std::vector<PaintTextBox> m_text;
     uint32_t  m_text_seq  = 0;
     uint32_t  m_text_sel  = 0;
+    // Shared text (SelectTextBox): the selected box as it was when claimed, and
+    // the boxes waiting to be pushed -- by key, removed or not, with the
+    // version that says whether the last export already carried them.
+    struct TextOut { uint64_t ver = 0; bool removed = false; };
+    PaintTextBox m_text_before;
+    std::map<std::string, TextOut> m_text_out;
+    uint64_t m_text_ver = 0;
+    mutable uint64_t m_text_exported = 0;
     bool      m_text_show = false;
     bool      m_text_warned = false;
     ETCS::RID m_glyphs = 0;
@@ -5738,6 +5851,106 @@ private:
     }
 
     // And the roster AFTER it, which is the entry undo actually walks over.
+    bool sharing() const { return !m_author.empty(); }
+
+    void note_text(const std::string& key, bool removed)
+    {
+        TextOut& o = m_text_out[key];
+        o.ver = ++m_text_ver;
+        o.removed = removed;
+    }
+
+    // Up to the page, which holds the node: claim, touch, release.
+    void text_event(const std::string& what) const
+    {
+#if defined(__EMSCRIPTEN__)
+        MAIN_THREAD_EM_ASM({
+            window.dispatchEvent(new CustomEvent('etcs-text', { detail: UTF8ToString($0) }));
+        }, what.c_str());
+#endif
+        ETCS_LOG("PaintDocument", "text " << what);
+    }
+
+    /*
+     * A BOX ON THE WIRE: "<seq> text <author> 0 0 <key> x y w h r g b a <text>"
+     * with the text in base64 ("-" when empty), or "<seq> untext <author> 0 0
+     * <key>". The two zeros stand where a notebook line has its layer and order,
+     * so the node reads the author and the key from the same places in both.
+     */
+    static std::string text_line(const PaintTextBox& b, const std::string& author)
+    {
+        std::string out = "0 text " + (author.empty() ? std::string("-") : author) + " 0 0 " + b.key;
+        out += ' ' + std::to_string(b.x) + ' ' + std::to_string(b.y) + ' ' + std::to_string(b.w) + ' ' + std::to_string(b.h);
+        for (float c : b.rgba) out += ' ' + std::to_string(c);
+        out += ' ';
+        out += b.text.empty() ? std::string("-")
+                              : paint_b64_encode(reinterpret_cast<const uint8_t*>(b.text.data()), b.text.size());
+        return out;
+    }
+
+    // The pending boxes, after the notebook's lines (ExportOps).
+    size_t write_text_out(std::ostream& o) const
+    {
+        size_t n = 0;
+        for (const auto& [key, out] : m_text_out)
+        {
+            if (out.removed) o << "0 untext " << m_author << " 0 0 " << key << "\n";
+            else
+            {
+                const PaintTextBox* b = nullptr;
+                for (const auto& t : m_text) if (t.key == key) b = &t;
+                if (!b) continue;
+                o << text_line(*b, m_author) << "\n";
+            }
+            ++n;
+            m_text_exported = std::max(m_text_exported, out.ver);
+        }
+        return n;
+    }
+
+    // A box line from the room. The box this page is holding is left alone --
+    // nobody else can have submitted it (the node refuses them), so a line for
+    // it is an old one.
+    bool apply_text_line(const std::string& line)
+    {
+        std::istringstream in(line);
+        std::string seq, kind, author, layer, order, key;
+        if (!(in >> seq >> kind >> author >> layer >> order >> key)) return false;
+        PaintTextBox* b = nullptr;
+        for (auto& t : m_text) if (t.key == key) b = &t;
+        if (b && b->id == m_text_sel) return true;
+        if (kind == "untext")
+        {
+            if (b) for (auto it = m_text.begin(); it != m_text.end(); ++it)
+                if (it->key == key) { m_text.erase(it); break; }
+            Touch();
+            return true;
+        }
+        PaintTextBox got;
+        std::string body;
+        if (!(in >> got.x >> got.y >> got.w >> got.h >> got.rgba[0] >> got.rgba[1] >> got.rgba[2] >> got.rgba[3] >> body))
+            return false;
+        if (body != "-")
+        {
+            std::vector<uint8_t> raw;
+            if (!paint_b64_decode(body, raw)) return false;
+            got.text.assign(raw.begin(), raw.end());
+        }
+        if (!b)
+        {
+            got.id = ++m_text_seq;
+            got.key = key;
+            m_text.push_back(got);
+        }
+        else
+        {
+            got.id = b->id; got.key = key;
+            *b = got;
+        }
+        Touch();
+        return true;
+    }
+
     // True, and said once, when this document is view only (SetReadOnly).
     bool refuse_read_only(const char* what) const
     {
@@ -5774,6 +5987,7 @@ private:
             o << paint_op_encode(snap) << "\n";
             ++n;
         }
+        for (const PaintTextBox& b : m_text) { o << text_line(b, m_author) << "\n"; ++n; }
         return n;
     }
 
@@ -13437,6 +13651,7 @@ public:
         if (key == KEY_BACKSPACE)
         {
             if (!b->text.empty()) b->text.pop_back();
+            m_document->TextEdited(sel);
             repaint_view();
             return true;
         }
@@ -13452,6 +13667,7 @@ public:
         const char ch = paint_key_to_char(key);
         if (ch == 0) return true;          // consumed: a modifier or a function key
         b->text.push_back(ch);
+        m_document->TextEdited(sel);
         repaint_view();
         return true;
     }
@@ -14599,12 +14815,25 @@ private:
         std::chrono::steady_clock::time_point seen = std::chrono::steady_clock::now();
     };
 
+    /*
+     * WHO HAS THEIR HAND ON A TEXT BOX. First to ask gets it; it is theirs until
+     * they let go (release) or stop touching it for kClaimSeconds, which is what
+     * keeps a person who walked away from locking a box for everyone.
+     */
+    struct Claim
+    {
+        std::string who;
+        std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+    };
+    static constexpr long kClaimSeconds = 20;
+
     struct Session
     {
         std::string host;
         std::vector<std::string> lines;   // verbatim, one entry each
         uint64_t seq = 0;
         std::unordered_map<std::string, Member> roster;   // by name
+        std::unordered_map<std::string, Claim>  claims;   // text box key -> holder
         std::chrono::steady_clock::time_point opened = std::chrono::steady_clock::now();
     };
 
@@ -14738,7 +14967,7 @@ private:
      */
     size_t pushLocked(Session& s, const std::string& author, const std::string& body)
     {
-        size_t taken = 0, bad = 0;
+        size_t taken = 0, bad = 0, held = 0;
         std::istringstream in(body);
         std::string line;
         while (std::getline(in, line))
@@ -14752,6 +14981,14 @@ private:
             std::string rest;
             std::getline(ls, rest);            // everything after the author, space included
 
+            // A TEXT BOX HELD BY SOMEBODY ELSE is not theirs to submit: the one
+            // line the node reads past the author, and only for this.
+            if ((kind == "text" || kind == "untext") && !claimFree(s, key_of(rest), author))
+            {
+                ++held;
+                continue;
+            }
+
             std::string stored = std::to_string(++s.seq);
             stored += " " + kind;
             stored += " " + (author.empty() ? std::string("-") : author);
@@ -14762,7 +14999,29 @@ private:
         if (bad)
             ETCS_LOG("PaintNode", "push from '" << author << "': " << bad
                      << " malformed line(s) refused.");
+        if (held)
+            ETCS_LOG("PaintNode", "push from '" << author << "': " << held
+                     << " text box(es) held by somebody else -- refused.");
         return taken;
+    }
+
+    // The key of a text line, from what follows its author: "<layer> <order> <key> ...".
+    static std::string key_of(const std::string& rest)
+    {
+        std::istringstream r(rest);
+        std::string layer, order, key;
+        r >> layer >> order >> key;
+        return key;
+    }
+
+    // Free for `who`: nobody holds it, they do, or the holder's hand went idle.
+    bool claimFree(Session& s, const std::string& key, const std::string& who) const
+    {
+        auto it = s.claims.find(key);
+        if (it == s.claims.end() || it->second.who == who) return true;
+        const long idle = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - it->second.last).count();
+        return idle >= kClaimSeconds || !s.roster.count(it->second.who);
     }
 
     std::string readLocked(const Session& s, uint64_t since) const
@@ -14918,6 +15177,7 @@ private:
             s->roster.erase(self);
             s->roster[want] = std::move(moved);
             if (s->host == self) s->host = want;
+            for (auto& [key, c] : s->claims) if (c.who == self) c.who = want;
             ETCS_LOG("PaintNode", "'" << self << "' is now '" << want << "' in '" << id << "'.");
             return want;
         }
@@ -14933,6 +15193,31 @@ private:
             const uint64_t since = arg.empty() ? 0
                                  : static_cast<uint64_t>(std::strtoull(arg.c_str(), nullptr, 10));
             return readLocked(*s, since);
+        }
+
+        /*
+     * claim/<key>: my hand on a text box, if nobody else's is (see Claim). A
+     * held box answers with its holder, which is what the page shows. Asked
+     * again while typing, which is what keeps the claim from lapsing.
+     * release/<key>: letting go, after the box went out with a push.
+     */
+        if (verb == "claim")
+        {
+            if (me->role != Role::Writer && me->role != Role::Owner) return "READ ONLY";
+            const std::string key = clean(arg, 64);
+            if (key.empty()) return "BAD KEY";
+            if (!claimFree(*s, key, self)) return "held " + s->claims[key].who;
+            Claim& c = s->claims[key];
+            c.who  = self;
+            c.last = std::chrono::steady_clock::now();
+            return "ok";
+        }
+        if (verb == "release")
+        {
+            const std::string key = clean(arg, 64);
+            auto it = s->claims.find(key);
+            if (it != s->claims.end() && it->second.who == self) s->claims.erase(it);
+            return "ok";
         }
 
         if (verb == "push")
@@ -15502,6 +15787,21 @@ DEFINE_WORK_FUNC(PaintDocument, ExportBaseline)
     in >> path;
     if (path.empty()) { ETCS_LOG("PaintDocument", "ExportBaseline needs a path."); data.writeString("0"); return; }
     data.writeString(std::to_string(self.ExportBaseline(path)).c_str());
+}
+
+// TextDenied <key>, <holder> -- the node gave that box to somebody else
+// (PaintDocument::TextDenied).
+DEFINE_WORK_FUNC_TYPED(PaintDocument, TextDenied, (std::string, key), (std::string, holder))
+{
+    (void)ctx;
+    self.TextDenied(key, holder);
+}
+
+// TextSent -- the boxes the last export carried reached the room.
+DEFINE_WORK_FUNC(PaintDocument, TextSent)
+{
+    (void)ctx; (void)data;
+    self.TextSent();
 }
 
 // SetReadOnly <0|1> -- view only while a shared session says so.

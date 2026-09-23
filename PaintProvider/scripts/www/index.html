@@ -882,6 +882,7 @@
       }
       if (answer === 'NO SUCH SESSION') { leaveSession(); return; }
       if (/^\d+/.test(answer)) {
+        callVerb('doc', 'TextSent', '');           // the boxes in it are the room's now
         if (!isNaN(lastSeq) && lastSeq > 0) share.sent = lastSeq;
         const nodeHead = parseInt(answer.split(' ')[0], 10);
         if (!isNaN(nodeHead)) share.head = Math.max(share.head, nodeHead);
@@ -1222,6 +1223,66 @@
     if (verb !== 'writer' && verb !== 'reader' && verb !== 'out') return;
     await nodeGet(tokenPath('role', who, verb));
     await refreshRoster();
+  });
+
+  /*
+   * ── one hand on a text box ────────────────────────────────────────────────
+   *
+   * The runtime says when a box is selected (claim), typed into (touch) and
+   * let go (release) -- PaintDocument::SelectTextBox -- and the node decides
+   * who has it. A claim refused puts the box back as it was (TextDenied). The
+   * release goes AFTER a push, so the submission is in the room before the box
+   * is anyone else's to take. A hand idle for SHARE_TEXT_IDLE_MS lets go by
+   * itself: the box is submitted as it stands, and the node would have let the
+   * claim lapse soon after anyway.
+   */
+  const SHARE_TEXT_IDLE_MS = 20000;
+  const SHARE_TEXT_RENEW_MS = 5000;
+  const text = { key: null, renewed: 0, idle: 0 };
+
+  function textIdleArm() {
+    clearTimeout(text.idle);
+    text.idle = setTimeout(function () {
+      if (text.key && runtimeUp()) {
+        log('[etcs] text box let go after a while with no typing -- sent as it stands\n');
+        callVerb('doc', 'SelectTextBox', '0');
+      }
+    }, SHARE_TEXT_IDLE_MS);
+  }
+
+  window.addEventListener('etcs-text', async function (ev) {
+    const what = (ev && ev.detail) || '';
+    if (!share.token) return;
+    const colon = what.indexOf(':');
+    const verb = what.slice(0, colon), key = what.slice(colon + 1);
+    if (verb === 'claim') {
+      text.key = key; text.renewed = Date.now(); textIdleArm();
+      const got = await nodeGet(tokenPath('claim', encodeURIComponent(key)));
+      if (got && got.startsWith('held ')) {
+        const who = got.slice(5).trim();
+        callVerb('doc', 'TextDenied', key + ', ' + who);
+        callVerb('canvas', 'Render', '');
+        log('[etcs] ' + who + ' is editing that text -- it is theirs until they let go\n', 'err');
+        if (text.key === key) { text.key = null; clearTimeout(text.idle); }
+      }
+      return;
+    }
+    if (verb === 'touch') {
+      textIdleArm();
+      if (Date.now() - text.renewed > SHARE_TEXT_RENEW_MS) {
+        text.renewed = Date.now();
+        await nodeGet(tokenPath('claim', encodeURIComponent(key)));
+      }
+      return;
+    }
+    if (verb === 'release') {
+      if (text.key === key) { text.key = null; clearTimeout(text.idle); }
+      // A push already in flight (or a read) holds `busy`; wait it out so this
+      // one is the push that carries the box.
+      for (let i = 0; i < 60 && share.busy; i++) await new Promise(function (r) { setTimeout(r, 50); });
+      await pushMine();
+      await nodeGet(tokenPath('release', encodeURIComponent(key)));
+    }
   });
 
   // A link opened cold. Waits for the BOOT, not only the runtime: the runtime

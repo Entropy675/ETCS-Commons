@@ -654,6 +654,19 @@ moves the window: the router holds the pointer on it for the length of the drag
 (`PaintRouter::Route`, the capture), because it is its own pane and a fast
 flick would otherwise leave it behind.
 
+**Text boxes travel too, one hand at a time.** Selecting a box claims it: the
+page asks the node, which gives each box to the first person who asks and to
+nobody else until they let go (`claim/<key>`; a box is named in the room by who
+made it and their number for it, `PaintTextBox::key`). Someone else pressing a
+held box is told who has it, and anything they typed into it is put back
+(`PaintDocument::TextDenied`). Letting go -- Enter, Escape, a press elsewhere,
+or twenty seconds without a key -- is the submission: the box as it stands is
+pushed, and only then released, so it is in the room before anyone else can
+take it. The node refuses a box line from anyone but the holder, and a claim
+nobody has touched for twenty seconds lapses. What travels is each finished
+edit, not the keystrokes. Boxes go beside the notebook rather than in it, so
+undo, which walks the pixels, is unchanged.
+
 **Pushes of any size.** A request to the node is bounded (64 KB with its
 headers, `ETCS_NETWORK_MAX_HEADER_SIZE`) and a keyframe is a layer's PNG, so a
 push bigger than one request goes as numbered parts the node joins back
