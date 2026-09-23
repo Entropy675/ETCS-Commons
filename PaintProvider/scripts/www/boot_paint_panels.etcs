@@ -73,10 +73,16 @@ sheet_root.SetHidden(1)
 # Spawned once, here, because this is the first thing that needs one, and kept
 # afterwards rather than deleted, so anything else with a wait in it (a new
 # canvas, a page switch, an import) shows THIS one instead of building another.
-# Two lines, from any subscript:
+# Two lines, from any subscript, for a wait the subscript owns:
 #
 #     ensure RenderProvider::Throbber main_throbber
 #     main_throbber.SetHidden(0)
+#
+# -- unless a Watch is bound (below), in which case the throbber follows that
+# flag and SetHidden is overruled a frame later. A type with a wait of its own
+# raises a flag on itself and the subscript points the watch at it:
+#
+#     main_throbber.Watch(@thing, busy)
 #
 # ENSURE, NOT SPAWN, and the difference is the whole point of the name. The
 # three acquire verbs differ only in what happens when the word is already
@@ -112,7 +118,7 @@ main_throbber.SetPosition(464, 336)
 # whatever the script contains (bootThrobber in www/index.html has the
 # measurement). The page covers that interval with the same twelve dots in the
 # same two colours. THIS one is for the waits that happen afterwards, when the
-# runtime is up and can draw: a new page, a page switch, a load (pages.BindWait
+# runtime is up and can draw: a new page, a page switch, a load (the Watch
 # below). Hidden, it costs one virtual call a frame.
 main_throbber.SetHidden(1)
 
@@ -247,10 +253,13 @@ canvas.BindGlyphs(@glyph_src)
 # touched, so it stays transparent from Allocate. Order 2, just over the pane:
 # the ruler is chrome, and everything else is over chrome.
 #
-# NOT PICKABLE, and this is the line that makes a full-sheet sibling possible:
+# PASSTHROUGH, and this is the line that makes a full-sheet sibling possible:
 # the pick walks children top down and a compositor answers for its whole
 # rectangle, so without it every press on the paper would have landed on the
-# ruler and no stroke would ever have started (CompositeDrawable2D::SetPickable).
+# ruler and no stroke would ever have started. It is a state tag on the node
+# (`passthrough`, asked by Drawable2D_::PickAt beside Hidden) rather than a
+# property of the composite: any leaf that raises it is passed over the same
+# way, and `unflag ruler_pane passthrough` would make it pickable again.
 # It is at the sheet's origin so the pane's Bounds() -- in the sheet's space --
 # are the same offsets in the ruler's space, which is what draw_edge_ruler
 # reads (PaintSurface::BindRulerFrame).
@@ -259,7 +268,7 @@ ruler_pane.Create(1024, 768)
 ruler_pane.SetPosition(0, 0)
 ruler_pane.SetOrder(2)
 ruler_pane.SetRetain(1)
-ruler_pane.SetPickable(0)
+ruler_pane.SetPassthrough(1)
 # THE ONE PANE THAT IS NOT A LAYOUT BOX. It is the sheet, at the sheet's
 # origin, overlapping the picture -- which is not a row or a column and so is
 # not something a solver has anything to say about. It follows the window
@@ -480,10 +489,14 @@ db.Connect(/persist/pages.db)
 spawn PaintProvider::PaintPages pages
 pages.Create(@doc, @db)
 pages.BindSurface(@canvas)
-# Shown while a page is saved, loaded or made -- the one wait in this session
-# long enough to see (PaintPages::BindWait has the numbers). This is what the
-# throbber above was kept for.
-pages.BindWait(@main_throbber)
+# THE THROBBER FOLLOWS THE STORE'S FLAG. PaintPages raises `busy` on itself
+# for as long as a page is saved, loaded or made -- the one wait in this
+# session long enough to see (PaintPages::Waiting has the numbers) -- and the
+# throbber shows exactly while the flag is up (Throbber::Watch, read on the
+# frame edge). The store never learns there is a throbber; the throbber never
+# learns what the work is; a flag is what a state tag is for. This is what
+# the throbber above was kept for.
+main_throbber.Watch(@pages, busy)
 input.BindPages(@pages)
 
 spawn PaintProvider::PaintInput wheel_input

@@ -513,12 +513,12 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetRetain, (int32_t, on))
                                                     : "OFF -- the buffer is derived from the tree"));
 }
 
-// SetPickable <0|1> -- 0 makes the node scenery: drawn, and no pick lands on
-// it or on anything inside it. See SetPickable itself.
-DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPickable, (int32_t, on))
+// SetPassthrough <0|1> -- 1 raises the `passthrough` flag: drawn, and no pick
+// lands on the node or on anything inside it. See SetPassthrough itself.
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPassthrough, (int32_t, on))
 {
     (void)ctx;
-    self.SetPickable(on != 0);
+    self.SetPassthrough(on != 0);
 }
 
 /*
@@ -1318,6 +1318,23 @@ DEFINE_WORK_FUNC_TYPED(Throbber, SetHidden, (int32_t, hidden))
 {
     (void)ctx;
     self.SetHidden(hidden != 0);
+}
+
+// Watch <@entity> <flag> -- shown exactly while that entity carries the
+// (lowercase) state tag; see Throbber::Watch. An empty flag unbinds.
+DEFINE_WORK_FUNC_TYPED(Throbber, Watch, (ETCS::RID, entity), (std::string, flag))
+{
+    (void)ctx;
+    self.Watch(entity, flag);
+    ETCS_LOG("Throbber::Watch", (flag.empty() ? "unbound" : "following '" + flag + "' on RID:" + std::to_string(entity))
+                                << " for RID:" << self.getRID());
+}
+
+// SetPlate r g b a -- a square behind the ring; alpha 0 (the default) is none.
+DEFINE_WORK_FUNC_TYPED(Throbber, SetPlate, (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetPlate(r, g, b, a);
 }
 
 DEFINE_WORK_FUNC(Throbber, Delete)

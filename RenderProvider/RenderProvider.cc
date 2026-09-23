@@ -49,7 +49,7 @@ ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
 // at all -- see CompositeDrawable2D.h on how Pixels_'s own dirty flag ends up
 // serving both this and the device upload, in sequence.
 ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
-    Create, SetPosition, SetOrder, SetBackground, SetRetain, SetPickable, SetHidden, MoveTo,
+    Create, SetPosition, SetOrder, SetBackground, SetRetain, SetPassthrough, SetHidden, MoveTo,
     ResizeTo, FollowResize,
     Draw, Clear, DrawRect, Blit, Delete)
 
@@ -90,5 +90,5 @@ ETCS_TAG_BLOCK_BASIC(TextLabel,
 // from its tag block compiles, links, and fails silently at call time -- ten
 // PaintProvider controls shipped dead exactly that way (PaintProvider.cc).
 ETCS_TAG_BLOCK_BASIC(Throbber,
-    Create, SetSize, SetStep, SetDots, SetColors, SetTextColor, SetText,
-    SetPosition, SetOrder, SetHidden, Delete)
+    Create, SetSize, SetStep, SetDots, SetColors, SetTextColor, SetText, SetPlate,
+    SetPosition, SetOrder, SetHidden, Watch, Delete)

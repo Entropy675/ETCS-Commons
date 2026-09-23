@@ -85,7 +85,7 @@ ETCS_TAG_BLOCK_BASIC(PaintPalette,
 
 // The pages of this session, kept in a database -- see PaintPages.
 ETCS_TAG_BLOCK_BASIC(PaintPages,
-    Create, BindSurface, BindWait, Save, Load, New, Next, Prev, List, Delete, Destroy)
+    Create, BindSurface, Save, Load, New, Next, Prev, List, Delete, Destroy)
 
 // A mapping from picked node to layer action, and nothing else -- it owns no
 // pixels for the same reason PaintPalette owns none. See PaintLayerPanel.

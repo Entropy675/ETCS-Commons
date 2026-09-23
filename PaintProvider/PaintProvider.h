@@ -231,10 +231,23 @@ static inline Point2D paint_root_origin(ETCS::RID node)
  * Same translation PaintInput::RouteEvent makes before picking, and it has to be
  * the same one, or a pane could be offered an event it then picks nothing from.
  */
+/*
+ * A HIDDEN PANE CONTAINS NOTHING, for routing as for picking. The router ranks
+ * every pane it was given and hands the event to the topmost one whose root
+ * contains the point; a pane that is registered while hidden -- the visitors
+ * window sits in the router from boot, order 30, and is shown later -- would
+ * otherwise take every press inside its rectangle ahead of the menu popup
+ * beneath it (order 29) and drop it, since PickAt on a hidden root answers
+ * nothing. That was every press on a menu item doing nothing while the popup
+ * opened and closed fine. Same rule Drawable2D_::PickAt applies one level
+ * down: if you cannot see it, you cannot hit it.
+ */
 static inline bool paint_pane_contains(ETCS::RID root, int32_t x, int32_t y)
 {
     ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", root);
     if (!h) return false;
+    if (void* d = static_cast<ETCS::Entity*>(h.get())->getInterfacePointer(ETCS::Buffer("Drawable")))
+        if (static_cast<Drawable_*>(d)->Hidden()) return false;
     const Point2D at = paint_root_origin(root);
     return h->ContainsLocal(x - at.x, y - at.y);
 }
@@ -6786,28 +6799,29 @@ public:
     void BindSurface(ETCS::RID surface) { m_surface = surface; }
 
     /*
- * THE WAIT INDICATOR, shown for as long as a page operation runs. A new page
- * encodes and stores every layer of the one it leaves (6 MB of PAM at
- * 1024x768) and a load decodes as much back, all on the thread the press
- * arrived on -- a second or more in the browser during which the sheet is
- * still and the pointer is ignored, which is indistinguishable from a hang.
- * The frame edge is a different thread (RenderProvider/scripts/
- * render_frames.etcs), so a node unhidden BEFORE the work is drawn while the
- * work runs; hidden again after, it costs nothing (Throbber::AnimatingConcrete).
+ * BUSY IS A FLAG THIS TYPE RAISES ON ITSELF for as long as a page operation
+ * runs. A new page encodes and stores every layer of the one it leaves (6 MB
+ * of PAM at 1024x768) and a load decodes as much back, all on the thread the
+ * press arrived on -- a second or more in the browser during which the sheet
+ * is still and the pointer is ignored, which is indistinguishable from a hang.
  *
- * Bound by RID and driven by verb, like every node this module reaches
- * (PaintLayerPanel::SetHidden): the type does not know it is a Throbber, only
- * that it can be hidden. boot_paint_panels.etcs binds the session's
- * main_throbber. A depth rather than a flag because step() lands in Load()
- * or NewAt(), and the indicator should leave when the outermost one does.
+ * A state tag rather than a verb at a bound node, because the store's job is
+ * to say what state it is in, not to know what shows it. `busy` is a
+ * lowercase entry in this entity's own tag store (Entity::addTag), ordered
+ * within this module like any tag change; whatever wants to show the wait
+ * observes it -- the session's throbber does (Throbber::Watch, bound in
+ * boot_paint_panels.etcs), on the frame edge's own thread, and so would
+ * anything else that watched. Nothing crosses a module boundary on the input
+ * thread to make the indicator appear.
+ *
+ * A depth rather than a bare raise because step() lands in Load() or NewAt(),
+ * and the flag should come down when the outermost one does.
  */
-    void BindWait(ETCS::RID node) { m_wait = node; }
-
     struct Waiting
     {
         PaintPages& p;
-        explicit Waiting(PaintPages& pages) : p(pages) { if (p.m_wait_depth++ == 0) p.set_wait(true); }
-        ~Waiting() { if (--p.m_wait_depth == 0) p.set_wait(false); }
+        explicit Waiting(PaintPages& pages) : p(pages) { if (p.m_wait_depth++ == 0) p.set_busy(true); }
+        ~Waiting() { if (--p.m_wait_depth == 0) p.set_busy(false); }
     };
     void repaint()
     {
@@ -6862,16 +6876,16 @@ public:
     }
 
 private:
-    void set_wait(bool on)
+    void set_busy(bool on)
     {
-        paint_node_hidden(m_wait, !on);
+        if (on) this->addTag("busy");
+        else    this->removeTag(ETCS::Buffer("busy"));
     }
 
     PaintDocument* m_document = nullptr;
     ETCS::RID      m_db = 0;
     ETCS::RID      m_surface = 0;      // repainted after a load -- see BindSurface
-    ETCS::RID      m_wait = 0;         // unhidden while a page operation runs -- see BindWait
-    int            m_wait_depth = 0;
+    int            m_wait_depth = 0;   // see Waiting
     int64_t        m_current = 0;       // the slot the present came from or went to; 0 is none
     uint64_t       m_loaded_rev = 0;    // the document's revision at that moment -- see dirty()
 
@@ -13802,13 +13816,6 @@ DEFINE_WORK_FUNC_TYPED(PaintPages, BindSurface, (ETCS::RID, surface))
 {
     (void)ctx;
     self.BindSurface(surface);
-}
-
-// BindWait <rid> -- the node unhidden while a page is saved, loaded or made.
-DEFINE_WORK_FUNC_TYPED(PaintPages, BindWait, (ETCS::RID, node))
-{
-    (void)ctx;
-    self.BindWait(node);
 }
 
 DEFINE_WORK_FUNC(PaintPages, Save)

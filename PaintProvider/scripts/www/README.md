@@ -156,8 +156,9 @@ Nothing enforces that the band is unpaintable; two facts already in the tree do 
 
 `canvas.BindRulerFrame(@ruler_pane)` is what tells the surface which raster to
 draw on: a sibling of the pane at the sheet's origin and size, retained (the
-surface is its one writer) and not pickable (`CompositeDrawable2D::SetPickable`,
-or every press on the paper would land on it). Its own raster and not the sheet's,
+surface is its one writer) and flagged `passthrough` (`SetPassthrough(1)`; the
+pick walk asks the flag beside `Hidden`, or every press on the paper would land
+on it). Its own raster and not the sheet's,
 because the sheet is composed on the frame edge's thread while `Render` draws on
 the input thread; when the band was written straight into the sheet, which of
 the two got there last decided whether a frame showed the band or the toolbar
@@ -456,10 +457,13 @@ back and the second is gone.
 
 Saving and loading those bytes takes a moment -- a second or so in the
 browser -- on the thread the press arrived on, so the pointer is not answered
-until it is done. The session's throbber shows for exactly that interval
-(`PaintPages::BindWait`, bound to `main_throbber` in `boot_paint_panels.etcs`):
-the frame edge is another thread, so the ring turns while the store works, and
-it is hidden again when the page is up.
+until it is done. The store raises a `busy` state tag on itself for exactly
+that interval (`PaintPages::Waiting`), and the session's throbber follows the
+flag (`main_throbber.Watch(@pages, busy)` in `boot_paint_panels.etcs`,
+`Throbber::Watch`): the frame edge is another thread and reads the flag once a
+frame, so the ring turns while the store works and goes when the page is up.
+Neither side knows the other exists -- anything else that raises `busy` gets
+the same indicator.
 
 ## Sizes, and 1920x1080
 
