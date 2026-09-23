@@ -48,29 +48,13 @@ tree.MountTree(favicon ACE_ROOT/scripts/www/favicon)
 
 # ── the mounts ───────────────────────────────────────────────────────────────
 #
-# Each at the path the page stages it under (www/modules.json), which is the path
-# the OS side reads it from -- so boot_paint_panels.etcs's `detach` and `run`
-# lines are spelled once for both substrates instead of twice.
-tree.MountFile(paint_routed_pointer.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_routed_pointer.etcs)
-tree.MountFile(PaintProvider/scripts/paint_toolbar.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_toolbar.etcs)
-tree.MountFile(PaintProvider/scripts/paint_wheel.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_wheel.etcs)
-tree.MountFile(PaintProvider/scripts/paint_menu.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_menu.etcs)
-tree.MountFile(PaintProvider/scripts/paint_layers.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_layers.etcs)
-tree.MountFile(PaintProvider/scripts/paint_import.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_import.etcs)
-tree.MountFile(PaintProvider/scripts/paint_visitors.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_visitors.etcs)
-tree.MountFile(PaintProvider/scripts/paint_eye.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_eye.etcs)
-tree.MountFile(PaintProvider/scripts/paint_cell_arrow.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_cell_arrow.etcs)
-tree.MountFile(PaintProvider/scripts/paint_layer_row.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_layer_row.etcs)
-tree.MountFile(PaintProvider/scripts/paint_page_row.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_page_row.etcs)
-tree.MountFile(PaintProvider/scripts/paint_anim.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_anim.etcs)
-tree.MountFile(PaintProvider/scripts/paint_anim_row.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_anim_row.etcs)
-tree.MountFile(PaintProvider/scripts/paint_visitor_row.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_visitor_row.etcs)
-tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
-
-# The terminal view, from ShellProvider's own page rather than a copy of it.
-# Mounted at "shell", which is what index.html's iframe points at; the MIME comes
-# from the disk name.
-tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)
+# The page's own files, from the one list of them (paint_mounts.etcs), each at
+# the path the page stages it under (www/modules.json) -- which is the path the
+# OS side reads it from, so boot_paint_panels.etcs's `detach` and `run` lines
+# are spelled once for both substrates. No prefix: this server serves nothing
+# but the page. Named as a sibling, which resolves in this script's own
+# directory first (resolve_script_path).
+run paint_mounts.etcs tree=tree
 
 # The whole served surface, which is the fastest way to catch a staging mistake:
 # a name the page asks for and this does not list is a 404 waiting to happen.

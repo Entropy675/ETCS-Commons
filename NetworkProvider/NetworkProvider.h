@@ -1271,6 +1271,16 @@ DEFINE_WORK_FUNC(FileHtmlPage, MountExternal)
              << " at '" << segment << "' under RID:" << self.getRID());
 }
 
+// SetMountPrefix <segment[/segment...]> -- where MountFile paths go from now
+// on; no argument clears it. See FileHtmlPage::SetMountPrefix.
+DEFINE_WORK_FUNC(FileHtmlPage, SetMountPrefix)
+{
+    (void)ctx;
+    std::string prefix;
+    data >> prefix;
+    self.SetMountPrefix(prefix);
+}
+
 DEFINE_WORK_FUNC(FileHtmlPage, MountFile)
 {
     (void)ctx;

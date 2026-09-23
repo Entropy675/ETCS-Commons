@@ -45,7 +45,7 @@ ETCS_TAG_BLOCK_BASIC(StaticHtmlPage,
 )
 
 ETCS_TAG_BLOCK_BASIC(FileHtmlPage,
-    LoadFromDisk, MountFile, MountTree, SetDefaultExtension, MountExternal,
+    LoadFromDisk, MountFile, MountTree, SetDefaultExtension, SetMountPrefix, MountExternal,
     EnsureFallback, Resolve, ListPaths, Delete
 )
 

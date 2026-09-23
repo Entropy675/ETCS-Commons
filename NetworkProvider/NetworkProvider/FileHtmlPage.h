@@ -172,6 +172,29 @@ public:
     }
     const std::string& GetDefaultExtension() const { return default_extension_; }
 
+    /*
+     * WHERE THE NEXT MountFile's GO, said once by the caller rather than in
+     * every line. A module keeps the list of files its page needs in its own
+     * script and mounts them relative to wherever its page lives; the SITE
+     * decides where that is. So the site sets the prefix, runs the module's
+     * mount script, and clears it:
+     *
+     *     tree.SetMountPrefix(paint)
+     *     run PaintProvider/scripts/paint_mounts.etcs tree=tree
+     *     tree.SetMountPrefix()
+     *
+     * The script cannot be handed the prefix itself -- `run` carries RIDs, not
+     * words -- which is why it is state on the tree for the length of the run.
+     * MountFile only: MountTree takes one segment and is the site's own call.
+     */
+    void SetMountPrefix(const std::string& prefix)
+    {
+        mount_prefix_ = prefix;
+        while (!mount_prefix_.empty() && mount_prefix_.back() == '/') mount_prefix_.pop_back();
+        while (!mount_prefix_.empty() && mount_prefix_.front() == '/') mount_prefix_.erase(0, 1);
+    }
+    const std::string& GetMountPrefix() const { return mount_prefix_; }
+
     // --- Register a mount child directly, not from disk -- the
     // programmatic counterpart to a directory entry LoadFromDisk would
     // have created, for mounting an externally-owned StaticHtmlPage at a
@@ -213,8 +236,9 @@ public:
     // needed, so "assets/etcs.wasm" works with no matching directory on disk.
     // Read once, here, like LoadFromDisk -- a later edit to the file needs a
     // re-mount, which is the trade for not re-reading on every request.
-    bool MountFile(const std::string& url_path, const std::string& disk_path)
+    bool MountFile(const std::string& asked_path, const std::string& disk_path)
     {
+        const std::string url_path = mount_prefix_.empty() ? asked_path : (mount_prefix_ + "/" + asked_path);
         std::vector<std::string> segments;
         size_t start = 0;
         while (start <= url_path.size())
@@ -623,6 +647,9 @@ private:
     // Tree-root only (see SetDefaultExtension): optional suffix tried when
     // a path segment misses its exact-name child. Empty = exact-name only.
     std::string default_extension_;
+
+    // Put in front of every MountFile path while set (SetMountPrefix).
+    std::string mount_prefix_;
 
     // Directory-kind: local, synthesized fallback content -- see
     // EnsureFallbackPage()'s own comment.
