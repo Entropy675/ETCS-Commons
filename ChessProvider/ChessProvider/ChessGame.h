@@ -405,6 +405,104 @@ private:
     uint64_t chain_ = 0;
     size_t   chain_seq_ = 0;
 
+    /*
+     * ── AGREEMENT: a pair's two boards on what the next step is ─────────────
+     *
+     * A step is proposed FROM a state and lands on a state; the line carries
+     * both hashes (ChessNode::proposeLocked), and each board takes it only
+     * from the same state to the same result (ChessNode::replayLocked). A
+     * line proposed from a state that is gone -- a line ordered ahead of it
+     * changed the board -- is void on both boards alike, no word needed.
+     * Taken from the same state to a DIFFERENT result is a disagreement: the
+     * board that saw it says so with a `void` line, and both take that one
+     * step back. Past one step there is nothing to agree back to: the game is
+     * drawn, "desync".
+     *
+     * The state is what the two players must agree on -- position, seats,
+     * the offer, the outcome -- not chat, presence or history, which each
+     * board narrates at its own moments. A desynced game hashes as "desync"
+     * alone: the boards disagree about the rest by definition, and a New game
+     * proposed from there has to be takeable by both.
+     */
+    uint64_t stateHashLocked() const
+    {
+        const std::string s = (over_ == "desync") ? over_
+            : board.toFENString() + "|" + white_ + "|" + black_ + "|" + draw_offer_ + "|" + over_;
+        return XXH3_64bits(s.data(), s.size());
+    }
+
+    // Everything a step can change and stateHashLocked covers, plus what
+    // follows from it (history, started_, recorded_), so a step is undone
+    // whole. recorded_ goes back too: a player record an undone ending
+    // already counted is not uncounted -- the node keeps no ledger to take
+    // it back from.
+    struct Snapshot
+    {
+        std::string fen, white, black, offer, over;
+        bool        started = false, recorded = false;
+        size_t      plies = 0, plies_base = 0;
+        ChessStatus last = ChessStatus::SUCCESS;
+    };
+    Snapshot snapshotLocked() const
+    {
+        return Snapshot{ board.toFENString(), white_, black_, draw_offer_, over_,
+                         started_, recorded_, history_.size(), history_base_, last };
+    }
+    void restoreLocked(const Snapshot& s)
+    {
+        board.loadFEN(s.fen);
+        white_ = s.white; black_ = s.black; draw_offer_ = s.offer; over_ = s.over;
+        started_ = s.started; recorded_ = s.recorded; last = s.last;
+        if (s.plies_base == history_base_ && s.plies <= history_.size())
+            history_.resize(s.plies);
+        refreshTerminal();
+    }
+
+    // A pair's board. Its liveness is the name server's (a quiet partner
+    // ends the pair there), so it reaps nothing by its own clock: two boards
+    // releasing a seat thirty seconds apart would disagree about the seat.
+    bool replayed_ = false;
+    // The last line of the record that changed this board, and the state
+    // before it: the one step a `void` can take back.
+    struct Step { bool on = false; size_t seq = 0; Snapshot before; };
+    Step last_step_;
+    // This page's own step, drawn before its place in the order is known.
+    // One at a time: a second waits for the first to come back in order.
+    // `undone` once a line ordered ahead of it took it back; it is then
+    // judged in its turn like anyone's.
+    struct Pending { bool on = false, undone = false; std::string self, tag; Snapshot before; };
+    Pending pending_;
+    // The seq of the last line of the record, other than talk, replayed
+    // here: a `void` must name exactly that line to be one step deep.
+    bool   has_line_ = false;
+    size_t last_line_ = 0;
+    // The last `void` taken: which line it disputed, and its own seq.
+    struct Voided { bool on = false; size_t seq = 0, at = 0; };
+    Voided voided_;
+
+    // Ends the game drawn on a disagreement past one step. Every board that
+    // takes the `void` does this, whatever it holds, so both end alike.
+    std::string desyncLocked()
+    {
+        over_ = "desync";
+        draw_offer_.clear();
+        pending_ = Pending{}; last_step_ = Step{}; voided_ = Voided{};
+        logLocked("the boards disagree past one step -- drawn (desync)");
+        refreshTerminal();
+        reportOutcomeLocked();
+        return "DESYNC";
+    }
+
+    // An answer that refuses: every refusal here is upper case ("ILLEGAL",
+    // "NOT YOUR TURN", "GAME OVER", "TAKEN" ...); what a verb takes answers
+    // with a FEN, a status line or "OK".
+    static bool refusal(const std::string& a)
+    {
+        if (a.empty() || a == "OK") return false;
+        for (char c : a) if (!(c == ' ' || (c >= 'A' && c <= 'Z'))) return false;
+        return true;
+    }
+
     // "<base> <next>\n" then src[from - base ...], stopping before the budget.
     // Whole lines only: half a line is not a thing any reader here can use.
     std::string pageLocked(const std::vector<std::string>& src,
@@ -895,6 +993,7 @@ private:
     // nobody to notice it, so there is nothing to do until someone shows up.
     void reapLocked(int grace_seconds)
     {
+        if (replayed_) return;
         const auto now = Clock::now();
         auto gone = [&](const std::string& tok)
         {
@@ -1004,7 +1103,8 @@ private:
     std::string white_, black_;              // seat holders, by token ("" = open)
 
     // Agreed outcomes, which the BOARD cannot express: "" | resign-white |
-    // resign-black | draw. Kept separate from checkmate_/stalemate_ because
+    // resign-black | draw | desync (a pair's boards that stopped agreeing;
+    // counted as a draw). Kept separate from checkmate_/stalemate_ because
     // those are facts about the position and these are facts about the players.
     std::string over_;
     std::string draw_offer_;                 // token of the offerer ("" = none)

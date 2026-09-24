@@ -130,9 +130,10 @@
   #gamestatus.bad { color:var(--err); }
   #fen { font-size:11px; color:var(--dim); word-break:break-all; max-width:100%; text-align:center; }
 
-  /* ONE CARD PER SEAT, side by side, with New game folded into the same
-     row rather than a row of its own -- one caption line under the board,
-     not three. A card says who holds the seat -- you, your partner, or
+  /* ONE CARD PER SEAT, side by side -- one caption line under the board,
+     not three. No New game here: a game ends by mate, stalemate, a
+     resignation or an agreed draw, and New game is offered by the veil that
+     says which (#over). A card says who holds the seat -- you, your partner, or
      nobody -- and an open one offers Sit (a move for that side takes it
      too); a seat you hold shows what a seat can do (resign, draw, leave).
      See this folder's README, "Your lobby, and how a seat is taken".
@@ -145,7 +146,7 @@
           padding:4px 8px; border:1px solid var(--line); background:var(--panel); }
   .seat .who { font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); }
   .seat .row { display:flex; gap:3px; }
-  .seat button, #reset { font-size:10.5px; padding:3px 7px; }
+  .seat button { font-size:10.5px; padding:3px 7px; }
   /* A seat this page holds. The colour is the selection colour on purpose:
      "mine" and "selected" are the same claim, made about a seat instead of a
      square. A seat somebody else holds -- your partner -- dims instead. */
@@ -273,7 +274,6 @@
           <button id="leave-b" class="hidden leave" title="give the black seat up">leave</button>
         </div>
       </div>
-      <button id="reset">New game</button>
     </div>
   </section>
 
@@ -712,11 +712,13 @@ function renderSeats(){
 
 /*
  * ONE WAY TO ACT ON THE TABLE. Alone, the verb goes straight to this
- * runtime's board. In a pair it goes to the relay, and lands on this board
- * when it comes back in the pair's order -- the same moment it lands on the
- * partner's -- so both boards take every line in one order and cannot
- * disagree. The one exception is a move in your own turn window (move()):
- * nobody else can move then, so it is drawn at once.
+ * runtime's board. In a pair it is drawn here at once too, as a PROPOSAL
+ * (ChessNode::proposeLocked): the board answers as it would, plus the state
+ * hashes either side of the step, and the line goes to the relay carrying
+ * them -- "<arg>~<from>.<to>". Both boards then take it in the pair's order
+ * only from <from> to <to> (see "the relay" below); a step that changed
+ * nothing, or was refused, sends nothing. Talk is not a step: it goes to the
+ * relay as it is and lands in order.
  */
 async function act(self, verb, arg){
   if(!paired()){
@@ -724,10 +726,28 @@ async function act(self, verb, arg){
     await refreshAll();
     return t;
   }
-  const seq = await relayPush(verb, arg);
-  if(seq == null) return '';
+  if(verb==='say'){
+    if(await relayPush(verb, arg) != null) await relayPull();
+    return 'SENT';
+  }
+  const r = ((await callResult('game','Request','game/'+myName+'/propose/'+table.match+'/'
+                               +verb+(arg ? '/'+arg : ''))) || '');
+  const nl = r.indexOf('\n');
+  const ans = (nl<0 ? r : r.slice(0,nl)).trim(), tag = nl<0 ? '' : r.slice(nl+1).trim();
+  if(ans==='BUSY'){ flash('still resolving the last step'); return ans; }
+  if(!tag) return ans;
+  // Your own New game: the partner's page clears its history when the line
+  // lands (relayPull); this one drew it already.
+  if(verb==='reset'){ histMap.clear(); histBase=0; histEnd=0; ply=-1; }
+  await refreshAll(verb==='move' ? arg : '');
+  if(await relayPush(verb, (arg||'')+'~'+tag) == null){
+    // The name server did not take it: nobody else will ever see this step.
+    await callResult('game','Request','game/'+myName+'/withdraw/'+table.match);
+    await refreshAll();
+    return '';
+  }
   await relayPull();
-  return 'SENT';
+  return ans;
 }
 
 async function sit(c){
@@ -825,7 +845,9 @@ async function arrived(fen, uci){
   if(gsEl.className === 'bad') gsEl.className = '';
   lastFen = fen;
   noteLive(uci || '', fen);
-  if(ply >= 0) await goLive(true);
+  // Back's enabled state is histEnd's: a pair starts with it disabled
+  // (resetView), and only this re-enables it as positions arrive.
+  if(ply >= 0) await goLive(true); else reviewUi();
   draw(fen);
   if(uci) highlightLast(uci.slice(2,4), true);
   return true;
@@ -841,12 +863,10 @@ function moveRefusal(t, self, uci){
 
 /*
  * A MOVE. Alone: sent as the side to move, the hotseat's two selves. In a
- * pair: sent as you, and drawn AT ONCE only inside your own turn window --
- * your seat, your side to move -- where nothing the partner can send comes
- * before it, and its read-back is passed over (relay.mine). Outside it (the
- * first move that would claim an open seat) it goes to the relay first and
- * lands in the pair's order, so a seat both of you reach for goes to whoever
- * got there first, on both boards.
+ * pair: sent as you, a step like any other (act): drawn at once, and kept if
+ * it comes back in the pair's order from the state it was made on -- so a
+ * seat both of you reach for by moving goes to whoever reached the relay
+ * first, and the other's move is taken back on both boards alike.
  */
 let moveInFlight = false;
 async function move(uci){
@@ -861,17 +881,8 @@ async function move(uci){
       else flash(moveRefusal(t, side, uci));
       return;
     }
-    if(heldSeat()===side){
-      const t = ((await ask(myName, 'move', uci)) || '').trim();
-      if(!isFen(t)){ flash(moveRefusal(t, myName, uci)); return; }
-      await arrived(t, uci);
-      const seq = await relayPush('move', uci, true);
-      if(seq == null) return;
-      await refreshStatus(); await refreshChat();
-      return;
-    }
-    const seq = await relayPush('move', uci);
-    if(seq != null) await relayPull();
+    const t = await act(myName, 'move', uci);
+    if(t && t!=='BUSY' && !isFen(t)) flash(moveRefusal(t, myName, uci));
   } finally {
     moveInFlight = false;
   }
@@ -994,6 +1005,9 @@ function showGameOver(state,side){
     $('over-sub').textContent=quit+' resigned — '+((quit==='White')?'Black':'White')+' wins.';
   } else if(state==='draw'){
     $('over-title').textContent='Draw'; $('over-sub').textContent='Agreed by both players.';
+  } else if(state==='desync'){
+    $('over-title').textContent='Draw — desync';
+    $('over-sub').textContent='The two boards disagreed by more than one step.';
   } else if(state==='checkmate'){
     $('over-title').textContent='Checkmate';
     $('over-sub').textContent=((side==='w')?'Black':'White')+' wins.';
@@ -1005,6 +1019,8 @@ function showGameOver(state,side){
 }
 function hideGameOver(){ overEl.classList.remove('on'); overShown=''; }
 
+// Offered only by the game-over veil: a live game ends by resigning or an
+// agreed draw first, as it did on the server-played page.
 async function doReset(){
   if(!boardReady()) return;
   // No seat needed: the position is dead, and requiring one would strand a
@@ -1019,7 +1035,6 @@ async function doReset(){
     await refreshStatus();
   }
 }
-$('reset').onclick=doReset;
 $('over-new').onclick=doReset;
 
 // ── status ───────────────────────────────────────────────────────────────
@@ -1050,7 +1065,7 @@ async function refreshStatus(){
       +(holder[mover]==='-' && state==='ok' ? ' — seat open' : '')
       +(drawOfferBy ? ' — draw offered by '+drawOfferBy : '');
   }
-  if(state==='checkmate'||state==='stalemate'||state==='draw'||state.startsWith('resign'))
+  if(state==='checkmate'||state==='stalemate'||state==='draw'||state==='desync'||state.startsWith('resign'))
     showGameOver(state,side);
   else if(overShown) hideGameOver();
 }
@@ -1177,24 +1192,28 @@ async function nsCall(path){
  * runtime's board -- the same call a click makes -- and the partner's page
  * does the same with the same lines, so the two boards take one game.
  *
- * Chess makes the order easy: moves come in turn windows, and in yours
- * nobody else can move, so your own move is drawn at once and its read-back
- * passed over (`mine`). Anything that lands ahead of such a line that is not
- * talk -- a resignation, a draw, a seat -- means this board took your move
- * before a line the pair ordered first, and the board is rebuilt from the
- * relay rather than guessed at (rebuildPair). Everything else waits for its
- * turn in the order.
+ * AGREEMENT, per step (ChessNode::replayLocked). Each step carries the state
+ * it was made from and the state it made; a board takes it only from the
+ * one to the other. Your own step, drawn when you made it, is confirmed when
+ * it comes back in order. A step ordered ahead of it takes it back first,
+ * and it is then judged in its turn like the partner's: made from a state
+ * that step replaced, it is void on both boards (VOID -- whoever reached the
+ * relay first won). A step both boards start from but land differently is a
+ * DISAGREEMENT: the board that sees it answers with a `void` line, and both
+ * take that one step back where it was taken (UNDONE). A `void` that is not
+ * about the line just before it means the boards disagree past one step:
+ * the game is drawn, "desync", and a New game starts both over.
  *
- * One call at a time (withRelay): a pull that overlapped a push would read
- * the pushed line before knowing it was already drawn.
+ * One call at a time (withRelay): a pull that overlapped a push would judge
+ * the pushed line before its own proposal was recorded.
  */
-const relay = { mine:new Set(), busy:false };
+const relay = { busy:false };
 async function withRelay(fn){
   while(relay.busy) await sleep(15);
   relay.busy = true;
   try { return await fn(); } finally { relay.busy = false; }
 }
-async function relayPush(verb, arg, drawn){
+async function relayPush(verb, arg){
   const p = table.pair; if(!p) return null;
   return withRelay(async ()=>{
     const t = ((await nsCall(nsPath('push', p.id, verb) + (arg ? '/'+arg : ''))) || '').trim();
@@ -1203,13 +1222,15 @@ async function relayPush(verb, arg, drawn){
       else flash('the name server did not take it'+(t ? ': '+t : ' (no answer)'));
       return null;
     }
-    if(drawn) relay.mine.add(+t);
     return +t;
   });
 }
+const WHAT = { move:'move', sit:'seat', resign:'resignation', draw:'draw offer',
+               decline:'decline', leave:'leaving', reset:'new game' };
 async function relayPull(){
   const p = table.pair; if(!p) return;
-  let changed=false, rebuild=false, landed='';
+  let changed=false, rebuild=false, landed='', note='';
+  const disputed = [];
   await withRelay(async ()=>{
     for(let guard=0; guard<64 && table.pair===p; guard++){
       const t = await nsCall(nsPath('relay', p.id, p.since));
@@ -1220,27 +1241,30 @@ async function relayPull(){
       for(const l of pg.lines){
         const f = l.split(' ');
         const seq = +f[0], self = f[1], verb = f[2], arg = f.slice(3).join(' ');
-        // Replayed through the board's own replay entry (ChessNode::
-        // replayLocked), which chains the line as the relay chained it; a
-        // line this board already drew ("=<seq>") is chained, not applied.
-        const drawn = relay.mine.has(seq);
         const ans = ((await callResult('game','Request','game/'+self+'/replay/'+table.match+'/'
-                         +(drawn?'=':'')+seq+'/'+verb+(arg ? '/'+arg : ''))) || '').trim();
-        if(drawn){ relay.mine.delete(seq); continue; }
-        if(relay.mine.size && verb!=='say') rebuild = true;
+                         +seq+'/'+verb+(arg ? '/'+arg : ''))) || '').trim();
         changed = true;
-        if(verb==='move'){
-          if(isFen(ans)) landed = arg;
-          // Your own move, refused in the pair's order: somebody got there
-          // first -- the partner's claim on the same open seat, say.
-          else if(self===myName) flash(moveRefusal(ans, self, arg));
-        }
+        if(verb==='say') continue;
+        const bare = arg.split('~')[0];
+        if(ans==='VOID'){
+          if(self===myName) note = 'your '+(WHAT[verb]||verb)+' was taken back — the partner’s came first';
+        } else if(ans==='DISAGREE'){
+          // A rebuild replays lines whose disputes are already in the record.
+          if(!p.rebuilding) disputed.push(seq);
+        } else if(ans==='UNDONE'){
+          note = 'a step was taken back — the two boards disagreed about it';
+        } else if(verb==='reset' && isFen(ans)){
+          // A new game drops the board's history (ChessGame::resetLocked), so
+          // the page's copy goes too, or Back would count the old game's plies.
+          histMap.clear(); histBase=0; histEnd=0; ply=-1;
+        } else if(verb==='move' && isFen(ans)) landed = bare;
       }
       /*
        * THE CHAIN, compared: the board's chain over what it replayed against
        * the relay's over what it stored, at the same seq -- the share
-       * record's own check. Different is a line this board took that the
-       * record does not hold, or missed; nothing but a rebuild says which.
+       * record's own check. Different is a line this board missed or took
+       * twice -- transport, not disagreement -- and nothing but a replay of
+       * the record says which.
        */
       if(pg.chain && pg.lines.length){
         const c = ((await ask(me(), 'chain')) || '').trim().split(' ');
@@ -1251,8 +1275,17 @@ async function relayPull(){
       if(!pg.lines.length) break;
     }
   });
-  if(rebuild && table.pair===p) await rebuildPair();
-  else if(changed) await refreshAll(landed);
+  if(rebuild && table.pair===p){ await rebuildPair(); return; }
+  if(changed) await refreshAll(landed);
+  // After the redraw, which would clear it: the position a note explains is
+  // the one now on the board.
+  if(note) flash(note);
+  // Said after the pull, in the pair's order like any line: the partner's
+  // board, and this one, take the step back when it comes round.
+  if(disputed.length && table.pair===p){
+    for(const seq of disputed) await relayPush('void', String(seq));
+    await relayPull();
+  }
 }
 // A fresh board on this runtime, the whole relay replayed onto it in order.
 async function rebuildPair(){
@@ -1262,10 +1295,10 @@ async function rebuildPair(){
   if((p.gen||0) >= 5){ flash('this board cannot agree with the pair’s record'); return; }
   log('[etcs] relay: this board is not the pair\'s record -- replaying the pair from its start\n');
   p.gen = (p.gen||0) + 1; p.since = 0;
-  relay.mine.clear();
   table.match = p.id + '.' + p.gen;
   resetView();
-  await relayPull();
+  p.rebuilding = true;
+  try { await relayPull(); } finally { p.rebuilding = false; }
   await refreshAll();
 }
 
@@ -1292,7 +1325,6 @@ async function enterPair(id, owner, partner){
   table.pair = { id, owner, partner, since:0, gen:0 };
   table.match = id;
   waiting = false;
-  relay.mine.clear();
   resetView();
   tableLabel();
   const other = owner===myName ? partner : owner;
@@ -1305,7 +1337,6 @@ async function enterPair(id, owner, partner){
 async function leftPair(why){
   if(!table.pair) return;
   table.pair = null; table.match = 'local';
-  relay.mine.clear();
   resetView();
   tableLabel();
   nsSay(why, 'err');

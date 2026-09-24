@@ -211,26 +211,44 @@ draw, a new game -- is a line `<seq> <self> <verb>[ <arg>]` pushed to the
 name server, which gives it the pair's order; each page pulls the record and
 replays every line as that self's verb against its own board, the same
 `game.Request` a click makes. Both boards take the same lines in the same
-order, so they are one game. Chess makes the order easy: moves come in turn
-windows, and in yours nobody else can move, so your own move is drawn at once
-and its read-back passed over. A move outside your window -- the first one,
-which claims an open seat -- goes to the relay first and lands in order, so
-when both of you reach for white, whoever's move reaches the name server first
-has it, and the other is refused on both boards alike. Anything else that
-lands ahead of a move this page already drew (a resignation, say) means this
-board took its move out of order, and it is rebuilt from the whole record
-rather than guessed at.
+order, so they are one game.
+
+**The two boards agree on each step.** A step is drawn on your board the
+moment you make it (`<self>/propose/<pair>/<verb>[/<arg>]`,
+`ChessNode::proposeLocked`), which answers as the verb would plus the state
+hashes either side of it -- position, seats, the draw offer, the outcome
+(`ChessGame::stateHashLocked`; not chat or presence, which each board
+narrates at its own moments). The line carries them: `<arg>~<from>.<to>`.
+Every board then takes a line only from `<from>` to `<to>`
+(`ChessNode::replayLocked`):
+
+- your own step, coming back in order, is confirmed -- already drawn;
+- a line ordered ahead of it takes it back first, and it is judged in its
+  turn like anyone's: made from a state that line replaced, it is void on
+  both boards. Whoever reached the name server first has the seat, the move,
+  the offer; the other page says its step was taken back;
+- a step both boards start from but land differently on is a disagreement.
+  The board that sees it pushes `void/<seq>`, and both take that one step
+  back where it was taken;
+- a `void` that is not about the line just before it is a disagreement past
+  one step: there is nothing agreed to go back to, and the game is drawn,
+  `desync`. A desynced board hashes as `desync` alone, so New game is a
+  step both can take.
+
+Talk (`say`) is not a step: it carries no hashes and lands in order. A step
+that changes nothing, or is refused, is never sent. A pair's board reaps no
+seats by its own clock -- two boards timing a seat out seconds apart would
+disagree about it; a quiet partner ends the pair at the name server instead.
 
 **The record checks itself, the way the share record does.** The name server
 chains every line it stores -- XXH3 of the line seeded with the chain before
 it, the paint session's own record chain -- and each page of the relay says
 the chain through its last line (`<base> <next> <chain>`). The page replays
 each line through its board's `replay` entry
-(`<self>/replay/<pair>/<seq>/<verb>[/<arg>]`, `ChessNode::replayLocked`),
-which chains the same bytes into the board (`=<seq>` for a line the board
-already drew: chained, not applied again), and reads the board's chain back
-(`chain`). Equal seqs with different chains is a line one side took that the
-other did not, and the board is rebuilt from the start of the record.
+(`<self>/replay/<pair>/<seq>/<verb>[/<arg>]`), which chains the same bytes
+into the board, and reads the board's chain back (`chain`). Equal seqs with
+different chains is a line one side missed -- transport, not disagreement --
+and the board is rebuilt from the start of the record.
 
 The relay is the proxy level a browser needs: a page can dial a node and
 cannot be dialled. The lines are the verbs themselves, so a direct link --
