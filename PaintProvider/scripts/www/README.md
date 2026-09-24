@@ -704,10 +704,27 @@ Each used to be a whole-layer keyframe here and nothing at all to the room, so
 a hidden layer was hidden on one canvas, and the picture check read that as a
 divergence for as long as it stayed hidden. A mark made under a selection
 carries the selection (`PaintOp::Clip`) and lands under it everywhere,
-replay here included. A layer is matched across members by a key it is given
-the first time a roster names it (`PaintLayer::key`), so a restack moves the
-layer rather than renaming the ones at each position. Names travel as typed:
-`layer 3` used to arrive as `layer_3`.
+replay here included. Names travel as typed: `layer 3` used to arrive as
+`layer_3`.
+
+**A line is a change's exact input, and the change has one implementation.**
+Every entry names its layer by the layer's key (`PaintLayer::key`: the same
+number on every member, kept when an undo brings the layer back), never by a
+RID, which is one runtime's own. Numbers travel with nine significant digits
+(`paint_float_text`), which brings every float back to the same bits -- six
+decimal places brought a brush size or an opacity back as a neighbouring value,
+and a replay of the same input drew a different picture. And a change made here
+is BUILT as its entry and handed to the document, which lands it through the
+same code a replay runs: a shape, a fill or a cleared layer through `Perform`,
+a stroke point by point through `StrokeTo` (the step `ApplyOp` takes for each of
+its points), every change to the stack -- a new layer, a removal, a merge, an
+import, a restack, a layer's eye, opacity or name -- through `PerformStack`,
+which is reconcile and then the raster the entry carries, exactly what a
+member reading it does. The replay itself is a call: `ImportOps` hands each
+entry to the `Accept` verb by reference (`PaintOpRef`, the shape `RouteRef`
+gives a request), so a replayed change passes the same dispatch a made one
+does. `doc.Perform(<a record line without its sequence>)` replays a line from a
+script.
 
 **A reader's eye is refused with every other edit**, since a layer's
 visibility is part of the picture now; the hover peek still shows a hidden
