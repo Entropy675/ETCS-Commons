@@ -1,24 +1,35 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
+# ── A CHESS NODE ON THE WEB: its /game route, and nothing else ───────────────
+#
+#     detach NetworkProvider/scripts/chess_web.etcs game=<ChessNode>
+#
+# The node is a NAME SERVER: pages (ChessProvider/scripts/www, served by
+# whoever hosts them) list, pair and relay through /game/...; the boards run
+# in the pages. So this adds the route and the header a page on another
+# origin needs, onto the server named `web` -- the site's, when a site script
+# has one (run_website.etcs, run_tls_website.etcs), or a bare one on 8080
+# otherwise (chess_lobby.etcs alone, chess_server.etcs).
+#
+# NO PAGES. This used to load ./www into the server's `tree` as well, for the
+# server-played page -- which, run from a site whose `tree` already holds the
+# site, re-read that directory relative to wherever the process was started
+# and replaced what the site had mounted under it: /chess/play/ answered 404
+# whenever the site was started from scripts/. The site serves the pages; a
+# node answers verbs.
+
 requires game
 ensure NetworkProvider::HttpServer web
+# Setup for a server this script made; a started site's server refuses both,
+# and says so, which is the whole of their effect there.
 web.SetPort(8080)
 
-web.spawn(NetworkProvider::StaticHtmlPage board_page)
-board_page.SetHtmlFromFile(./www/static/chess.html)
-
-web.ensure(NetworkProvider::FileHtmlPage tree)
-tree.LoadFromDisk(./www)
-tree.ListPaths()
-
 web.AddRoute(@game Request @game Filter)
-# The node is a name server for pages served from OTHER origins -- the wasm
-# chess page reads /game/rooms and /game/players from wherever it is hosted.
 # A browser only lets a page read a cross-origin answer that says so; this
-# header is that permission. Wide open on purpose: rooms and players are the
-# public listing, every verb behind them is keyed by self, nothing here is
-# credentialed. Written into every response by HttpServer::Serve.
+# header is that permission. Wide open on purpose: the listings are public,
+# every verb behind them is keyed by self and token, nothing is credentialed.
+# Written into every response by HttpServer::Serve.
 web.AddHeader(Access-Control-Allow-Origin *)
 web.Start()
 web.IsStarted()

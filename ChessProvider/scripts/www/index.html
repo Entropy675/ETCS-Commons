@@ -1128,8 +1128,8 @@ sayEl.addEventListener('keydown',async ev=>{
  * ask any node and cannot be asked, so finding a partner takes a node you
  * both can reach.
  *
- * DEFAULT: whoever served this page, at its `game` mount (chess_web.etcs and
- * serve_chess.etcs both add that route beside the page).
+ * DEFAULT: whoever served this page, at its `game` mount (serve_chess.etcs
+ * adds that route beside the page; a site adds it with chess_web.etcs).
  */
 const nsUrlEl=$('ns-url'), nsStatusEl=$('ns-status');
 function defaultNode(){
