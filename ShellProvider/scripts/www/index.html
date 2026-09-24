@@ -327,11 +327,20 @@
   const inputRow = document.getElementById('input-row');
   let menuSerial = 0, menuPending = null, menuEnabled = false;
 
+  /*
+   * The view a page framing this one asks for (`?view=line|buttons`) is its
+   * default -- a short pane has no room for the menu as buttons -- and a
+   * choice made in it is kept per frame path, so switching one embedded shell
+   * does not switch every other shell on the site.
+   */
+  const askedView = new URLSearchParams(window.location.search).get('view');
+  const viewDefault = (askedView === 'line' || askedView === 'buttons') ? askedView : 'buttons';
+  const viewKey = 'etcs-shell-view' + (askedView ? ':' + window.location.pathname : '');
   function menuView() {
-    try { return window.localStorage.getItem('etcs-shell-view') || 'buttons'; } catch (e) { return 'buttons'; }
+    try { return window.localStorage.getItem(viewKey) || viewDefault; } catch (e) { return viewDefault; }
   }
   function setMenuView(v) {
-    try { window.localStorage.setItem('etcs-shell-view', v); } catch (e) {}
+    try { window.localStorage.setItem(viewKey, v); } catch (e) {}
     applyMenuView();
   }
   function applyMenuView() {

@@ -31,7 +31,10 @@ buttons; `go` sends both, and empty words are allowed (most actions read none).
 the choice is kept in the browser. Buttons are the default because on a phone
 they are the only usable form and on a desktop they are the readable one.
 Embedded in the paint page, the host relays the menu JSON to the frame with the
-text (`{etcs:'menu'}`), so the framed terminal has the same two views.
+text (`{etcs:'menu'}`), so the framed terminal has the same two views. A host
+whose pane is too short for the buttons frames it as `shell?view=line` (the
+chess page does): that view is then the default, and a switch made in that
+frame is kept for that frame's path only.
 
 ## Output is pulled in chunks, not pushed per line
 
