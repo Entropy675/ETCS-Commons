@@ -1,0 +1,24 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── THE CHESS PAGE'S FILES, for a site that serves it under a prefix ─────────
+#
+#     tree.SetMountPrefix(chess/play)
+#     run ChessProvider/scripts/chess_mounts.etcs tree=tree
+#     tree.SetMountPrefix()
+#
+# The wasm chess page (www/index.html) and what it fetches beside itself, each
+# at the path it is fetched from -- the page's own list, kept here in the
+# module the page belongs to, the way paint_mounts.etcs keeps Paint's. The
+# runtime (/wasm/) and the marks (/favicon/) are the site's, mounted once for
+# every page; the name server is the site's too, at /game.
+#
+# By file rather than MountTree: MountTree takes one path segment, and this
+# page lives two deep, under the site's lobby list at /chess/.
+
+requires tree [FileHtmlPage]
+
+tree.MountFile(index.html ACE_ROOT/modules/ChessProvider/scripts/www/index.html)
+tree.MountFile(modules.json ACE_ROOT/modules/ChessProvider/scripts/www/modules.json)
+tree.MountFile(boot_chess.etcs ACE_ROOT/modules/ChessProvider/scripts/www/boot_chess.etcs)
+tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)

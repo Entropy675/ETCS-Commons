@@ -212,6 +212,8 @@
   #me:hover { text-decoration:underline; background:none; color:var(--sel); }
   #me-edit { width:12rem; }
   #table-label { color:var(--dim); font-size:12px; }
+  #games-link { color:var(--dim); font-size:12px; }
+  #games-link:hover { color:var(--sel); }
   .st-waiting { color:var(--dim); } .st-playing { color:#8fbf7a; }
   .st-checkmate, .st-stalemate, .st-draw, .st-resign-white, .st-resign-black { color:#d4a24f; }
   .full { color:var(--err); }
@@ -225,6 +227,9 @@
   <button id="me" title="your name -- press to rename">—</button>
   <input id="me-edit" class="hidden" maxlength="24" spellcheck="false">
   <span id="table-label">your lobby · hotseat</span>
+  <!-- Back to the site's lobby list, when this page is mounted under one
+       (/chess/play/ beside /chess/). -->
+  <a id="games-link" class="hidden" href="../">all lobbies</a>
   <span class="spacer"></span>
   <span id="status">loading…</span>
 </header>
@@ -636,6 +641,10 @@ if(!/^[0-9a-f]{16}$/.test(myToken)){
 }
 // The name-server verbs, spelled with the token: /<self>/<verb>/<token>/...
 const nsPath = (verb, ...rest) => [myName, verb, myToken, ...rest].join('/');
+// What this page plays, as a name server lists it -- the game a lobby list
+// (scripts/www/chess/ on the site) opens this page for, and what quick match
+// pairs with.
+const GAME = 'chess';
 let myName = '';
 try { myName = localStorage.getItem(NAME_KEY) || ''; } catch(e){}
 if(!nameOk(myName)){ myName = madeUpName(); try { localStorage.setItem(NAME_KEY, myName); } catch(e){} }
@@ -1334,13 +1343,13 @@ function startNameServer(){
   refreshLobbies();
   if(ns.local){ tableLabel(); return; }
   const beat = async ()=>{
-    let t = await nsCall(nsPath('host'));
+    let t = await nsCall(nsPath('host', GAME));
     // Somebody else's page holds this name here: go by the first free
     // suffix of it, for this tab only -- the name you chose is kept.
     for(let n=2; t && t.trim()==='NAME TAKEN' && n<100; n++){
       const base = baseName();
       myName = base + '-' + n; showName();
-      t = await nsCall(nsPath('host'));
+      t = await nsCall(nsPath('host', GAME));
       if(t && t.trim()!=='NAME TAKEN') nsSay(base+' is in use on '+ns.shown+' -- you are '+myName+' here', 'err');
     }
     if(t!=null) await onState(t);
@@ -1365,8 +1374,9 @@ function renderLobbies(text){
   let shown=0;
   for(const line of lines(text)){
     const p=line.split(/\s+/);
-    if(p.length!==3) throw new Error('node said: '+line);
+    if(p.length<3 || p.length>4) throw new Error('node said: '+line);
     const [owner,partner,state]=p;
+    if((p[3]||'chess')!==GAME) continue;          // another game's lobby
     if(want && !(owner.toLowerCase().includes(want) || partner.toLowerCase().includes(want))) continue;
     const tr=document.createElement('tr');
     const self=(owner===myName);
@@ -1430,7 +1440,7 @@ async function visit(owner){
 }
 $('ns-quick').onclick=async()=>{
   if(ns.local){ nsSay('quick match needs a name server both of you can reach', 'err'); return; }
-  const t = await nsCall(nsPath('pair'));
+  const t = await nsCall(nsPath('pair', GAME));
   if(t==null){ nsSay(ns.shown+' did not answer', 'err'); return; }
   await onState(t);
 };
@@ -1472,7 +1482,7 @@ async function endRename(keep){
     // Asked BEFORE giving up the old one: a name another page holds is
     // refused, and you keep the one you had.
     const was = myName; myName = n;
-    const t = ((await nsCall(nsPath('host'))) || '').trim();
+    const t = ((await nsCall(nsPath('host', GAME))) || '').trim();
     myName = was;
     if(t==='NAME TAKEN'){ nsSay(n+' is in use on '+ns.shown, 'err'); return; }
     await nsCall(nsPath('unpair')); waiting=false;
@@ -1484,6 +1494,7 @@ async function endRename(keep){
 meEdit.addEventListener('keydown',ev=>{ if(ev.key==='Enter') endRename(true); else if(ev.key==='Escape') endRename(false); });
 meEdit.addEventListener('blur',()=>endRename(true));
 showName();
+if(/\/play\/$/.test(location.pathname)) $('games-link').classList.remove('hidden');
 
 // ── boot ─────────────────────────────────────────────────────────────────
 async function boot() {
@@ -1577,9 +1588,10 @@ async function boot() {
       const qs = new URLSearchParams(location.search);
       if (qs.get('ns')) nsUrlEl.value = qs.get('ns');
       const lobby = qs.get('lobby');
-      if (qs.has('ns') || qs.has('lobby')) history.replaceState(null, '', location.pathname);
+      if (qs.has('ns') || qs.has('lobby') || qs.has('quick')) history.replaceState(null, '', location.pathname);
       await useNameServer();
       if (lobby && lobby !== myName) await visit(lobby);
+      else if (qs.get('quick')) $('ns-quick').click();
     },
     onAbort: function (r) {
       setStatus('aborted', 'err');

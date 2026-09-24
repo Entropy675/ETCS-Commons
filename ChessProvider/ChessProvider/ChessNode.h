@@ -428,6 +428,7 @@ private:
         for (const auto& [s, l] : lobbies_)
         {
             if (l == me || !l->waiting_ || !onlineLocked(l) || pairOfLocked(l)) continue;
+            if (l->game_ != me->game_) continue;          // like with like
             return startPairLocked(l, me);
         }
         me->waiting_ = true;
@@ -448,7 +449,10 @@ private:
     }
 
     // One line into the pair's record, in the one order both boards replay.
-    // The verbs a table takes -- nothing that would reach past the board.
+    // A chess pair takes the verbs a chess table takes -- nothing that would
+    // reach past the board (the replay is a Request on the page's node). Any
+    // other game's lines are its pages' business: a verb is one lowercase
+    // word, and the line is relayed unread.
     std::string pushLocked(ChessLobby* me, const std::string& id,
                            const std::string& verb, const std::string& arg)
     {
@@ -456,8 +460,13 @@ private:
         if (!o || o->pair_.id != id) return "NOT PAIRED";
         static const char* const kVerbs[] = { "move", "sit", "say", "resign", "draw",
                                               "decline", "leave", "reset" };
-        bool ok = false;
-        for (const char* v : kVerbs) if (verb == v) ok = true;
+        bool ok = !verb.empty() && verb.size() <= 16;
+        for (char c : verb) if (c < 'a' || c > 'z') ok = false;
+        if (ok && o->game_ == "chess")
+        {
+            ok = false;
+            for (const char* v : kVerbs) if (verb == v) ok = true;
+        }
         if (!ok) return "NOT FOUND";
         ChessLobby::Pair& p = o->pair_;
         const size_t seq = p.base + p.record.size();
@@ -542,7 +551,9 @@ private:
         return applied ? std::string("OK") : g->verbLocked(self, verb, arg);
     }
 
-    // Every lobby online here: "owner partner|- open|waiting|playing".
+    // Every lobby online here: "owner partner|- open|waiting|playing game".
+    // Any game's: the node pairs and relays lines without reading them, so a
+    // lobby list here is a list for every game whose pages use it.
     std::string lobbiesLocked()
     {
         endStaleLocked();
@@ -553,14 +564,14 @@ private:
             ChessLobby* live = pairOfLocked(l);
             if (live && live != l) continue;          // sitting at somebody else's table
             out += s + " " + (live ? l->pair_.partner : std::string("-")) + " "
-                 + (live ? "playing" : l->waiting_ ? "waiting" : "open") + "\n";
+                 + (live ? "playing" : l->waiting_ ? "waiting" : "open") + " " + l->game_ + "\n";
         }
         return out;
     }
 
     // /<mount>/<self>/<match>/<verb>[/<arg>]
     // /<mount>/<self>/list | join | me
-    // /<mount>/<self>/host|pair|unpair/<token> | visit/<token>/<owner>
+    // /<mount>/<self>/host|pair/<token>[/<game>] | unpair/<token> | visit/<token>/<owner>
     // /<mount>/<self>/push/<token>/<pair>/<verb>[/<arg>] | relay/<token>/<pair>/<since>
     // /<mount>/<self>/replay/<match>/<seq>/<verb>[/<arg>]
     // /<mount>/players | rooms | lobbies
@@ -620,6 +631,9 @@ private:
         // The name-server verbs: a lobby hosted by a page, paired, relayed.
         // See ChessLobby's Pair.
         auto at = [&](size_t i) { return (seg.size() > i) ? seg[i] : std::string(); };
+        // The game a lobby is for rides on host and pair (seg[4]): the listing
+        // says it, and quick match pairs like with like. Chess when unsaid.
+        if ((match == "host" || match == "pair") && !at(4).empty()) me->game_ = at(4);
         if (match == "host")   { endStaleLocked(); me->hosting_ = true; return stateLocked(me); }
         if (match == "pair")   return pairLocked(me);
         if (match == "visit")  return visitLocked(me, at(4));

@@ -166,13 +166,27 @@ its field -- by default whoever served this page, at `/game`
 (`serve_chess.etcs` and `chess_web.etcs` both mount one). It holds no board.
 It does three things, all verbs on the node:
 
-    <self>/host/<token>             keep my lobby listed; answer my standing
-    lobbies                         who is online here: "owner partner|- open|waiting|playing"
-    <self>/pair/<token>             quick match: sit with whoever is waiting, or wait
+    <self>/host/<token>[/<game>]    keep my lobby listed; answer my standing
+    lobbies                         who is online: "owner partner|- open|waiting|playing game"
+    <self>/pair/<token>[/<game>]    quick match: sit with whoever of my game is waiting, or wait
     <self>/visit/<token>/<owner>    sit at that lobby (a row, or a shared link)
     <self>/unpair/<token>           leave the pair
     <self>/push/<token>/<pair>/<verb>[/<arg>]   one line into the pair's record
     <self>/relay/<token>/<pair>/<since>         the record, paged like chat
+
+**Any game's lobbies.** A page says which game it plays when it hosts or
+asks for a match (this one says `chess`); the listing carries it, quick
+match pairs like with like, and the relay passes another game's lines on
+unread -- only a chess pair's lines are held to the chess verbs. So one name
+server is a lobby list for every game whose pages use it.
+
+**On the site.** `run_website.etcs` and `run_tls_website.etcs` serve this page
+at `/chess/play/` (its files listed in `../chess_mounts.etcs`, mounted under
+that prefix) beside the site's lobby list at `/chess/`
+(`scripts/www/chess/index.html` in ETCS): the name server's list read with no
+game attached, whose rows open this page with `?lobby=<owner>` and whose
+Quick match opens it with `?quick=1`. The page links back to the list when it
+is served under a `/play/` path.
 
 **One page per name.** Every name-server verb carries the page's token --
 one per tab, kept in `sessionStorage`, so a reload is still you and a second

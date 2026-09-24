@@ -175,6 +175,7 @@ private:
     std::string guest_of_;          // the owner whose table this self sits at
     unsigned    pairs_ = 0;         // pairings made at this table, for ids
     std::string claim_;             // the token of the page that holds this name -- see ChessNode
+    std::string game_ = "chess";    // what its page plays -- the listing's fourth field
 };
 
 #endif // CHESSLOBBY_H__
