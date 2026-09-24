@@ -448,7 +448,8 @@ Folded, the window IS its bar: the pane shrinks to it (`paint_window_fold`),
 since a pane is its whole rectangle to a pick and to the router -- a window
 that only hid its rows kept the rectangle they left, and a stroke drawn toward
 it stopped at an edge nobody could see. The sharing window has the same eye,
-left of `end` (`PaintVisitors::PressView`).
+left of `end` (`PaintVisitors::PressView`), and so does the animation window
+(`PaintAnimation::PressView`).
 
 The window re-renders the canvas itself whenever it changes the PICTURE rather
 than the list -- a restack, an eye, a delete, a press that lands a carry
@@ -509,16 +510,21 @@ By verb:
 ## Animation: frames cut from the page and put back
 
 The `anim` tool (beside `select`) drags a region on the page. That region is
-the frame: the animation window comes up under the layer window, the region is
-outlined on the sheet in the page's highlight, and from then on the page is the
+the CAMERA: the animation window comes up under the layer window, the region is
+outlined on the page in the page's highlight, and from then on the page is the
 drawing board and the window is the reel (`PaintAnimation`,
 `PaintProvider/scripts/paint_anim.etcs`, rows from `paint_anim_row.etcs`).
+The tool pressed inside the camera carries it, same size, and while it moves
+the preview is a viewfinder onto what it frames (the readout says `camera`);
+snap there and the frame is taken there. Every frame remembers where on the
+page it was snapped.
 
-    snap    a frame from what is visible in the region now, after the current
+    snap    a frame from what is visible in the camera now, after the current
             one -- draw, snap, draw, snap builds the reel in order
-    put     the current frame back onto the active layer, in the region, as one
-            undo step (PaintDocument::PastePixels)
-    < >     step the current frame; a press on a row does the same
+    put     the current frame back onto the active layer where it was
+            snapped, as one undo step (PaintDocument::PastePixels)
+    < >     step the current frame, and take the camera to where it was
+            snapped; a press on a row does the same
     play    run the reel at the rate; the same button pauses. The window claims
             Animated (ontology/Animated.h) and honours dt, unlike the throbber,
             because "12 a second" is a duration and must mean the same on every
@@ -528,12 +534,17 @@ drawing board and the window is the reel (`PaintAnimation`,
     gif     the reel as a GIF, to the page's download (`anim.gif`)
 
 The window onto the reel is four rows; the wheel over it scrolls, and playing
-keeps the current frame in view. Resizing the region drops the frames (a frame
-is the region's size by definition); moving it keeps them. The outline is four
-bars on the sheet placed through the surface's projection, re-placed as the
-view pans or zooms -- on the sheet and not in the view pane, because the view
-pane is the surface's raster and a child of a pane somebody else clears is
-drawn only when the tree changes.
+keeps the current frame in view; playing leaves the camera where it is.
+Resizing the region drops the frames (a frame is the region's size by
+definition); moving it keeps them. The camera is drawn by the canvas in page
+space (`PaintSurface::SetCamera`), so it stays on the page under every pan and
+zoom, as a selection does -- it was four panes on the sheet, re-placed only by
+the pointer's own repaints, and a zoom from the toolbar left it on the screen.
+The window's bar carries it; the eye on the bar folds it to the bar, as the
+layer and sharing windows' eyes do, and takes the camera off the page; the `x`
+closes window and camera and puts the move tool in hand (`PaintPalette::
+PickTool` lights it on the bar). The reel is kept either way, and the anim
+tool -- a click, or a new drag -- brings the window back.
 
 **GIF both ways.** An uploaded GIF with more than one frame goes straight to the
 reel rather than to the layer-or-canvas question (`PaintCanvasMenu::OfferImport`

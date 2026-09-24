@@ -15,8 +15,8 @@
 # with the checker behind it; a row of buttons; the readout ("12 fps  3/8");
 # and four rows of [thumb][#][x], the window onto the reel the wheel scrolls.
 #
-#   snap   a frame from what the region shows now, after the current one
-#   put    the current frame back onto the active layer, in the region
+#   snap   a frame from what the camera shows now, after the current one
+#   put    the current frame back onto the active layer, where it was snapped
 #   <  >   step the current frame
 #   play   run the reel at the rate (pause is the same button)
 #   -  +   the rate, one frame a second at a time
@@ -24,7 +24,9 @@
 #
 # The window is hidden until a region exists (PaintAnimation::BindWindow): the
 # animation tool's drag on the page is what brings it up, and until then there
-# is nothing here to show.
+# is nothing here to show. The bar carries it; the eye on the bar folds it to
+# the bar and takes the camera off the page; the x closes it and hands you the
+# move tool. The reel is kept either way.
 
 requires panel   [Drawable2D]
 requires anim    [PaintAnimation]
@@ -58,6 +60,40 @@ anim_title_word.SetSize(1)
 anim_title_word.SetColor(0.94, 0.89, 0.78, 1.0)
 anim_title_word.SetText(animation)
 anim_title_word.SetOrder(2)
+anim.BindTitle(@anim_title)
+anim.BindTitle(@anim_title_word)
+
+# THE EYE FOLDS IT TO ITS BAR, as the layer and sharing windows' do: the same
+# eye from the same file, left of the x (PaintAnimation::PressView). Folded,
+# the camera is off the page too; the reel is kept.
+panel.spawn(RenderProvider::CompositeDrawable2D anim_view)
+anim_view.Create(38, 26)
+anim_view.SetPosition(176, -2)
+anim_view.SetOrder(2)
+anim.BeginTitle()
+run paint_eye.etcs pane=anim_view list=anim
+
+# THE x CLOSES IT, camera and all, and puts the move tool in hand
+# (PaintAnimation::Close, through the palette so the bar lights `move`).
+anim.BindPalette(@palette)
+panel.spawn(RenderProvider::PolygonDrawable2D anim_close)
+anim_close.Create()
+anim_close.AddPoint(216, 3)
+anim_close.AddPoint(236, 3)
+anim_close.AddPoint(236, 19)
+anim_close.AddPoint(216, 19)
+anim_close.SetFill(0.32, 0.18, 0.16, 1.0)
+anim_close.SetOrder(2)
+palette.AddCall(@anim_close, @anim, PaintAnimation.Close)
+
+panel.spawn(RenderProvider::TextLabel anim_close_word)
+anim_close_word.Create()
+anim_close_word.SetPosition(223, 7)
+anim_close_word.SetSize(1)
+anim_close_word.SetColor(0.94, 0.89, 0.78, 1.0)
+anim_close_word.SetText(x)
+anim_close_word.SetOrder(3)
+palette.AddCall(@anim_close_word, @anim, PaintAnimation.Close)
 
 # ── the preview ───────────────────────────────────────────────────────────
 #

@@ -8384,6 +8384,7 @@ public:
         }
         m_document->RenderToSurface(m_target, m_pan_x, m_pan_y, m_zoom);
         draw_peer_views(view);
+        draw_camera(view);
         // The pane's own edge, marked out. After the document because it is chrome
         // rather than part of the picture -- and, with a frame bound, not on the
         // picture's raster at all.
@@ -8449,6 +8450,19 @@ public:
 
     size_t peerCount() const { return m_peers.size(); }
 
+    /*
+ * THE ANIMATION CAMERA (PaintAnimation's region), drawn here like the frames
+ * above: in DOCUMENT space, through this pane's projection, every Render --
+ * so it stays on the page under every pan and zoom, as a selection does. It
+ * was four panes on the sheet placed from the region, re-placed only by the
+ * input's own repaint, and a zoom from the toolbar left the box where the
+ * screen had been rather than where the page was.
+ */
+    void SetCamera(bool on, int32_t x, int32_t y, int32_t w, int32_t h)
+    {
+        m_cam_on = on; m_cam_x = x; m_cam_y = y; m_cam_w = w; m_cam_h = h;
+    }
+
     // This pane's own visible rectangle IN DOCUMENT SPACE -- what a page sends
     // so everyone else can draw it. Derived from the projection rather than
     // remembered, so it cannot go stale behind a pan.
@@ -8498,7 +8512,24 @@ private:
         }
     }
 
+    // The page's highlight, as the drag that chose it is previewed in.
+    void draw_camera(Surface_* view)
+    {
+        if (!view || !m_cam_on) return;
+        const int32_t x0 = DocToViewX(m_cam_x), y0 = DocToViewY(m_cam_y);
+        const int32_t x1 = DocToViewX(m_cam_x + m_cam_w), y1 = DocToViewY(m_cam_y + m_cam_h);
+        const int32_t vw = x1 - x0, vh = y1 - y0;
+        if (vw < 2 || vh < 2) return;
+        const uint32_t uw = static_cast<uint32_t>(vw), uh = static_cast<uint32_t>(vh);
+        view->DrawRect(x0, y0, uw, 2u, 0.35f, 0.55f, 0.95f, 1.0f);
+        view->DrawRect(x0, y1 - 2, uw, 2u, 0.35f, 0.55f, 0.95f, 1.0f);
+        view->DrawRect(x0, y0, 2u, uh, 0.35f, 0.55f, 0.95f, 1.0f);
+        view->DrawRect(x1 - 2, y0, 2u, uh, 0.35f, 0.55f, 0.95f, 1.0f);
+    }
+
     std::vector<PeerView> m_peers;
+    bool    m_cam_on = false;
+    int32_t m_cam_x = 0, m_cam_y = 0, m_cam_w = 0, m_cam_h = 0;
 
 public:
     // WHAT THE SURFACE'S OWN LAYER LOOKS LIKE -- not a "background", which would
@@ -10004,10 +10035,14 @@ private:
  * second is a real duration and "twelve a second" must mean the same on
  * every display.
  *
- * THE OUTLINE is four thin panes on the view (BindOutline), placed from the
- * region through the surface's projection and re-placed when the pan or the
- * zoom moves under them -- checked once a frame, so a drag of the picture
- * carries the outline with it.
+ * THE REGION IS A CAMERA ON THE PAGE. It is drawn by the surface in
+ * document space (PaintSurface::SetCamera), so it stays where it is on the
+ * page as the view pans and zooms. The animation tool pressed inside it
+ * carries it (PaintInput, MoveRegionTo) -- same size, so the reel is kept --
+ * and while it moves the preview is a viewfinder onto what it frames now.
+ * Every frame remembers where on the page it was snapped: `put` lays it back
+ * THERE, and choosing a frame takes the camera to it, so a reel shot across
+ * the page is a set of places as well as pictures.
  */
 class PaintAnimation : public DeletableBase<PaintAnimation>,
                        public AnimatedBase<PaintAnimation>
@@ -10042,13 +10077,80 @@ public:
     void BindWindow(ETCS::RID pane)   { m_window = pane; paint_node_hidden(pane, !m_has_region); }
     void BindPreview(ETCS::RID node)  { m_preview = node; }
     void BindReadout(ETCS::RID node)  { m_readout = node; }
-    // The four outline bars, in the order top, bottom, left, right.
-    void BindOutline(ETCS::RID node)  { if (node && m_outline.size() < 4) m_outline.push_back(node); }
 
-    void BeginRow() { m_rows.push_back(Row{}); }
+    /*
+ * THE WINDOW MOVES BY ITS BAR, FOLDS BY ITS EYE AND CLOSES BY ITS x.
+ * The first two as the layer and sharing windows do (PaintInput routes the
+ * press, the motion and the release here): folded, it is its bar
+ * (paint_window_fold) and the camera is off the page. Closed, it is gone
+ * with the camera, and the tool in hand becomes `move` (the bar lights it,
+ * PaintPalette::PickTool) -- the animation tool is what the window belongs
+ * to, and one left in hand with nothing showing would still carry an
+ * invisible camera. Either way the reel is kept, and the animation tool --
+ * a click, or a new drag -- brings the window back.
+ */
+    void BindPalette(ETCS::RID palette) { m_palette = palette; }
+    void BindTitle(ETCS::RID node) { if (node) m_title.push_back(node); }
+    void BeginTitle() { m_title_open = true; }
+    bool PressTitle(ETCS::RID node, Point2D at)
+    {
+        if (!m_has_region || m_closed || node == 0
+            || std::find(m_title.begin(), m_title.end(), node) == m_title.end()) return false;
+        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
+        if (!w) return true;
+        const Rect2D b = w->Bounds();
+        m_moving = true;
+        m_grab = at;
+        m_origin = Point2D{ b.x, b.y };
+        return true;
+    }
+    bool moving() const { return m_moving; }
+    void DragWindow(Point2D at)
+    {
+        if (m_moving && !paint_node_moved(m_window, m_origin.x + (at.x - m_grab.x), m_origin.y + (at.y - m_grab.y)))
+            m_moving = false;
+    }
+    void EndWindowDrag() { m_moving = false; }
+
+    void Fold(bool folded) { if (m_shown == !folded) return; m_shown = !folded; if (folded) m_playing = false; show(); }
+    void Open()  { if (!m_has_region || (m_shown && !m_closed)) return; m_shown = true; m_closed = false; show(); }
+    void Close()
+    {
+        if (m_closed) return;
+        m_closed = true;
+        m_playing = false;
+        show();
+        if (ETCS::Entity* pal = paint_resolve_tag("PaintPalette", m_palette))
+        {
+            ETCS::Buffer act; act.write("PaintPalette.PickTool");
+            ETCS::Buffer arg; arg.write("move");
+            try { pal->call(act, arg); } catch (...) {}
+        }
+    }
+    bool shown() const { return m_shown && !m_closed; }
+
+    // A press on the bar's eye: fold, or open again.
+    bool PressView(ETCS::RID node)
+    {
+        if (node == 0 || (node != m_view_eye && node != m_view_iris && node != m_view_pupil)) return false;
+        Fold(m_shown);
+        return true;
+    }
+
+    void BeginRow() { m_title_open = false; m_rows.push_back(Row{}); }
     void RowNode(const std::string& what, ETCS::RID node)
     {
         if (node == 0) return;
+        // The bar's eye (paint_eye.etcs between BeginTitle and BeginRow).
+        if (m_title_open)
+        {
+            if      (what == "eye")   m_view_eye   = node;
+            else if (what == "iris")  m_view_iris  = node;
+            else if (what == "pupil") m_view_pupil = node;
+            else ETCS_LOG("PaintAnimation", "RowNode: '" << what << "' on the title bar -- only an eye goes there.");
+            tint_view();
+            return;
+        }
         if (m_rows.empty()) { ETCS_LOG("PaintAnimation", "RowNode before BeginRow -- ignored."); return; }
         const size_t idx = m_rows.size() - 1;
         Row& row = m_rows[idx];
@@ -10091,18 +10193,41 @@ public:
             ETCS_LOG("PaintAnimation", "region resized " << m_w << "x" << m_h << " -> " << w << "x" << h
                      << "; " << m_frames.size() << " frame(s) of the old size dropped.");
             m_frames.clear();
+            m_where.clear();
             m_at = 0;
         }
         m_x = lx; m_y = ty; m_w = w; m_h = h;
         m_has_region = true;
-        paint_node_hidden(m_window, false);
-        place_outline(true);
-        Refresh();
+        m_shown = true;
+        m_closed = false;
+        m_live = true;
+        show();
         ETCS_LOG("PaintAnimation", "region " << m_w << "x" << m_h << " at " << m_x << "," << m_y);
         return true;
     }
 
     bool hasRegion() const { return m_has_region; }
+
+    // Whether a document point is inside the camera -- where the animation
+    // tool's press carries it rather than drawing a new one.
+    bool RegionHas(int32_t x, int32_t y) const
+    {
+        return m_has_region && m_shown && !m_closed && x >= m_x && y >= m_y
+            && x < m_x + static_cast<int32_t>(m_w) && y < m_y + static_cast<int32_t>(m_h);
+    }
+    int32_t regionX() const { return m_x; }
+    int32_t regionY() const { return m_y; }
+
+    // The camera to a new corner, the same size, kept on the page. The reel
+    // is kept: its frames are this size wherever they were taken.
+    void MoveRegionTo(int32_t x, int32_t y)
+    {
+        if (!m_has_region || !m_document) return;
+        m_x = std::clamp(x, 0, std::max(0, static_cast<int32_t>(m_document->width()) - static_cast<int32_t>(m_w)));
+        m_y = std::clamp(y, 0, std::max(0, static_cast<int32_t>(m_document->height()) - static_cast<int32_t>(m_h)));
+        m_live = true;
+        show();
+    }
 
     // ── the reel ─────────────────────────────────────────────────────────
 
@@ -10122,21 +10247,24 @@ public:
                         static_cast<size_t>(m_w) * 4);
         const size_t at = m_frames.empty() ? 0 : std::min(m_frames.size(), m_at + 1);
         m_frames.insert(m_frames.begin() + static_cast<std::ptrdiff_t>(at), std::move(f));
+        m_where.insert(m_where.begin() + static_cast<std::ptrdiff_t>(at), Point2D{ m_x, m_y });
         m_at = at;
+        m_live = false;
         Refresh();
         ETCS_LOG("PaintAnimation", "snapped frame " << (m_at + 1) << " of " << m_frames.size());
         return true;
     }
 
-    // The current frame onto the active layer, in the region, as one
+    // The current frame onto the active layer where it was snapped, as one
     // undoable step (PaintDocument::PastePixels).
     bool Put()
     {
         if (!m_document || m_frames.empty() || !m_has_region) return false;
         const PaintImage& f = m_frames[m_at];
-        if (!m_document->PastePixels(f.rgba.data(), f.w, f.h, m_x, m_y)) return false;
+        const Point2D at = m_where[m_at];
+        if (!m_document->PastePixels(f.rgba.data(), f.w, f.h, at.x, at.y)) return false;
         if (m_surface) m_surface->Render();
-        ETCS_LOG("PaintAnimation", "put frame " << (m_at + 1) << " at " << m_x << "," << m_y);
+        ETCS_LOG("PaintAnimation", "put frame " << (m_at + 1) << " at " << at.x << "," << at.y);
         return true;
     }
 
@@ -10144,17 +10272,19 @@ public:
     {
         if (index >= m_frames.size()) return;
         m_frames.erase(m_frames.begin() + static_cast<std::ptrdiff_t>(index));
+        m_where.erase(m_where.begin() + static_cast<std::ptrdiff_t>(index));
         if (m_at >= m_frames.size()) m_at = m_frames.empty() ? 0 : m_frames.size() - 1;
         Refresh();
     }
 
-    void Select(size_t index) { if (index < m_frames.size()) { m_at = index; Refresh(); } }
-    void Next() { if (!m_frames.empty()) { m_at = (m_at + 1) % m_frames.size(); Refresh(); } }
-    void Prev() { if (!m_frames.empty()) { m_at = (m_at + m_frames.size() - 1) % m_frames.size(); Refresh(); } }
+    // Choosing a frame takes the camera to where it was snapped.
+    void Select(size_t index) { if (index < m_frames.size()) go_to(index); }
+    void Next() { if (!m_frames.empty()) go_to((m_at + 1) % m_frames.size()); }
+    void Prev() { if (!m_frames.empty()) go_to((m_at + m_frames.size() - 1) % m_frames.size()); }
 
     void SetFps(int32_t fps) { m_fps = std::clamp(fps, MIN_FPS, MAX_FPS); Refresh(); }
     void StepFps(int32_t by) { SetFps(m_fps + by); }
-    void Play()  { m_playing = !m_frames.empty(); m_clock = 0.0; Refresh(); }
+    void Play()  { m_playing = !m_frames.empty(); m_clock = 0.0; m_live = false; Refresh(); }
     void Pause() { m_playing = false; Refresh(); }
     void Toggle() { if (m_playing) Pause(); else Play(); }
 
@@ -10182,12 +10312,14 @@ public:
             return false;
         }
         m_frames = std::move(frames);
+        m_where.assign(m_frames.size(), Point2D{ x, y });
         m_at = 0;
         m_x = x; m_y = y; m_w = w; m_h = h; m_has_region = true;
         m_fps = std::clamp(static_cast<int32_t>(std::lround(1000.0 / std::max(1, delay_ms))), MIN_FPS, MAX_FPS);
-        paint_node_hidden(m_window, false);
-        place_outline(true);
-        Refresh();
+        m_shown = true;
+        m_closed = false;
+        m_live = false;
+        show();
         ETCS_LOG("PaintAnimation", "imported " << path << ": " << m_frames.size() << " frame(s) " << w << "x" << h
                  << " at " << m_fps << " fps");
         return true;
@@ -10298,16 +10430,19 @@ public:
             paint_fit(row.thumb, m_frames[at]);
             paint_node_text(row.label, std::to_string(at + 1));
         }
+        const bool live = m_live && !m_playing;
         if (m_preview)
         {
-            if (m_frames.empty()) paint_fit(m_preview, PaintImage{});
-            else                  paint_fit(m_preview, m_frames[m_at]);
+            if (live)                  paint_fit(m_preview, camera_view());
+            else if (m_frames.empty()) paint_fit(m_preview, PaintImage{});
+            else                       paint_fit(m_preview, m_frames[m_at]);
         }
         if (m_readout)
         {
             std::string t = std::to_string(m_fps) + " fps  ";
             t += m_frames.empty() ? "no frames" : (std::to_string(m_at + 1) + "/" + std::to_string(m_frames.size()));
             if (m_playing) t += "  playing";
+            else if (live) t += "  camera";
             paint_node_text(m_readout, t);
         }
     }
@@ -10324,9 +10459,8 @@ public:
 
     bool AnimatingConcrete() override { return m_playing && m_frames.size() > 1; }
 
-    // dt honoured: the rate is a duration. The outline is re-placed here too,
-    // playing or not -- see the header -- which is why Animating answers true
-    // only while playing: one virtual call a frame is the cost of the check.
+    // dt honoured: the rate is a duration. Playing does not move the camera:
+    // it is the reel being watched, not the frames being chosen.
     void AdvanceConcrete(double dt_ms) override
     {
         if (!m_playing || m_frames.size() < 2) return;
@@ -10336,10 +10470,6 @@ public:
         while (m_clock >= per) { m_clock -= per; m_at = (m_at + 1) % m_frames.size(); stepped = true; }
         if (stepped) Refresh();
     }
-
-    // Called by the surface's owner each render (PaintInput::repaint_view) so
-    // the outline follows a pan or a zoom.
-    void FollowView() { place_outline(false); }
 
 private:
     struct Row { ETCS::RID bg = 0, thumb = 0, label = 0, del = 0; };
@@ -10397,61 +10527,83 @@ private:
         etcs_mark_observed(dst);
     }
 
-    /*
- * The four bars around the region, in the SHEET's space: the view's origin
- * plus the region projected through pan and zoom, clipped to the view so a
- * region panned half off the page does not draw its edge over the ruler.
- * On the sheet and not in the view pane, because the view pane is the
- * surface's raster -- retained and cleared by Render -- and a child of a pane
- * that somebody else clears is drawn only when the tree changes, which is why
- * every pane the surface writes has no children (paint_layers.etcs says the
- * same of the thumbs). Skipped when nothing moved since the last placement
- * unless forced: each bar is three verbs across a module boundary.
- */
-    void place_outline(bool force)
+    // The window (whole, or folded to its bar) and the camera (only while
+    // open), and the window's contents restated.
+    void show()
     {
-        if (m_outline.size() < 4 || !m_surface) return;
-        if (!m_has_region) { for (ETCS::RID n : m_outline) paint_node_hidden(n, true); return; }
-        Rect2D pane{ 0, 0, 0, 0 };
+        const bool up = m_has_region && m_shown && !m_closed;
+        paint_node_hidden(m_window, !m_has_region || m_closed);
+        paint_window_fold(m_window, !m_shown, paint_nodes_bottom(m_title), m_full_h);
+        tint_view();
+        if (m_surface)
         {
-            ETCS::Held<Drawable2D_> v = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_surface->target());
-            if (!v) return;
-            pane = v->Bounds();
+            m_surface->SetCamera(up, m_x, m_y, static_cast<int32_t>(m_w), static_cast<int32_t>(m_h));
+            m_surface->Render();
         }
-        const int32_t pw = static_cast<int32_t>(pane.w), ph = static_cast<int32_t>(pane.h);
-        const int32_t vx0 = std::clamp(m_surface->DocToViewX(m_x), 0, pw);
-        const int32_t vy0 = std::clamp(m_surface->DocToViewY(m_y), 0, ph);
-        const int32_t vx1 = std::clamp(m_surface->DocToViewX(m_x + static_cast<int32_t>(m_w)), 0, pw);
-        const int32_t vy1 = std::clamp(m_surface->DocToViewY(m_y + static_cast<int32_t>(m_h)), 0, ph);
-        if (!force && vx0 == m_ox0 && vy0 == m_oy0 && vx1 == m_ox1 && vy1 == m_oy1
-            && pane.x == m_opx && pane.y == m_opy) return;
-        m_ox0 = vx0; m_oy0 = vy0; m_ox1 = vx1; m_oy1 = vy1; m_opx = pane.x; m_opy = pane.y;
-        const int32_t t = 2;
-        const bool visible = (vx1 - vx0) >= t && (vy1 - vy0) >= t;
-        const uint32_t w = static_cast<uint32_t>(std::max(t, vx1 - vx0)), h = static_cast<uint32_t>(std::max(t, vy1 - vy0));
-        auto bar = [&](ETCS::RID n, int32_t x, int32_t y, uint32_t bw, uint32_t bh)
+        Refresh();
+    }
+
+    // The layer window's eye colours, so one eye means one thing on the sheet.
+    void tint_view()
+    {
+        static constexpr float white_open[3] = { 0.94f, 0.89f, 0.78f }, white_shut[3] = { 0.35f, 0.36f, 0.28f };
+        static constexpr float iris_open[3]  = { 0.35f, 0.55f, 0.95f }, iris_shut[3]  = { 0.106f, 0.110f, 0.078f };
+        const float* w = m_shown ? white_open : white_shut;
+        const float* i = m_shown ? iris_open  : iris_shut;
+        if (m_view_eye)   paint_node_fill(m_view_eye,  w[0], w[1], w[2], 1.0f);
+        if (m_view_iris)  paint_node_fill(m_view_iris, i[0], i[1], i[2], 1.0f);
+        if (m_view_pupil) paint_node_hidden(m_view_pupil, !m_shown);
+    }
+
+    void go_to(size_t index)
+    {
+        m_at = index;
+        m_live = false;
+        if (index < m_where.size() && (m_where[index].x != m_x || m_where[index].y != m_y))
         {
-            paint_node_hidden(n, !visible);
-            paint_node_verb(n, "ResizeTo", std::to_string(bw) + ", " + std::to_string(bh));
-            paint_node_verb(n, "MoveTo", std::to_string(pane.x + x) + ", " + std::to_string(pane.y + y));
-        };
-        bar(m_outline[0], vx0, vy0, w, t);
-        bar(m_outline[1], vx0, vy1 - t, w, t);
-        bar(m_outline[2], vx0, vy0, t, h);
-        bar(m_outline[3], vx1 - t, vy0, t, h);
+            m_x = m_where[index].x; m_y = m_where[index].y;
+            show();
+            return;
+        }
+        Refresh();
+    }
+
+    // What the camera frames now, from the visible picture -- the viewfinder.
+    PaintImage camera_view() const
+    {
+        PaintImage f;
+        std::vector<uint8_t> px;
+        if (!m_document || !m_has_region || !m_document->CompositeVisible(px)) return f;
+        const uint32_t dw = m_document->width(), dh = m_document->height();
+        if (m_x < 0 || m_y < 0 || m_x + m_w > dw || m_y + m_h > dh) return f;
+        f.w = m_w; f.h = m_h; f.rgba.resize(static_cast<size_t>(m_w) * m_h * 4);
+        for (uint32_t y = 0; y < m_h; ++y)
+            std::memcpy(f.rgba.data() + static_cast<size_t>(y) * m_w * 4,
+                        px.data() + (static_cast<size_t>(m_y + y) * dw + m_x) * 4,
+                        static_cast<size_t>(m_w) * 4);
+        return f;
     }
 
     PaintDocument* m_document = nullptr;
     PaintSurface*  m_surface  = nullptr;
     ETCS::RID m_window = 0, m_preview = 0, m_readout = 0;
-    std::vector<ETCS::RID> m_outline;
-    int32_t m_ox0 = INT32_MIN, m_oy0 = 0, m_ox1 = 0, m_oy1 = 0, m_opx = 0, m_opy = 0;
+    std::vector<ETCS::RID> m_title;
+    bool     m_moving = false;
+    Point2D  m_grab{ 0, 0 }, m_origin{ 0, 0 };
+    bool      m_title_open = false;    // between BeginTitle and the first BeginRow
+    ETCS::RID m_view_eye = 0, m_view_iris = 0, m_view_pupil = 0;
+    uint32_t  m_full_h = 0;            // the window's height while folded -- paint_window_fold
 
     bool     m_has_region = false;
+    bool     m_shown = true;           // open, not folded to the bar -- see Fold
+    bool     m_closed = false;         // gone, window and camera -- see Close
+    ETCS::RID m_palette = 0;           // whose tool becomes `move` on Close
+    bool     m_live = false;           // the preview is the camera, not a frame
     int32_t  m_x = 0, m_y = 0;
     uint32_t m_w = 0, m_h = 0;
 
     std::vector<PaintImage> m_frames;
+    std::vector<Point2D>    m_where;   // where on the page each frame was snapped
     size_t   m_at = 0;
     int32_t  m_fps = 12;
     bool     m_playing = false;
@@ -10895,6 +11047,17 @@ public:
     // A third thing a node can mean, alongside a colour and a size: which TOOL
     // it selects. Same mapping, same Apply, so a tool button is a rectangle in
     // the toolbar script exactly as a swatch is.
+    // The tool in hand from outside the bar, lit as if its slice had been
+    // pressed -- what a window that belongs to one tool does as it closes
+    // (PaintAnimation::Close).
+    void PickTool(const std::string& kind)
+    {
+        if (!m_tool) return;
+        m_tool->SetKind(kind);
+        repaintPalette();
+        ETCS_LOG("PaintPalette", "tool -> " << kind);
+    }
+
     void AddTool(ETCS::RID node, const std::string& kind)
     {
         if (node == 0) return;
@@ -14960,6 +15123,16 @@ public:
         // swallowed with it so the sheet under the menu never sees half a click.
         if ((is_press || is_release) && m_page_panel && m_page_panel->Apply(hit_rid, is_press))
             return;
+        // The animation window carried by its bar, as the layer window is.
+        if (m_anim && m_anim->moving())
+        {
+            if (ev.action == INPUT_MOTION) { m_anim->DragWindow(pane_pt); return; }
+            if (is_release) { m_anim->EndWindowDrag(); return; }
+        }
+        if (is_press && m_anim && m_anim->PressView(hit_rid))
+            return;
+        if (is_press && m_anim && m_anim->PressTitle(hit_rid, pane_pt))
+            return;
         if ((is_press || is_release) && m_anim && m_anim->Apply(hit_rid, is_press))
             return;
 
@@ -15192,7 +15365,8 @@ public:
         if (m_panning && !(own_button_edge && ev.key == m_pan_button)
             && !still_held(m_pan_hold, m_pan_button, ev))
             release_lapsed(m_pan_button);
-        const bool primary_live = (m_tool && m_tool->active()) || m_text_drag != 0 || m_text_resize != 0 || m_sel_carry;
+        const bool primary_live = (m_tool && m_tool->active()) || m_text_drag != 0 || m_text_resize != 0 || m_sel_carry
+                                || m_anim_drag;
         if (primary_live && !(own_button_edge && ev.key == m_stroke_button)
             && !still_held(m_stroke_hold, m_stroke_button, ev))
             release_lapsed(m_stroke_button);
@@ -15305,6 +15479,16 @@ public:
             m_cursor_x = to_doc_x(ev.x);
             m_cursor_y = to_doc_y(ev.y);
             repaint_view();
+            return;
+        }
+
+        if (ev.action == INPUT_MOTION && m_anim_drag && m_anim)
+        {
+            // Carrying the animation camera: the region follows the hand by
+            // the offset it was taken at, as a text box does.
+            m_cursor_x = to_doc_x(ev.x);
+            m_cursor_y = to_doc_y(ev.y);
+            m_anim->MoveRegionTo(m_cursor_x - m_anim_grab_x, m_cursor_y - m_anim_grab_y);
             return;
         }
 
@@ -15499,6 +15683,22 @@ public:
                 return;
             }
 
+            /*
+         * A PRESS INSIDE THE ANIMATION CAMERA CARRIES IT, as a press inside a
+         * selection carries that: the camera is a thing on the page you can
+         * take hold of and put somewhere else, then snap again. Outside it the
+         * press falls through and a drag chooses a new one.
+         */
+            if (m_tool && m_cursor_seen && m_anim
+             && m_tool->kind() == PaintToolKind::Animate
+             && m_anim->RegionHas(m_cursor_x, m_cursor_y))
+            {
+                m_anim_drag   = true;
+                m_anim_grab_x = m_cursor_x - m_anim->regionX();
+                m_anim_grab_y = m_cursor_y - m_anim->regionY();
+                return;
+            }
+
             if (m_tool && m_cursor_seen && m_document
              && m_tool->kind() == PaintToolKind::Select
              && !paint_modifiers().ctrl() && !paint_modifiers().shift()
@@ -15595,6 +15795,11 @@ public:
                 m_text_drag = 0;
                 return;
             }
+            if (m_anim_drag)
+            {
+                m_anim_drag = false;
+                return;
+            }
             if (m_text_resize != 0)
             {
                 ETCS_LOG("PaintInput", "text box " << m_text_resize << " resized");
@@ -15643,9 +15848,12 @@ public:
                 else if (m_tool->active() && k == PaintToolKind::Select)
                     end_selection(m_tool->anchorX(), m_tool->anchorY(),
                                   m_cursor_x, m_cursor_y);
-                else if (m_tool->active() && k == PaintToolKind::Animate && m_anim)
-                    m_anim->SetRegion(m_tool->anchorX(), m_tool->anchorY(),
-                                      m_cursor_x, m_cursor_y);
+                // A click is too small to be a region, and brings a closed
+                // window back instead.
+                else if (m_tool->active() && k == PaintToolKind::Animate && m_anim
+                         && !m_anim->SetRegion(m_tool->anchorX(), m_tool->anchorY(),
+                                               m_cursor_x, m_cursor_y))
+                    m_anim->Open();
                 m_tool->EndStroke();
                 /*
                  * THE PREVIEW LIVES ON THE VIEW, so whatever the drag drew
@@ -16427,7 +16635,6 @@ private:
     void repaint_view()
     {
         if (m_surface) m_surface->Render();
-        if (m_anim) m_anim->FollowView();
         if (m_text_bar) m_text_bar->Follow();
     }
 
@@ -16566,6 +16773,8 @@ private:
     // The box being carried, and where inside it the pointer took hold. 0 is
     // "nothing is being carried" -- see the press branch.
     uint32_t m_text_drag   = 0;
+    bool     m_anim_drag   = false;      // carrying the animation camera
+    int32_t  m_anim_grab_x = 0, m_anim_grab_y = 0;
     int32_t  m_text_grab_x = 0;
     int32_t  m_text_grab_y = 0;
     // The selection being carried, and where inside it the pointer took hold
@@ -18808,6 +19017,12 @@ DEFINE_WORK_FUNC(PaintPalette, BindSurface)
     self.BindSurface(surface);
 }
 
+DEFINE_WORK_FUNC_TYPED(PaintPalette, PickTool, (std::string, kind))
+{
+    (void)ctx;
+    self.PickTool(kind);
+}
+
 DEFINE_WORK_FUNC(PaintPalette, AddTool)
 {
     (void)ctx;
@@ -18939,13 +19154,18 @@ DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindReadout, (ETCS::RID, node))
     self.BindReadout(node);
 }
 
-// BindOutline <node> -- four times, top, bottom, left, right: the bars that
-// mark the region on the view.
-DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindOutline, (ETCS::RID, node))
+// BindTitle <node> -- a press here carries the window (PaintAnimation::PressTitle).
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindTitle, (ETCS::RID, node))
 {
     (void)ctx;
-    self.BindOutline(node);
+    self.BindTitle(node);
 }
+
+DEFINE_WORK_FUNC(PaintAnimation, BeginTitle) { (void)ctx; (void)data; self.BeginTitle(); }
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, BindPalette, (ETCS::RID, palette)) { (void)ctx; self.BindPalette(palette); }
+DEFINE_WORK_FUNC_TYPED(PaintAnimation, Fold, (int32_t, folded)) { (void)ctx; self.Fold(folded != 0); }
+DEFINE_WORK_FUNC(PaintAnimation, Close)  { (void)ctx; (void)data; self.Close(); }
+DEFINE_WORK_FUNC(PaintAnimation, Open)   { (void)ctx; (void)data; self.Open(); }
 
 DEFINE_WORK_FUNC_TYPED(PaintAnimation, SetRowColors,
     (float, sr), (float, sg), (float, sb), (float, ur), (float, ug), (float, ub))

@@ -377,13 +377,8 @@ layers.Refresh()
 # window's, one order below it, and hidden until a region exists -- the drag
 # is what brings it up.
 #
-# THE OUTLINE is four bars on the SHEET, over the picture (order 3: above the
-# pane, under every window), placed from the region through the surface's
-# projection plus the pane's own offset (PaintAnimation::place_outline), and
-# re-placed as the view pans or zooms. Not children of the pane: the pane is
-# the surface's raster, cleared by every Render, and a child of a pane that
-# somebody else clears is drawn only when the tree changes. Passthrough, so
-# the drag that chose the region can be made again over its own edge.
+# THE CAMERA -- the region -- is drawn by the canvas itself, in page space
+# (PaintSurface::SetCamera), so it stays on the page as the view moves.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D anim_pane)
 anim_pane.Create(240, 300)
 anim_pane.SetPosition(700, 290)
@@ -393,34 +388,6 @@ spawn PaintProvider::PaintAnimation anim
 anim.Create(@doc)
 anim.BindSurface(@canvas)
 anim.BindWindow(@anim_pane)
-sheet_root.spawn(RenderProvider::CompositeDrawable2D anim_edge_top)
-anim_edge_top.Create(2, 2)
-anim_edge_top.SetOrder(3)
-anim_edge_top.SetBackground(0.35, 0.55, 0.95, 1.0)
-anim_edge_top.SetPassthrough(1)
-anim_edge_top.SetHidden(1)
-anim.BindOutline(@anim_edge_top)
-sheet_root.spawn(RenderProvider::CompositeDrawable2D anim_edge_bottom)
-anim_edge_bottom.Create(2, 2)
-anim_edge_bottom.SetOrder(3)
-anim_edge_bottom.SetBackground(0.35, 0.55, 0.95, 1.0)
-anim_edge_bottom.SetPassthrough(1)
-anim_edge_bottom.SetHidden(1)
-anim.BindOutline(@anim_edge_bottom)
-sheet_root.spawn(RenderProvider::CompositeDrawable2D anim_edge_left)
-anim_edge_left.Create(2, 2)
-anim_edge_left.SetOrder(3)
-anim_edge_left.SetBackground(0.35, 0.55, 0.95, 1.0)
-anim_edge_left.SetPassthrough(1)
-anim_edge_left.SetHidden(1)
-anim.BindOutline(@anim_edge_left)
-sheet_root.spawn(RenderProvider::CompositeDrawable2D anim_edge_right)
-anim_edge_right.Create(2, 2)
-anim_edge_right.SetOrder(3)
-anim_edge_right.SetBackground(0.35, 0.55, 0.95, 1.0)
-anim_edge_right.SetPassthrough(1)
-anim_edge_right.SetHidden(1)
-anim.BindOutline(@anim_edge_right)
 run PaintProvider/scripts/paint_anim.etcs panel=anim_pane anim=anim palette=palette
 
 # ── the text bar ─────────────────────────────────────────────────────────────

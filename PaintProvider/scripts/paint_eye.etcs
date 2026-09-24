@@ -33,9 +33,9 @@
 # two nodes become the window's view toggle, open while the rows show and shut
 # while the window is collapsed to its bar.
 #
-# `list` IS UNTYPED because two windows take an eye: the layer window
-# (PaintLayerPanel) and the sharing window (PaintVisitors), whose bar folds
-# the same way. Both answer RowNode(what, node) and know which part is which.
+# `list` IS UNTYPED because three windows take an eye: the layer window
+# (PaintLayerPanel), the sharing window (PaintVisitors) and the animation
+# window (PaintAnimation), whose bars fold the same way. Both answer RowNode(what, node) and know which part is which.
 
 requires pane [Drawable2D]
 requires list

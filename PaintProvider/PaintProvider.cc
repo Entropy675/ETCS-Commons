@@ -79,7 +79,7 @@ ETCS_TAG_BLOCK_HYBRID(PaintInput,
 // +/- nibs and the numbers beside them, ten calls were refused at boot, and the
 // controls were dead while every other control on the same bar worked.
 ETCS_TAG_BLOCK_BASIC(PaintPalette,
-    BindTool, BindSurface, AddColor, AddSize, AddTool, AddZoom,
+    BindTool, BindSurface, AddColor, AddSize, AddTool, PickTool, AddZoom,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
     BindWheel, AddWheelArrow, AddModeArrow, AddArrow, SetModeReadout, SetShapeReadout, SetTipReadout,
     SetHoldCapacity, AddHoverLabel,
@@ -104,8 +104,8 @@ ETCS_TAG_BLOCK_BASIC(PaintTextBar,
 // Frames cut from a region of the page and put back; a reel that plays in its
 // window and travels as a GIF. See PaintAnimation.
 ETCS_TAG_BLOCK_BASIC(PaintAnimation,
-    Create, BindSurface, BindWindow, BindPreview, BindReadout, BindOutline, SetRowColors,
-    BeginRow, RowNode, SetRegion, Snap, Put, Remove, Select, Next, Prev,
+    Create, BindSurface, BindWindow, BindPreview, BindReadout, BindTitle, BeginTitle, BindPalette, SetRowColors,
+    BeginRow, RowNode, SetRegion, Snap, Put, Remove, Select, Next, Prev, Open, Close, Fold,
     SetFps, StepFps, Play, Pause, Toggle, ImportGif, ExportGif, Download, Scroll, Refresh, Report, Delete)
 
 // The store as a list: node to page action, nothing drawn. See PaintPagePanel.
