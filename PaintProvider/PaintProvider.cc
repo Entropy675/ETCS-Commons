@@ -48,7 +48,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
     SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
     CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo, RedoAlt, RedoBranches,
     ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
-    ExportOps, ExportBaseline, ImportOps, NotebookHead, PictureHash, PictureReport, Accept, Perform, SetAuthor, SetReadOnly,
+    ExportOps, ExportBaseline, ImportOps, NotebookHead, PictureHash, PictureReport, Accept, Perform, RevertPending, SetAuthor, SetReadOnly,
     TextDenied, SetTextFont, SetTextSize, SetTextColor,
     MergeDown, MergeUp,
     Report, Delete)

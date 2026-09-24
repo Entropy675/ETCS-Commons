@@ -726,7 +726,7 @@ gives a request), so a replayed change passes the same dispatch a made one
 does. `doc.Perform(<a record line without its sequence>)` replays a line from a
 script.
 
-**A reader's eye is refused with every other edit**, since a layer's
+**A reader's eye comes back off with every other edit**, since a layer's
 visibility is part of the picture now; the hover peek still shows a hidden
 layer to you alone.
 
@@ -762,13 +762,27 @@ still to be pushed. A member at the owner's position whose picture differs for
 three presence ticks running has diverged, whatever it received, and reads the
 record again. The owner never resyncs to anyone.
 
-**A reader's canvas is view only.** Joining makes you a reader; the host
-promotes. While you are a reader the document refuses every edit
-(`PaintDocument::SetReadOnly`, raised by the page from your role) and the
-canvas starts no stroke -- a mark made there would never reach the room, and
-your picture and everyone else's would differ from then on. Pan, zoom and the
-hover peek still work. Promotion lifts it within a few seconds (the page asks
-the node for its role on a timer).
+**Draw now; the room decides.** A change you make lands on your canvas at
+once and is held as PENDING (your own entry, not yet read back from the node:
+`PaintOp::confirmed`). The node is the source of truth, so nothing is refused
+up front -- a reader draws like anyone -- and what the room refuses comes back
+off. Everyone's lines, the host's included, arrive through the same read. When
+another member's line arrives while you hold pending entries, the document
+REWINDS: it sets the pending ones aside, appends what arrived after the
+confirmed ones, and when the read is done puts yours back on top and replays
+the page once (`PaintDocument::ImportOps`), so every member ends with the
+node's order -- a stroke drawn over yours while yours was in flight used to
+land under it on your canvas and over it on everyone else's. Your own line
+coming back confirms the entry it was pushed as (matched by its text, in
+order); one pushed earlier that never came back was not taken, and goes. A
+push the node refuses -- you are a reader, or were just made one -- or that
+fails takes every pending entry off (`doc.RevertPending`, and the page says
+once that the room has you as a reader), so no mark of yours stands on your
+canvas that is not on the host's. An open stroke or an open text box survives
+the rewind and is put back where it was. Promotion takes effect within a few
+seconds (the page asks the node for its role on a timer). A document change
+takes the document's lock (`PaintDocument::m_doc_mu`), since the read runs on
+its own thread and your pen on another.
 
 **Everyone has a sharing window** (`PaintVisitors`, drawn by
 `paint_visitors.etcs`), opened as the host's or a guest's (`OpenAs`). Its top

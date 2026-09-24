@@ -3601,6 +3601,18 @@ struct PaintOp
      */
     bool sent = false;
 
+    /*
+     * AND BACK: the record holds it, in the place the node gave it. A change
+     * made here is drawn at once and is only PENDING until its line comes
+     * back through a read -- set then, or on arrival for anything from the
+     * room. What a pending entry becomes is the record's call: it is put
+     * after whatever the room ordered before it (PaintDocument::rewind), and
+     * taken away if the node refused it. `wire` is the line as it went out,
+     * past its sequence and author, which is what its read-back is matched on.
+     */
+    bool        confirmed = false;
+    std::string wire;
+
     // "Did this change the picture." A structural entry that changed the stack
     // did -- undoing it puts a layer back -- so it steps like a mark. A
     // retraction is not itself a mark: it names one, and it is what the
@@ -4045,6 +4057,19 @@ static inline bool paint_raster_decode(const std::string& b64, PaintOp& out)
     out.h = static_cast<uint32_t>(h);
     stbi_image_free(px);
     return true;
+}
+
+// A line past its sequence and author: what a node copies through unread, and
+// what a pending entry's read-back is matched on (PaintOp::wire).
+static inline std::string paint_line_rest(const std::string& line)
+{
+    size_t at = 0;
+    for (int field = 0; field < 3 && at != std::string::npos; ++field)
+    {
+        at = line.find(' ', at);
+        if (at != std::string::npos) ++at;
+    }
+    return (at == std::string::npos) ? std::string() : line.substr(at);
 }
 
 /*
@@ -5397,6 +5422,7 @@ public:
     void RememberOp(PaintOpKind kind, const PaintBrushState& brush,
                     uint32_t tolerance = 0)
     {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         Touch();
         sealOpenOp();
         if (!m_active_layer) return;
@@ -5439,7 +5465,7 @@ public:
 
     // Seal the open entry. Called at every stroke release, and again by the
     // next seam, which is what closes one a lost release left in the air.
-    void SealOp() { sealOpenOp(); }
+    void SealOp() { std::lock_guard<std::recursive_mutex> hold(m_doc_mu); sealOpenOp(); }
 
     /*
      * A CHANGE STATED AFTER THE FACT, for the inputs that are not a brush
@@ -5526,6 +5552,7 @@ public:
  */
     size_t ExportOps(const std::string& path)
     {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         std::ofstream o(path, std::ios::binary | std::ios::trunc);
         if (!o)
         {
@@ -5557,7 +5584,8 @@ public:
             ETCS_LOG("PaintDocument", "ExportOps: this page changed -- the room gets it whole.");
             ensureKeys();
             n = write_baseline(o);
-            for (const PaintOp* op : chain) const_cast<PaintOp*>(op)->sent = true;
+            // The whole page stands for everything that made it.
+            for (const PaintOp* op : chain) { const_cast<PaintOp*>(op)->sent = true; const_cast<PaintOp*>(op)->confirmed = true; }
             m_page_changed = false;
         }
         else
@@ -5578,8 +5606,10 @@ public:
                     const_cast<PaintOp*>(op)->sent = true;
                     continue;
                 }
-                o << paint_op_encode(*op) << "\n";
+                const std::string line = paint_op_encode(*op);
+                o << line << "\n";
                 const_cast<PaintOp*>(op)->sent = true;
+                const_cast<PaintOp*>(op)->wire = paint_line_rest(line);
                 ++n;
             }
         }
@@ -5613,7 +5643,7 @@ public:
         // The whole page went, so everything that made it is in the record.
         std::vector<const PaintOp*> chain;
         m_book.ChainTo(m_cursor, chain);
-        for (const PaintOp* op : chain) const_cast<PaintOp*>(op)->sent = true;
+        for (const PaintOp* op : chain) { const_cast<PaintOp*>(op)->sent = true; const_cast<PaintOp*>(op)->confirmed = true; }
         m_page_changed = false;
         ETCS_LOG("PaintDocument", "ExportBaseline: " << m_width << "x" << m_height << ", "
                  << (n ? n - 1 : 0) << " layer keyframe(s) at " << m_cursor << " -> '" << path << "'.");
@@ -5644,9 +5674,9 @@ public:
         // the host reading back the baseline it pushed), in which case its own
         // lines are chained and left alone: the picture here is what they were
         // made from.
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         const bool restart = (since == 0);
         if (restart) { m_chain = 0; m_chain_seq = 0; }
-        const bool pass_mine = keep_mine || !restart;
         std::string line;
         size_t taken = 0, bad = 0, mine = 0;
         while (std::getline(f, line))
@@ -5668,7 +5698,16 @@ public:
                 if (head >> seq >> kind >> author)
                 {
                     m_chain_seq = seq;
-                    if (pass_mine && !m_author.empty() && author == m_author) { ++mine; continue; }
+                    const bool own = !m_author.empty() && author == m_author;
+                    // The host reading back the baseline it just pushed: its
+                    // picture is what those lines were made from.
+                    if (own && keep_mine) { ++mine; continue; }
+                    // One of ours coming back: the entry already drawn here is
+                    // now the record's, in the place the node gave it. A line of
+                    // ours that is not in flight is history (a read from zero, a
+                    // push from an earlier page of ours) and is taken below like
+                    // anybody's.
+                    if (own && confirm_own(paint_line_rest(line))) { ++mine; continue; }
                 }
             }
             PaintOp op;
@@ -5691,8 +5730,9 @@ public:
             this->call(ETCS::Buffer("PaintDocument.Accept"), ref);
             ++taken;
         }
+        finish_rewind();
         ETCS_LOG("PaintDocument", "ImportOps: " << taken << " entr(ies) from '" << path
-                 << "'" << (mine ? ", " + std::to_string(mine) + " of this page's own passed over" : "")
+                 << "'" << (mine ? ", " + std::to_string(mine) + " of this page's own confirmed" : "")
                  << (bad ? ", " + std::to_string(bad) + " unreadable and skipped" : "")
                  << "; at " << m_book.head() << ", record chain " << std::hex << m_chain
                  << std::dec << " at " << m_chain_seq << ".");
@@ -5713,8 +5753,8 @@ public:
         if (m_open_live || m_page_changed) return false;
         std::vector<const PaintOp*> chain;
         m_book.ChainTo(m_cursor, chain);
-        for (const PaintOp* o : chain) if (!o->sent) return false;
-        return true;
+        for (const PaintOp* o : chain) if (pending(o)) return false;
+        return !m_text_sel;
     }
 
     /*
@@ -5815,6 +5855,7 @@ public:
  */
     bool Undo()
     {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         if (refuse_read_only("undo")) return false;
         // An open box's edit is a step like any other: ended, and so recorded,
         // before the undo that may take it back.
@@ -5898,6 +5939,7 @@ public:
 
     bool redoAlong(size_t branch)
     {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         if (refuse_read_only("redo")) return false;
         if (m_text_sel) SelectTextBox(0);
         sealOpenOp();
@@ -6104,7 +6146,26 @@ public:
     // history, so a viewer and a reload are the same code path.
     bool AcceptOp(PaintOp op)
     {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         op.sent = true;                   // it came from the record; it is the record's
+        op.confirmed = true;
+        /*
+         * THE ROOM FIRST. Anything drawn here that the record does not hold
+         * yet -- a pending entry, a stroke still being made, an open box --
+         * was drawn on a picture the room is now changing ahead of it. So the
+         * page steps back to its last confirmed entry, takes the room's
+         * entries in the record's order, and puts its own back after them
+         * (rewind, then finish_rewind at the end of the read): every member
+         * applies the same entries in the same order, the one who made them
+         * included, and nobody waits for a round trip to see their own mark.
+         */
+        if (!m_rewound && has_pending()) rewind("the room's entries came first");
+        if (m_rewound)
+        {
+            if (op.kind == PaintOpKind::Page) { become_page(op); return true; }
+            setCursor(m_book.Append(std::move(op), m_cursor));
+            return true;                  // drawn by the replay at the end of the read
+        }
         /*
      * A PAGE ENTRY REPLACES THE DOCUMENT rather than adding to it: the size,
      * the stack and nothing on it, history and text boxes gone. The keyframes
@@ -6150,6 +6211,157 @@ public:
     bool shared() const { return !m_author.empty(); }
 
     /*
+     * THE NODE REFUSED: a push came back READ ONLY (or not at all). What was
+     * drawn here and not confirmed is not in the picture everybody else has,
+     * so it comes off this one too: back to the last confirmed entry, and the
+     * record's picture from there. The remote decides who draws; this page
+     * draws first and is corrected, rather than guessing and refusing.
+     */
+    bool RevertPending()
+    {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+        size_t n = 0;
+        for (const PaintOp* o : chain) if (pending(o)) ++n;
+        if (!n) return false;
+        rewind("refused by the room");
+        m_stash.clear();
+        finish_rewind();
+        ETCS_LOG("PaintDocument", "the room did not take " << n << " entr(ies) of this page's -- taken off here too.");
+        return true;
+    }
+
+private:
+    bool pending(const PaintOp* o) const
+    {
+        return !m_author.empty() && o->author == m_author && !o->confirmed && o->kind != PaintOpKind::Snapshot;
+    }
+    bool has_pending() const
+    {
+        if (m_open_live || m_text_sel) return true;
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+        for (const PaintOp* o : chain) if (pending(o)) return true;
+        return false;
+    }
+
+    /*
+     * STEP BACK TO THE LAST CONFIRMED ENTRY. What is in the air (an open
+     * stroke, an open box) is held; every pending entry is set aside in order;
+     * the confirmed entries after the first pending one -- the room's, taken
+     * while this page's were in flight -- are kept, since the record put them
+     * first; this page's own keyframes past that point are dropped, being of a
+     * picture drawn in the wrong order. The picture is left as it was until
+     * finish_rewind replays the path once, whatever arrived meanwhile.
+     */
+    void rewind(const char* why)
+    {
+        if (m_rewound) return;
+        m_held_stroke = m_open_live;
+        if (m_open_live) { m_held_open = m_open; m_open = PaintOp{}; m_open_live = false; }
+        m_held_box = false;
+        if (m_text_sel)
+            if (const PaintTextBox* b = FindTextBox(m_text_sel))
+            {
+                m_held_box = true;
+                m_held_text = *b;
+                m_held_before = m_text_before;
+                m_held_fresh = m_text_fresh;
+            }
+
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+        size_t i0 = chain.size();
+        for (size_t i = 0; i < chain.size(); ++i) if (pending(chain[i])) { i0 = i; break; }
+        m_stash.clear();
+        std::vector<PaintOp> keep;
+        for (size_t i = i0; i < chain.size(); ++i)
+        {
+            const PaintOp* o = chain[i];
+            if (o->kind == PaintOpKind::Snapshot) continue;
+            if (pending(o)) m_stash.push_back(*o);
+            else            keep.push_back(*o);
+        }
+        setCursor(i0 < chain.size() ? chain[i0]->parent : m_cursor);
+        for (PaintOp& k : keep) setCursor(m_book.Append(std::move(k), m_cursor));
+        m_rewound = true;
+        ETCS_LOG("PaintDocument", "rewound (" << why << "): " << m_stash.size()
+                 << " of this page's entr(ies) set aside" << (m_held_stroke ? ", a stroke in the air" : "")
+                 << (m_held_box ? ", an open box" : "") << ".");
+    }
+
+    /*
+     * A LINE OF OURS, READ BACK: the oldest pending entry it matches (by its
+     * wire form) is confirmed where the record put it. Pending entries before
+     * the match were refused by the node (a box somebody else held) and are
+     * dropped -- which takes a rewind, since they are drawn.
+     */
+    bool confirm_own(const std::string& rest)
+    {
+        if (!m_rewound)
+        {
+            std::vector<const PaintOp*> chain;
+            m_book.ChainTo(m_cursor, chain);
+            std::vector<PaintOp*> waiting;
+            for (const PaintOp* o : chain) if (pending(o) && o->sent) waiting.push_back(const_cast<PaintOp*>(o));
+            if (waiting.empty()) return false;
+            if (waiting.front()->wire == rest)
+            {
+                waiting.front()->confirmed = true;
+                return true;
+            }
+            bool later = false;
+            for (PaintOp* w : waiting) if (w->wire == rest) later = true;
+            if (!later) return false;
+            rewind("the room refused part of a push");
+        }
+        for (size_t k = 0; k < m_stash.size(); ++k)
+        {
+            if (!m_stash[k].sent || m_stash[k].wire != rest) continue;
+            if (k) ETCS_LOG("PaintDocument", k << " entr(ies) of this page's were refused by the room -- dropped.");
+            PaintOp e = std::move(m_stash[k]);
+            e.confirmed = true;
+            m_stash.erase(m_stash.begin(), m_stash.begin() + static_cast<std::ptrdiff_t>(k) + 1);
+            setCursor(m_book.Append(std::move(e), m_cursor));
+            return true;
+        }
+        return false;
+    }
+
+    // Put this page's own back after the room's, replay the path once, and
+    // put back what was in the air.
+    void finish_rewind()
+    {
+        if (!m_rewound) return;
+        for (PaintOp& p : m_stash) setCursor(m_book.Append(std::move(p), m_cursor));
+        m_stash.clear();
+        m_rewound = false;
+        replayTo(m_cursor, "record order");
+        if (m_held_stroke)
+        {
+            m_open = m_held_open;
+            m_open_live = true;
+            if (PaintLayer* l = layerFor(m_open))
+                for (size_t i = 0; i < m_open.points(); ++i) apply_step(l, m_open, i);
+            m_held_stroke = false;
+        }
+        if (m_held_box)
+        {
+            PaintTextBox* at = nullptr;
+            for (auto& t : m_text) if (t.key == m_held_text.key) at = &t;
+            if (at) { const uint32_t id = at->id; *at = m_held_text; at->id = id; }
+            else    { m_text.push_back(m_held_text); m_text.back().id = ++m_text_seq; at = &m_text.back(); }
+            m_text_sel    = at->id;
+            m_text_before = m_held_before;
+            m_text_fresh  = m_held_fresh;
+            m_held_box = false;
+        }
+        Touch();
+    }
+public:
+
+    /*
      * THE UNDO EDGE (PaintOpKind::Undo). Names this page's newest entry that
      * still stands -- its own, never anybody else's: in a room a stroke is its
      * author's to take back, and an undo that reached across authors would
@@ -6183,13 +6395,12 @@ public:
     /*
  * ── VIEW ONLY ────────────────────────────────────────────────────────────
  *
- * A reader in a shared session sees the host's page and must not change it:
- * the room would never hear of the change, and from then on this picture and
- * everybody else's differ in a way nothing puts right. A lowercase state flag
- * on the document, raised by the page while its role is reader, and every
- * verb that edits refuses while it is up (refuse_read_only). What ARRIVES is
- * not an edit made here -- AcceptOp works below these verbs -- so the room's
- * changes still land.
+ * A page that shows a picture and takes no edits (a viewer, a kiosk). A
+ * lowercase state flag on the document; every verb that edits refuses while
+ * it is up (refuse_read_only). What ARRIVES is not an edit made here --
+ * AcceptOp works below these verbs -- so a room's changes still land. A
+ * shared session does NOT raise it: a reader draws, the node refuses the push,
+ * and RevertPending takes the marks off, so the node stays the one judge.
  */
     void SetReadOnly(bool on)
     {
@@ -7000,6 +7211,7 @@ public:
 
     void StrokeTo(int32_t x, int32_t y)
     {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         if (!m_open_live) return;
         PaintLayer* l = layerFor(m_open);
         if (!l) return;
@@ -7015,6 +7227,7 @@ public:
      */
     bool Perform(PaintOp op)
     {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         if (refuse_read_only("draw")) return false;
         Touch();
         sealOpenOp();
@@ -7133,6 +7346,18 @@ private:
     // own was the ping-pong.
     bool          m_page_changed = false;
     uint64_t      m_key_seq = 0;     // see newKey
+    // One change at a time: the input's thread draws while a read lands on a
+    // pool worker, and a rewind moves the path both of them write to.
+    mutable std::recursive_mutex m_doc_mu;
+    // See rewind: this page's pending entries while the room's are taken in,
+    // and what was in the air.
+    bool                 m_rewound = false;
+    std::vector<PaintOp> m_stash;
+    bool                 m_held_stroke = false;
+    PaintOp              m_held_open;
+    bool                 m_held_box = false;
+    PaintTextBox         m_held_text, m_held_before;
+    std::string          m_held_fresh;
     int           m_quiet = 0;   // see Quiet
 
     void sealOpenOp()
@@ -7341,6 +7566,17 @@ private:
         reconcileLayers(&page);
         for (PaintLayer* l : layers())
             if (l->PixelWidth() != page.w || l->PixelHeight() != page.h) l->Allocate(page.w, page.h);
+        // AND THE STACK AS THE FIRST ENTRY of the history that starts here, a
+        // keyframe the record already holds: a replay that goes back to this
+        // point (a rewind, an undo) has the stack to reconcile to, rather than
+        // leaving whatever the page had rearranged since.
+        PaintOp stack = page;
+        stack.kind      = PaintOpKind::Layers;
+        stack.keyframe  = true;
+        stack.sent      = true;
+        stack.confirmed = true;
+        stack.w = stack.h = 0;
+        setCursor(m_book.Append(std::move(stack), m_cursor));
         ETCS_LOG("PaintDocument", "following the session's page: " << page.w << "x" << page.h
                  << ", " << page.roster.size() << " layer(s).");
     }
@@ -7460,6 +7696,7 @@ private:
     // roster) when there is anything undo must be able to land on.
     bool PerformStack(PaintOp op)
     {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         Touch();
         sealOpenOp();
         op.kind     = PaintOpKind::Layers;
@@ -7494,6 +7731,7 @@ private:
         snap.w      = layer->PixelWidth();
         snap.h      = layer->PixelHeight();
         snap.sent   = true;               // a keyframe is this page's own and never travels
+        snap.confirmed = true;
         if (!layer->SnapshotBytes(snap.bytes)) return;
         setCursor(m_book.Append(std::move(snap), m_cursor));
     }
@@ -17718,7 +17956,7 @@ DEFINE_WORK_FUNC_TYPED(PaintDocument, SetTextColor, (uint32_t, id), (float, r), 
     self.SetTextColor(id, r, g, b, a);
 }
 
-// SetReadOnly <0|1> -- view only while a shared session says so.
+// SetReadOnly <0|1> -- view only: every edit refused here (a share never raises it).
 DEFINE_WORK_FUNC_TYPED(PaintDocument, SetReadOnly, (int32_t, on))
 {
     (void)ctx;
@@ -17754,6 +17992,15 @@ DEFINE_WORK_FUNC(PaintDocument, PictureReport)
     // The report is the log line; the answer is its length, since a report of
     // a few layers is past the data channel (256 bytes) already.
     data.writeString(std::to_string(r.size()).c_str());
+}
+
+// RevertPending -- the room refused this page's push: what it drew and the
+// record does not hold comes off (PaintDocument::RevertPending). Answers 1 when
+// anything did.
+DEFINE_WORK_FUNC(PaintDocument, RevertPending)
+{
+    (void)ctx;
+    data.writeString(self.RevertPending() ? "1" : "0");
 }
 
 /*

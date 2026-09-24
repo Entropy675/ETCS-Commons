@@ -970,13 +970,18 @@
     return true;
   }
 
-  // The role, and what it means for this page: a reader's canvas is view only
-  // (PaintDocument::SetReadOnly), because a mark made here would never reach
-  // the room and the two pictures would differ from then on.
+  /*
+   * The role, and what it does NOT do: it does not stop this page drawing. The
+   * room decides who draws -- the node refuses a reader's push -- and a mark
+   * the room refused comes off this canvas when the refusal comes back
+   * (PaintDocument::RevertPending, pushMine below). Refusing here instead was
+   * a second authority that could disagree with the first, and a page that
+   * thought it could still draw kept marks nobody else had.
+   */
   function setRole(r) {
     share.role = r;
     if (!runtimeUp()) return;
-    callVerb('doc', 'SetReadOnly', r === 'reader' ? '1' : '0');
+    callVerb('doc', 'SetReadOnly', '0');
     // The sharing window is the role's too: the host's half or a guest's.
     if (r) { callVerb('visitors', 'OpenAs', r); tellWindowWhoIAm(); }
   }
@@ -990,7 +995,6 @@
 
   async function pushMine() {
     if (share.busy || !share.token || !runtimeUp()) return;
-    if (share.role !== 'owner' && share.role !== 'writer') return;
     share.busy = true;
     try {
       const fs = etcsFS();
@@ -1004,15 +1008,23 @@
       if (!text.trim()) return;
 
       const answer = await pushText(text);
-      if (answer === null) return;
-      if (answer === 'READ ONLY') {
-        // Elevation taken away between one stroke and the next, which is what
-        // revocation is supposed to feel like rather than an error.
-        setRole('reader');
-        shareTimers(true);
+      if (answer === 'NO SUCH SESSION') { leaveSession(); return; }
+      /*
+       * NOT TAKEN -- refused (this page is a reader, or was just made one) or
+       * never answered: what was drawn here is not the room's, so it comes off
+       * here. There is no state in which a mark is on this canvas and not in
+       * the record for longer than one push takes.
+       */
+      if (answer === null || answer === 'READ ONLY' || !/^\d+/.test(answer)) {
+        callVerb('doc', 'RevertPending', '');
+        callVerb('canvas', 'Render', '');
+        if (answer === 'READ ONLY' && !share.told_reader) {
+          share.told_reader = true;
+          log('[etcs] the room has you as a reader -- what you draw here comes back off\n', 'err');
+        }
         return;
       }
-      if (answer === 'NO SUCH SESSION') { leaveSession(); return; }
+      share.told_reader = false;
       // The head stays where the last READ put it -- see pushBaseline.
     } finally { share.busy = false; }
   }
@@ -1234,8 +1246,8 @@
     if (!on) return;
     share.view_t = setInterval(tickPresence, SHARE_VIEW_MS);
     share.read = setInterval(readTheirs, SHARE_READ_MS);
-    if (share.role === 'owner' || share.role === 'writer')
-      share.push = setInterval(pushMine, SHARE_PUSH_MS);
+    // Every member pushes: the node is what says who may draw (pushMine).
+    share.push = setInterval(pushMine, SHARE_PUSH_MS);
     share.who = setInterval(refreshRoster, SHARE_WHO_MS);
     if (share.role !== 'owner') share.role_t = setInterval(refreshRole, SHARE_ROLE_MS);
   }
