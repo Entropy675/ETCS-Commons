@@ -1,4 +1,4 @@
-# ETCS Chess in the browser -- one board, both sides, local
+# ETCS Chess in the browser -- your lobby, and a partner a name server finds
 
     etcs modules/ChessProvider/scripts/serve_chess.etcs
     then open https://localhost:8444/
@@ -136,174 +136,108 @@ other pthread worker in this loader's `PROXY_TO_PTHREAD` build needs pumped
 to make progress, so blocking it there is a deadlock, not a slow path (see
 above).
 
-## The causal graph, as the page shows it
+## Your lobby, and how a seat is taken
 
-The page is laid out as the ontology is: a NODE (this page's own runtime, or
-a remote one -- "Name servers, all the way down" below), SELVES that take
-SEATS in a MATCH, and the match itself. Three types in `ChessProvider.h`,
-three places on screen. Nothing in the C++ changed to get there; the
-server-authoritative page already drove these same verbs, it just left the
-seat step implicit.
+Every person has a lobby: this page's own runtime, one board, two seats. You
+have a name from the first visit -- made up, kept in the browser, shown in the
+header and renamed by pressing it -- because it is what a name server lists
+you as and what a link to your lobby opens.
 
-**Seats are joined, then claimed.** Each colour's card starts as `open` with
-one button, Join -- taking a seat, the same way the server page's home
-screen had you join a match. Joining is this page declaring which self it
-will move as: `white` and `black` are the two selves this page can be, the
-same tokens the move verb has always been sent as. The causal claim itself
-still lands exactly where `ChessGame` puts it, on that self's first legal
-move (`applyMoveLocked`, "claim by moving") -- so the log still reads
-`white sits as white` at the first move, not at the click. That is the
-server page's own model with the one step it skipped made explicit: there
-you were a viewer until your first move; here you are a viewer until you
-say which seat you are taking, and then until your first move. A click on
-a piece whose seat this page has not joined is refused with `join white to
-move`, the way a spectator's click was refused there.
+**Taking a seat is making a move for a side.** A click as the side to move
+sits you there if the seat is open -- claim by moving
+(`ChessGame::applyMoveLocked`), the server page's own model -- so a board is
+playable the moment it is up. The `Sit` button on each seat card is the same
+seat taken without moving (`sit/<white|black>`, `ChessGame::sitLocked`, same
+rule: a held seat is its holder's, and one self never holds both). A seat you
+hold shows Resign, Draw (the label says whether it offers or accepts --
+`drawLocked` is one verb both ways) and leave.
 
-Once joined, the card shows what a seat can do -- Resign, Draw, leave --
-which is what the server page showed once `/status` reported you seated.
-`leave` is the verb that page sent on departure: it releases the seat in
-the game if the first move had already claimed it (`leaveLocked`, logged as
-`white left -- white seat is open`), and is a no-op if not. New game clears
-the seats in the game (`resetLocked`), so the cards go back to Join --
-colours are re-taken next round, as there.
+Alone, the two seats are the colours' own selves, `white` and `black`, so the
+board is a hotseat: moving for either side sits you in it. The status line
+names who holds each seat (its seventh and eighth fields), and the cards are
+drawn from that and nothing else -- a seat is the board's fact, not the page's
+bookkeeping. The board turns for black: the seat you hold, or with none, the
+one your first move would take.
 
-Hotseat is joining both seats. Both cards say `you`; the page moves as
-whichever colour the FEN says is to move (`sideToMoveOf`), and every seat
-check after the first move (`seat == tok`) is satisfied because the two
-seats hold the two different tokens `applyMoveLocked` insists on ("one
-browser cannot quietly become both players" -- it cannot, but two selves
-can). A seat that reads `taken` without this page having joined it is one
-somebody ELSE holds; nothing reaches that state today, and it is exactly
-what the other end of the peer link will look like when it does.
+## The name server, and a partner
 
-**Draw is one verb, labelled per seat.** `drawLocked` answers both
-directions -- press one seat's Draw to offer, the other's to accept -- and a
-spectator is only ever told an offer is `theirs`, not whose. So when the
-status read as `local` says an offer stands, the page asks once more as
-`white` to learn whose it is, and labels the cards from that: the offerer's
-button reads `offered…` (disabled), the other seat's `Accept draw`, the
-status line says `draw offered by white`. Moving is declining, as it always
-was (`applyMoveLocked` clears the offer).
+The panel beside the board is a NAME SERVER: any ChessNode, at the address in
+its field -- by default whoever served this page, at `/game`
+(`serve_chess.etcs` and `chess_web.etcs` both mount one). It holds no board.
+It does three things, all verbs on the node:
 
-**No token, no cache, no poll.** The server page carried a client-chosen
-token in a cookie (so "this record is mine" meant something across
-requests) and a `localStorage` cache of positions (so a poll every second
-or two did not re-fetch a game the browser already had). Neither describes
-one runtime with one person at the keyboard: the selves are the two colours,
-and a local `callResult()` round trip (a `ThreadPool` enqueue plus one
-`EventStream` wait, not a network hop) is cheap enough that `refreshStatus`,
-`refreshChat` and every review step simply ask again rather than caching
-what the last answer said. The `HIST_BLOCK`/prefetch machinery the old page
-needed to make paging cheap is not reproduced here, only the paging loop
-itself (`ChessGame::kFrameBudget` still caps one reply, whatever asks). A
-name for the local self -- what a name server's `players` list would show
-you as -- belongs with the peer link, where there is a second identity to
-be told apart from.
+    <self>/host/<token>             keep my lobby listed; answer my standing
+    lobbies                         who is online here: "owner partner|- open|waiting|playing"
+    <self>/pair/<token>             quick match: sit with whoever is waiting, or wait
+    <self>/visit/<token>/<owner>    sit at that lobby (a row, or a shared link)
+    <self>/unpair/<token>           leave the pair
+    <self>/push/<token>/<pair>/<verb>[/<arg>]   one line into the pair's record
+    <self>/relay/<token>/<pair>/<since>         the record, paged like chat
 
-## Name servers, all the way down
+**One page per name.** Every name-server verb carries the page's token --
+one per tab, kept in `sessionStorage`, so a reload is still you and a second
+tab is not. A name is the first token's while that page is online; any other
+token is answered `NAME TAKEN` (checked before the self is touched, so the
+refused calls cannot keep the holder's name alive), and once the holder has
+been quiet for 30s the name is free again. A page told its name is taken goes
+by the first free suffix (`name-2`) there, for that tab only; a rename onto a
+held name is refused and the old name kept.
 
-"Play online" (header) opens the name-server menu: `rooms` and `players`,
-read off a node and rendered the way the server page's own home screen
-rendered them -- because they are the same two verbs, in the same line
-format (`ChessNode::roomsLocked`, `ChessLobby::profileLocked`).
+The page calls `host` every 1.5s; a lobby whose page stops calling for 30s
+drops out of the listing and out of its pair (`ChessNode::endStaleLocked`).
+`Share my lobby` copies `?lobby=<you>&ns=<node>` -- whoever opens it sits down
+across from you. `this node` is the page's own runtime, which lists nobody but
+you: a tab can ask any node and cannot be asked, so finding a partner takes a
+node you both can reach.
 
-There is no name-server TYPE anywhere in this. `ChessNode.h`'s own words:
-"a node hosting many lobbies is a server, and a node hosting exactly ONE
-lobby is a peer. Nothing else about the arrangement changes between those
-two cases -- same types, same edges, same routing." A name server is any
-node asked its listing verbs. The assumption underneath, stated so nothing
-drifts from it: **the exact same ETCS runtime sits on the other side of any
-address, and whether it is in a page or in a server on Linux does not
-matter.** Nothing in this page branches on which it is; the address is the
-only thing that varies by where a node lives. The menu's field names which
-one:
+**Paired, both runtimes replay one record.** The pair is a new board on each
+runtime (its id, `<owner>-<n>`, is the match name there; your hotseat board is
+kept). Every act at the table -- a move, a seat, a word, a resignation, a
+draw, a new game -- is a line `<seq> <self> <verb>[ <arg>]` pushed to the
+name server, which gives it the pair's order; each page pulls the record and
+replays every line as that self's verb against its own board, the same
+`game.Request` a click makes. Both boards take the same lines in the same
+order, so they are one game. Chess makes the order easy: moves come in turn
+windows, and in yours nobody else can move, so your own move is drawn at once
+and its read-back passed over. A move outside your window -- the first one,
+which claims an open seat -- goes to the relay first and lands in order, so
+when both of you reach for white, whoever's move reaches the name server first
+has it, and the other is refused on both boards alike. Anything else that
+lands ahead of a move this page already drew (a resignation, say) means this
+board took its move out of order, and it is rebuilt from the whole record
+rather than guessed at.
 
-- `https://anticurrententropy.com/chess/lobby` -- the DEFAULT. The hosted
-  node, one instance of the thing, reached by `fetch()`; the global
-  namespace everyone's page opens on, so strangers can find each other
-  without exchanging an address first. (The verbs are read as
-  `<field>/rooms` and `<field>/players`, so the field is the node's mount
-  as seen from outside -- whatever path the node is served at.)
-- `local` (the "this node" button) -- this page's own runtime, asked the
-  same two verbs through the same call bridge every move goes through
-  (`game/rooms`, `game/players` -- the reserved selves `requestLocked`
-  routes). It lists match `local` and selves `white`, `black`, `local`.
-- anything else -- a friend's node, your own hosted one. Same rendering,
-  same format, no code that knows the difference.
+**The record checks itself, the way the share record does.** The name server
+chains every line it stores -- XXH3 of the line seeded with the chain before
+it, the paint session's own record chain -- and each page of the relay says
+the chain through its last line (`<base> <next> <chain>`). The page replays
+each line through its board's `replay` entry
+(`<self>/replay/<pair>/<seq>/<verb>[/<arg>]`, `ChessNode::replayLocked`),
+which chains the same bytes into the board (`=<seq>` for a line the board
+already drew: chained, not applied again), and reads the board's chain back
+(`chain`). Equal seqs with different chains is a line one side took that the
+other did not, and the board is rebuilt from the start of the record.
+
+The relay is the proxy level a browser needs: a page can dial a node and
+cannot be dialled. The lines are the verbs themselves, so a direct link --
+a MirrorBuffer between two runtimes, or a WebRTC channel for two pages -- can
+carry the same ones later without the replay changing.
+
+## The address of a name server
 
 An address is resolved before it is dialled (`nsResolve`): the scheme is
-optional and https is assumed (a bare `host/path` is how one gets typed);
-the port is 443 for https unless the address says `host:port`, in which
-case that port is used, and 80 for http likewise; trailing slashes are
-dropped. The status line spells the resolved `host:port/path` out even
-when the port is the default, so what was dialled is never a guess --
-`anticurrententropy.com/chess/lobby` reads as
-`anticurrententropy.com:443/chess/lobby`, `myhost:8444/chess/lobby` keeps
-its 8444.
-
-That is what "every lobby is recursively a name server" cashes out to at
-the level of this page. One asymmetry is the browser's, not the design's:
-a tab can ASK any node but cannot BE asked -- there is no listening socket
-in a browser -- so this page's own node is reachable as a name server only
-from itself, until the peer link gives it an address (WebRTC is the one
-transport a browser can be reached on, which is another reason the peer
-link is where the name goes).
-
-**This build reads a node; it does not connect to one.** Join / watch on a
-room row and Create on the name input both stop at a status line saying so.
-Connecting -- the two tabs finding each other through a node (the match's
-own chat verb as the mailbox for the WebRTC handshake, so the hosted node
-needs nothing new), then the game itself over the data channel with each
-side running its own board and relaying its own moves -- is the next patch.
-
-**CORS is one line in the node's own script, and it is in this patch.** A
-browser only lets a page read a cross-origin answer that says so, and the
-node as hosted today says nothing -- checked: its `rooms` answers 200,
-`text/plain`, no `Access-Control-Allow-Origin`, so from any origin but its
-own the default target reads as `unreachable from this origin`.
-`HttpServer::AddHeader` is the fix, and it already works: `HttpServer::Serve`
-(`NetworkProvider.h`) writes every header `AddHeader` stored into every
-response it sends. So `NetworkProvider/scripts/chess_web.etcs` -- the script
-the hosted node runs -- gains `web.AddHeader(Access-Control-Allow-Origin *)`
-before `web.Start()`, wide open on purpose: rooms and players are the public
-listing, every verb behind them is keyed by self, nothing is credentialed.
-Verified on the wire against a native node running that script, and then by
-this page reading that node's rooms and players through the menu.
+optional and https is assumed; the port is 443 for https unless the address
+says `host:port`, and 80 for http likewise; trailing slashes are dropped. The
+status line spells the resolved `host:port/path` out, so what was dialled is
+never a guess. A node on another origin has to send
+`Access-Control-Allow-Origin` (`chess_web.etcs` does; `HttpServer::AddHeader`
+writes it into every response).
 
 **NetworkProvider is in this page too -- built for the browser, loaded, and
-booted the same way the hosted node boots it.** It is a formatting provider:
-HTTP parsing, pages, routes, the connection lifecycle as entities. The
-transport under it is core's (ThreadPool's IO, io_uring on Linux and
-compiled out in a browser), and its own socket calls resolve to emscripten's
-POSIX layer -- so it compiles for Web unmodified, mbedtls and picohttpparser
-included (see `ace-build-tools.diff` for the two build-tool changes that
-needed: `emcmake` for a cmake dependency under Web, and a platform tag on
-the dependency's build marker so a native build after a Web build does not
-find wasm objects in `libmbedtls.a`). `boot_chess.etcs` then runs the same
-lines `chess_web.etcs` runs: `ensure NetworkProvider::HttpServer web`,
-`SetPort`, the `/game/...` route onto this node's `Request`, the CORS
-header, `Start`. Every one of them takes; `Start()` is refused by the
-browser at `listen()` -- `ConnectionManager` logs `listen() failed`,
-`HttpServer` logs `not started`, the page goes on -- which is exactly right:
-this node is a name server in kind, with routes and a header and a verb
-surface identical to the hosted one, lacking only an address anyone else
-can dial. Giving it one is the peer link's job. The point of carrying the
-provider is the point of the whole design: the runtime on this side of an
-address is the runtime on the other side, and nothing in this page may
-depend on which it is talking to.
-
-## Resign and draw, one set of controls per seat
-
-The old page had one Resign button and one Offer-draw button because the
-server told each browser which seat it held (`role` in `/status`). Here a
-seat's controls appear on that seat's card once it is joined, calling
-`resign` / `draw` as `white` or `black` explicitly -- the existing two-token
-seat model with nothing new in the C++: `resignLocked`/`drawLocked` already
-key off `roleOfLocked(tok)`, and `white`/`black` are the same tokens `Move`
-already claims:
-
-    White's card  -> resign as 'white'  / draw as 'white'  / leave as 'white'
-    Black's card  -> resign as 'black'  / draw as 'black'  / leave as 'black'
+booted the same way the hosted node boots it.** `boot_chess.etcs` runs the
+same lines `chess_web.etcs` runs; `Start()` is refused by the browser at
+`listen()` and the page goes on. This node is a name server in kind, lacking
+only an address anyone else can dial.
 
 ## Waiting for the boot script, not just the runtime
 
@@ -350,30 +284,15 @@ the speedup the rewrite exists to provide.
 
 ## What is not solved here
 
-**The peer link.** The name-server menu reads nodes; it does not connect to
-them. The agreed shape, for the next patch: the two tabs find each other
-through a node's listing, exchange the WebRTC offer/answer/candidates
-through that match's own `say`/`chat` verbs (a mailbox the hosted node
-already has, tagged so the page filters it out of the visible chat), and
-then play over the data channel with each side running its own
-`ChessNode`+board and relaying its own legal moves -- the receiving side
-applies them as that self's moves, so its own `applyMoveLocked` validates
-them like any other. That is deliberately the pragmatic relay, not the
-event-replay-over-`MirrorBuffer` sync `ChessNode.h` describes as the
-target; the target is substrate work, and this is a page.
+**The link is a relay.** Two pages talk through a name server, not to each
+other. A direct link (WebRTC for two pages, a MirrorBuffer for two native
+runtimes) would carry the same lines.
 
-**Chat has one voice, and the selves have no name.** Every chat line is
-authored `local`, and the seats are the colour names. Both are the same
-gap: there is one keyboard, so nothing needs telling apart yet. A name --
-what a node's `players` list shows you as, what the other tab's board
-would claim your seat with -- goes in with the peer link.
+**A name is held, not proven.** A name server keeps a name to one page
+while it is online, and a token is only as private as the page's own
+traffic; a signed key is what would make a name belong to a person.
 
-**Nothing persists.** PaintProvider mounts `/persist` on IDBFS so a page
-survives a reload; this page does not; a reload starts `boot_chess.etcs`
-fresh, a new board. The current game (and its history and chat, which
-`ChessGame` already keeps in memory regardless of substrate) is gone the
-moment the tab is. Worth doing the same way Paint's page does it, later.
-
-**Board orientation is fixed.** The server-authoritative page flipped for a
-`black` role; this page could now flip by which seat is joined (one seat
-joined is a role), and does not yet. Stays at White's view throughout.
+**Nothing persists.** A reload starts `boot_chess.etcs` fresh, a new board;
+a pair survives it only if the page comes back within 30s (its `host` call
+finds the pair and replays the record). PaintProvider mounts `/persist` on
+IDBFS; this page could do the same.

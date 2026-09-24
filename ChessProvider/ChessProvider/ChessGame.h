@@ -244,7 +244,7 @@ public:
     std::string KeyVerb(const std::string& k = "")     { return op(Kind::Key, k); }
 
     // ── EphemeralBase / DeletableBase ─────────────────────────────────────
-    bool ResetConcrete() { return op(Kind::Reset) != "BUSY"; }
+    bool ResetConcrete() override { return op(Kind::Reset) != "BUSY"; }
 
     // Reads the CACHED terminal flag rather than recomputing. Two reasons, the
     // second load-bearing: isCheckmate()/isStalemate() are non-const in CChess
@@ -253,9 +253,9 @@ public:
     // Caching at the one moment the answer can change is cheaper and
     // const-honest. A plain bool read races benignly with a move landing --
     // worst case a caller sees the previous answer one request early.
-    bool IsActiveConcrete() const { return active_; }
+    bool IsActiveConcrete() const override { return active_; }
 
-    bool DeleteConcrete()
+    bool DeleteConcrete() override
     {
         std::string conjugate_key = this->getSourceModule().toString() + ":"
                                    + this->getSourceTag().toString();
@@ -282,7 +282,7 @@ public:
     // No seat check: fullness is a question about MOVING, answered in
     // applyMoveLocked. Declining here once full silently made spectating
     // impossible -- a third viewer's path stopped matching and 404'd.
-    bool AcceptsConcrete(ETCS::Buffer& io) const
+    bool AcceptsConcrete(ETCS::Buffer& io) const override
     {
         if (match_key_.empty()) { io.reset(); return false; }
 
@@ -397,6 +397,13 @@ private:
     // silently renumbers under the reader and it re-appends lines it already
     // has.
     size_t chat_base_ = 0, history_base_ = 0;
+
+    // The record chain of a pair's lines replayed onto this board
+    // (ChessNode::replayLocked): XXH3 of each line seeded with the one
+    // before, the relay's own chain, so the two can be compared. Not
+    // cleared by reset -- a reset is a line of the record like any other.
+    uint64_t chain_ = 0;
+    size_t   chain_seq_ = 0;
 
     // "<base> <next>\n" then src[from - base ...], stopping before the budget.
     // Whole lines only: half a line is not a thing any reader here can use.
@@ -758,12 +765,45 @@ private:
         if      (draw_offer_.empty())  s += " none";
         else if (draw_offer_ == tok)   s += " mine";
         else                           s += " theirs";
+        // Seventh and eighth: WHO holds each seat ('-' for nobody). Selves are
+        // public -- the players listing names them -- and a page whose partner
+        // plays the other side has to be able to say so on the seat.
+        s += " " + (white_.empty() ? std::string("-") : white_);
+        s += " " + (black_.empty() ? std::string("-") : black_);
         return s;
+    }
+
+    /*
+     * TAKING A SEAT WITHOUT MOVING. Moving is still the ordinary way in
+     * (applyMoveLocked, claim by moving); this is the button beside it, so a
+     * player can sit down before it is their turn. Same rule as the move's
+     * claim: a seat somebody holds is theirs, and one token never holds both.
+     */
+    std::string sitLocked(const std::string& tok, const std::string& side)
+    {
+        if (tok.empty())                         return "NOT YOUR SEAT";
+        if (side != "white" && side != "black")  return "NOT FOUND";
+        if (!over_.empty())                      return "GAME OVER";
+        std::string& seat        = (side == "white") ? white_ : black_;
+        const std::string& other = (side == "white") ? black_ : white_;
+        if (seat == tok)   return "OK";
+        if (!seat.empty()) return "TAKEN";
+        if (other == tok)  return "NOT YOUR SEAT";
+        seat = tok;
+        logLocked(tok + " sits as " + side);
+        return "OK";
     }
 
     // No exceptions on a bad cursor: the argument comes off a URL, so garbage
     // is an ordinary input and "start from the beginning" is a safe reading of
     // it. stoul would throw straight through the ordering thread.
+    static std::string hex64(uint64_t v)
+    {
+        char b[17];
+        std::snprintf(b, sizeof(b), "%016llx", static_cast<unsigned long long>(v));
+        return b;
+    }
+
     static size_t parseIndex(const std::string& s)
     {
         size_t n = 0;
@@ -917,6 +957,10 @@ private:
         if (verb == "chat")    return arg.empty() ? chatLogLocked()
                                                   : chatPageLocked(parseIndex(arg));
         if (verb == "history") return historyPageLocked(parseIndex(arg));
+        if (verb == "sit")     return sitLocked(tok, arg);
+        // "<chain> <seq>": the record chain of the lines replayed onto this
+        // board (ChessNode::replayLocked), and the seq after the last.
+        if (verb == "chain")   return hex64(chain_) + " " + std::to_string(chain_seq_);
         if (verb == "resign")  return resignLocked(tok);
         if (verb == "draw")    return drawLocked(tok);
         if (verb == "decline") return declineLocked(tok);

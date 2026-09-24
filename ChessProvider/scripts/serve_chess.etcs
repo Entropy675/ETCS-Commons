@@ -54,5 +54,14 @@ tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)
 # a 404 waiting to happen.
 tree.ListPaths()
 
+# AND A NAME SERVER BESIDE IT, at /game -- where the page looks by default
+# (defaultNode in www/index.html). Two pages served from here find each other
+# through it: it lists them, pairs them and relays their lines; each page's
+# own runtime holds its board. The same node chess_web.etcs mounts on the
+# hosted site.
+spawn ChessProvider::ChessNode lobby
+lobby.Mount(game)
+web.AddRoute(@lobby Request @lobby Filter)
+
 web.Start()
 web.IsStarted()

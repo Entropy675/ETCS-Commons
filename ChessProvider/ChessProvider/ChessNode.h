@@ -130,7 +130,7 @@ public:
     // through the stream: it runs for every request on the server, including
     // paths that turn out not to be ours, and a round trip here would serialize
     // all path matching behind game logic.
-    bool AcceptsConcrete(ETCS::Buffer& io) const
+    bool AcceptsConcrete(ETCS::Buffer& io) const override
     {
         const std::string desc = io.restAsString();
         size_t i = 0;
@@ -150,7 +150,7 @@ public:
     const std::string& MountPath() const { return mount_; }
     void SetMount(const std::string& m)  { mount_ = m; }   // setup only
 
-    bool DeleteConcrete()
+    bool DeleteConcrete() override
     {
     // OPEN, and the one thing this change leaves unfinished: the stream is
     // never stopped. As a module singleton it lived for the life of the DSO and
@@ -172,6 +172,8 @@ private:
     // walked away for a minute is fine, losing your whole history for it is not.
     static constexpr int kSession   = 600;   // self kept this long after last request
     static constexpr int kSeatGrace = 30;    // matches ChessGame's own reaping
+    static constexpr int kOnline    = 30;    // a hosted lobby is listed this long after its page's last call
+    static constexpr size_t kRelayLines = 4000;   // a game and its chat, many times over
 
     std::string op(Kind k, const std::string& arg = "") const
     {
@@ -343,12 +345,228 @@ private:
         }
     }
 
+    // ── the name server: hosted lobbies, pairing, the relay ────────────────
+    //
+    // See ChessLobby's Pair for the shape. Online is "its page called within
+    // kOnline" -- every call touches the self (selfLocked) -- so a closed tab
+    // drops out of the listing and out of its pair by itself.
+
+    bool onlineLocked(const ChessLobby* l) const
+    { return l && l->hosting_ && l->idleSecondsLocked() < kOnline; }
+
+    // The lobby whose pair this self is in, as owner or partner, if it is live.
+    ChessLobby* pairOfLocked(ChessLobby* me)
+    {
+        if (!me) return nullptr;
+        if (!me->pair_.ended) return me;
+        if (me->guest_of_.empty()) return nullptr;
+        ChessLobby* o = findLobbyLocked(me->guest_of_);
+        if (o && !o->pair_.ended && o->pair_.partner == me->self_) return o;
+        return nullptr;
+    }
+
+    void endPairLocked(ChessLobby* owner, const std::string& why)
+    {
+        if (!owner || owner->pair_.ended) return;
+        owner->pair_.ended = true;
+        ETCS_LOG("ChessNode", "pair " << owner->pair_.id << " ended: " << why);
+    }
+
+    // A pair whose owner or partner has gone quiet is over: the board is on
+    // their page, and the page is gone.
+    void endStaleLocked()
+    {
+        for (const auto& [s, l] : lobbies_)
+        {
+            if (!l || l->pair_.ended) continue;
+            ChessLobby* p = findLobbyLocked(l->pair_.partner);
+            if (!onlineLocked(l))      endPairLocked(l, s + " went quiet");
+            else if (!onlineLocked(p)) endPairLocked(l, l->pair_.partner + " went quiet");
+        }
+    }
+
+    // "PAIRED <id> <owner> <partner>" | "WAITING" | "OPEN" | "ENDED <id>".
+    // ENDED names the last pairing this self was in, so a page still showing
+    // that game learns it is over; a page on another game ignores it.
+    std::string stateLocked(ChessLobby* me)
+    {
+        if (ChessLobby* o = pairOfLocked(me))
+            return "PAIRED " + o->pair_.id + " " + o->self_ + " " + o->pair_.partner;
+        std::string last;
+        if (!me->pair_.id.empty()) last = me->pair_.id;
+        if (!me->guest_of_.empty())
+            if (ChessLobby* o = findLobbyLocked(me->guest_of_))
+                if (o->pair_.partner == me->self_) last = o->pair_.id;
+        if (me->waiting_) return "WAITING";
+        return last.empty() ? "OPEN" : "ENDED " + last;
+    }
+
+    // A new game at owner's table with guest in the other seat. Anything
+    // either of them was in ends first: one table at a time.
+    std::string startPairLocked(ChessLobby* owner, ChessLobby* guest)
+    {
+        if (ChessLobby* o = pairOfLocked(owner)) endPairLocked(o, owner->self_ + " took a new partner");
+        if (ChessLobby* o = pairOfLocked(guest)) endPairLocked(o, guest->self_ + " took a new partner");
+        owner->pair_ = ChessLobby::Pair{};
+        owner->pair_.id      = owner->self_ + "-" + std::to_string(++owner->pairs_);
+        owner->pair_.partner = guest->self_;
+        owner->pair_.ended   = false;
+        owner->waiting_ = guest->waiting_ = false;
+        guest->guest_of_ = owner->self_;
+        ETCS_LOG("ChessNode", "pair " << owner->pair_.id << ": " << guest->self_
+                 << " sits at " << owner->self_ << "'s table");
+        return stateLocked(guest);
+    }
+
+    // Quick match: somebody waiting, else wait. Oldest waiter first, so two
+    // arrivals meet rather than both waiting.
+    std::string pairLocked(ChessLobby* me)
+    {
+        endStaleLocked();
+        me->hosting_ = true;
+        if (pairOfLocked(me)) return stateLocked(me);
+        for (const auto& [s, l] : lobbies_)
+        {
+            if (l == me || !l->waiting_ || !onlineLocked(l) || pairOfLocked(l)) continue;
+            return startPairLocked(l, me);
+        }
+        me->waiting_ = true;
+        return stateLocked(me);
+    }
+
+    // Sitting at a named lobby -- a row in the listing, or a shared link.
+    std::string visitLocked(ChessLobby* me, const std::string& owner_name)
+    {
+        endStaleLocked();
+        me->hosting_ = true;
+        ChessLobby* o = findLobbyLocked(owner_name);
+        if (!o || !onlineLocked(o)) return "NO SUCH LOBBY";
+        if (o == me)                return stateLocked(me);
+        if (ChessLobby* live = pairOfLocked(o))
+            return (live == o && o->pair_.partner == me->self_) ? stateLocked(me) : "FULL";
+        return startPairLocked(o, me);
+    }
+
+    // One line into the pair's record, in the one order both boards replay.
+    // The verbs a table takes -- nothing that would reach past the board.
+    std::string pushLocked(ChessLobby* me, const std::string& id,
+                           const std::string& verb, const std::string& arg)
+    {
+        ChessLobby* o = pairOfLocked(me);
+        if (!o || o->pair_.id != id) return "NOT PAIRED";
+        static const char* const kVerbs[] = { "move", "sit", "say", "resign", "draw",
+                                              "decline", "leave", "reset" };
+        bool ok = false;
+        for (const char* v : kVerbs) if (verb == v) ok = true;
+        if (!ok) return "NOT FOUND";
+        ChessLobby::Pair& p = o->pair_;
+        const size_t seq = p.base + p.record.size();
+        const std::string line = recordLine(seq, me->self_, verb, arg);
+        // THE RECORD CHAIN, the share record's own (PaintNode): XXH3 of every
+        // line seeded with the chain before it, kept per line so a page of
+        // the record can say what the chain is at its end.
+        const uint64_t before = p.chains.empty() ? p.base_chain : p.chains.back();
+        p.record.push_back(line);
+        p.chains.push_back(XXH3_64bits_withSeed(line.data(), line.size(), before));
+        if (p.record.size() > kRelayLines)
+        {
+            p.base_chain = p.chains.front();
+            p.record.erase(p.record.begin()); p.chains.erase(p.chains.begin()); ++p.base;
+        }
+        return std::to_string(seq);
+    }
+
+    // "<base> <next>\n" then whole lines from <since>, within the frame
+    // budget -- ChessGame's own page shape, so a reader loops the same way.
+    // Readable after the pair ends, so the last lines still arrive.
+    std::string relayLocked(ChessLobby* me, const std::string& id, const std::string& since)
+    {
+        const size_t dash = id.rfind('-');
+        ChessLobby* o = (dash == std::string::npos) ? nullptr : findLobbyLocked(id.substr(0, dash));
+        if (!o || o->pair_.id != id) return "NOT PAIRED";
+        if (o != me && o->pair_.partner != me->self_) return "NOT PAIRED";
+        const ChessLobby::Pair& p = o->pair_;
+        size_t from = ChessGame::parseIndex(since);
+        if (from < p.base) from = p.base;
+        size_t i = from - p.base;
+        std::string body;
+        while (i < p.record.size() && body.size() + p.record[i].size() + 1 <= ChessGame::kFrameBudget)
+        {
+            body += p.record[i]; body += "\n"; ++i;
+        }
+        // The third field is the chain through the page's last line: what a
+        // board that replayed the record to here must have chained too.
+        const uint64_t chain = (i == 0) ? p.base_chain : p.chains[i - 1];
+        return std::to_string(p.base) + " " + std::to_string(p.base + i) + " "
+             + ChessGame::hex64(chain) + "\n" + body;
+    }
+
+    // "<seq> <self> <verb>[ <arg>]" -- one spelling, used by the relay that
+    // stores a line and by the board that replays it, so both chain the
+    // same bytes.
+    static std::string recordLine(size_t seq, const std::string& self,
+                                  const std::string& verb, const std::string& arg)
+    {
+        return std::to_string(seq) + " " + self + " " + verb + (arg.empty() ? "" : " " + arg);
+    }
+
+    /*
+     * A LINE OF A PAIR'S RECORD, REPLAYED ON THIS RUNTIME'S BOARD:
+     * /<mount>/<self>/replay/<match>/<seq>/<verb>[/<arg>]. The line is
+     * chained into the board's own record chain (ChessGame::chain_) exactly
+     * as the relay chained it, and then applied as <self>'s verb -- the same
+     * verbLocked a click reaches. A seq written "=<seq>" is a line this board
+     * already applied (its own move, drawn in its turn window): chained, not
+     * applied again. The page compares the board's chain with the relay's
+     * (ChessGame "chain") and rebuilds the board if they differ.
+     */
+    std::string replayLocked(const std::string& self, const std::vector<std::string>& seg)
+    {
+        const std::string match = (seg.size() > 3) ? seg[3] : "";
+        std::string seqs        = (seg.size() > 4) ? seg[4] : "";
+        const std::string verb  = (seg.size() > 5) ? seg[5] : "";
+        const std::string arg   = (seg.size() > 6) ? seg[6] : "";
+        const bool applied = !seqs.empty() && seqs[0] == '=';
+        if (applied) seqs.erase(0, 1);
+        if (match.empty() || seqs.empty() || verb.empty()) return "NOT FOUND";
+        ChessLobby* me = selfLocked(self);
+        if (!me) return "FAILED";
+        ChessGame* g = findGameLocked(match);
+        if (!g) g = createGameLocked(match);
+        if (!g) return "FAILED";
+        me->addEdgeLocked(match, g);
+        const size_t seq = ChessGame::parseIndex(seqs);
+        const std::string line = recordLine(seq, self, verb, arg);
+        g->chain_     = XXH3_64bits_withSeed(line.data(), line.size(), g->chain_);
+        g->chain_seq_ = seq + 1;
+        return applied ? std::string("OK") : g->verbLocked(self, verb, arg);
+    }
+
+    // Every lobby online here: "owner partner|- open|waiting|playing".
+    std::string lobbiesLocked()
+    {
+        endStaleLocked();
+        std::string out;
+        for (const auto& [s, l] : lobbies_)
+        {
+            if (!onlineLocked(l)) continue;
+            ChessLobby* live = pairOfLocked(l);
+            if (live && live != l) continue;          // sitting at somebody else's table
+            out += s + " " + (live ? l->pair_.partner : std::string("-")) + " "
+                 + (live ? "playing" : l->waiting_ ? "waiting" : "open") + "\n";
+        }
+        return out;
+    }
+
     // /<mount>/<self>/<match>/<verb>[/<arg>]
     // /<mount>/<self>/list | join | me
-    // /<mount>/players | rooms
+    // /<mount>/<self>/host|pair|unpair/<token> | visit/<token>/<owner>
+    // /<mount>/<self>/push/<token>/<pair>/<verb>[/<arg>] | relay/<token>/<pair>/<since>
+    // /<mount>/<self>/replay/<match>/<seq>/<verb>[/<arg>]
+    // /<mount>/players | rooms | lobbies
     //
-    // "players" and "rooms" are reserved selves; "list", "join" and "me" are
-    // reserved matches.
+    // "players", "rooms" and "lobbies" are reserved selves; "list", "join",
+    // "me" and the name-server verbs are reserved matches.
     std::string requestLocked(const std::string& path)
     {
         std::vector<std::string> seg;
@@ -361,14 +579,54 @@ private:
         if (self.empty())      return "NOT FOUND";
         if (self == "players") return playersLocked();
         if (self == "rooms")   return roomsLocked();
+        if (self == "lobbies") return lobbiesLocked();
+
+        const std::string match = (seg.size() > 2) ? seg[2] : "";
+
+        /*
+         * ONE PAGE PER NAME. The name-server verbs carry the page's token
+         * (seg[3]); a name held by another token whose page is still online
+         * is refused, and refused BEFORE the self is touched -- touching it
+         * would keep the holder's name alive on the impostor's calls. A name
+         * whose page has gone quiet (kOnline) is free to the next token.
+         */
+        const bool ns_verb = (match == "host" || match == "pair" || match == "visit" || match == "unpair"
+                              || match == "push" || match == "relay");
+        const std::string token = (ns_verb && seg.size() > 3) ? seg[3] : "";
+        if (ns_verb)
+        {
+            if (token.empty()) return "NO TOKEN";
+            ChessLobby* held = findLobbyLocked(self);
+            if (held && !held->claim_.empty() && held->claim_ != token && onlineLocked(held))
+                return "NAME TAKEN";
+        }
+
+        // A page's own board, replaying a line of its pair's record: see
+        // replayLocked. Reserved like the name-server verbs.
+        if (match == "replay") return replayLocked(self, seg);
 
         ChessLobby* me = selfLocked(self);
         if (!me) return "FAILED";
+        if (ns_verb && me->claim_ != token)
+        {
+            if (!me->claim_.empty()) ETCS_LOG("ChessNode", "name '" << self << "' was quiet -- a new page holds it now");
+            me->claim_ = token;
+        }
 
-        const std::string match = (seg.size() > 2) ? seg[2] : "";
         if (match.empty() || match == "list") return me->listLocked();
         if (match == "me")                    return me->profileLocked();
         if (match == "join")                  return joinLocked(self);
+
+        // The name-server verbs: a lobby hosted by a page, paired, relayed.
+        // See ChessLobby's Pair.
+        auto at = [&](size_t i) { return (seg.size() > i) ? seg[i] : std::string(); };
+        if (match == "host")   { endStaleLocked(); me->hosting_ = true; return stateLocked(me); }
+        if (match == "pair")   return pairLocked(me);
+        if (match == "visit")  return visitLocked(me, at(4));
+        if (match == "unpair") { endStaleLocked(); if (ChessLobby* o = pairOfLocked(me)) endPairLocked(o, self + " left");
+                                 me->waiting_ = false; return stateLocked(me); }
+        if (match == "push")   return pushLocked(me, at(4), at(5), at(6));
+        if (match == "relay")  return relayLocked(me, at(4), at(5));
 
         ChessGame* g = findGameLocked(match);
         if (!g) g = createGameLocked(match);

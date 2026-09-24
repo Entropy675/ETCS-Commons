@@ -60,18 +60,18 @@
      the chat both want a real floor rather than whatever the board leaves. */
   #layout { display:grid; gap:0.75rem; padding:0.75rem; max-width:1400px; margin:0 auto;
             grid-template-columns:1fr;
-            grid-template-areas:"board" "chat" "term"; }
+            grid-template-areas:"board" "lobby" "chat" "term"; }
   @media (min-width:62rem) {
     #layout { grid-template-columns:minmax(0,1fr) minmax(22rem, 34%);
-              grid-template-rows:minmax(0,1fr) minmax(0,1fr);
-              grid-template-areas:"board chat" "board term"; }
+              grid-template-rows:minmax(0,1.3fr) minmax(0,1fr) minmax(0,.8fr);
+              grid-template-areas:"board lobby" "board chat" "board term"; }
     /* THE PAGE STOPS SCROLLING AND THE PANES START. Side by side there is a
        height to divide, so the two rows share it and each pane scrolls inside
        its own box. The columns' stacked floors come off here: two 12rem floors
        in a short window add up to more than the window, and a grid that
        overflows its own row is the thing this is fixing. */
     body { overflow:hidden; }
-    #chat-col, #term-col { min-height:0; }
+    #chat-col, #term-col, #lobby-col { min-height:0; }
     #chat, #shell { min-height:0; }
   }
 
@@ -132,12 +132,10 @@
 
   /* ONE CARD PER SEAT, side by side, with New game folded into the same
      row rather than a row of its own -- one caption line under the board,
-     not three. A card starts as an open seat with one button, Join; once
-     this page has taken the seat it shows what a seat can do (resign,
-     draw, leave). The original page had one resign button and one draw
-     button, because the server told each browser which seat it held; here
-     the cards say it. See this folder's README, "The causal graph, as the
-     page shows it".
+     not three. A card says who holds the seat -- you, your partner, or
+     nobody -- and an open one offers Sit (a move for that side takes it
+     too); a seat you hold shows what a seat can do (resign, draw, leave).
+     See this folder's README, "Your lobby, and how a seat is taken".
      Deliberately smaller type/padding than the page default (below): these
      are captions to the board, not controls competing with it for
      attention, and the board is what just got the room to be the actual
@@ -150,8 +148,7 @@
   .seat button, #reset { font-size:10.5px; padding:3px 7px; }
   /* A seat this page holds. The colour is the selection colour on purpose:
      "mine" and "selected" are the same claim, made about a seat instead of a
-     square. A seat somebody ELSE holds (taken, not mine -- only reachable once
-     the peer link exists) dims instead. */
+     square. A seat somebody else holds -- your partner -- dims instead. */
   .seat.mine { border-color:var(--sel); }
   .seat.mine .who { color:var(--sel); }
   .seat.taken { opacity:.55; }
@@ -191,38 +188,30 @@
   #over p { margin:0; color:var(--dim); font-size:12px; }
   #promo button { width:64px; height:64px; font-size:42px; background:var(--light); color:var(--ink); }
 
-  /* ── the name-server menu ─────────────────────────────────────────────
-     Rooms and players, read off whichever node the field names. The table
-     styling is the server-authoritative page's own, kept so a listing read
-     from a hosted node looks like the same listing that node's own page
-     shows -- because it is the same two verbs. */
-  #online .box { flex-direction:column; gap:10px; padding:18px 22px; width:min(56rem, calc(100vw - 32px));
-                 max-height:calc(100vh - 32px); overflow-y:auto; }
-  .ns-head { display:flex; align-items:center; gap:10px; }
-  .ns-head h2 { margin:0; font-size:15px; font-weight:normal; letter-spacing:.08em; color:var(--sel); flex:1; }
-  .ns-head button { padding:1px 8px; font-size:14px; line-height:1.3; }
-  .ns-blurb, .ns-foot { margin:0; color:var(--dim); font-size:11px; line-height:1.5; }
-  .ns-blurb code { color:var(--light); }
+  /* ── the name server, beside the board ───────────────────────────────
+     Lobbies and players, read off whichever node the field names, in the
+     server page's own table styling -- the same listings, the same look. */
+  #lobby-col { grid-area:lobby; display:flex; flex-direction:column; gap:6px; }
+  #lobby-col h3 { margin:0; font-weight:normal; color:var(--dim); font-size:11px;
+                  letter-spacing:.1em; text-transform:uppercase; }
   .ns-row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-  .ns-row label { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); }
-  .ns-row input { flex:1 1 18rem; min-width:0; }
-  #ns-local { font-size:10.5px; padding:3px 7px; }
+  .ns-row input { flex:1 1 12rem; min-width:0; }
+  .ns-row button, #ns-search { font-size:10.5px; padding:3px 7px; }
   .ns-status { min-height:1.3em; font-size:11px; color:var(--dim); }
-  .ns-quick { display:flex; gap:6px; align-items:center; flex-wrap:wrap;
-              border-top:1px solid var(--line); padding-top:10px; }
-  .ns-quick input { flex:1; min-width:10rem; }
   .ns-status.err { color:var(--err); } .ns-status.ok { color:var(--ok); }
-  .ns-cols { display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start; }
-  .ns-cols > div { flex:1 1 300px; min-width:0; display:flex; flex-direction:column; gap:6px; }
-  .ns-cols h3 { margin:0; font-weight:normal; color:var(--dim); font-size:11px;
-                letter-spacing:.1em; text-transform:uppercase; }
-  .ns-cols table { border-collapse:collapse; width:100%; font-size:12px; }
-  .ns-cols th { text-align:left; font-weight:normal; color:var(--dim); font-size:10px;
-                letter-spacing:.08em; text-transform:uppercase; padding:3px 6px;
-                border-bottom:1px solid var(--line); }
-  .ns-cols td { padding:4px 6px; border-bottom:1px solid #2a2c22; white-space:nowrap; }
-  .ns-cols td.key { color:var(--sel); }
-  .ns-cols td button { font-size:10.5px; padding:2px 7px; }
+  .ns-lists { flex:1; min-height:6rem; overflow-y:auto; display:flex; flex-direction:column; gap:6px; }
+  .ns-lists table { border-collapse:collapse; width:100%; font-size:12px; }
+  .ns-lists th { text-align:left; font-weight:normal; color:var(--dim); font-size:10px;
+                 letter-spacing:.08em; text-transform:uppercase; padding:3px 6px;
+                 border-bottom:1px solid var(--line); }
+  .ns-lists td { padding:4px 6px; border-bottom:1px solid #2a2c22; white-space:nowrap; }
+  .ns-lists td.key { color:var(--sel); }
+  .ns-lists td button { font-size:10.5px; padding:2px 7px; }
+  /* Your name, a way to rename it, and which table the board is. */
+  #me { background:none; border:none; padding:2px 4px; color:var(--sel); letter-spacing:.04em; }
+  #me:hover { text-decoration:underline; background:none; color:var(--sel); }
+  #me-edit { width:12rem; }
+  #table-label { color:var(--dim); font-size:12px; }
   .st-waiting { color:var(--dim); } .st-playing { color:#8fbf7a; }
   .st-checkmate, .st-stalemate, .st-draw, .st-resign-white, .st-resign-black { color:#d4a24f; }
   .full { color:var(--err); }
@@ -232,8 +221,11 @@
 <body>
 <header>
   <span class="brand">ETCS CHESS</span>
+  <!-- Your name, from the first visit: pressed to rename it. -->
+  <button id="me" title="your name -- press to rename">—</button>
+  <input id="me-edit" class="hidden" maxlength="24" spellcheck="false">
+  <span id="table-label">your lobby · hotseat</span>
   <span class="spacer"></span>
-  <button id="online-btn" title="rooms and players, read off a name server">Play online</button>
   <span id="status">loading…</span>
 </header>
 
@@ -261,7 +253,7 @@
       <div class="seat" id="seat-w">
         <span class="who" id="who-w">White</span>
         <div class="row">
-          <button id="join-w" title="take the white seat">Join</button>
+          <button id="join-w" title="take the white seat without moving">Sit</button>
           <button id="resign-w" class="hidden">Resign</button>
           <button id="draw-w" class="hidden" title="offer a draw, or accept one">Draw</button>
           <button id="leave-w" class="hidden leave" title="give the white seat up">leave</button>
@@ -270,13 +262,44 @@
       <div class="seat" id="seat-b">
         <span class="who" id="who-b">Black</span>
         <div class="row">
-          <button id="join-b" title="take the black seat">Join</button>
+          <button id="join-b" title="take the black seat without moving">Sit</button>
           <button id="resign-b" class="hidden">Resign</button>
           <button id="draw-b" class="hidden" title="offer a draw, or accept one">Draw</button>
           <button id="leave-b" class="hidden leave" title="give the black seat up">leave</button>
         </div>
       </div>
       <button id="reset">New game</button>
+    </div>
+  </section>
+
+  <!-- THE NAME SERVER, beside the board: who is online there, a partner
+       found for you (quick match) or chosen (join), and a link to your own
+       lobby. See "The name server" in the script. -->
+  <section id="lobby-col">
+    <h3>Name server</h3>
+    <div class="ns-row">
+      <input id="ns-url" spellcheck="false" list="ns-known" title="any ETCS chess node's address">
+      <datalist id="ns-known">
+        <option value="https://anticurrententropy.com/game"></option>
+        <option value="local"></option>
+      </datalist>
+      <button id="ns-refresh" title="use this address">Go</button>
+      <button id="ns-local" title="this page's own runtime">this node</button>
+    </div>
+    <div class="ns-row">
+      <button id="ns-quick" class="primary" title="pair with whoever is waiting, or wait for them">Quick match</button>
+      <button id="ns-share" title="copy a link that seats its follower across from you">Share my lobby</button>
+      <button id="ns-unpair" class="hidden">Leave the pair</button>
+    </div>
+    <div id="ns-status" class="ns-status"></div>
+    <input id="ns-search" placeholder="search lobbies" spellcheck="false">
+    <div class="ns-lists">
+      <table><thead><tr><th>lobby</th><th>partner</th><th>state</th><th></th></tr></thead>
+        <tbody id="ns-lobbies"></tbody></table>
+      <div id="ns-no-lobbies" class="empty">nobody online here</div>
+      <table><thead><tr><th>player</th><th>W</th><th>L</th><th>D</th><th>idle</th></tr></thead>
+        <tbody id="ns-players"></tbody></table>
+      <div id="ns-no-players" class="empty">no players</div>
     </div>
   </section>
 
@@ -298,69 +321,6 @@
 <div id="over" class="veil"><div class="box">
   <h2 id="over-title">Game over</h2><p id="over-sub"></p>
   <button id="over-new" class="primary">New game</button>
-</div></div>
-
-<!-- The name-server menu. There is no special "name server" type anywhere
-     in this: a name server is any ChessNode, asked its two listing verbs
-     (rooms, players) -- the hosted node at anticurrententropy.com is one
-     instance of that, the default, and this page's OWN node is another
-     ("this node" below reads the very same two verbs off the local runtime
-     through the same rendering). See this folder's README, "Name servers,
-     all the way down". -->
-<div id="online" class="veil"><div class="box">
-  <div class="ns-head">
-    <h2>Play online</h2>
-    <button id="online-close" title="close (Esc)">&times;</button>
-  </div>
-  <p class="ns-blurb">A name server is any ETCS chess node, asked what it has:
-    <code>rooms</code> and <code>players</code>. The one below is only the default --
-    point this at another node (a friend's, your own) and it reads the same way,
-    and "this node" is this page's own runtime answering the same two verbs.</p>
-  <div class="ns-row">
-    <label for="ns-url">Name server</label>
-    <!-- No value here: the default is the node that SERVED THIS PAGE, filled in
-         at boot (defaultNode, below). A hard-coded address in the markup is one
-         that is wrong everywhere except the one deployment it was typed for. -->
-    <input id="ns-url" spellcheck="false" list="ns-known">
-    <datalist id="ns-known">
-      <option value="https://anticurrententropy.com/chess/lobby"></option>
-      <option value="local"></option>
-    </datalist>
-    <button id="ns-local" title="this page's own node">this node</button>
-    <button id="ns-refresh">Refresh</button>
-  </div>
-  <div id="ns-status" class="ns-status"></div>
-  <div class="ns-cols">
-    <div>
-      <h3>Rooms</h3>
-      <table><thead><tr><th>match</th><th>here</th><th>seats</th><th>state</th><th></th></tr></thead>
-        <tbody id="ns-rooms"></tbody></table>
-      <div id="ns-no-rooms" class="empty">no matches on this node</div>
-      <div class="ns-row">
-        <input id="ns-new-room" placeholder="new match name" maxlength="32" spellcheck="false">
-        <button id="ns-make">Create</button>
-      </div>
-    </div>
-    <div>
-      <h3>Players</h3>
-      <table><thead><tr><th>name</th><th>W</th><th>L</th><th>D</th><th>games</th><th>idle</th></tr></thead>
-        <tbody id="ns-players"></tbody></table>
-      <div id="ns-no-players" class="empty">nobody on this node</div>
-    </div>
-  </div>
-  <!-- QUICK JOIN, at the bottom, which is where the server-authoritative page
-       put it and for the same reason: it is the thing most people came to do.
-       One name and one press -- the node's own `join` verb picks the match,
-       which is what makes seat occupancy and matchmaking the same fact
-       (ChessNode::joinLocked pairs whoever is waiting). -->
-  <div class="ns-quick">
-    <input id="ns-name" placeholder="your name" maxlength="24" spellcheck="false">
-    <button id="ns-quick" class="primary">Quick join</button>
-    <button id="ns-leave-table" class="hidden">Back to this page's own board</button>
-  </div>
-  <p class="ns-foot">Quick join seats you on the node itself -- the board then plays that
-    node's match over the same verbs, so the other seat is whoever the node paired you
-    with. A direct page-to-page link (no node in the middle) is still the next patch.</p>
 </div></div>
 
 <script>
@@ -638,123 +598,175 @@ function set(sq,ch){
 }
 function flash(m){ gsEl.textContent=m; gsEl.className='bad'; }
 
-// Whoever is about to move is whoever a click acts as -- provided this page
-// has JOINED that seat (see "seats" below). The server-authoritative page
-// derived this same field for its OWN review math (plyFromFen); here it is
-// what stands in for the login it no longer has: the side to move names the
-// self a move is sent as, and the seat cards say whether that self is one
-// this page holds.
+// The side to move, read off the position: in a hotseat game it names the
+// seat a click acts as, and in a pair it is whose turn window is open.
 function sideToMoveOf(fen){ return fen.split(' ')[1]==='b' ? 'black' : 'white'; }
+
+/*
+ * ── WHO YOU ARE ──────────────────────────────────────────────────────────
+ *
+ * A name from the first visit on, kept in the browser, shown in the header
+ * and renamed by pressing it -- the server page gave you one at once too, and
+ * a page that asks for a name before you can do anything is a form. The name
+ * is the self a name server lists you as, the lobby a link to you opens, and
+ * the token your moves claim a seat with in a pair.
+ */
+const NAME_KEY = 'etcs-chess-name';
+const WORDS_A = ['amber','brisk','calm','dusky','eager','fleet','gentle','hazel','ivory','jolly',
+                 'keen','lucid','mellow','nimble','olive','proud','quiet','rustic','sly','tidal'];
+const WORDS_B = ['badger','crane','dingo','egret','ferret','gecko','heron','ibis','jackal','koala',
+                 'lemur','marten','newt','otter','puffin','quail','raven','stoat','tapir','wren'];
+function madeUpName(){
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  return pick(WORDS_A) + '-' + pick(WORDS_B) + '-' + (10 + Math.floor(Math.random() * 90));
+}
+const nameOk = n => !!n && n.length <= 24 && /^[A-Za-z0-9_.-]+$/.test(n);
+/*
+ * AND A TOKEN PER TAB, which is what makes the name this page's: a name
+ * server gives a name to the first page that uses it and refuses it to any
+ * other page while that one is online (ChessNode, "one page per name"). Per
+ * tab (sessionStorage), so a reload is still you and a second tab is somebody
+ * else -- which is told `NAME TAKEN` and goes by a suffixed name here.
+ */
+let myToken = '';
+try { myToken = sessionStorage.getItem('etcs-chess-token') || ''; } catch(e){}
+if(!/^[0-9a-f]{16}$/.test(myToken)){
+  myToken = Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2,'0')).join('');
+  try { sessionStorage.setItem('etcs-chess-token', myToken); } catch(e){}
+}
+// The name-server verbs, spelled with the token: /<self>/<verb>/<token>/...
+const nsPath = (verb, ...rest) => [myName, verb, myToken, ...rest].join('/');
+let myName = '';
+try { myName = localStorage.getItem(NAME_KEY) || ''; } catch(e){}
+if(!nameOk(myName)){ myName = madeUpName(); try { localStorage.setItem(NAME_KEY, myName); } catch(e){} }
+
 /*
  * ── THE TABLE ────────────────────────────────────────────────────────────
  *
- * WHERE THE GAME THIS PAGE IS PLAYING LIVES, and it is one object because it
- * is one question. The page began able to play only its own runtime's match,
- * spelled `game/<self>/local/<verb>` -- 'local' being the match name
- * boot_chess.etcs creates. A node reached over HTTP answers the SAME verb
- * surface at `<base>/<self>/<match>/<verb>`: the mount is in the base and the
- * rest is identical, because it is the identical runtime on the far side.
- * That is the assumption this whole page is built on, so playing a remote
- * match is a change of ADDRESS, not a second code path.
+ * Every person has a lobby: a board with two seats, on their own runtime.
+ * Alone it is a hotseat -- the seats are the two colours, and a click moves as
+ * whichever is to move. PAIRED it is the same board with a partner in it: the
+ * name server found you each other (quick match, a row in its listing, or a
+ * shared link), and from then on both runtimes replay the same lines -- each
+ * move, seat, word and resignation -- against their own boards, so the two
+ * boards are one game (see "the relay" below). The node never plays; it
+ * lists, pairs and orders.
  *
- * So there is one table and `ask` is the only thing that knows which kind it
- * is. Everything either side of it -- the board, the seats, the history, the
- * chat, resign and draw -- is written once and does not care.
- *
- * `name` is the self this page plays as on a remote table. Locally there is no
- * such thing: the selves are the two colours and this page may hold both
- * (hotseat). Remotely it holds ONE, the node decides which colour by
- * claim-by-moving, and `me()` is what the read verbs are asked as -- so the
- * page does not register a stray self called 'local' on somebody else's node.
+ * `match` is the board on THIS runtime the table reads and writes: 'local'
+ * for your own hotseat, the pair's id for a pairing -- a new board per
+ * pairing, so a game starts clean and the hotseat one is kept.
  */
-const table = { local:true, base:null, match:'local', name:null };
-function me(){ return table.name || 'local'; }
+const table = { pair:null, match:'local' };   // pair: {id, owner, partner, since, busy}
+function paired(){ return !!table.pair; }
+// Who the read verbs ask as: in a pair, you; alone, a viewer of your own board.
+function me(){ return paired() ? myName : 'local'; }
 function verbPath(self, verb, arg){
   return self + '/' + table.match + '/' + verb + (arg!=null && arg!=='' ? '/' + arg : '');
 }
-async function ask(self, verb, arg){
-  const p = verbPath(self, verb, arg);
-  if(table.local) return callResult('game', 'Request', 'game/' + p);
-  try {
-    const r = await fetch(table.base + '/' + p, { mode:'cors', cache:'no-store', credentials:'omit' });
-    return r.ok ? await r.text() : null;
-  } catch(e){ return null; }
-}
+// This runtime's board. Every read and every replayed line goes through here.
+function ask(self, verb, arg){ return callResult('game', 'Request', 'game/' + verbPath(self, verb, arg)); }
 
 // ── seats ─────────────────────────────────────────────────────────────────
-// Which of the two seats THIS PAGE has taken. Joining is the page declaring
-// which self it will move as -- 'white' and 'black' are the two selves this
-// page can be, the same tokens the move verb has always claimed with -- and
-// the causal claim itself still lands where ChessGame puts it: on that
-// self's first legal move (applyMoveLocked, "claim by moving"). This is
-// exactly the server-authoritative page's own seat model with the one step
-// it left implicit made explicit: there you were a viewer until your first
-// move; here you are a viewer until you say which seat you are taking, and
-// then until your first move. Leaving is the same verb that page sent on
-// departure (leave), which releases the seat if the first move had already
-// claimed it. Hotseat is joining both; a peer, once the link exists, is the
-// other seat reading "taken" without this page having joined it.
-const seats = { white:false, black:false };
+// Read off the board every status (the seventh and eighth fields name who
+// holds each), never kept on the side: a seat is the board's fact. Alone, the
+// holders are the colours' own tokens and both are yours; in a pair they are
+// names -- yours, your partner's, or nobody's.
 const seatEl = { white:$('seat-w'), black:$('seat-b') };
 const whoEl  = { white:$('who-w'),  black:$('who-b')  };
-const btns   = { white:{ join:$('join-w'), resign:$('resign-w'), draw:$('draw-w'), leave:$('leave-w') },
-                 black:{ join:$('join-b'), resign:$('resign-b'), draw:$('draw-b'), leave:$('leave-b') } };
-let seatHeld = { white:'open', black:'open' };   // what statusLineLocked last said
-let drawOfferBy = '';                            // 'white' | 'black' | ''
+const btns   = { white:{ sit:$('join-w'), resign:$('resign-w'), draw:$('draw-w'), leave:$('leave-w') },
+                 black:{ sit:$('join-b'), resign:$('resign-b'), draw:$('draw-b'), leave:$('leave-b') } };
+let holder = { white:'-', black:'-' };      // the self in each seat, '-' for nobody
+let drawOfferBy = '';                       // 'white' | 'black' | ''
+function mine(c){ return paired() ? holder[c]===myName : holder[c]===c; }
+function heldSeat(){ return mine('white') ? 'white' : mine('black') ? 'black' : ''; }
+// The token a seat's actions are sent as: the colour alone, you in a pair.
+function tokenFor(c){ return paired() ? myName : c; }
 function renderSeats(){
   for(const c of ['white','black']){
-    const mine = seats[c];
-    const takenByOther = !mine && seatHeld[c]==='taken';
-    seatEl[c].classList.toggle('mine', mine);
-    seatEl[c].classList.toggle('taken', takenByOther);
-    whoEl[c].textContent = c[0].toUpperCase()+c.slice(1)
-      + (mine ? ' · you' : takenByOther ? ' · taken' : ' · open');
-    btns[c].join.classList.toggle('hidden', mine);
-    btns[c].join.disabled = takenByOther;
-    for(const k of ['resign','draw','leave']) btns[c][k].classList.toggle('hidden', !mine);
-    // The draw button is one verb for both directions (drawLocked); the
-    // label says which direction it would be from this seat right now.
-    if(mine){
+    const m = mine(c), open = holder[c]==='-';
+    seatEl[c].classList.toggle('mine', m);
+    seatEl[c].classList.toggle('taken', !m && !open);
+    whoEl[c].textContent = c[0].toUpperCase()+c.slice(1) + ' · '
+      + (m ? 'you' : open ? 'open' : holder[c]);
+    // Sit: an open seat, and in a pair only while you hold neither -- one
+    // self never holds both (ChessGame::sitLocked).
+    btns[c].sit.classList.toggle('hidden', !open || (paired() && !!heldSeat()));
+    for(const k of ['resign','draw','leave']) btns[c][k].classList.toggle('hidden', !m);
+    if(m){
       const theirs = drawOfferBy && drawOfferBy!==c;
       btns[c].draw.textContent = drawOfferBy===c ? 'offered…' : theirs ? 'Accept draw' : 'Draw';
       btns[c].draw.disabled = (drawOfferBy===c);
     }
   }
+  orient();
 }
-function joinSeat(c){
+
+/*
+ * ONE WAY TO ACT ON THE TABLE. Alone, the verb goes straight to this
+ * runtime's board. In a pair it goes to the relay, and lands on this board
+ * when it comes back in the pair's order -- the same moment it lands on the
+ * partner's -- so both boards take every line in one order and cannot
+ * disagree. The one exception is a move in your own turn window (move()):
+ * nobody else can move then, so it is drawn at once.
+ */
+async function act(self, verb, arg){
+  if(!paired()){
+    const t = ((await ask(self, verb, arg)) || '').trim();
+    await refreshAll();
+    return t;
+  }
+  const seq = await relayPush(verb, arg);
+  if(seq == null) return '';
+  await relayPull();
+  return 'SENT';
+}
+
+async function sit(c){
   if(!boardReady()){ flash('still starting up…'); return; }
-  if(seats[c]) return;
-  seats[c]=true; renderSeats();
-  if(gsEl.className==='bad') gsEl.className='';
-  refreshStatus();
+  const t = await act(tokenFor(c), 'sit', c);
+  if(t==='TAKEN') flash(c+' is taken');
+  else if(t==='GAME OVER') flash('this game is finished');
 }
 async function leaveSeat(c){
-  if(!boardReady()||!seats[c]) return;
-  seats[c]=false; renderSeats();
-  // Releases the seat in the game if a move had claimed it; a no-op if not.
-  await ask(c, 'leave');
-  await refreshStatus(); await refreshChat();
+  if(!boardReady() || !mine(c)) return;
+  await act(tokenFor(c), 'leave');
 }
-$('join-w').onclick=()=>joinSeat('white');  $('join-b').onclick=()=>joinSeat('black');
+$('join-w').onclick=()=>sit('white');   $('join-b').onclick=()=>sit('black');
 $('leave-w').onclick=()=>leaveSeat('white'); $('leave-b').onclick=()=>leaveSeat('black');
 
+/*
+ * WHICH WAY UP. Your seat decides; with none, the seat you would get -- the
+ * server page's presumptive flip: white taken and black open means your
+ * first move would be black's.
+ */
+let flipped=false;
+function applyOrientation(){ for(const d of squares) d.style.order = flipped?(63-+d.dataset.idx):+d.dataset.idx; }
+function orient(){
+  const held = heldSeat();
+  let black = (held==='black' && !mine('white'));
+  if(!held && paired()) black = (holder.white!=='-' && holder.black==='-');
+  if(black===flipped) return;
+  flipped=black; applyOrientation();
+}
+
+/*
+ * A PRESS ON THE BOARD. Taking a seat is making a move for a side: a click
+ * as the side to move sits you there if the seat is open (claim by moving,
+ * ChessGame::applyMoveLocked) -- the Sit buttons beside the board are the
+ * same seat taken without moving. In a pair, whoever's move reaches the
+ * relay first wins an open seat; the other is refused on both boards alike.
+ */
 function clickSquare(sq){
   if(!boardReady()){ flash('still starting up…'); return; }
   if(ply>=0){ flash('reviewing — press Live to move'); return; }
-  // Only the hotseat table is refused here; a remote one is the node's to
-  // refuse, and it knows which colour this self holds.
   const side = sideToMoveOf(lastFen || 'x w');
-  if(table.local && !seats[side]){ flash('join '+side+' to move'); return; }
-  // moveInFlight guards against exactly the race a fast double-click (or a
-  // script driving clicks back to back) can hit now that move() is async:
-  // sideToMoveOf(lastFen) reads lastFen, and lastFen is only updated once
-  // the IN-FLIGHT move's own round trip resolves. A second click landing
-  // before that happens would compute `self` from the position BEFORE the
-  // first move, sending it as the wrong side -- silently rejected by the
-  // seat check server-side (NOT YOUR TURN), which looks like a dropped
-  // click rather than the race it is. Refusing new input until the
-  // in-flight move resolves is simpler and safer than trying to queue or
-  // reorder moves client-side.
+  if(paired()){
+    const held = heldSeat();
+    if(held && held!==side){ flash('not your turn'); return; }
+    if(!held && holder[side]!=='-'){ flash(side+' is '+holder[side]+'’s'); return; }
+  } else if(holder[side]!=='-' && !mine(side)){ flash(side+' is taken'); return; }
+  // A second click before the first move's answer would read the position
+  // from before it and be sent as the wrong side.
   if(moveInFlight){ flash('still resolving the last move'); return; }
   if(!selected){ selected=sq; sq.classList.add('sel'); return; }
   const from=selected.dataset.alg, to=sq.dataset.alg;
@@ -794,18 +806,10 @@ function highlightLast(to, pulse){
 /*
  * ── A POSITION ARRIVED ───────────────────────────────────────────────────
  *
- * AND THE ARRIVING INPUT IS WHAT DRIVES THE PICTURE. There is one path here
- * because there is one cause: a FEN turned up. It makes no difference whether
- * it turned up as the answer to a move this page made or as the answer to a
- * read of a table somebody else is moving on -- the board is redrawn by the
- * position arriving, not by which call carried it.
- *
- * `uci` is the one thing only the mover's own answer knows: which square to
- * pulse. A position that arrived any other way simply has none, which is not a
- * missing case but the honest absence of one.
- *
- * Returns whether it was news, so a caller that only wanted to know can ask
- * without comparing FENs itself.
+ * One path, because there is one cause: a FEN turned up -- as the answer to a
+ * move made here, or as the board after a line replayed from the partner. The
+ * board is redrawn by the position arriving, not by which call carried it.
+ * `uci` is only known to the mover's own answer: which square to pulse.
  */
 async function arrived(fen, uci){
   if(!isFen(fen) || fen === lastFen) return false;
@@ -818,30 +822,47 @@ async function arrived(fen, uci){
   return true;
 }
 
+function moveRefusal(t, self, uci){
+  if(t==='ILLEGAL')       return uci+' — illegal';
+  if(t==='NOT YOUR TURN') return 'not '+self+'’s turn';
+  if(t==='NOT YOUR SEAT') return 'that seat is somebody else’s';
+  if(t==='GAME OVER')     return 'this game is finished';
+  return 'runtime said: '+(t||'(empty)');
+}
+
+/*
+ * A MOVE. Alone: sent as the side to move, the hotseat's two selves. In a
+ * pair: sent as you, and drawn AT ONCE only inside your own turn window --
+ * your seat, your side to move -- where nothing the partner can send comes
+ * before it, and its read-back is passed over (relay.mine). Outside it (the
+ * first move that would claim an open seat) it goes to the relay first and
+ * lands in the pair's order, so a seat both of you reach for goes to whoever
+ * got there first, on both boards.
+ */
 let moveInFlight = false;
 async function move(uci){
-  if(!boardReady()){ flash('still starting up…'); return; } // askPromotion's own buttons bypass clickSquare's guard -- re-checked here
+  if(!boardReady()){ flash('still starting up…'); return; }
   if(moveInFlight){ flash('still resolving the last move'); return; }
-  // WHO THIS MOVE IS SENT AS. Locally the page can hold both colours, so the
-  // side to move names the self -- that is what stands in for the login the
-  // hotseat page does not have. On a remote table this page is ONE self and
-  // the node decides its colour by claim-by-moving, so the name is the answer
-  // and the node's own seat check is the guard (NOT YOUR TURN, below).
-  const self = table.local ? sideToMoveOf(lastFen || 'x w') : table.name;
-  if(table.local && !seats[self]){ flash('join '+self+' to move'); return; }
   moveInFlight = true;
   try {
-    const t = ((await ask(self, 'move', uci)) || '').trim();
-    if(t==='ILLEGAL') flash(uci+' — illegal');
-    else if(t==='NOT YOUR TURN') flash('not '+self+'’s turn');
-    else if(t==='NOT YOUR SEAT') flash(self+'’s seat is held by someone else');
-    else if(t==='GAME OVER') flash('this game is finished');
-    else if(isFen(t)){
-      await arrived(t, uci);
-      await refreshStatus();
-      await refreshChat();   // the move, and a first move's seat claim, are narrated there
+    const side = sideToMoveOf(lastFen || 'x w');
+    if(!paired()){
+      const t = ((await ask(side, 'move', uci)) || '').trim();
+      if(isFen(t)){ await arrived(t, uci); await refreshStatus(); await refreshChat(); }
+      else flash(moveRefusal(t, side, uci));
+      return;
     }
-    else flash('runtime said: '+(t||'(empty)'));
+    if(heldSeat()===side){
+      const t = ((await ask(myName, 'move', uci)) || '').trim();
+      if(!isFen(t)){ flash(moveRefusal(t, myName, uci)); return; }
+      await arrived(t, uci);
+      const seq = await relayPush('move', uci, true);
+      if(seq == null) return;
+      await refreshStatus(); await refreshChat();
+      return;
+    }
+    const seq = await relayPush('move', uci);
+    if(seq != null) await relayPull();
   } finally {
     moveInFlight = false;
   }
@@ -856,12 +877,14 @@ async function move(uci){
 // with a server, because there is no server.
 let histMap = new Map(), histBase = 0, histEnd = 0, ply = -1;
 
+// "<base> <next>[ <chain>]" then whole lines. The relay's pages add the
+// record chain through their last line (ChessNode::relayLocked).
 function parsePage(t){
   const nl=t.indexOf('\n');
   if(nl<0) return null;
-  const m=/^(\d+) (\d+)$/.exec(t.slice(0,nl));
+  const m=/^(\d+) (\d+)(?: ([0-9a-f]{16}))?$/.exec(t.slice(0,nl));
   if(!m) return null;
-  return { base:+m[1], next:+m[2], lines:t.slice(nl+1).split('\n').filter(Boolean) };
+  return { base:+m[1], next:+m[2], chain:m[3]||'', lines:t.slice(nl+1).split('\n').filter(Boolean) };
 }
 function histRow(l){
   const sp=l.indexOf(' ');
@@ -975,51 +998,39 @@ function hideGameOver(){ overEl.classList.remove('on'); overShown=''; }
 
 async function doReset(){
   if(!boardReady()) return;
-  // 'local', not a seat: reset needs none (the server page's own reasoning --
-  // requiring one would strand a game whose loser closed their tab).
-  const t = ((await ask(me(), 'reset')) || '').trim();
+  // No seat needed: the position is dead, and requiring one would strand a
+  // game whose loser closed their tab (the server page's own reasoning).
+  const t = await act(me(), 'reset');
   hideGameOver();
-  histMap.clear(); histBase=0; histEnd=0; ply=-1;
-  clearLast(); reviewUi();
-  if(isFen(t)){ lastFen=t; noteLive('',t); draw(t); }
-  // Reset clears the seats in the game, so the page's own claims clear with
-  // them: colours are re-taken next round, same as the server page.
-  seats.white=false; seats.black=false; drawOfferBy=''; renderSeats();
-  gsEl.className=''; gsEl.textContent='new game';
-  await refreshStatus();
+  if(!paired()){
+    histMap.clear(); histBase=0; histEnd=0; ply=-1;
+    clearLast(); reviewUi();
+    if(isFen(t)){ lastFen=t; noteLive('',t); draw(t); }
+    gsEl.className=''; gsEl.textContent='new game';
+    await refreshStatus();
+  }
 }
 $('reset').onclick=doReset;
 $('over-new').onclick=doReset;
 
 // ── status ───────────────────────────────────────────────────────────────
-// "side state role wSeat bSeat drawoffer" -- read as 'local' (a permanent
-// viewer). The ROLE field is not needed: which seats this page holds is
-// what the seat cards say, not what statusLineLocked reports a spectator's
-// role as. The seat fields ARE used -- they are how a seat somebody else
-// holds shows up here once the peer link exists -- and the offer field is
-// read once more as 'white' when an offer stands, because a viewer is only
-// ever told an offer is "theirs", not whose.
+// "side state role wSeat bSeat drawoffer white-self black-self", asked as
+// me(): you in a pair, a viewer of your own board alone. The seat holders
+// are what the cards show; the offer is relative to the asker, so alone --
+// where the asker holds no seat -- it is asked once more as 'white' to learn
+// whose it is.
 async function refreshStatus(){
   if(!runtimeUp()) return;
   const p = ((await ask(me(), 'status')) || '').trim().split(/\s+/);
   if(p.length<3) return;
   const [side,state] = p;
-  seatHeld.white = p[3]||'open'; seatHeld.black = p[4]||'open';
-  /*
-   * ON A REMOTE TABLE THE SEATS ARE THE NODE'S ANSWER, not this page's
-   * bookkeeping. p[2] is the ROLE this self holds in that match -- 'white',
-   * 'black', or 'viewer' until claim-by-moving decides -- so the cards show
-   * the occupancy the node is matchmaking with, which is the whole point of
-   * joining through one. Locally the `seats` map stays what it was: which
-   * colours this page has taken, because there it can take both.
-   */
-  if(!table.local){
-    const role = p[2]||'viewer';
-    seats.white = (role==='white'); seats.black = (role==='black');
-  }
+  holder.white = p[6]||'-'; holder.black = p[7]||'-';
   const offer = p[5]||'none';
   if(offer==='none') drawOfferBy='';
-  else {
+  else if(paired()){
+    const held = heldSeat();
+    drawOfferBy = offer==='mine' ? held : (held==='white' ? 'black' : 'white');
+  } else {
     const w = ((await ask('white', 'status')) || '').trim().split(/\s+/);
     drawOfferBy = (w[5]==='mine') ? 'white' : 'black';
   }
@@ -1027,43 +1038,38 @@ async function refreshStatus(){
   if(gsEl.className!=='bad' && ply<0){
     const mover=(side==='w'?'white':'black');
     gsEl.textContent=mover+' to move'+(state!=='ok'?' — '+state:'')
-      +(!seats[mover] && state==='ok' ? ' — seat open' : '')
+      +(holder[mover]==='-' && state==='ok' ? ' — seat open' : '')
       +(drawOfferBy ? ' — draw offered by '+drawOfferBy : '');
   }
   if(state==='checkmate'||state==='stalemate'||state==='draw'||state.startsWith('resign'))
     showGameOver(state,side);
   else if(overShown) hideGameOver();
 }
-
-// ── seated actions, one set of controls per seat this page holds ───────────
-// See the CSS comment above #seatctl for why there are two of everything
-// instead of one "resign" / one "offer draw": the seat model in ChessGame is
-// two tokens claimed by moving (applyMoveLocked), and 'white' / 'black' are
-// exactly the tokens Move already claims above -- so a button fixed to one
-// colour lines up with the seat that colour already holds, with nothing new
-// to keep straight in the C++. Offering and accepting are still one verb
-// (drawLocked): press White's once to offer, Black's once to accept, in
-// either order -- the second press is whichever token did NOT make the
-// standing offer. The cards only show these once the seat is joined, which
-// is what the server page did with its own controls (visible once seated).
-async function seated(self, verb){
-  if(!boardReady()||!seats[self]) return;
-  const t = ((await ask(self, verb)) || '').trim();
-  if(t==='NOT YOUR SEAT'||t==='GAME OVER'){ flash(t.toLowerCase()); return; }
-  await refreshStatus(); await refreshChat();
+async function refreshAll(uci){
+  const fen = ((await ask(me(), 'fen')) || '').trim();
+  await arrived(fen, uci);
+  await refreshStatus();
+  await refreshChat();
 }
-$('resign-w').onclick=()=>{ if(confirm('White resigns?')) seated('white','resign'); };
-$('resign-b').onclick=()=>{ if(confirm('Black resigns?')) seated('black','resign'); };
+
+// ── a seat's own actions ─────────────────────────────────────────────────
+// Shown on the seats you hold, sent as that seat's token (tokenFor): the
+// colour alone, you in a pair. Draw is one verb both ways (drawLocked): the
+// label says which it would be from this seat now.
+async function seated(c, verb){
+  if(!boardReady()||!mine(c)) return;
+  const t = await act(tokenFor(c), verb);
+  if(t==='NOT YOUR SEAT'||t==='GAME OVER') flash(t.toLowerCase());
+}
+$('resign-w').onclick=()=>{ if(confirm('Resign as white?')) seated('white','resign'); };
+$('resign-b').onclick=()=>{ if(confirm('Resign as black?')) seated('black','resign'); };
 $('draw-w').onclick=()=>seated('white','draw');
 $('draw-b').onclick=()=>seated('black','draw');
 
 // ── chat ─────────────────────────────────────────────────────────────────
-// Authored as 'local': there is one keyboard, so unlike the multiplayer page
-// there is no second identity to tell a line apart from. A name field is a
-// reasonable follow-up (see this folder's README) and not required for the
-// feature -- the log, and narration inside it (seat claims, moves, the
-// outcome -- ChessGame::logLocked), are unchanged from the server-
-// authoritative page's own chat verb.
+// Authored as you, alone or paired; in a pair it is a line in the relay like
+// any other, so both boards hold the same conversation in the same order,
+// narration of the moves included (ChessGame::logLocked).
 let chatFrom = 0, chatLines = [];
 function chatLine(text){
   const d=document.createElement('div');
@@ -1097,67 +1103,35 @@ sayEl.addEventListener('keydown',async ev=>{
   if(!boardReady()) return;
   const t = sayEl.value.trim().replace(/%/g,'%20');
   sayEl.value='';
-  await ask(me(), 'say', encodeURIComponent(t));
-  await refreshChat();
+  await act(myName, 'say', encodeURIComponent(t));
   chatEl.scrollTop = chatEl.scrollHeight;
 });
 
-// ── the name-server menu ───────────────────────────────────────────────────
-// A name server is a ChessNode asked its two listing verbs. Nothing here is
-// specific to the hosted one: nsGet() reads `rooms` and `players` off
-// whatever the field names, and the special name `local` reads them off THIS
-// page's own node through the same call bridge every move goes through --
-// same verbs, same line format, same rendering. That is what "every node is
-// a name server" means at the level of this page: the default remote is one
-// instance of the thing, not a different kind of thing. The assumption
-// underneath, stated: the exact same ETCS runtime sits on the other side of
-// any address, and whether it is in a page or in a server on Linux does not
-// matter -- so nothing in this file may branch on which it is. The address
-// (nsResolve) is the only thing that varies by where a node is.
-//
-// Line formats are the node's own (ChessNode::roomsLocked, ChessLobby::
-// profileLocked), unchanged from what the server-authoritative page parses:
-//   rooms:   "match here seats state"
-//   players: "name W L D locked|open games idle"
-//
-// A remote node is a cross-origin fetch. A node that does not send
-// Access-Control-Allow-Origin for this page's origin is reported as
-// unreachable -- the browser withholds the body, there is nothing to parse.
-// See this folder's README, "Name servers, all the way down", for the state
-// of that on the hosted node today.
-const onlineEl=$('online'), nsUrlEl=$('ns-url'), nsStatusEl=$('ns-status');
-
 /*
- * THE DEFAULT NODE IS WHOEVER SERVED THIS PAGE.
+ * ── THE NAME SERVER ──────────────────────────────────────────────────────
  *
- * The page was shipping with an address typed into the markup, which is right
- * for exactly one deployment and wrong for every other -- a page served from a
- * laptop, a staging host or a second site all pointed at somebody else's node
- * by default, over the internet, when the one that handed them the page was
- * sitting on the same origin.
+ * Any ChessNode, asked. It lists who is online (`lobbies`, `players`), pairs
+ * two of them (`pair` finds whoever is waiting, `visit/<name>` sits at a
+ * named lobby -- a row, or a shared link), and relays the pair's lines in one
+ * order (`push`, `relay`). It holds no board: each page's own runtime does.
+ * The address is the only thing that varies by where the node lives; `this
+ * node` is this page's own runtime, which lists nobody but you -- a tab can
+ * ask any node and cannot be asked, so finding a partner takes a node you
+ * both can reach.
  *
- * And it is the same runtime: a node that serves this page serves the verb
- * surface beside it (chess_web.etcs does both -- the www tree AND the /game
- * route), so the origin is both where the page came from and the nearest ETCS
- * provider that can answer it. Nearest in the way that matters, too: same
- * origin means no CORS question to lose, and no hop off the machine.
- *
- * The mount is `game` because that is the route chess_web.etcs adds. A
- * deployment that mounts it elsewhere changes this one line; the hosted
- * address stays in the datalist as a suggestion, not as the default.
+ * DEFAULT: whoever served this page, at its `game` mount (chess_web.etcs and
+ * serve_chess.etcs both add that route beside the page).
  */
+const nsUrlEl=$('ns-url'), nsStatusEl=$('ns-status');
 function defaultNode(){
   try { return window.location.origin + '/game'; } catch(e){ return 'local'; }
 }
 nsUrlEl.value = defaultNode();
 const lines = t => t.split('\n').map(l => l.trim()).filter(Boolean);
-// What the field names, resolved. `local` is this page's own node. Anything
-// else is an address: scheme optional (https assumed -- a node on the open
-// internet is behind TLS, and a bare host is how one gets typed), port 443
-// for https unless `host:port` says otherwise, 80 for http likewise. The
-// verbs are read at <base>/rooms and <base>/players, so the path is the
-// node's mount as seen from outside. `shown` spells the port out even when
-// it is the default, so the status line says exactly what was dialled.
+// What the field names, resolved: `local` is this page's own node; anything
+// else an address -- https assumed, 443/80 unless `host:port` says, trailing
+// slashes dropped. `shown` spells the port out, so what was dialled is never
+// a guess.
 function nsResolve(){
   const raw=(nsUrlEl.value||'').trim();
   const low=raw.toLowerCase();
@@ -1170,212 +1144,346 @@ function nsResolve(){
   const port = u.port || (u.protocol==='https:' ? '443' : '80');
   const path = u.pathname.replace(/\/+$/,'');
   return { local:false, base:u.protocol+'//'+u.hostname+':'+port+path,
-           shown:u.hostname+':'+port+path };
+           shown:u.hostname+':'+port+path, url:u.protocol+'//'+u.host+path };
 }
+let ns = { local:true, shown:'this node' };
+function nsSay(m, cls){ nsStatusEl.textContent=m; nsStatusEl.className='ns-status'+(cls?' '+cls:''); }
+// One call to the name server. null when it did not answer.
+async function nsCall(path){
+  if(ns.local){
+    if(!runtimeUp()) return null;
+    return callResult('game','Request','game/'+path);
+  }
+  try {
+    const r = await fetch(ns.base+'/'+path, { mode:'cors', cache:'no-store', credentials:'omit' });
+    return r.ok ? await r.text() : null;
+  } catch(e){ return null; }
+}
+
 /*
- * SIT DOWN AT A TABLE -- the one place the page changes which game it is
- * playing. Everything it holds about the old one is per-game and has to go
- * with it: the position, the review cursor and its cache, the chat cursor,
- * and which seats it thought it had. What it does NOT reset is the runtime,
- * which is the same either way and is not what changed.
+ * ── THE RELAY ────────────────────────────────────────────────────────────
+ *
+ * A pair's lines, "<seq> <self> <verb>[ <arg>]", in the one order the name
+ * server gave them. Each is replayed here as that self's verb against this
+ * runtime's board -- the same call a click makes -- and the partner's page
+ * does the same with the same lines, so the two boards take one game.
+ *
+ * Chess makes the order easy: moves come in turn windows, and in yours
+ * nobody else can move, so your own move is drawn at once and its read-back
+ * passed over (`mine`). Anything that lands ahead of such a line that is not
+ * talk -- a resignation, a draw, a seat -- means this board took your move
+ * before a line the pair ordered first, and the board is rebuilt from the
+ * relay rather than guessed at (rebuildPair). Everything else waits for its
+ * turn in the order.
+ *
+ * One call at a time (withRelay): a pull that overlapped a push would read
+ * the pushed line before knowing it was already drawn.
  */
-function sitAt(node, match, name){
-  table.local = !!node.local;
-  table.base  = node.local ? null : node.base;
-  table.match = match;
-  table.name  = node.local ? null : name;
-  seats.white = seats.black = false;
-  seatHeld = { white:'open', black:'open' }; drawOfferBy='';
+const relay = { mine:new Set(), busy:false };
+async function withRelay(fn){
+  while(relay.busy) await sleep(15);
+  relay.busy = true;
+  try { return await fn(); } finally { relay.busy = false; }
+}
+async function relayPush(verb, arg, drawn){
+  const p = table.pair; if(!p) return null;
+  return withRelay(async ()=>{
+    const t = ((await nsCall(nsPath('push', p.id, verb) + (arg ? '/'+arg : ''))) || '').trim();
+    if(!/^\d+$/.test(t)){
+      if(t==='NOT PAIRED'){ flash('the pair has ended'); leftPair('the pair has ended'); }
+      else flash('the name server did not take it'+(t ? ': '+t : ' (no answer)'));
+      return null;
+    }
+    if(drawn) relay.mine.add(+t);
+    return +t;
+  });
+}
+async function relayPull(){
+  const p = table.pair; if(!p) return;
+  let changed=false, rebuild=false, landed='';
+  await withRelay(async ()=>{
+    for(let guard=0; guard<64 && table.pair===p; guard++){
+      const t = await nsCall(nsPath('relay', p.id, p.since));
+      if(t==null) return;
+      const pg = parsePage(t);
+      if(!pg) return;
+      if(pg.base > p.since){ rebuild = true; return; }   // lines gone before this page read them
+      for(const l of pg.lines){
+        const f = l.split(' ');
+        const seq = +f[0], self = f[1], verb = f[2], arg = f.slice(3).join(' ');
+        // Replayed through the board's own replay entry (ChessNode::
+        // replayLocked), which chains the line as the relay chained it; a
+        // line this board already drew ("=<seq>") is chained, not applied.
+        const drawn = relay.mine.has(seq);
+        const ans = ((await callResult('game','Request','game/'+self+'/replay/'+table.match+'/'
+                         +(drawn?'=':'')+seq+'/'+verb+(arg ? '/'+arg : ''))) || '').trim();
+        if(drawn){ relay.mine.delete(seq); continue; }
+        if(relay.mine.size && verb!=='say') rebuild = true;
+        changed = true;
+        if(verb==='move'){
+          if(isFen(ans)) landed = arg;
+          // Your own move, refused in the pair's order: somebody got there
+          // first -- the partner's claim on the same open seat, say.
+          else if(self===myName) flash(moveRefusal(ans, self, arg));
+        }
+      }
+      /*
+       * THE CHAIN, compared: the board's chain over what it replayed against
+       * the relay's over what it stored, at the same seq -- the share
+       * record's own check. Different is a line this board took that the
+       * record does not hold, or missed; nothing but a rebuild says which.
+       */
+      if(pg.chain && pg.lines.length){
+        const c = ((await ask(me(), 'chain')) || '').trim().split(' ');
+        if(+c[1]===pg.next && c[0]!==pg.chain){ rebuild = true; p.since = pg.next; return; }
+      }
+      if(pg.next<=p.since) break;
+      p.since = pg.next;
+      if(!pg.lines.length) break;
+    }
+  });
+  if(rebuild && table.pair===p) await rebuildPair();
+  else if(changed) await refreshAll(landed);
+}
+// A fresh board on this runtime, the whole relay replayed onto it in order.
+async function rebuildPair(){
+  const p = table.pair; if(!p) return;
+  // Bounded: a board that still disagrees after a few clean replays has a
+  // fault replay will not fix, and replaying forever would only hide it.
+  if((p.gen||0) >= 5){ flash('this board cannot agree with the pair’s record'); return; }
+  log('[etcs] relay: this board is not the pair\'s record -- replaying the pair from its start\n');
+  p.gen = (p.gen||0) + 1; p.since = 0;
+  relay.mine.clear();
+  table.match = p.id + '.' + p.gen;
+  resetView();
+  await relayPull();
+  await refreshAll();
+}
+
+// Everything this page shows about ONE board, cleared for another.
+function resetView(){
+  holder = { white:'-', black:'-' }; drawOfferBy='';
   histMap = new Map(); histBase = 0; histEnd = 0; ply = -1;
   chatFrom = 0; chatLines = []; chatEl.textContent='';
-  lastFen=''; selected=null; clearLast(); hideGameOver();
-  closeLobby();
-  setStatus(table.local ? 'local table' : 'seated at '+node.shown+'/'+match+' as '+name, 'ok');
-  gsEl.className=''; gsEl.textContent='seating…';
-  renderSeats();
-  $('ns-leave-table').classList.toggle('hidden', table.local);
-  stopTablePoll();
-  (async()=>{
-    const fen=((await ask(me(),'fen'))||'').trim();
-    if(isFen(fen)){ lastFen=fen; noteLive('',fen); draw(fen); }
-    await refreshStatus(); await refreshChat();
-    startTablePoll();
-  })();
+  lastFen=''; selected=null; clearLast(); hideGameOver(); reviewUi();
 }
 
-/*
- * ── THE POLL, AND ONLY FOR A REMOTE TABLE ────────────────────────────────
- *
- * A hotseat table needs none: every change to it is this page's own, so the
- * board is never behind its own runtime. A table on a node is somebody ELSE's
- * to change, and nothing pushes -- the node answers verbs, it does not call
- * back, because a browser has no address to be called at. That is the same
- * asymmetry the name-server note above describes, met from the other side: a
- * tab can ask any node and cannot be asked, so a tab that wants to know asks.
- *
- * The server-authoritative page polled for exactly this reason and kept a
- * localStorage cache of positions to make it cheap. This one keeps none,
- * because it only polls while it is sitting at a remote table -- a page on its
- * own board does nothing at all, which is the common case and was the whole
- * argument for dropping the cache when the page went local.
- *
- * Skipped mid-move and while reviewing: the first would race a round trip
- * whose answer is already on its way, and the second would yank the board out
- * from under somebody reading it.
- */
-const TABLE_POLL_MS = 1500;
-let tablePoll = 0;
-function stopTablePoll(){ if(tablePoll){ clearInterval(tablePoll); tablePoll = 0; } }
-function startTablePoll(){
-  stopTablePoll();
-  if(table.local) return;
-  tablePoll = setInterval(async () => {
-    if(moveInFlight || ply >= 0) return;
-    await arrived(((await ask(me(), 'fen')) || '').trim());
-    await refreshStatus();
-    await refreshChat();
-  }, TABLE_POLL_MS);
+function tableLabel(){
+  $('table-label').textContent = paired()
+    ? (table.pair.owner===myName ? table.pair.partner+' at your lobby'
+                                 : 'at '+table.pair.owner+'’s lobby')
+    : 'your lobby · hotseat';
+  $('ns-unpair').classList.toggle('hidden', !paired() && !waiting);
+  $('ns-unpair').textContent = paired() ? 'Leave the pair' : 'Stop waiting';
+  $('ns-quick').disabled = paired() || waiting || ns.local;
 }
 
-function nsSay(m, cls){ nsStatusEl.textContent=m; nsStatusEl.className='ns-status'+(cls?' '+cls:''); }
-async function nsGet(node, verb){
-  if(node.local){
-    if(!runtimeUp()) throw new Error('runtime not up');
-    const t = await callResult('game','Request','game/'+verb);
-    if(t==null) throw new Error("'game' did not answer");
-    return t;
+// Sat down with a partner: a new board for this pairing, the relay replayed.
+async function enterPair(id, owner, partner){
+  table.pair = { id, owner, partner, since:0, gen:0 };
+  table.match = id;
+  waiting = false;
+  relay.mine.clear();
+  resetView();
+  tableLabel();
+  const other = owner===myName ? partner : owner;
+  nsSay('paired with '+other+' via '+ns.shown, 'ok');
+  gsEl.className=''; gsEl.textContent='paired with '+other;
+  await relayPull();
+  await refreshAll();
+}
+// Back to your own hotseat board, which kept its game.
+async function leftPair(why){
+  if(!table.pair) return;
+  table.pair = null; table.match = 'local';
+  relay.mine.clear();
+  resetView();
+  tableLabel();
+  nsSay(why, 'err');
+  await refreshAll();
+  gsEl.className='bad'; gsEl.textContent=why+' — back at your own board';
+}
+
+// What `host`, `pair` and `visit` answer: the self's standing at the node.
+let waiting = false;
+async function onState(t){
+  const f = (t||'').trim().split(/\s+/);
+  if(f[0]==='PAIRED'){
+    waiting = false;
+    if(!table.pair || table.pair.id!==f[1]) await enterPair(f[1], f[2], f[3]);
+  } else if(f[0]==='ENDED'){
+    waiting = false;
+    if(table.pair && table.pair.id===f[1]) await leftPair('the pair has ended');
+  } else if(f[0]==='WAITING'){
+    waiting = true;
+    nsSay('waiting for a partner on '+ns.shown+'…');
+  } else if(f[0]==='OPEN'){
+    waiting = false;
+    if(table.pair) await leftPair('the pair has ended');
   }
-  const r = await fetch(node.base+'/'+verb, { mode:'cors', cache:'no-store', credentials:'omit' });
-  if(!r.ok) throw new Error('HTTP '+r.status);
-  return r.text();
+  tableLabel();
 }
+
+// The heartbeat: `host` keeps this lobby listed and says whether somebody sat
+// down at it. The pull follows the relay while paired.
+const HOST_MS = 1500, PULL_MS = 600, LIST_MS = 4000;
+let hostTimer = 0, pullTimer = 0, listTimer = 0;
+function startNameServer(){
+  clearInterval(hostTimer); clearInterval(pullTimer); clearInterval(listTimer);
+  hostTimer = pullTimer = listTimer = 0;
+  refreshLobbies();
+  if(ns.local){ tableLabel(); return; }
+  const beat = async ()=>{
+    let t = await nsCall(nsPath('host'));
+    // Somebody else's page holds this name here: go by the first free
+    // suffix of it, for this tab only -- the name you chose is kept.
+    for(let n=2; t && t.trim()==='NAME TAKEN' && n<100; n++){
+      const base = baseName();
+      myName = base + '-' + n; showName();
+      t = await nsCall(nsPath('host'));
+      if(t && t.trim()!=='NAME TAKEN') nsSay(base+' is in use on '+ns.shown+' -- you are '+myName+' here', 'err');
+    }
+    if(t!=null) await onState(t);
+  };
+  beat();
+  hostTimer = setInterval(beat, HOST_MS);
+  pullTimer = setInterval(()=>{ if(table.pair && !moveInFlight && ply<0) relayPull(); }, PULL_MS);
+  listTimer = setInterval(refreshLobbies, LIST_MS);
+}
+async function useNameServer(){
+  let node; try { node = nsResolve(); } catch(e){ nsSay(e.message, 'err'); return; }
+  if(table.pair || waiting){ await nsCall(nsPath('unpair')); waiting=false; await leftPair('left the pair to change name server'); }
+  myName = baseName(); showName();
+  ns = node;
+  startNameServer();
+}
+
 function stateCell(s){ return '<td class="st-'+s+'">'+s+'</td>'; }
-function renderRooms(text){
-  const tb=$('ns-rooms'); tb.innerHTML='';
-  const ls=lines(text);
+function renderLobbies(text){
+  const tb=$('ns-lobbies'); tb.innerHTML='';
+  const want=($('ns-search').value||'').trim().toLowerCase();
   let shown=0;
-  for(const line of ls){
+  for(const line of lines(text)){
     const p=line.split(/\s+/);
-    // Four fields, numeric counts -- the server page's own guard, for the
-    // same reason: an error body must not render as a plausible match.
-    if(p.length!==4||!/^\d+$/.test(p[1])||!/^\d+$/.test(p[2])) throw new Error('node said: '+line);
-    const [m,here,seats,state]=p, full=(+seats>=2);
+    if(p.length!==3) throw new Error('node said: '+line);
+    const [owner,partner,state]=p;
+    if(want && !(owner.toLowerCase().includes(want) || partner.toLowerCase().includes(want))) continue;
     const tr=document.createElement('tr');
-    tr.innerHTML='<td class="key">'+m+'</td><td>'+here+'</td><td class="'+(full?'full':'')+'">'+seats+
-                 '/2</td>'+stateCell(state)+'<td></td>';
-    const b=document.createElement('button');
-    b.textContent=full?'watch':'join';
-    // A NAMED MATCH NEEDS NO SEPARATE VERB: visiting one IS the edge join
-    // (ChessNode::requestLocked). So sitting at a row is sitting at the table
-    // it names, and 'watch' is the same act with both seats already taken --
-    // the node answers a viewer's reads and refuses its moves, which is what
-    // watching is.
-    b.onclick=()=>{
-      let node; try{ node=nsResolve(); }catch(e){ nsSay(e.message,'err'); return; }
-      const name=quickName(); if(!name) return;
-      sitAt(node, m, name);
-    };
-    tr.lastElementChild.appendChild(b); tb.appendChild(tr); shown++;
+    const self=(owner===myName);
+    tr.innerHTML='<td class="key">'+owner+(self?' (you)':'')+'</td><td>'+(partner==='-'?'':partner)+'</td>'
+                 +stateCell(state)+'<td></td>';
+    if(!self){
+      const b=document.createElement('button');
+      const seated = table.pair && table.pair.owner===owner;
+      b.textContent = seated ? 'here' : state==='playing' ? 'full' : 'join';
+      b.disabled = seated || state==='playing';
+      b.onclick=()=>visit(owner);
+      tr.lastElementChild.appendChild(b);
+    }
+    tb.appendChild(tr); shown++;
   }
-  $('ns-no-rooms').classList.toggle('hidden', shown>0);
+  $('ns-no-lobbies').classList.toggle('hidden', shown>0);
 }
 function renderPlayers(text){
   const tb=$('ns-players'); tb.innerHTML='';
-  const ls=lines(text);
   let shown=0;
-  for(const line of ls){
+  for(const line of lines(text)){
     const p=line.split(/\s+/);
     if(p.length<7) continue;
     const tr=document.createElement('tr');
-    tr.innerHTML='<td class="key">'+p[0]+'</td><td>'+p[1]+'</td><td>'+p[2]+'</td><td>'+p[3]+
-                 '</td><td>'+p[5]+'</td><td>'+p[6]+'s</td>';
+    tr.innerHTML='<td class="key">'+p[0]+'</td><td>'+p[1]+'</td><td>'+p[2]+'</td><td>'+p[3]+'</td><td>'+p[6]+'s</td>';
     tb.appendChild(tr); shown++;
   }
   $('ns-no-players').classList.toggle('hidden', shown>0);
 }
-// Generation-counted rather than a busy flag: a read of the default remote
-// that is still failing to connect must not swallow a click on "this node"
-// -- the newer read wins, the older one's answer (or error) is dropped.
-let nsGen=0;
-async function refreshLobby(){
-  const gen=++nsGen;
-  let node;
-  try { node=nsResolve(); } catch(e){ nsSay(e.message, 'err'); return; }
-  const where=node.shown;
-  nsSay('reading '+where+'…');
-  try {
-    const [r,p]=await Promise.all([nsGet(node,'rooms'), nsGet(node,'players')]);
-    if(gen!==nsGen) return;
-    renderRooms(r); renderPlayers(p);
-    nsSay('read '+where+' at '+new Date().toLocaleTimeString(), 'ok');
-  } catch(e){
-    if(gen!==nsGen) return;
-    $('ns-rooms').innerHTML=''; $('ns-players').innerHTML='';
-    $('ns-no-rooms').classList.remove('hidden'); $('ns-no-players').classList.remove('hidden');
-    const cors = !node.local && /TypeError|Failed to fetch|NetworkError/.test(String(e));
-    nsSay(where+' unreachable'+(cors ? ' from this origin -- down, or not sending CORS headers (see README)'
-                                     : ': '+(e&&e.message||e)), 'err');
+// Generation-counted: a slow read of an old address must not overwrite a
+// newer one's answer.
+let nsGen=0, lastLobbies='';
+async function refreshLobbies(){
+  const gen=++nsGen, where=ns.shown;
+  if(ns.local){
+    $('ns-lobbies').innerHTML=''; $('ns-players').innerHTML='';
+    $('ns-no-lobbies').classList.remove('hidden'); $('ns-no-players').classList.remove('hidden');
+    nsSay('this node is your own runtime -- name a node you and a partner can both reach to find one');
+    return;
   }
+  const [l,p]=await Promise.all([nsCall('lobbies'), nsCall('players')]);
+  if(gen!==nsGen) return;
+  if(l==null){
+    $('ns-lobbies').innerHTML=''; $('ns-no-lobbies').classList.remove('hidden');
+    nsSay(where+' unreachable from this origin -- down, or not sending CORS headers', 'err');
+    return;
+  }
+  try { lastLobbies=l; renderLobbies(l); if(p!=null) renderPlayers(p); }
+  catch(e){ nsSay(e.message, 'err'); return; }
+  if(!table.pair && !waiting) nsSay('online at '+where+' as '+myName, 'ok');
 }
-function openLobby(){ onlineEl.classList.add('on'); refreshLobby(); }
-function closeLobby(){ onlineEl.classList.remove('on'); }
-$('online-btn').onclick=openLobby;
-$('online-close').onclick=closeLobby;
-onlineEl.onclick=ev=>{ if(ev.target===onlineEl) closeLobby(); };
-$('ns-refresh').onclick=refreshLobby;
-$('ns-local').onclick=()=>{ nsUrlEl.value='local'; refreshLobby(); };
-nsUrlEl.addEventListener('keydown',ev=>{ if(ev.key==='Enter') refreshLobby(); });
-$('ns-make').onclick=()=>{
-  const k=$('ns-new-room').value.trim();
-  if(!k||/[\/\s]/.test(k)){ nsSay('a match name is one word, no slashes', 'err'); return; }
-  let node; try { node=nsResolve(); } catch(e){ nsSay(e.message, 'err'); return; }
-  const name=quickName(); if(!name) return;
-  // CREATING IS SITTING AT A NAME NOBODY IS AT YET. There is no create verb
-  // and there does not need to be: requestLocked makes the match on first
-  // visit (`if (!g) g = createGameLocked(match)`), so naming one and sitting
-  // at it are the same act. This is the named-match door beside quick join's
-  // whoever-is-waiting one.
-  sitAt(node, k, name);
-};
-$('ns-new-room').addEventListener('keydown',ev=>{ if(ev.key==='Enter') $('ns-make').click(); });
+$('ns-search').addEventListener('input', ()=>{ try { renderLobbies(lastLobbies); } catch(e){} });
 
-/*
- * ── quick join ───────────────────────────────────────────────────────────
- *
- * ONE VERB, and it is the node's own: `<self>/join` asks the node to seat this
- * name at whatever match is waiting, and answers with the match it chose
- * (ChessNode::joinLocked). Two people pressing this against the same node land
- * in the same match, which is what "seat occupancy is player matchmaking"
- * means -- there is no second matchmaker to keep in step with the seats,
- * because taking a seat is the whole of it.
- *
- * The name is remembered per browser: it is who the node knows you as, and
- * typing it again every visit would make the players list a list of strangers.
- */
-const nsNameEl=$('ns-name');
-try { nsNameEl.value = localStorage.getItem('etcs-chess-name') || ''; } catch(e){}
-function quickName(){
-  const n=(nsNameEl.value||'').trim();
-  if(!n||/[\/\s]/.test(n)){ nsSay('a name is one word, no slashes -- it is how the node lists you','err'); nsNameEl.focus(); return ''; }
-  try { localStorage.setItem('etcs-chess-name', n); } catch(e){}
-  return n;
+async function visit(owner){
+  if(ns.local){ nsSay('pairing needs a name server both of you can reach', 'err'); return; }
+  nsSay('sitting down at '+owner+'’s lobby…');
+  const t = ((await nsCall(nsPath('visit', owner))) || '').trim();
+  if(t==='FULL') { nsSay(owner+'’s lobby is full', 'err'); return; }
+  if(t==='NO SUCH LOBBY' || !t) { nsSay(owner+' is not online at '+ns.shown, 'err'); return; }
+  await onState(t);
 }
 $('ns-quick').onclick=async()=>{
-  const name=quickName(); if(!name) return;
-  let node; try{ node=nsResolve(); }catch(e){ nsSay(e.message,'err'); return; }
-  nsSay('joining '+node.shown+' as '+name+'…');
-  try {
-    const m=((await nsGet(node, name+'/join'))||'').trim();
-    // A match name is one word. Anything else is an error body, and an error
-    // body must not become a table -- the same guard renderRooms makes.
-    if(!m||/\s/.test(m)) throw new Error('node said: '+(m||'(nothing)'));
-    sitAt(node, m, name);
-  } catch(e){ nsSay('could not join '+node.shown+': '+(e&&e.message||e),'err'); }
+  if(ns.local){ nsSay('quick match needs a name server both of you can reach', 'err'); return; }
+  const t = await nsCall(nsPath('pair'));
+  if(t==null){ nsSay(ns.shown+' did not answer', 'err'); return; }
+  await onState(t);
 };
-nsNameEl.addEventListener('keydown',ev=>{ if(ev.key==='Enter') $('ns-quick').click(); });
-// Back to the page's own runtime -- the board it came up on, still running.
-$('ns-leave-table').onclick=()=>sitAt({local:true,shown:'this node'},'local',null);
-window.addEventListener('keydown',ev=>{ if(ev.key==='Escape' && onlineEl.classList.contains('on')) closeLobby(); });
+$('ns-unpair').onclick=async()=>{
+  await nsCall(nsPath('unpair'));
+  waiting=false;
+  if(table.pair) await leftPair('you left the pair');
+  tableLabel(); refreshLobbies();
+};
+// A link that opens YOUR lobby on this name server: whoever follows it sits
+// down across from you (visit), from their own page and runtime.
+$('ns-share').onclick=async()=>{
+  if(ns.local){ nsSay('a link needs a name server the other page can reach', 'err'); return; }
+  const link = location.origin + location.pathname + '?lobby=' + encodeURIComponent(myName)
+             + '&ns=' + encodeURIComponent(ns.url);
+  try { await navigator.clipboard.writeText(link); nsSay('link to your lobby copied', 'ok'); }
+  catch(e){ window.prompt('Link to your lobby', link); }
+};
+$('ns-refresh').onclick=useNameServer;
+$('ns-local').onclick=()=>{ nsUrlEl.value='local'; useNameServer(); };
+nsUrlEl.addEventListener('keydown',ev=>{ if(ev.key==='Enter') useNameServer(); });
+
+// ── your name, pressed to rename ──────────────────────────────────────────
+// A new name is a new self at the name server: a pair held under the old one
+// is left first, since the partner's page knows you by it.
+const meBtn=$('me'), meEdit=$('me-edit');
+// The name chosen in this browser; myName is it, or a suffix of it while
+// another page holds it at the name server.
+function baseName(){ try { return localStorage.getItem(NAME_KEY) || myName; } catch(e){ return myName; } }
+function showName(){ meBtn.textContent=myName; }
+meBtn.onclick=()=>{ meEdit.value=myName; meBtn.classList.add('hidden'); meEdit.classList.remove('hidden'); meEdit.focus(); meEdit.select(); };
+async function endRename(keep){
+  if(meEdit.classList.contains('hidden')) return;
+  meEdit.classList.add('hidden'); meBtn.classList.remove('hidden');
+  const n=meEdit.value.trim();
+  if(!keep || n===myName) return;
+  if(!nameOk(n)){ nsSay('a name is one word: letters, digits, - _ . (24 at most)', 'err'); return; }
+  if(!ns.local){
+    // Asked BEFORE giving up the old one: a name another page holds is
+    // refused, and you keep the one you had.
+    const was = myName; myName = n;
+    const t = ((await nsCall(nsPath('host'))) || '').trim();
+    myName = was;
+    if(t==='NAME TAKEN'){ nsSay(n+' is in use on '+ns.shown, 'err'); return; }
+    await nsCall(nsPath('unpair')); waiting=false;
+  }
+  if(table.pair) await leftPair('renamed -- left the pair');
+  myName=n; try { localStorage.setItem(NAME_KEY, n); } catch(e){}
+  showName(); refreshLobbies();
+}
+meEdit.addEventListener('keydown',ev=>{ if(ev.key==='Enter') endRename(true); else if(ev.key==='Escape') endRename(false); });
+meEdit.addEventListener('blur',()=>endRename(true));
+showName();
 
 // ── boot ─────────────────────────────────────────────────────────────────
 async function boot() {
@@ -1463,6 +1571,15 @@ async function boot() {
       }
       await refreshStatus();
       await refreshChat();
+      // Online from the start at the default name server (or the one a link
+      // named), and -- for a link to somebody's lobby -- sat down across from
+      // them. Consumed once: the URL is an entry, not state.
+      const qs = new URLSearchParams(location.search);
+      if (qs.get('ns')) nsUrlEl.value = qs.get('ns');
+      const lobby = qs.get('lobby');
+      if (qs.has('ns') || qs.has('lobby')) history.replaceState(null, '', location.pathname);
+      await useNameServer();
+      if (lobby && lobby !== myName) await visit(lobby);
     },
     onAbort: function (r) {
       setStatus('aborted', 'err');
