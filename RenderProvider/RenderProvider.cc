@@ -5,28 +5,29 @@
 // a script detaches, not a stream pair -- see the Surface block below.
 ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel Throbber")
 
-// The Vulkan instance/device/queue/command pool. Spawn one, Create it,
-// hand its RID to every Surface.
+// The GPU -- Vulkan natively, WebGPU in a browser. Spawn one, Create it, and
+// name it from a Device under whatever should use it.
 ETCS_TAG_BLOCK_BASIC(Instance,
     Create, Delete)
 
-// The device capability attachment: spawn one under a Camera and point it at
-// an Instance, and that camera can project through the GPU. Presence is the
-// capability (ontology/Device.h) -- there is always a CPU, so only the
-// addition needs saying.
+// The device capability attachment: spawn one under a Camera or a Surface and
+// point it at an Instance, and that entity works through the GPU while the
+// device is ready. Presence is the capability (ontology/Device.h) -- there is
+// always a CPU, so only the addition needs saying.
 ETCS_TAG_BLOCK_BASIC(Device,
     Create, Delete)
 
-// The window-bound presentable surface: spawn it as a Window's child.
-// Clear/DrawRect/Blit accumulate in call order and are RETAINED until
-// something composes a new frame; Present is the only call that touches the
-// GPU queue, and RunFrames is that same Present driven by a clock.
+// The window surface: spawn it as a Window's child. A host raster, and the
+// device's while a ready Device is under it (UseDevice says whether to use
+// one). Clear/DrawRect/Blit accumulate in call order and are RETAINED until
+// something composes a new frame; Present hands the frame to the window, and
+// RunFrames is that same Present driven by a clock.
 //
 // BASIC: presenting is a step on the Presentable family
 // (ontology/PresentableBase.h) and RunFrames is an ordinary work function a
 // script detaches, so this tag has no stream, no ring and no pool occupant.
 ETCS_TAG_BLOCK_BASIC(Surface,
-    Create, SetTarget, ResizeTo, Clear, DrawRect, Blit, Compose, Present,
+    Create, SetTarget, ResizeTo, UseDevice, Clear, DrawRect, Blit, Compose, Present,
     Delete, RunDemo, RunFrames)
 
 // An offscreen CPU-backed surface -- a layer. Same drawing verbs, no

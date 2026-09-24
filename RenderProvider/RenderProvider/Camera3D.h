@@ -220,7 +220,7 @@ public:
          * camera records and replays like every other op -- because in that
          * mode there is no buffer to clear, and Clear on a retained op list
          * means "a new composition starts here" exactly as it does for
-         * PolygonDrawable2D and VulkanSurface.
+         * PolygonDrawable2D and a window surface on a device.
          */
         if (this->DeviceProjection()) Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         else                          ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
@@ -252,7 +252,7 @@ public:
      * TWO SINKS, ONE SET OF VERBS. On the host these rasterise into the
      * camera's own buffer, which is what they have always done. Through a
      * device they RECORD, and DrawInto replays them onto the destination --
-     * the same retained model PolygonDrawable2D and VulkanSurface both use,
+     * the same retained model PolygonDrawable2D and a device-drawn window use,
      * for the reason PolygonDrawable2D states: "the thread that decides what
      * to draw is not the thread that draws it".
      *
@@ -322,8 +322,8 @@ public:
      * The recording, for device mode only. One flat list in call order,
      * because that IS the composition -- a layered picture is drawn
      * back-to-front and the order calls arrive in is the order they must be
-     * replayed in, which is the same reason VulkanSurface keeps ONE
-     * m_pendingDraws rather than three lists.
+     * replayed in, which is the same reason a window surface keeps ONE
+     * recording rather than three lists (OS/HostSurface.h).
      *
      * Coordinates are the camera's own; the destination offset is added at
      * replay. Clear carries no rect: it means the whole frame, whose size is
@@ -366,10 +366,10 @@ public:
          * visible difference between the two modes.
          *
          * The host frame is a buffer, so it reaches the destination the way
-         * every buffer does -- one Blit, which on a VulkanSurface is an upload
+         * every buffer does -- one Blit, which on a device-drawn window is an upload
          * and a textured quad. The device frame was never a buffer: it is the
          * spans the projection produced, replayed onto the destination as its
-         * own draws, so on a VulkanSurface they become device rects and the
+         * own draws, so on a device-drawn window they become device rects and the
          * frame is produced without host pixels existing at any point.
          *
          * Replayed under the lock, into a local copy: the frame edge runs on

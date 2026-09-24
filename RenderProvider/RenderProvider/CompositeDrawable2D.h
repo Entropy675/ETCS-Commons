@@ -138,7 +138,7 @@ public:
      *
      * So the geometry is STAGED and applied at the top of recompose(), which
      * is already the one place that owns the buffer exclusively -- the same
-     * deferral VulkanSurface makes for its Vulkan calls, for the same
+     * deferral the window surface makes for its device calls, for the same
      * reason. The layout keeps writing whenever it likes and nothing it
      * writes takes effect in the middle of somebody reading.
      *
@@ -357,7 +357,6 @@ public:
  */
         const uint64_t dst_rid = dst->getRID();
         this->Observe(dst_rid);
-        (void)TakeObserved(dst_rid);   // spent: the frame below is that answer
 
         const Point2D base = parentAbsoluteOrigin();
 
@@ -366,23 +365,27 @@ public:
  * anyone reads: a destination gets the last WHOLE composition, never the raster
  * with half of one in it.
  *
- * A device destination has no host address to blend into, so it takes the
- * family verb and reads the live raster -- the old behaviour, and the only one
- * available there.
+ * A device destination -- or a host one with a Device under it, whose bytes are
+ * not its picture (etcs_direct_pixels) -- takes the family verb and reads the
+ * live raster: the only route that lands on whichever side it draws.
  */
-        if (Pixels_* dpx = static_cast<Pixels_*>(
-                dst->getInterfacePointer(ETCS::Buffer("Pixels"))))
+        if (Pixels_* dpx = etcs_direct_pixels(static_cast<ETCS::Entity*>(dst)))
         {
             std::lock_guard<std::mutex> g(m_front_mtx);
             if (m_front.empty()) publishLocked();   // first sight of this node
             if (!m_front.empty() && m_front_w && m_front_h)
             {
+                (void)TakeObserved(dst_rid);   // spent: the composite below is that answer
                 render_composite_raw(*dpx, m_front.data(), m_front_w, m_front_h,
                                      base.x + m_x, base.y + m_y, 1.0f);
                 etcs_mark_observed(dpx);
                 return;
             }
         }
+        // The mark is the destination's to take here, not this node's: a
+        // device destination uploads only when its own TakeObserved says the
+        // raster changed, so spending it first froze the device on the first
+        // frame it ever saw.
         dst->Blit(this, base.x + m_x, base.y + m_y, m_w, m_h, 1.0f);
     }
 

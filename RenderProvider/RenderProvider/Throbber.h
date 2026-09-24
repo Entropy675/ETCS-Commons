@@ -405,10 +405,8 @@ public:
         if (!dst) return;
         const Rect2D b = BoundsConcrete();
         const Point2D base = this->parentAbsoluteOrigin();
-        void* raw = static_cast<ETCS::Entity*>(dst)
-                        ->getInterfacePointer(ETCS::Buffer("Pixels"));
-        if (raw)
-            render_composite_raw(*static_cast<Pixels_*>(raw),
+        if (Pixels_* raw = etcs_direct_pixels(static_cast<ETCS::Entity*>(dst)))
+            render_composite_raw(*raw,
                                  this->PixelData(), m_w, m_h,
                                  base.x + b.x, base.y + b.y, 1.0f);
         else

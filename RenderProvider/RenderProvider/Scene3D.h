@@ -673,9 +673,9 @@ public:
  * future provider registers under Surface, with no branch here for which one
  * it got". Every Camera_ IS a Surface_, so the camera itself is that
  * destination, and what it does with a DrawRect is its own business:
- * GpuCamera3D records it and replays it onto whatever it is drawn into, so on
- * a VulkanSurface the frame is produced by the device and never exists as host
- * pixels at all.
+ * a camera with a Device records it and replays it onto whatever it is drawn
+ * into, so on a window surface drawing through a device the frame is produced
+ * by the device and never exists as host pixels at all.
  *
  * DEPTH STAYS HERE EITHER WAY. m_depth is the scene's, not the camera's --
  * DepthAt and DepthFor are answered off it (Drawable3D.h: the three

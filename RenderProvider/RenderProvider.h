@@ -10,24 +10,26 @@
 #include <string>
 #include <thread>
 
-// RenderProvider -- Vulkan, three tags:
+// RenderProvider -- the surfaces, and the device they can draw through:
 //
-//   Instance     -- the VkInstance/device/queue/command pool. Flat (no
-//                   ontology supertype but Deletable): there is one Vulkan
-//                   backend, and nothing addresses "an instance"
-//                   generically.
-//   Surface      -- the window-bound presentable surface
-//                   [Surface + Presentable + Resizable]. Spawned as a
-//                   CHILD of a WindowProvider::Window; reaches its parent
-//                   through the generic interface-pointer surface, never
-//                   through a compile-time dependency on WindowProvider.
+//   Instance     -- the GPU: Vulkan natively, WebGPU in a browser. Flat (no
+//                   ontology supertype but Deletable); nothing addresses "an
+//                   instance" generically.
+//   Device       -- "this entity can reach that Instance", as a child of the
+//                   entity. Attaching one is the switch (ontology/Device.h).
+//   Surface      -- the window surface [Surface + Pixels + Presentable +
+//                   Resizable]: a host raster on every platform, drawing and
+//                   presenting through the device while a ready Device is
+//                   under it (OS/HostSurface.h). Spawned as a CHILD of a
+//                   WindowProvider::Window; reaches its parent through the
+//                   generic interface-pointer surface, never through a
+//                   compile-time dependency on WindowProvider.
 //   ImageSurface -- an offscreen CPU-backed surface
 //                   [Surface + Pixels + Resizable]. A layer.
 //
-// The pair is the point: both answer Clear/DrawRect/Blit, one composites
-// on the CPU into its own bytes and the other uploads and draws on the
-// GPU, and a caller composing a layer stack writes the same calls either
-// way. That is the surface PintaProvider projects onto.
+// Every surface answers Clear/DrawRect/Blit, and a caller composing a layer
+// stack writes the same calls whether the window under it rasterises on the
+// CPU or records for the GPU. That is the surface PaintProvider projects onto.
 //
 // Deliberately absent, all flagged rather than forgotten:
 //   - validation layers (VulkanInstance::Create's own comment)
@@ -86,14 +88,19 @@ DEFINE_WORK_FUNC(Device, Delete)
 
 // ── Surface (window-bound, presentable) ──────────────────────────────────
 
-// Create <instance_rid> [<shader_dir>] -- the RID is parsed off the raw
-// buffer rather than declared as a typed field, matching HttpServer's own
-// AddHandler/AddRoute convention (NetworkProvider.h) for taking a
-// script-supplied @name. shader_dir defaults to "shaders/", resolved
-// relative to the process cwd exactly like FileHtmlPage::LoadFromDisk's
-// path -- nothing in this codebase locates a module's own install
-// directory yet, and inventing that mechanism here would be a bigger
-// change than this milestone warrants.
+/*
+ * Create [<instance_rid> [<shader_dir>]] -- the host raster needs neither. An
+ * Instance given here is the old spelling of attaching a device, kept because
+ * every script before devices were children says it: the surface comes up on
+ * the host, and a Device child naming that Instance is spawned under it, so
+ * the switch is the same child a script would have spawned itself
+ * (RenderProvider/Device.h). An Instance that failed to come up spawns
+ * nothing, and the window is simply on the host.
+ *
+ * The RID is parsed off the raw buffer rather than declared as a typed field,
+ * matching HttpServer's own AddRoute convention for a script-supplied @name.
+ * shader_dir overrides where the Vulkan backend looks for its SPIR-V.
+ */
 DEFINE_WORK_FUNC(Surface, Create)
 {
     (void)ctx;
@@ -102,29 +109,42 @@ DEFINE_WORK_FUNC(Surface, Create)
     data >> instance_rid;
     data >> shader_dir;
 
-    if (instance_rid == 0)
+    if (!self.Create(shader_dir))
     {
-        ETCS_LOG("Surface::Create", "no Instance RID given -- spawn a RenderProvider::Instance, "
-                                     "call Create on it, and pass it here.");
-        return;
-    }
-
-    // Resolved through this module's own "Instance" tag list rather than a
-    // family aggregate: Instance is flat by design, so its tag list IS the
-    // only place it appears.
-    ETCS::Entity* raw = rp_resolve_tag("Instance", instance_rid);
-    if (!raw)
-    {
-        ETCS_LOG("Surface::Create", "RID:" << instance_rid << " is not a RenderProvider::Instance.");
-        return;
-    }
-    // getTrueType(), not a static_cast off Entity*: Entity is a VIRTUAL
-    // base here, so a direct downcast from it is ill-formed -- this is the
-    // same recovery route the work-func trampolines themselves use.
-    Instance* instance = static_cast<Instance*>(raw->getTrueType());
-
-    if (!self.Create(instance, shader_dir))
         ETCS_LOG("Surface::Create", "surface bring-up failed.");
+        return;
+    }
+    if (instance_rid == 0) return;
+
+    // Resolved through this module's own "Instance" tag list: Instance is
+    // flat by design, so its tag list is the only place it appears.
+    // getTrueType(), not a static_cast off Entity* -- Entity is a virtual base.
+    ETCS::Entity* raw = rp_resolve_tag("Instance", instance_rid);
+    Instance* instance = raw ? static_cast<Instance*>(raw->getTrueType()) : nullptr;
+    if (!instance || !instance->Usable())
+    {
+        ETCS_LOG("Surface::Create", "RID:" << instance_rid << " is not a usable RenderProvider::Instance "
+                 "-- this surface stays on the host.");
+        return;
+    }
+    Device* dev = self.addTag<Device>();
+    if (!dev || !dev->Create(instance_rid))
+        ETCS_LOG("Surface::Create", "could not attach a Device for RID:" << instance_rid
+                 << " -- this surface stays on the host.");
+}
+
+/*
+ * UseDevice 0|1 -- the standing preference: 1 (the default) draws through a
+ * ready Device child whenever there is one, 0 keeps this surface on the host
+ * with the device still attached. The camera's SetDeviceProjection, for a
+ * window.
+ */
+DEFINE_WORK_FUNC_TYPED(Surface, UseDevice, (uint32_t, on))
+{
+    (void)ctx;
+    self.UseDevice(on != 0);
+    ETCS_LOG("Surface::UseDevice", (on ? "a ready Device child is used from the next frame."
+                                       : "held on the host from the next frame."));
 }
 
 /*
@@ -133,9 +153,9 @@ DEFINE_WORK_FUNC(Surface, Create)
  * One session, several surfaces, several destinations: in the browser the name is
  * a canvas element's id and a page may hold as many as it likes, which is what
  * makes a toolbar strip beside the main view possible at all
- * (CanvasSurface::SetTarget explains why this belongs to the surface and not to
- * the window). The device backend has one target per swapchain and says so
- * (VulkanSurface::SetTarget) rather than storing a name nothing reads.
+ * (HostSurface::SetTarget explains why this belongs to the surface and not to
+ * the window). A native window has one output and says so rather than storing
+ * a name nothing reads.
  */
 DEFINE_WORK_FUNC_TYPED(Surface, SetTarget, (std::string, element_id))
 {
@@ -147,7 +167,7 @@ DEFINE_WORK_FUNC_TYPED(Surface, SetTarget, (std::string, element_id))
  * An explicit size, which a surface following its window does not have. Stating
  * one makes this surface a REGION of the page rather than the whole frame, and on
  * the browser backend it also stops the follow -- being told and following cannot
- * both be live (CanvasSurface::ResizeTo).
+ * both be live (HostSurface::ResizeTo).
  */
 DEFINE_WORK_FUNC_TYPED(Surface, ResizeTo, (uint32_t, w), (uint32_t, h))
 {
@@ -188,7 +208,7 @@ DEFINE_WORK_FUNC_TYPED(Surface, Blit, (ETCS::RID, source), (int32_t, x), (int32_
 // Compose <drawable_rid> -- bind a Drawable root that the frame edge re-walks
 // every tick, instead of replaying whatever the script last drew. Zero unbinds
 // and returns the surface to the retained model. See
-// VulkanSurface::SetComposeRoot for why a tree that moves needs the other one.
+// HostSurface::SetComposeRoot for why a tree that moves needs the other one.
 DEFINE_WORK_FUNC_TYPED(Surface, Compose, (ETCS::RID, root))
 {
     (void)ctx;
@@ -222,13 +242,13 @@ DEFINE_WORK_FUNC(Surface, Delete)
 // argument: a standing produce body never returns its pool worker, so a pair
 // gives the pool a minimum size). Every queue-touching call happens on one
 // thread, which is the real invariant; it is whichever thread drives the
-// family. Splitting the Vulkan work instead -- acquire on one thread, submit
+// family. Splitting the device work instead -- acquire on one thread, submit
 // on another -- puts two threads on one VkQueue and one VkSwapchainKHR, both
 // of which the application must externally synchronise, and buys nothing.
 //
 // Draws arrive from whatever thread calls Clear/DrawRect/Blit -- the script's
 // -- so the surface's own state is mutex-guarded and Present works off a
-// snapshot. See VulkanSurface::PresentConcrete.
+// snapshot. See HostSurface::PresentConcrete.
 // Default pacing, in milliseconds, when the stream config says nothing.
 // ~60Hz, a placeholder for asking the swapchain about its present mode,
 // which is where real pacing belongs.

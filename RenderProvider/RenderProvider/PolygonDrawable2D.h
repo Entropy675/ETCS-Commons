@@ -180,8 +180,9 @@ public:
     //
     // A polygon has no pixels, so these RETAIN rather than rasterise, and
     // DrawIntoConcrete replays them clipped to the shape. Same retained model
-    // VulkanSurface uses, for the same reason: the thread that decides what
-    // to draw is not the thread that draws it.
+    // a window surface on a device uses (OS/HostSurface.h), for the same
+    // reason: the thread that decides what to draw is not the thread that
+    // draws it.
 
     void ClearConcrete(float r, float g, float b, float a) override
     {

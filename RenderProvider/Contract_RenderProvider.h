@@ -1,29 +1,43 @@
 #ifndef RENDERPROVIDER_CONTRACT__
 
+/*
+ * TWO THINGS PER PLATFORM, and only the first is platform code:
+ *
+ *   Instance -- the GPU, when there is one: Vulkan natively, WebGPU in a
+ *               browser. A Device child names it (RenderProvider/Device.h).
+ *   Surface  -- the window surface: a host raster on every platform
+ *               (OS/HostSurface.h), presented by the window system's own
+ *               call, that draws and presents through the Instance's device
+ *               while a ready Device is under it.
+ *
+ * So the device is never what a window NEEDS, only what it uses when it can:
+ * an Instance that fails to come up leaves every surface on the host, and a
+ * script says nothing different either way (no line is conditional).
+ */
 #if defined(__EMSCRIPTEN__)
     #define RENDERPROVIDER_CONTRACT__
-    #include "OS/CanvasInstance.h"
-    #include "OS/CanvasSurface.h"
-    typedef CanvasInstance Instance;
-    typedef CanvasSurface  Surface;
+    #include "OS/WebGpuInstance.h"
+    typedef WebGpuInstance Instance;
 
 #elif defined(_WIN32) || defined(__linux__)
     #define RENDERPROVIDER_CONTRACT__
     #include "OS/VulkanInstance.h"
-    #include "OS/VulkanSurface.h"
     typedef VulkanInstance Instance;
-    typedef VulkanSurface  Surface;
 
 #else
     #warning "RenderProvider_Contract: Platform not detected (expects win/linux). Check preprocessor definitions."
     #error "Unsupported platform"
 #endif
 
-// The device capability attachment. Beside these rather than under OS/ for a
-// reason that looks like an exception and is not: what varies per platform is
-// the Instance it names, which is already selected above -- this type only
-// says "reachable from here", which is the same statement everywhere.
+// The device capability attachment. Beside the Instance rather than under
+// OS/: what varies per platform is the Instance it names, already selected
+// above -- this type only says "reachable from here", the same statement
+// everywhere. BEFORE the surface, which builds its backend from one.
 #include "RenderProvider/Device.h"
+
+#include "OS/HostSurface.h"
+typedef HostSurface Surface;
+
 #include "RenderProvider/ImageSurface.h"
 #include "RenderProvider/PolygonDrawable2D.h"
 #include "RenderProvider/CompositeDrawable2D.h"
@@ -31,17 +45,15 @@
 // The 3D pair, and CPU-only for the same reason ImageSurface is: the
 // projection is arithmetic and a depth test, with no device object anywhere in
 // it. Scene3D fills a camera's Pixels_ and Camera3D owns those pixels, so the
-// result reaches the GPU by the route every other CPU-side surface already
-// takes -- one Blit into a VulkanSurface. A device-side renderer would be a
-// second concrete Drawable3D under OS/, selected here; it would not change a
-// line of either header, which is the point of the seam being Project.
+// result reaches the window by the route every other CPU-side surface already
+// takes -- one Blit. With a Device under the camera it instead records the
+// spans it would have written and replays them onto the destination as rects,
+// which a surface on a device draws there (Camera3D.h).
 #include "RenderProvider/Scene3D.h"
 #include "RenderProvider/Camera3D.h"
 
 // The Glyphs leaf. AFTER the surfaces, because a label bound to a frame rate
-// reads it off this platform's concrete Surface -- the rate is a property of
-// the frame loop, not of the Surface family, so the type has to be complete
-// here rather than reachable by family name.
+// reads it off the Presentable family of whatever it names.
 #include "RenderProvider/TextLabel.h"
 
 // AFTER TextLabel, and that is a hard order rather than a tidy one: the

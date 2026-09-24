@@ -58,7 +58,7 @@ code. emscripten's GLFW owns exactly one canvas — `Browser.getCanvas()` — an
 So a second GLFW window would cost the first one its input and its dimensions and
 still be pointed at the same element. A second SURFACE has none of those
 properties: presenting is a `putImageData` and nothing about it is global. That is
-why the target belongs to the surface (`RenderProvider/OS/CanvasSurface.h`), named
+why the target belongs to the surface (`RenderProvider/OS/HostSurface.h`), named
 rather than numbered, with `"canvas"` as the default so a session that never
 mentions one behaves exactly as it did before targets existed.
 
@@ -917,8 +917,7 @@ a fixed 640x64, so a very narrow viewport scales it down rather than reflowing t
 swatches. Reflow is a layout question for the 2D tree
 (`paint_toolbar.etcs` states absolute positions in bar space), not for the surface.
 
-3D does not draw on either canvas. `CanvasSurface` is `PixelsBase` — host bytes and
-`putImageData` — while `Scene3D`/`Camera3D` draw through the device path
-(`RenderableBase`), which in a browser means a WebGPU or WebGL context. A canvas has
-exactly one context for its lifetime, so that is a different surface type on a
-different canvas rather than an addition to this one.
+Each surface draws on the host, or through WebGPU while a Device under it is
+ready (`view.Create(@gpu)` attaches one when the page has WebGPU). The device draws
+into a canvas laid over the surface's own, `<id>-gpu`, since a canvas holds one
+context for life and this one's is 2D (`RenderProvider/OS/WebGpuJs.h`).

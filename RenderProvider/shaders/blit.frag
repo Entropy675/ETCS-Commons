@@ -1,9 +1,9 @@
 #version 450
 
-// The source texture is R8G8B8A8_SRGB, so this sample is already decoded
-// to linear and the sRGB swapchain re-encodes on write -- the round trip
-// is why a layer's bytes reach the display unchanged (see ensureTexture's
-// own comment in OS/VulkanSurface.h).
+// The source texture and the swapchain are both UNORM, so a layer's bytes
+// are sampled as they are and written as they are -- the host raster's
+// convention, and why a frame looks the same on the device as off it
+// (OS/VulkanPresenter.h).
 //
 // Opacity multiplies alpha only: the pipeline blends source-over, so
 // scaling alpha is what makes a layer translucent without darkening it.

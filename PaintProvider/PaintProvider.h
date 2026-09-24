@@ -540,7 +540,7 @@ static inline void paint_stamp_surface(ETCS::RID target, int32_t x, int32_t y,
     const float b = lifting ? 0.88f : brush.color.b;
     const float a = lifting ? 0.35f : brush.color.a;
 
-    if (Pixels_* px = ETCS::resolve_in_family<Pixels_>("Pixels", target))
+    if (Pixels_* px = etcs_direct_pixels(ETCS::resolve_in_family<Pixels_>("Pixels", target)))
     {
         for (int dy = st.lo; dy <= st.hi; ++dy)
             if (st.row(dy, x0, x1))
@@ -2354,14 +2354,16 @@ public:
      * compositor takes as "that frame is ready to copy", and it was true four
      * layers early.
      */
-        if (Pixels_* dpx = ETCS::resolve_in_family<Pixels_>("Pixels", target))
+        if (Pixels_* dpx = etcs_direct_pixels(ETCS::resolve_in_family<Pixels_>("Pixels", target)))
         {
             render_composite_scaled(*dpx, *this, ox, oy, dw, dh, alpha);
             return;
         }
 
-        // A device-backed destination has no address to blend into, so it keeps
-        // the old approximation: one DrawRect per sample, coarse by necessity.
+        // A device-backed destination -- or one with a Device under it, whose
+        // host bytes are not its picture (etcs_direct_pixels) -- has no address
+        // to blend into, so it keeps the old approximation: one DrawRect per
+        // sample, coarse by necessity.
         const size_t bytes = this->PixelBytes();
         const uint32_t step = std::max(1u, static_cast<uint32_t>(4.0f / z));
         const uint32_t rw = std::max(1u, static_cast<uint32_t>(step * z + 1.0f));
@@ -3117,15 +3119,18 @@ public:
                                      int32_t x, int32_t y, float r, float g, float b, float a) override
     {
         Face* f = face(font);
-        if (!f)
+        // A face blends coverage into host bytes, so a target whose bytes are
+        // not its picture -- a surface drawing through a device -- takes the
+        // pixel font, which draws through the Surface verbs.
+        Pixels_* dst = etcs_direct_pixels(ETCS::resolve_in_family<Pixels_>("Pixels", target));
+        if (!f || !dst)
         {
             ETCS::Held<Glyphs_> px = ETCS::resolve_held<Glyphs_>("Glyphs", m_pixel);
-            if (!px) return TextExtent{ 0, 0, 0 };
+            if (!px) return f ? MeasureTextConcrete(text, font, size_px) : TextExtent{ 0, 0, 0 };
             return px->RasterizeText(target, text, 0, size_px, x, y, r, g, b, a);
         }
         const TextExtent e = MeasureTextConcrete(text, font, size_px);
-        Pixels_* dst = ETCS::resolve_in_family<Pixels_>("Pixels", target);
-        if (!dst || !dst->PixelData() || !text) return e;
+        if (!dst->PixelData() || !text) return e;
         const float scale = stbtt_ScaleForPixelHeight(&f->info, static_cast<float>(std::max<uint32_t>(1, size_px)));
         const int32_t base = y + static_cast<int32_t>(e.baseline);
         float pen = static_cast<float>(x);
@@ -7209,7 +7214,7 @@ public:
         const uint32_t dh = std::max(1u, static_cast<uint32_t>(bh * z + 0.5f));
         const float alpha = layer->opacity() * layer->viewStrength();
 
-        if (Pixels_* dpx = ETCS::resolve_in_family<Pixels_>("Pixels", target))
+        if (Pixels_* dpx = etcs_direct_pixels(ETCS::resolve_in_family<Pixels_>("Pixels", target)))
         {
             paint_composite_raw_scaled(*dpx, m_sel.lift.data(), bw, bh, vx, vy, dw, dh, alpha);
             return;

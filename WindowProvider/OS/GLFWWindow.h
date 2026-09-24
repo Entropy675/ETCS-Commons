@@ -390,7 +390,9 @@ public:
          * different kind returns null. Asking GLFW for GLFW_OPENGL_ES_API takes
          * a WebGL context here, which permanently denies the 2D one -- and
          * RenderProvider's browser surface presents by putImageData
-         * (RenderProvider/OS/CanvasSurface.h), so the page could never draw.
+         * (RenderProvider/OS/HostSurface.h), so the page could never draw.
+         * Its device path draws WebGPU into a second canvas laid over this one
+         * for the same reason (OS/WebGpuJs.h).
          *
          * Nothing is lost by declining it. Event delivery, sizing and input are
          * independent of the client API, which is the half of GLFW this module
