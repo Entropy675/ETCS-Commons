@@ -32,9 +32,13 @@
 # ON THE TITLE BAR TOO: run between BeginTitle and the first BeginRow, the same
 # two nodes become the window's view toggle, open while the rows show and shut
 # while the window is collapsed to its bar.
+#
+# `list` IS UNTYPED because two windows take an eye: the layer window
+# (PaintLayerPanel) and the sharing window (PaintVisitors), whose bar folds
+# the same way. Both answer RowNode(what, node) and know which part is which.
 
 requires pane [Drawable2D]
-requires list [PaintLayerPanel]
+requires list
 
 # OVALS, ALL THREE, and smooth: SetOval fills the true curve and draws the
 # pixels its edge crosses at the share of them it covers

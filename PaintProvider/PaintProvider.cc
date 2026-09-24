@@ -162,10 +162,11 @@ ETCS_TAG_BLOCK_BASIC(PaintNode,
 // PaintVisitors -- who is in the session, as a pane on the sheet, for the host
 // and for everyone who joined. Rows are declared by the script and filled here;
 // the buttons are ordinary palette calls naming the node pressed. The title
-// moves it (PaintInput, PressTitle). It never reaches the node: a press raises
-// an event and the PAGE performs the verb, because a fetch is the page's.
+// moves it (PaintInput, PressTitle); the eye on it folds it to its bar. It
+// never reaches the node: a press raises an event and the PAGE performs the
+// verb, because a fetch is the page's.
 ETCS_TAG_BLOCK_BASIC(PaintVisitors,
-    Create, BeginRow, RowNode, BindWindow, BindTitle, BindHostOnly, BindGuestOnly,
+    Create, BeginTitle, BeginRow, RowNode, BindWindow, BindTitle, BindHostOnly, BindGuestOnly,
     BindMe, BindSwatch, SetRowColors, SetInk,
     SetRoster, SetMe, Open, OpenAs, Close, Hide, CopyLink, PickColor, EditName,
     Promote, Demote, Remove, Delete)

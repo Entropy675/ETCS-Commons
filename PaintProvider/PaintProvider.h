@@ -361,6 +361,52 @@ static inline bool paint_node_fill(ETCS::RID node, float r, float g, float b, fl
                            "SetBackground");
 }
 
+/*
+ * A WINDOW FOLDED TO ITS BAR IS ONLY ITS BAR. A compositor is its whole
+ * rectangle to a pick (Drawable2D_::PickAt answers the pane itself where no
+ * child is), and a pane is routed by its rectangle (PaintRouter::Route) -- so
+ * a window that hid its rows and kept its size was still scenery over the
+ * rectangle they left: a stroke drawn toward a collapsed layer window stopped
+ * at an edge nobody could see, and a press there drew nothing. So the pane
+ * itself shrinks to the bar -- which also clips what is under it, drawn and
+ * picked -- and grows back to the height it had. `full_h` holds that height
+ * while folded; 0 is unfolded.
+ */
+static inline void paint_window_fold(ETCS::RID pane, bool folded, uint32_t bar_h, uint32_t& full_h)
+{
+    Rect2D b{ 0, 0, 0, 0 };
+    {
+        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", pane);
+        if (!w) return;
+        b = w->Bounds();
+    }
+    if (folded && full_h == 0 && bar_h > 0 && bar_h < b.h)
+    {
+        full_h = b.h;
+        paint_node_verb(pane, "ResizeTo", std::to_string(b.w) + ", " + std::to_string(bar_h));
+    }
+    else if (!folded && full_h != 0)
+    {
+        paint_node_verb(pane, "ResizeTo", std::to_string(b.w) + ", " + std::to_string(full_h));
+        full_h = 0;
+    }
+}
+
+// The bottom of the lowest of these nodes, in their parent's space: how tall
+// a window's bar is, read off the nodes that make it.
+static inline uint32_t paint_nodes_bottom(const std::vector<ETCS::RID>& nodes)
+{
+    int32_t bottom = 0;
+    for (ETCS::RID n : nodes)
+    {
+        ETCS::Held<Drawable2D_> d = ETCS::resolve_held<Drawable2D_>("Drawable2D", n);
+        if (!d) continue;
+        const Rect2D r = d->Bounds();
+        bottom = std::max(bottom, r.y + static_cast<int32_t>(r.h));
+    }
+    return static_cast<uint32_t>(std::max<int32_t>(bottom, 0));
+}
+
 // Stamp a filled disc of the current brush onto a Surface (live feedback).
 // Approximates the brush with a axis-aligned rect of diameter 2*radius for
 // the smoke path; a later pass can use ImageSurface pixel upload.
@@ -12211,6 +12257,9 @@ public:
             end_edit(false);
             m_collapsed = !m_collapsed;
             Refresh();                 // which is where hidden actually happens
+            std::vector<ETCS::RID> bar;
+            for (const auto& [node, h] : m_regions) if (h.region == Region::Title) bar.push_back(node);
+            paint_window_fold(m_window, m_collapsed, paint_nodes_bottom(bar), m_full_h);
             repaint();
             return true;
         }
@@ -12742,6 +12791,7 @@ private:
                  std::vector<ETCS::RID> trim; };
     struct Hit { size_t row; Region region; };
     bool m_collapsed = false;
+    uint32_t m_full_h = 0;             // the window's height while folded -- paint_window_fold
     // The title bar's own eye (BeginTitle), tinted open or shut with the
     // window, and the window's body parts, hidden with the rows.
     bool      m_title_open = false;
@@ -14076,10 +14126,28 @@ public:
  * hidden on a guest's window, and on the host's own row, where they could only
  * ever be refused.
  */
-    void BeginRow() { m_rows.push_back(Row{}); }
+    void BeginRow() { m_title_open = false; m_rows.push_back(Row{}); }
+
+    /*
+ * THE BAR'S EYE, as the layer window has: run paint_eye.etcs between
+ * BeginTitle and the first BeginRow and its nodes are the window's view
+ * toggle -- open while the window shows everything, shut while it is folded
+ * to its bar (PressView). A session is long and the window is big; the bar
+ * left on screen is the way back, as the layer window's is.
+ */
+    void BeginTitle() { m_title_open = true; }
 
     void RowNode(const std::string& what, ETCS::RID node)
     {
+        if (m_title_open && node != 0)
+        {
+            if      (what == "eye")   m_view_eye  = node;
+            else if (what == "iris")  m_view_iris = node;
+            else if (what == "pupil") m_view_pupil = node;
+            else ETCS_LOG("PaintVisitors", "RowNode: '" << what << "' on the title bar -- only an eye goes there.");
+            tint_view();
+            return;
+        }
         if (m_rows.empty()) { ETCS_LOG("PaintVisitors", "RowNode before BeginRow -- ignored."); return; }
         if (node == 0) return;
         Row& row = m_rows.back();
@@ -14289,6 +14357,19 @@ public:
         return true;
     }
     bool moving() const { return m_moving; }
+
+    // A press on the bar's eye folds the window to its bar, or opens it again.
+    bool PressView(ETCS::RID node)
+    {
+        if (node == 0 || (node != m_view_eye && node != m_view_iris && node != m_view_pupil)) return false;
+        end_edit(true);
+        m_folded = !m_folded;
+        tint_view();
+        paint_window_fold(m_window, m_folded, paint_nodes_bottom(m_title), m_full_h);
+        return true;
+    }
+    bool folded() const { return m_folded; }
+
     void DragWindow(Point2D at)
     {
         if (!m_moving) return;
@@ -14337,6 +14418,20 @@ private:
         if (row == SIZE_MAX || row >= m_who.size()) return;
         if (m_who[row].role == "owner") return;      // the host is not theirs to change
         page_event((std::string(verb) + ":" + m_who[row].name).c_str());
+    }
+
+    // The layer window's eye colours (paint_layers.etcs), so one eye means one
+    // thing on the sheet: the white lit and the iris the page's highlight
+    // while open; both sunk into the band while shut, the pupil with them.
+    void tint_view()
+    {
+        static constexpr float white_open[3] = { 0.94f, 0.89f, 0.78f }, white_shut[3] = { 0.35f, 0.36f, 0.28f };
+        static constexpr float iris_open[3]  = { 0.35f, 0.55f, 0.95f }, iris_shut[3]  = { 0.106f, 0.110f, 0.078f };
+        const float* w = m_folded ? white_shut : white_open;
+        const float* i = m_folded ? iris_shut  : iris_open;
+        if (m_view_eye)  paint_node_fill(m_view_eye,  w[0], w[1], w[2], 1.0f);
+        if (m_view_iris) paint_node_fill(m_view_iris, i[0], i[1], i[2], 1.0f);
+        if (m_view_pupil) paint_node_hidden(m_view_pupil, m_folded);
     }
 
     void end_edit(bool keep)
@@ -14428,6 +14523,11 @@ private:
 
     bool    m_moving = false;
     Point2D m_grab{ 0, 0 }, m_origin{ 0, 0 };
+
+    bool      m_title_open = false;    // between BeginTitle and the first BeginRow
+    ETCS::RID m_view_eye = 0, m_view_iris = 0, m_view_pupil = 0;
+    bool      m_folded = false;
+    uint32_t  m_full_h = 0;            // the window's height while folded -- paint_window_fold
 
     float m_row[4]        = { 0.14f, 0.15f, 0.11f, 0.96f };
     float m_row_me[3]     = { 0.22f, 0.24f, 0.16f };
@@ -14846,6 +14946,8 @@ public:
             m_page_panel->CloseEdit();
         // The sharing window's title: the press that starts carrying it. In the
         // router's space, which is its parent's (the sheet sits at the origin).
+        if (is_press && m_visitors && m_visitors->PressView(hit_rid))
+            return;
         if (is_press && m_visitors && m_visitors->PressTitle(hit_rid, Point2D{ ev.x, ev.y }))
             return;
         if (is_press && m_visitors && m_visitors->editing()) m_visitors->CloseEdit();
@@ -20100,6 +20202,14 @@ DEFINE_WORK_FUNC(PaintVisitors, BeginRow)
 {
     (void)ctx; (void)data;
     self.BeginRow();
+}
+
+// BeginTitle -- until the first BeginRow, an eye registered by RowNode is the
+// window's fold toggle (paint_eye.etcs on the bar).
+DEFINE_WORK_FUNC(PaintVisitors, BeginTitle)
+{
+    (void)ctx; (void)data;
+    self.BeginTitle();
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintVisitors, RowNode, (std::string, what), (ETCS::RID, node))

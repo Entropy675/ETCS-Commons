@@ -443,6 +443,13 @@ the stack a row per notch, up toward the top, clamped at both ends
 of the zoom when the pointer is over the window). The rows are re-bound to
 different layers rather than moved.
 
+**The eye on the title bar folds the window to its bar**, and opens it again.
+Folded, the window IS its bar: the pane shrinks to it (`paint_window_fold`),
+since a pane is its whole rectangle to a pick and to the router -- a window
+that only hid its rows kept the rectangle they left, and a stroke drawn toward
+it stopped at an edge nobody could see. The sharing window has the same eye,
+left of `end` (`PaintVisitors::PressView`).
+
 The window re-renders the canvas itself whenever it changes the PICTURE rather
 than the list -- a restack, an eye, a delete, a press that lands a carry
 (`PaintLayerPanel::BindSurface`). A press on a row returns from the input edge

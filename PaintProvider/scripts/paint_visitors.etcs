@@ -51,6 +51,18 @@ vis_title.SetText(sharing)
 vis_title.SetOrder(2)
 visitors.BindTitle(@vis_title)
 
+# THE EYE FOLDS THE WINDOW TO ITS BAR, as the layer window's does, and opens it
+# again (PaintVisitors::PressView): a session is long and this window is big.
+# The same eye from the same file, left of `end`; its pane is part of the bar,
+# so a press beside the eye still carries the window.
+pane.spawn(RenderProvider::CompositeDrawable2D vis_view)
+vis_view.Create(38, 26)
+vis_view.SetPosition(196, 0)
+vis_view.SetOrder(2)
+visitors.BindTitle(@vis_view)
+visitors.BeginTitle()
+run paint_eye.etcs pane=vis_view list=visitors
+
 # THE HOST'S END CLOSES THE SHARE: there is no separate 'stop sharing', because
 # the window being up IS the statement that the canvas is shared. Everyone keeps
 # the canvas they have. A guest's is `leave`, in the same place.
