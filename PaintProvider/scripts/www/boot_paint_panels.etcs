@@ -333,57 +333,6 @@ layout.Create(1024, 768)
 run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette layout=layout
 
 
-# ── the zoom readout, in a row of its own under the picture ──────────────────
-#
-# Two steps and a percentage, deliberately faint: it is a thing you reach for
-# occasionally and should not compete with the picture.
-#
-# IN A PANE, and the pane is why. These were children of sheet_root at y=668 --
-# four pixels above a toolbar that was at 704 because the sheet was 768. Every
-# one of those numbers is the old height read backwards, so a taller sheet left
-# the row stranded in the middle of the picture. A pane is a layout box (the
-# layout, at the foot of this file), so the row sits under the picture and over
-# the bar at any height, and the coordinates below are its own 26px band rather
-# than a subtraction from a size nothing guarantees.
-#
-# The steps are PaintPalette entries -- a node that means a zoom, mapped by the
-# same type that maps a node meaning a colour (AddZoom says why a view setting
-# lives there). The label is pushed by the surface rather than by whoever zoomed,
-# so the wheel, these buttons and a script all keep it honest.
-sheet_root.spawn(RenderProvider::CompositeDrawable2D zoom_pane)
-zoom_pane.Create(960, 26)
-zoom_pane.SetPosition(36, 672)
-zoom_pane.SetOrder(21)
-
-zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_out)
-zoom_out.Create()
-zoom_out.AddPoint(0, 1)
-zoom_out.AddPoint(24, 1)
-zoom_out.AddPoint(24, 25)
-zoom_out.AddPoint(0, 25)
-zoom_out.SetFill(0.85, 0.85, 0.88, 0.30)
-zoom_out.SetOrder(21)
-palette.AddZoom(@zoom_out, 0.8)
-
-zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_in)
-zoom_in.Create()
-zoom_in.AddPoint(32, 1)
-zoom_in.AddPoint(56, 1)
-zoom_in.AddPoint(56, 25)
-zoom_in.AddPoint(32, 25)
-zoom_in.SetFill(0.85, 0.85, 0.88, 0.30)
-zoom_in.SetOrder(21)
-palette.AddZoom(@zoom_in, 1.25)
-
-zoom_pane.spawn(RenderProvider::TextLabel zoom_label)
-zoom_label.Create()
-zoom_label.SetPosition(66, 5)
-zoom_label.SetSize(2)
-zoom_label.SetColor(0.80, 0.80, 0.84, 1.0)
-zoom_label.SetText(100%)
-zoom_label.SetOrder(21)
-
-canvas.BindZoomLabel(@zoom_label)
 
 # ── the layer window, top-right of the paper ─────────────────────────────────
 #
@@ -550,6 +499,114 @@ input.BindRoot(@sheet_root)
 # sheet so the toolbar and the zoom steps are still reachable by the same pick.
 input.BindCanvas(@paper_pane)
 input.BindPalette(@palette)
+
+# ── undo/redo and the zoom readout, in two rows of their own under the picture ─
+#
+# Two steps and a percentage, deliberately faint: it is a thing you reach for
+# occasionally and should not compete with the picture. Undo and redo sit in the
+# row above them -- the two things a hand reaches for most that the toolbar does
+# not hold, and on a touch screen the only way to reach them at all.
+#
+# IN A PANE, and the pane is why. These were children of sheet_root at y=668 --
+# four pixels above a toolbar that was at 704 because the sheet was 768. Every
+# one of those numbers is the old height read backwards, so a taller sheet left
+# the row stranded in the middle of the picture. A pane is a layout box (the
+# layout, at the foot of this file), so the rows sit under the picture and over
+# the bar at any height, and the coordinates below are its own 52px band rather
+# than a subtraction from a size nothing guarantees.
+#
+# The steps are PaintPalette entries -- a node that means a zoom, mapped by the
+# same type that maps a node meaning a colour (AddZoom says why a view setting
+# lives there). The label is pushed by the surface rather than by whoever zoomed,
+# so the wheel, these buttons and a script all keep it honest. Undo and redo are
+# calls (AddCall) on the pane's input -- the step AND the repaint, as ctrl+z is
+# -- which is why this block sits after the input is spawned.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D zoom_pane)
+zoom_pane.Create(960, 52)
+zoom_pane.SetPosition(36, 646)
+zoom_pane.SetOrder(21)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D undo_btn)
+undo_btn.Create()
+undo_btn.AddPoint(0, 1)
+undo_btn.AddPoint(44, 1)
+undo_btn.AddPoint(44, 25)
+undo_btn.AddPoint(0, 25)
+undo_btn.SetFill(0.85, 0.85, 0.88, 0.30)
+undo_btn.SetOrder(21)
+palette.AddCall(@undo_btn, @input, PaintInput.Undo)
+zoom_pane.spawn(RenderProvider::TextLabel undo_word)
+undo_word.Create()
+undo_word.SetPosition(10, 9)
+undo_word.SetSize(1)
+undo_word.SetColor(0.80, 0.80, 0.84, 1.0)
+undo_word.SetText(undo)
+undo_word.SetOrder(22)
+palette.AddCall(@undo_word, @input, PaintInput.Undo)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D redo_btn)
+redo_btn.Create()
+redo_btn.AddPoint(52, 1)
+redo_btn.AddPoint(96, 1)
+redo_btn.AddPoint(96, 25)
+redo_btn.AddPoint(52, 25)
+redo_btn.SetFill(0.85, 0.85, 0.88, 0.30)
+redo_btn.SetOrder(21)
+palette.AddCall(@redo_btn, @input, PaintInput.Redo)
+zoom_pane.spawn(RenderProvider::TextLabel redo_word)
+redo_word.Create()
+redo_word.SetPosition(62, 9)
+redo_word.SetSize(1)
+redo_word.SetColor(0.80, 0.80, 0.84, 1.0)
+redo_word.SetText(redo)
+redo_word.SetOrder(22)
+palette.AddCall(@redo_word, @input, PaintInput.Redo)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_out)
+zoom_out.Create()
+zoom_out.AddPoint(0, 27)
+zoom_out.AddPoint(24, 27)
+zoom_out.AddPoint(24, 51)
+zoom_out.AddPoint(0, 51)
+zoom_out.SetFill(0.85, 0.85, 0.88, 0.30)
+zoom_out.SetOrder(21)
+palette.AddZoom(@zoom_out, 0.8)
+zoom_pane.spawn(RenderProvider::TextLabel zoom_out_sign)
+zoom_out_sign.Create()
+zoom_out_sign.SetPosition(7, 31)
+zoom_out_sign.SetSize(2)
+zoom_out_sign.SetColor(0.80, 0.80, 0.84, 1.0)
+zoom_out_sign.SetText(-)
+zoom_out_sign.SetOrder(22)
+palette.AddZoom(@zoom_out_sign, 0.8)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_in)
+zoom_in.Create()
+zoom_in.AddPoint(32, 27)
+zoom_in.AddPoint(56, 27)
+zoom_in.AddPoint(56, 51)
+zoom_in.AddPoint(32, 51)
+zoom_in.SetFill(0.85, 0.85, 0.88, 0.30)
+zoom_in.SetOrder(21)
+palette.AddZoom(@zoom_in, 1.25)
+zoom_pane.spawn(RenderProvider::TextLabel zoom_in_sign)
+zoom_in_sign.Create()
+zoom_in_sign.SetPosition(39, 31)
+zoom_in_sign.SetSize(2)
+zoom_in_sign.SetColor(0.80, 0.80, 0.84, 1.0)
+zoom_in_sign.SetText(+)
+zoom_in_sign.SetOrder(22)
+palette.AddZoom(@zoom_in_sign, 1.25)
+
+zoom_pane.spawn(RenderProvider::TextLabel zoom_label)
+zoom_label.Create()
+zoom_label.SetPosition(66, 31)
+zoom_label.SetSize(2)
+zoom_label.SetColor(0.80, 0.80, 0.84, 1.0)
+zoom_label.SetText(100%)
+zoom_label.SetOrder(21)
+
+canvas.BindZoomLabel(@zoom_label)
 input.BindPanel(@layers)
 # The animation tool's drag frames the reel, and the reel's window rows and
 # wheel are this input's too (PaintInput::BindAnimation).
@@ -813,7 +870,7 @@ layout.SetGap(@sheet_root, 8.0)
 
 # The picture takes everything the two fixed rows under it do not.
 layout.AddBox(@paper_pane, @sheet_root, 1, 0.0, 1, 0.0)
-layout.AddBox(@zoom_pane, @sheet_root, 1, 0.0, 2, 26.0)
+layout.AddBox(@zoom_pane, @sheet_root, 1, 0.0, 2, 52.0)
 layout.AddBox(@bar, @sheet_root, 1, 0.0, 2, 64.0)
 # THE BAR IS A ROW, and this is what makes the toolbar's sixteen cells share the
 # width instead of stopping at 960. AFTER its AddBox and not before: SetDirection

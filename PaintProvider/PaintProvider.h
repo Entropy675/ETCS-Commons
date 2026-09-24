@@ -3234,6 +3234,27 @@ enum class PaintOpKind : uint8_t
      * takes back a whole edit -- the typing, the font, the move -- in one step.
      */
     Text,
+    /*
+     * AN UNDO IS AN EDGE, NOT A WALK. In a shared session every member's
+     * picture is a function of one record, so taking a stroke back has to be
+     * something the record SAYS, replayed by everyone the same way -- not a
+     * cursor moving in one page's own tree, which the room could only learn
+     * about by being re-baselined with that page's whole picture (which is
+     * what it used to do, and what wiped everyone else's unsent strokes).
+     *
+     * Names its target by (author, ordinal): the k-th marking entry that
+     * author made, counted along the record. Never by sequence number -- a
+     * page numbers its own entries locally and the node renumbers them on the
+     * way in, so a sequence means nothing past the page that wrote it. Order
+     * is the identity, and the order of one author's entries is the same on
+     * every member (PaintNotebook's own rule, one level up).
+     *
+     * Redo is the same edge in reverse. Both are recorded, so a retraction and
+     * its retraction are history like everything else, and "undo, then redo"
+     * and "never touched" are different records of the same picture.
+     */
+    Undo,
+    Redo,
 };
 
 static inline const char* paint_op_name(PaintOpKind k)
@@ -3250,6 +3271,8 @@ static inline const char* paint_op_name(PaintOpKind k)
     case PaintOpKind::Layers:   return "layers";
     case PaintOpKind::Page:     return "page";
     case PaintOpKind::Text:     return "text";
+    case PaintOpKind::Undo:     return "undo";
+    case PaintOpKind::Redo:     return "redo";
     }
     return "snap";
 }
@@ -3265,6 +3288,8 @@ static inline PaintOpKind paint_op_from(const std::string& s)
     if (s == "layers")  return PaintOpKind::Layers;
     if (s == "page")    return PaintOpKind::Page;
     if (s == "text")    return PaintOpKind::Text;
+    if (s == "undo")    return PaintOpKind::Undo;
+    if (s == "redo")    return PaintOpKind::Redo;
     return PaintOpKind::Snapshot;
 }
 
@@ -3434,9 +3459,16 @@ struct PaintOp
     PaintTextBox box;
     bool         removed = false;
 
+    // Undo/Redo only: whose entry, and which of theirs (PaintOpKind::Undo).
+    std::string target;
+    uint32_t    ordinal = 0;
+
     // "Did this change the picture." A structural entry that changed the stack
-    // did -- undoing it puts a layer back -- so it steps like a mark.
-    bool marks() const { return kind != PaintOpKind::Snapshot && !keyframe; }
+    // did -- undoing it puts a layer back -- so it steps like a mark. A
+    // retraction is not itself a mark: it names one, and it is what the
+    // ordinals in the record count past.
+    bool marks() const { return kind != PaintOpKind::Snapshot && !keyframe && !retraction(); }
+    bool retraction() const { return kind == PaintOpKind::Undo || kind == PaintOpKind::Redo; }
     bool structural() const { return kind == PaintOpKind::Layers; }
     void addPoint(int32_t x, int32_t y) { pts.push_back(x); pts.push_back(y); }
     size_t points() const { return pts.size() / 2; }
@@ -3597,6 +3629,119 @@ public:
         return best;
     }
 
+    /*
+     * ── the path as the record reads it ─────────────────────────────────
+     *
+     * A retraction (PaintOpKind::Undo) names an entry by (author, ordinal):
+     * the ordinal is that author's count of MARKING entries along the path,
+     * from one. Counted here, in one place, because the writer that makes the
+     * edge and every member that applies it have to count the same way, and
+     * they do not share a sequence numbering -- only this order.
+     *
+     * The effective path is the canonical path with three things taken out:
+     * the retraction entries themselves (they say, they do not draw); every
+     * entry a retraction names that no later redo put back; and, for each
+     * layer, every KEYFRAME taken after the oldest retracted mark on it -- a
+     * snapshot holds the pixels of everything before it, retracted or not, so
+     * the layer has to be rebuilt from the last keyframe that predates the
+     * retraction. replayTo over the result is the same walk it always was.
+     */
+    struct Ordinal { std::string author; uint32_t ordinal = 0; };
+
+    static void Ordinals(const std::vector<const PaintOp*>& chain,
+                         std::vector<Ordinal>& out)
+    {
+        out.assign(chain.size(), Ordinal{});
+        std::unordered_map<std::string, uint32_t> count;
+        for (size_t i = 0; i < chain.size(); ++i)
+        {
+            const PaintOp* o = chain[i];
+            if (!o->marks()) continue;
+            out[i].author  = o->author;
+            out[i].ordinal = ++count[o->author];
+        }
+    }
+
+    // The entry an (author, ordinal) names on this path, or null.
+    static const PaintOp* ByOrdinal(const std::vector<const PaintOp*>& chain,
+                                    const std::string& author, uint32_t ordinal)
+    {
+        uint32_t seen = 0;
+        for (const PaintOp* o : chain)
+            if (o->marks() && o->author == author && ++seen == ordinal) return o;
+        return nullptr;
+    }
+
+    // This author's newest marking entry on the path that stands (`retracted`
+    // false) or that is retracted (`retracted` true): what an undo and a redo
+    // respectively name. Answers its ordinal; zero when there is none.
+    static uint32_t Newest(const std::vector<const PaintOp*>& chain,
+                           const std::string& author, bool retracted)
+    {
+        std::vector<bool> gone;
+        RetractedMask(chain, gone);
+        uint32_t seen = 0, answer = 0;
+        for (size_t i = 0; i < chain.size(); ++i)
+        {
+            const PaintOp* o = chain[i];
+            if (!o->marks() || o->author != author) continue;
+            ++seen;
+            if (gone[i] == retracted) answer = seen;
+        }
+        return answer;
+    }
+
+    // Which entries of `chain` the retractions on it have taken back, as a
+    // mask aligned with it. A redo after an undo of the same entry puts it
+    // back; the last word along the path wins.
+    static void RetractedMask(const std::vector<const PaintOp*>& chain, std::vector<bool>& gone)
+    {
+        gone.assign(chain.size(), false);
+        for (const PaintOp* r : chain)
+        {
+            if (!r->retraction()) continue;
+            uint32_t seen = 0;
+            for (size_t i = 0; i < chain.size(); ++i)
+            {
+                const PaintOp* o = chain[i];
+                if (o == r) break;                       // only what came before it
+                if (!o->marks() || o->author != r->target) continue;
+                if (++seen == r->ordinal) { gone[i] = (r->kind == PaintOpKind::Undo); break; }
+            }
+        }
+    }
+
+    void EffectivePath(uint64_t seq, std::vector<const PaintOp*>& out) const
+    {
+        std::vector<const PaintOp*> chain;
+        ChainTo(seq, chain);
+        std::vector<bool> gone;
+        RetractedMask(chain, gone);
+
+        // The oldest retracted mark per layer: keyframes of that layer from
+        // there on are of a picture that no longer stands.
+        std::unordered_map<ETCS::RID, uint64_t> first_gone;
+        for (size_t i = 0; i < chain.size(); ++i)
+            if (gone[i] && !first_gone.count(chain[i]->layer))
+                first_gone[chain[i]->layer] = chain[i]->seq;
+
+        out.clear();
+        out.reserve(chain.size());
+        for (size_t i = 0; i < chain.size(); ++i)
+        {
+            const PaintOp* o = chain[i];
+            if (o->retraction() || gone[i]) continue;
+            const bool keyframes = o->kind == PaintOpKind::Snapshot
+                                || (o->structural() && !o->bytes.empty());
+            if (keyframes)
+            {
+                auto it = first_gone.find(o->layer);
+                if (it != first_gone.end() && o->seq > it->second) continue;
+            }
+            out.push_back(o);
+        }
+    }
+
     // Drop everything before the newest snapshot of every layer. What keeps a
     // long session bounded, and the reason snapshots exist at all rather than
     // being only an undo optimisation: without a keyframe there is nothing a
@@ -3735,6 +3880,14 @@ static inline std::string paint_op_encode(const PaintOp& op)
         return out;
     }
 
+    // A retraction: whose entry and which. Layer and order above are zero.
+    if (op.retraction())
+    {
+        out += ' ' + (op.target.empty() ? std::string("-") : op.target);
+        out += ' ' + std::to_string(op.ordinal);
+        return out;
+    }
+
     if (op.kind == PaintOpKind::Layers || op.kind == PaintOpKind::Page)
     {
         if (op.kind == PaintOpKind::Page)
@@ -3820,6 +3973,13 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
             if (!paint_b64_decode(body, raw)) return false;
             b.text.assign(raw.begin(), raw.end());
         }
+        return true;
+    }
+
+    if (out.retraction())
+    {
+        if (!(in >> out.target >> out.ordinal)) return false;
+        if (out.target == "-") out.target.clear();
         return true;
     }
 
@@ -5014,7 +5174,10 @@ public:
      * has wound back past what it already sent, so the room is holding
      * strokes that are no longer part of the picture. Re-baselining is the
      * honest answer -- a keyframe of every layer on the path, then the tail --
-     * and it costs one snapshot per divergence rather than per stroke.
+     * and it costs one snapshot per divergence rather than per stroke. An
+     * undo no longer gets here (in a session it is an entry on the path,
+     * retract); what does is a page-level change -- New, a resize -- which
+     * IS a new page for everyone.
      */
         std::vector<const PaintOp*> chain;
         m_book.ChainTo(m_cursor, chain);
@@ -5042,6 +5205,10 @@ public:
              * writer used to push the host's own history at the host.
              */
                 if (!m_author.empty() && op->author != m_author) continue;
+                // Not keyframes: they are this page's own cache of its derived
+                // picture, and on another member they overwrite what that
+                // member derived (AcceptOp keeps its own).
+                if (op->kind == PaintOpKind::Snapshot) continue;
                 o << paint_op_encode(*op) << "\n";
                 ++n;
             }
@@ -5083,7 +5250,7 @@ public:
  * stops reading shows a frozen one. The first is recoverable by the next
  * snapshot and the second is not recoverable at all.
  */
-    size_t ImportOps(const std::string& path)
+    size_t ImportOps(const std::string& path, uint64_t since = 0, bool keep_mine = false)
     {
         std::ifstream f(path, std::ios::binary);
         if (!f)
@@ -5091,21 +5258,142 @@ public:
             ETCS_LOG("PaintDocument", "ImportOps: cannot open '" << path << "'.");
             return 0;
         }
+        // A read from zero is the record from its start, whatever this page
+        // held: the chain starts again with it -- and so does the picture (a
+        // Page entry replaces the document, become_page), so this page's OWN
+        // lines are applied like everybody's: what it drew is in the record,
+        // and nowhere else any more.
+        // -- unless this page is the one that just SENT that record (keep_mine:
+        // the host reading back the baseline it pushed), in which case its own
+        // lines are chained and left alone: the picture here is what they were
+        // made from.
+        const bool restart = (since == 0);
+        if (restart) { m_chain = 0; m_chain_seq = 0; }
+        const bool pass_mine = keep_mine || !restart;
         std::string line;
-        size_t taken = 0, bad = 0;
+        size_t taken = 0, bad = 0, mine = 0;
         while (std::getline(f, line))
         {
             if (line.empty()) continue;
             if (!line.empty() && line.back() == '\r') line.pop_back();
+            /*
+             * EVERY LINE IS CHAINED, and only the others' are applied. The
+             * page hands over the whole read, its own lines included: a
+             * writer applied its strokes as it made them, so taking the
+             * copy the node sends back would draw each one twice -- but the
+             * chain is over the record as the NODE holds it, own lines and
+             * all, or the two could never agree.
+             */
+            m_chain = XXH3_64bits_withSeed(line.data(), line.size(), m_chain);
+            {
+                std::istringstream head(line);
+                uint64_t seq = 0; std::string kind, author;
+                if (head >> seq >> kind >> author)
+                {
+                    m_chain_seq = seq;
+                    if (pass_mine && !m_author.empty() && author == m_author) { ++mine; continue; }
+                }
+            }
             PaintOp op;
-            if (!paint_op_decode(line, op)) { ++bad; continue; }
+            if (!paint_op_decode(line, op))
+            {
+                ++bad;
+                ETCS_LOG("PaintDocument", "ImportOps: unreadable entry: '"
+                         << line.substr(0, 80) << (line.size() > 80 ? "..." : "") << "'");
+                continue;
+            }
             AcceptOp(std::move(op));
             ++taken;
         }
         ETCS_LOG("PaintDocument", "ImportOps: " << taken << " entr(ies) from '" << path
-                 << "'" << (bad ? ", " + std::to_string(bad) + " unreadable and skipped" : "")
-                 << "; at " << m_book.head() << ".");
+                 << "'" << (mine ? ", " + std::to_string(mine) + " of this page's own passed over" : "")
+                 << (bad ? ", " + std::to_string(bad) + " unreadable and skipped" : "")
+                 << "; at " << m_book.head() << ", record chain " << std::hex << m_chain
+                 << std::dec << " at " << m_chain_seq << ".");
         return taken;
+    }
+
+    uint64_t recordChain()    const { return m_chain; }
+    uint64_t recordChainSeq() const { return m_chain_seq; }
+
+    // Whether everything this page made is in the record: no entry of its own
+    // past `sent` (the page's last export) still waiting to go. Its picture is
+    // only the record's picture when this answers yes -- a stroke is in its
+    // maker's picture before it is anywhere else.
+    bool settled(uint64_t sent) const
+    {
+        if (m_author.empty()) return true;
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+        for (const PaintOp* o : chain)
+            if (o->seq > sent && o->author == m_author && o->kind != PaintOpKind::Snapshot) return false;
+        return !m_open_live;
+    }
+
+    /*
+     * WHAT THE PICTURE IS, as one number: the document's own state surface and
+     * subtree (Entity::getHash -- the layers as children, their flags), every
+     * layer's pixels in stack order, and every text box. Two members at the
+     * same record head that answer differently have diverged, whichever of
+     * them is right, and that is a question the record chain cannot ask: it
+     * says what was received, this says what was made of it.
+     *
+     * The pixels are hashed whole on every call rather than cached on a dirty
+     * edge. A page asks once per presence tick (index.html, SHARE_VIEW_MS),
+     * and a few megabytes through XXH3 is a millisecond or two -- cheaper than
+     * being wrong about which write paths mark, which is the very thing this
+     * exists to catch.
+     */
+    // The parts of PictureHash, one line per layer, for finding WHICH part two
+    // members disagree on. A report, not a hash: it is what a divergence is
+    // chased with.
+    std::string PictureReport() const
+    {
+        std::ostringstream o;
+        o << "picture " << m_width << "x" << m_height << " boxes " << m_text.size();
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        for (PaintLayer* l : stack)
+        {
+            const uint8_t* px = l->PixelData();
+            o << " | layer RID " << l->getRID() << " order " << l->order() << " '" << l->name() << "' opacity " << l->opacity()
+              << " visible " << l->visible() << " " << l->PixelWidth() << "x" << l->PixelHeight()
+              << " px " << std::hex << (px ? XXH3_64bits(px, l->PixelBytes()) : 0) << std::dec;
+        }
+        return o.str();
+    }
+
+    uint64_t PictureHash() const
+    {
+        // NOT OVER Entity::getHash(). The node hash carries identity -- the
+        // layers' RIDs, this page's own flags such as `readonly` -- and two
+        // members with one picture have different identities by construction.
+        // Only what the picture IS goes in: the extent, each layer's place,
+        // opacity, visibility and pixels, and the boxes.
+        uint64_t h = XXH3_64bits(&m_width, sizeof(m_width));
+        h = XXH3_64bits_withSeed(&m_height, sizeof(m_height), h);
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        for (PaintLayer* l : stack)
+        {
+            const int32_t  order   = l->order();
+            const float    opacity = l->opacity();
+            const uint8_t  visible = l->visible() ? 1 : 0;
+            h = XXH3_64bits_withSeed(&order,   sizeof(order),   h);
+            h = XXH3_64bits_withSeed(&opacity, sizeof(opacity), h);
+            h = XXH3_64bits_withSeed(&visible, sizeof(visible), h);
+            const uint8_t* px = l->PixelData();
+            if (px) h = XXH3_64bits_withSeed(px, l->PixelBytes(), h);
+        }
+        for (const PaintTextBox& b : m_text)
+        {
+            std::string t = b.key + '\x1f' + b.text + '\x1f' + std::to_string(b.x) + ',' + std::to_string(b.y)
+                          + ',' + std::to_string(b.w) + ',' + std::to_string(b.h) + ','
+                          + std::to_string(b.font) + ',' + std::to_string(b.size);
+            for (float c : b.rgba) t += ',' + std::to_string(c);
+            h = XXH3_64bits_withSeed(t.data(), t.size(), h);
+        }
+        return h;
     }
 
     /*
@@ -5145,6 +5433,7 @@ public:
         // before the undo that may take it back.
         if (m_text_sel) SelectTextBox(0);
         sealOpenOp();
+        if (shared()) return retract(PaintOpKind::Undo);
         // NOT "0 means the head". Every append sets the cursor, so zero is
         // genuinely "before anything" -- and reading it as the head would make
         // an undo on a fully wound-back document leap to the top and undo the
@@ -5169,6 +5458,7 @@ public:
         if (refuse_read_only("redo")) return false;
         if (m_text_sel) SelectTextBox(0);
         sealOpenOp();
+        if (shared()) return retract(PaintOpKind::Redo);
         // Down the most-recent child each time, until something that marked
         // lands under us. A run of keyframes has one child each, so this is
         // one step in every ordinary case.
@@ -5340,6 +5630,28 @@ public:
             become_page(op);
             return true;
         }
+        /*
+         * A RETRACTION IS APPLIED BY REPLAY. It names an entry already on this
+         * path; appending it and re-deriving the path is what takes the entry
+         * out of the picture, on every member alike (PaintNotebook::
+         * EffectivePath). Nothing to draw, so nothing goes through ApplyOp.
+         */
+        if (op.retraction())
+        {
+            m_cursor = m_book.AppendAt(std::move(op), m_cursor);
+            return replayTo(m_cursor, "retraction");
+        }
+        /*
+         * A KEYFRAME OF OUR OWN, when this layer is due one, BEFORE the mark
+         * lands -- the same rule RememberOp keeps for a mark made here. The
+         * record carries no keyframes past the baseline (ExportOps: a writer's
+         * whole-layer snapshot was overwriting whatever the others had drawn
+         * on that layer since it was taken), so a member keeps its own, of the
+         * picture as IT has derived it, and a replay stays bounded.
+         */
+        if (op.marks() && shared())
+            if (PaintLayer* l = layerFor(op))
+                if (m_book.snapshotDue(l->getRID())) appendSnapshot(l);
         // A change to the STACK made elsewhere has to change this stack too;
         // the raster half of the entry (a merge's) lands on the result.
         if (op.structural()) reconcileLayers(&op);
@@ -5347,6 +5659,39 @@ public:
         m_cursor = m_book.AppendAt(std::move(op), m_cursor);
         Touch();
         return ok;
+    }
+
+    bool shared() const { return !m_author.empty(); }
+
+    /*
+     * THE UNDO EDGE (PaintOpKind::Undo). Names this page's newest entry that
+     * still stands -- its own, never anybody else's: in a room a stroke is its
+     * author's to take back, and an undo that reached across authors would
+     * have every writer's ctrl+z erasing whoever drew last. Appended to the
+     * path like an arriving one and applied the same way, so what this page
+     * shows after its own undo is exactly what the others will show after
+     * reading it. Redo names the newest of this page's entries that IS
+     * retracted, and puts it back.
+     */
+    bool retract(PaintOpKind kind)
+    {
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+        const bool undo = (kind == PaintOpKind::Undo);
+        const uint32_t k = PaintNotebook::Newest(chain, m_author, !undo);
+        if (k == 0)
+        {
+            ETCS_LOG("PaintDocument", (undo ? "nothing of yours to undo" : "nothing of yours to redo"));
+            return false;
+        }
+        PaintOp edge;
+        edge.kind    = kind;
+        edge.author  = m_author;
+        edge.target  = m_author;
+        edge.ordinal = k;
+        m_cursor = m_book.AppendAt(std::move(edge), m_cursor);
+        Touch();
+        return replayTo(m_cursor, undo ? "undo" : "redo");
     }
 
     /*
@@ -6225,6 +6570,12 @@ private:
     bool          m_open_live = false;
     uint64_t      m_cursor    = 0;
     std::string   m_author;
+    // The record's chain as this page has read it (ImportOps): XXH3 of every
+    // line taken in, seeded with the chain before it -- the node's own
+    // arithmetic (PaintNode::Session::chain), so equal heads with different
+    // chains means a line this page never took in. Reset by a read from zero.
+    uint64_t      m_chain     = 0;
+    uint64_t      m_chain_seq = 0;
 
     void sealOpenOp()
     {
@@ -6593,8 +6944,11 @@ private:
         // answer when a second branch became possible: entries numbered
         // between a keyframe and the target may belong to a sibling, and
         // replaying those paints a picture nobody ever made.
+        // AS THE RECORD READS IT: the canonical path less what retractions on
+        // it took back (PaintNotebook::EffectivePath). A local document with no
+        // retractions gets the canonical path unchanged.
         std::vector<const PaintOp*> chain;
-        m_book.ChainTo(seq, chain);
+        m_book.EffectivePath(seq, chain);
 
         // STRUCTURE FIRST. The rasters below are restored onto the layers this
         // puts back; doing it the other way round restores pixels onto planes
@@ -6603,22 +6957,44 @@ private:
         for (const PaintOp* o : chain) if (o->structural()) roster = o;
         reconcileLayers(roster);
 
+        /*
+         * BY THE LAYER AN ENTRY RESOLVES TO, not the RID it names. An entry
+         * from another member names THEIR layer's RID and lands here by order
+         * (layerFor); grouping by the named RID put such entries in a group of
+         * their own with no keyframe, and the group that restored the layer
+         * they had actually been drawn on replayed only the entries naming it
+         * -- so every undo in a room took the others' strokes off the layer
+         * with it. Resolve once per entry, up front, and group by the answer.
+         */
         std::vector<ETCS::RID> touched;
-        for (const PaintOp* o : chain)
+        std::vector<PaintLayer*> lands(chain.size(), nullptr);
+        for (size_t i = 0; i < chain.size(); ++i)
         {
+            const PaintOp* o = chain[i];
             // A structural entry names no layer UNLESS it carries one's bytes,
             // and a box never does (rebuild_text, below).
             if (o->structural() && o->bytes.empty()) continue;
             if (o->kind == PaintOpKind::Text) continue;
+            lands[i] = layerFor(*o);
+            if (!lands[i]) continue;
+            const ETCS::RID rid = lands[i]->getRID();
             bool seen = false;
-            for (ETCS::RID r : touched) if (r == o->layer) { seen = true; break; }
-            if (!seen) touched.push_back(o->layer);
+            for (ETCS::RID r : touched) if (r == rid) { seen = true; break; }
+            if (!seen) touched.push_back(rid);
         }
 
         size_t replayed = 0, restored = 0;
         for (ETCS::RID rid : touched)
         {
-            const PaintOp* base = PaintNotebook::SnapshotOnChain(chain, rid);
+            const PaintOp* base = nullptr;
+            for (size_t i = 0; i < chain.size(); ++i)
+            {
+                const PaintOp* o = chain[i];
+                const bool keyframes_it =
+                    (o->kind == PaintOpKind::Snapshot || (o->structural() && !o->bytes.empty()))
+                    && lands[i] && lands[i]->getRID() == rid;
+                if (keyframes_it) base = o;
+            }
             if (!base)
             {
                 ETCS_LOG("PaintDocument", what << ": layer " << rid
@@ -6628,10 +7004,11 @@ private:
             if (!ApplyOp(*base)) continue;
             ++restored;
             bool past = false;
-            for (const PaintOp* o : chain)
+            for (size_t i = 0; i < chain.size(); ++i)
             {
+                const PaintOp* o = chain[i];
                 if (!past) { if (o == base) past = true; continue; }
-                if (o->layer != rid || !o->marks()) continue;
+                if (!lands[i] || lands[i]->getRID() != rid || !o->marks()) continue;
                 if (ApplyOp(*o)) ++replayed;
             }
         }
@@ -13176,6 +13553,28 @@ public:
 
     // The bar over an open text box, placed whenever this input repaints the
     // view (PaintTextBar::Follow).
+    /*
+     * Undo and redo AS THIS PANE DOES THEM -- the document's step, then the
+     * view repainted and a carried selection dropped, which is what ctrl+z
+     * does (HandleKey) and what a button has to do too. A button wired to the
+     * document's own verb stepped the notebook and left the last frame on
+     * screen until something else redrew it.
+     */
+    bool Undo()
+    {
+        if (!m_document) return false;
+        const bool did = m_document->Undo();
+        if (did) { m_sel_carry = false; repaint_view(); }
+        return did;
+    }
+    bool Redo()
+    {
+        if (!m_document) return false;
+        const bool did = m_document->Redo();
+        if (did) { m_sel_carry = false; repaint_view(); }
+        return did;
+    }
+
     void BindTextBar(ETCS::RID bar)
     {
         ETCS::Entity* raw = paint_resolve_tag("PaintTextBar", bar);
@@ -15507,6 +15906,17 @@ private:
         std::string host;
         std::vector<std::string> lines;   // verbatim, one entry each
         uint64_t seq = 0;
+        /*
+         * THE RECORD'S OWN HASH: XXH3 of each stored line seeded with the
+         * hash before it, so it names the whole sequence up to `seq` and moves
+         * with every line. Answered beside the head (`head`, `push`, `read`),
+         * and a page keeps the same chain over what it has taken in: equal
+         * heads with different chains is a page that missed or misordered a
+         * line, and it resyncs itself from zero (index.html, readTheirs). The
+         * page cannot tell that from silence any other way -- a stroke it never
+         * received looks exactly like a stroke nobody made.
+         */
+        uint64_t chain = 0;
         std::unordered_map<std::string, Member> roster;   // by name
         std::unordered_map<std::string, Claim>  claims;   // text box key -> holder
         std::chrono::steady_clock::time_point opened = std::chrono::steady_clock::now();
@@ -15622,9 +16032,14 @@ private:
             out += name;
             out += " ";
             out += role_name(m.role);
-            const size_t sp = m.view.find_last_of(' ');
+            // A view is "x y w h hue [head chain picture]" -- the hue is the
+            // fifth field, whatever a page appends after it (index.html,
+            // pushMyView), not the last.
+            std::istringstream v(m.view);
+            std::string x, y, w, h, hue;
+            v >> x >> y >> w >> h >> hue;
             out += " ";
-            out += (m.view.empty() || sp == std::string::npos) ? std::string("-") : m.view.substr(sp + 1);
+            out += hue.empty() ? std::string("-") : hue;
             out += "\n";
         }
         return out;
@@ -15668,6 +16083,7 @@ private:
             stored += " " + kind;
             stored += " " + (author.empty() ? std::string("-") : author);
             stored += rest;
+            s.chain = XXH3_64bits_withSeed(stored.data(), stored.size(), s.chain);
             s.lines.push_back(std::move(stored));
             ++taken;
         }
@@ -15699,6 +16115,14 @@ private:
         return idle >= kClaimSeconds || !s.roster.count(it->second.who);
     }
 
+    static std::string hex64(uint64_t v)
+    {
+        char b[17];
+        std::snprintf(b, sizeof(b), "%016llx", static_cast<unsigned long long>(v));
+        return b;
+    }
+    std::string headLocked(const Session& s) const { return std::to_string(s.seq) + " " + hex64(s.chain); }
+
     std::string readLocked(const Session& s, uint64_t since) const
     {
         std::string out;
@@ -15710,6 +16134,11 @@ private:
             out += s.lines[i];
             out += "\n";
         }
+        // LAST, AND NOT AN ENTRY: where the record stands and what it hashes
+        // to, so the page can check what it now holds against what the node
+        // holds in the same answer that brought the lines. '=' cannot begin an
+        // entry (a sequence number does), so nothing reads it as one.
+        out += "= " + headLocked(s) + "\n";
         return out;
     }
 
@@ -15759,25 +16188,41 @@ private:
             // ids which of their guesses was once real.
             if (!s) return "NO SUCH SESSION";
 
-            auto it = s->roster.find(self);
-            if (it != s->roster.end())
-            {
-                // Already in: hand back the token they hold, at whatever role
-                // they now have. This is the reload path, and it is also how a
-                // page LEARNS it has been elevated -- the role travels with the
-                // answer, so a viewer that was made a writer finds out on its
-                // next join without anything having to reach it.
-                it->second.seen = std::chrono::steady_clock::now();
-                return it->second.token + " " + role_name(it->second.role);
-            }
+            /*
+             * THE TOKEN IS THE IDENTITY, NOT THE NAME. A reload comes back with
+             * the token it was given (the page keeps it per tab) and gets its
+             * own membership back at whatever role it now has -- which is also
+             * how a page LEARNS it has been elevated: the role travels with the
+             * answer. A join WITHOUT a token is a new member however familiar
+             * the name, and a name already in the roster is suffixed rather
+             * than shared.
+             *
+             * Matching on the name alone handed a second tab the first tab's
+             * token: every tab of one browser reads the same stored name, so a
+             * host and two readers on one machine were one member to the node,
+             * and each reader dropped every one of the host's lines as its own.
+             */
+            const std::string had = clean(req.at(4), 40);
+            if (!had.empty())
+                for (auto& [name, m] : s->roster)
+                    if (m.token == had)
+                    {
+                        m.seen = std::chrono::steady_clock::now();
+                        return m.token + " " + role_name(m.role) + " " + name;
+                    }
+
+            std::string name = self;
+            for (unsigned n = 2; s->roster.count(name); ++n)
+                name = self + "-" + std::to_string(n);
 
             Member m;
             m.token = mint();
             m.role  = Role::Reader;          // THE LINK IS WORTH EXACTLY THIS
             const std::string token = m.token;
-            s->roster[self] = std::move(m);
-            ETCS_LOG("PaintNode", "'" << self << "' joined '" << id << "' as reader.");
-            return token + " reader";
+            s->roster[name] = std::move(m);
+            ETCS_LOG("PaintNode", "'" << name << "' joined '" << id << "' as reader"
+                     << (name != self ? " (asked for '" + self + "', which was taken)" : "") << ".");
+            return token + " reader " + name;
         }
 
         // ── everything else carries a token ─────────────────────────────
@@ -15826,7 +16271,7 @@ private:
             return out;
         }
 
-        if (verb == "head") return std::to_string(s->seq);
+        if (verb == "head") return headLocked(*s);
 
         /*
      * THE ROSTER, TO EVERYONE IN IT. Names, roles and colours are what the
@@ -15904,7 +16349,7 @@ private:
             if (me->role != Role::Writer && me->role != Role::Owner) return "READ ONLY";
             if (!req.posted()) return "POST REQUIRED";
             const size_t n = pushLocked(*s, self, req.bodyString());
-            return std::to_string(s->seq) + " " + std::to_string(n);
+            return std::to_string(s->seq) + " " + std::to_string(n) + " " + hex64(s->chain);
         }
 
         /*
@@ -15931,7 +16376,7 @@ private:
             std::string whole;
             whole.swap(me->pending);
             const size_t taken = pushLocked(*s, self, whole);
-            return std::to_string(s->seq) + " " + std::to_string(taken);
+            return std::to_string(s->seq) + " " + std::to_string(taken) + " " + hex64(s->chain);
         }
 
         // ── the host's own verbs ────────────────────────────────────────
@@ -16500,13 +16945,53 @@ DEFINE_WORK_FUNC_TYPED(PaintDocument, SetReadOnly, (int32_t, on))
     self.SetReadOnly(on != 0);
 }
 
+// ImportOps <path> [since] [keep] -- every line of a read, `since` being where
+// the read started (zero restarts the record chain, and then this page's own
+// lines are applied too, unless `keep`: the host reading its own baseline back). Answers "<taken> <head>
+// <chain-hex> <chain-seq>": the page compares the last two with what the node
+// said in the same read.
 DEFINE_WORK_FUNC(PaintDocument, ImportOps)
 {
     (void)ctx;
-    const std::string path = paint_path_arg(data);
+    std::istringstream in(data.restAsString());
+    std::string path, mine;
+    uint64_t since = 0;
+    in >> path >> since >> mine;
     if (path.empty()) { ETCS_LOG("PaintDocument", "ImportOps needs a path."); data.writeString("0"); return; }
-    const size_t n = self.ImportOps(path);
-    data.writeString((std::to_string(n) + " " + std::to_string(self.notebookHead())).c_str());
+    const size_t n = self.ImportOps(path, since, mine == "keep");
+    char chain[17];
+    std::snprintf(chain, sizeof(chain), "%016llx", static_cast<unsigned long long>(self.recordChain()));
+    data.writeString((std::to_string(n) + " " + std::to_string(self.notebookHead()) + " " + chain
+                      + " " + std::to_string(self.recordChainSeq())).c_str());
+}
+
+// PictureReport -- PictureHash's parts, one per layer, for chasing a divergence.
+DEFINE_WORK_FUNC(PaintDocument, PictureReport)
+{
+    (void)ctx;
+    const std::string r = self.PictureReport();
+    ETCS_LOG("PaintDocument", r);
+    data.writeString(r.c_str());
+}
+
+// PictureHash -- what this page's picture is, as sixteen hex digits. Sent with
+// presence so members can tell they have diverged (PaintDocument::PictureHash).
+// Answers "<hex> <record-seq>": the picture AND the record position it is the
+// picture OF (the last line this page chained, ImportOps), taken together --
+// a picture paired with a position read at another moment is what made two
+// members at one head disagree about a picture they shared.
+// PictureHash [sent] -- and whether the picture is the record's yet (settled:
+// nothing of this page's past `sent` is still to be pushed).
+DEFINE_WORK_FUNC(PaintDocument, PictureHash)
+{
+    (void)ctx;
+    std::istringstream in(data.restAsString());
+    uint64_t sent = 0;
+    in >> sent;
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(self.PictureHash()));
+    data.writeString((std::string(hex) + " " + std::to_string(self.recordChainSeq())
+                      + (self.settled(sent) ? " 1" : " 0")).c_str());
 }
 
 // Where this document stands in the record -- the `since` of its next read or
@@ -18027,6 +18512,19 @@ DEFINE_WORK_FUNC_TYPED(PaintInput, BindAnimation, (ETCS::RID, anim))
 }
 
 // BindTextBar <bar> -- the bar over an open text box (PaintInput::BindTextBar).
+// Undo / Redo -- the pane's step: the document's, then the view repainted. What
+// the undo and redo buttons under the picture call (boot_paint_panels.etcs).
+DEFINE_WORK_FUNC(PaintInput, Undo)
+{
+    (void)ctx; (void)data;
+    self.Undo();
+}
+DEFINE_WORK_FUNC(PaintInput, Redo)
+{
+    (void)ctx; (void)data;
+    self.Redo();
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintInput, BindTextBar, (ETCS::RID, bar))
 {
     (void)ctx;

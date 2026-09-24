@@ -48,7 +48,7 @@ ETCS_TAG_BLOCK_BASIC(PaintDocument,
     SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
     CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo,
     ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
-    ExportOps, ExportBaseline, ImportOps, NotebookHead, SetAuthor, SetReadOnly,
+    ExportOps, ExportBaseline, ImportOps, NotebookHead, PictureHash, PictureReport, SetAuthor, SetReadOnly,
     TextDenied, SetTextFont, SetTextSize, SetTextColor,
     MergeDown, MergeUp,
     Report, Delete)
@@ -63,7 +63,7 @@ ETCS_TAG_BLOCK_BASIC(PaintSurface,
 
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
-     BindRoot, BindCanvas, BindPalette, BindPanel, BindPagePanel, BindVisitors, BindTextBar, BindAnimation, BindGlyphs, SetHoldCapacity, BindPages,
+     BindRoot, BindCanvas, BindPalette, BindPanel, BindPagePanel, BindVisitors, BindTextBar, Undo, Redo, BindAnimation, BindGlyphs, SetHoldCapacity, BindPages,
      BindWheel, SetWheelPane,
      Pointer, Press, Release, Report, Delete),
     (ConsumeInput, ConsumePointer, ConsumeRouted, ConsumeRoutedPointer))

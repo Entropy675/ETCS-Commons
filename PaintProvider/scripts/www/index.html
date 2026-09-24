@@ -664,7 +664,12 @@
     head: 0, sent: 0,
     push: 0, read: 0, who: 0, role_t: 0, view_t: 0,
     sent_view: '',
-    busy: false
+    busy: false,
+    // The record's chain as this page has taken it in (PaintDocument::
+    // ImportOps), and the owner's name and last reported (head, picture) --
+    // the two checks below (readTheirs, readViews).
+    chain: '', owner: '', owner_head: NaN, owner_picture: '', picture: '', picture_at: 0,
+    last_head: -1, mismatch: 0, resyncs: 0, keep_mine: false
   };
 
   const shareBtnEl  = document.getElementById('sharebtn');
@@ -828,8 +833,14 @@
     if (answer === null || !/^\d+/.test(answer)) return false;
     const seq = highestSeq(text);
     share.sent = isNaN(seq) ? 0 : seq;
-    const nodeHead = parseInt(answer.split(' ')[0], 10);
-    if (!isNaN(nodeHead)) share.head = Math.max(share.head, nodeHead);
+    /*
+     * THE HEAD IS NOT MOVED PAST WHAT WAS PUSHED. It used to be, so a page
+     * never read its own lines back -- but the record chain is over every
+     * line, so every line has to come back through a read, own ones included
+     * (the runtime passes over its own author; ImportOps). The baseline is
+     * read back with `keep`, so the host's own page is not replaced by it.
+     */
+    share.keep_mine = true;
     return true;
   }
 
@@ -883,8 +894,7 @@
       if (answer === 'NO SUCH SESSION') { leaveSession(); return; }
       if (/^\d+/.test(answer)) {
         if (!isNaN(lastSeq) && lastSeq > 0) share.sent = lastSeq;
-        const nodeHead = parseInt(answer.split(' ')[0], 10);
-        if (!isNaN(nodeHead)) share.head = Math.max(share.head, nodeHead);
+        // The head stays where the last READ put it -- see pushBaseline.
       }
     } finally { share.busy = false; }
   }
@@ -912,27 +922,50 @@
         leaveSession();
         return;
       }
+      /*
+       * THE LAST LINE IS THE NODE'S WORD ON THE RECORD: "= <head> <chain>". Every
+       * entry line goes to the runtime, this page's own included -- it chains
+       * them all and applies the others' (PaintDocument::ImportOps) -- and what
+       * it chained is compared with what the node chained over the same head.
+       * Equal heads with different chains is a line this page never took in
+       * (or took twice, or out of order), which nothing else can tell from
+       * silence: a stroke that never arrived looks exactly like a stroke nobody
+       * made. The answer is to start the record again from zero -- the
+       * baseline at its head becomes this page's page (PaintDocument::
+       * become_page) and everything after it is replayed -- rather than to
+       * guess which line went missing.
+       */
+      const since = share.head;
       const lines = body.split('\n').filter(function (l) { return l.trim().length > 0; });
-      if (!lines.length) return;
-
-      let highest = share.head;
-      const keep = [];
+      let nodeHead = NaN, nodeChain = '';
+      const entries = [];
       for (const line of lines) {
         const field = line.split(' ');
-        const seq = parseInt(field[0], 10);
-        if (!isNaN(seq)) highest = Math.max(highest, seq);
-        if (field[2] === share.self) continue;      // ours, already on this canvas
-        keep.push(line);
+        if (field[0] === '=') { nodeHead = parseInt(field[1], 10); nodeChain = field[2] || ''; continue; }
+        entries.push(line);
       }
-      share.head = highest;
-      if (!keep.length) return;
+      if (!isNaN(nodeHead)) share.head = Math.max(share.head, nodeHead);
+      if (!entries.length) return;
 
       const fs = etcsFS();
       const path = '/share/in.txt';
       try { fs.mkdirTree('/share'); } catch (e) {}
-      fs.writeFile(path, new TextEncoder().encode(keep.join('\n') + '\n'));
-      callVerb('doc', 'ImportOps', path);
+      fs.writeFile(path, new TextEncoder().encode(entries.join('\n') + '\n'));
+      const took = await callResult('doc', 'ImportOps', path + ' ' + since + (share.keep_mine ? ' keep' : ''));
+      share.keep_mine = false;
       callVerb('canvas', 'Render', '');           // a replayed mark needs showing
+      if (took) {
+        const f = took.trim().split(' ');         // taken head chain chain-seq
+        share.chain = f[2] || '';
+        const chainSeq = parseInt(f[3], 10);
+        if (nodeChain && share.chain && chainSeq === nodeHead && share.chain !== nodeChain) {
+          share.resyncs++;
+          log('[etcs] the record here (' + share.chain + ') is not the room\'s (' + nodeChain
+              + ') at ' + nodeHead + ' -- reading it again from the start\n', 'err');
+          share.head = 0;
+          share.chain = '';
+        }
+      }
     } finally { share.busy = false; }
   }
 
@@ -942,8 +975,13 @@
   async function refreshRoster() {
     if (!share.token || !runtimeUp()) return;
     const who = await nodeGet(tokenPath('who'));
-    if (who !== null && who !== 'FORBIDDEN' && who !== 'NO SUCH SESSION')
+    if (who !== null && who !== 'FORBIDDEN' && who !== 'NO SUCH SESSION') {
       callVerb('visitors', 'SetRoster', who);
+      for (const line of who.split('\n')) {
+        const f = line.trim().split(/\s+/);
+        if (f[1] === 'owner') share.owner = f[0];
+      }
+    }
   }
 
   // A VIEWER ASKS WHAT IT IS. The host's elevation cannot reach this page --
@@ -979,7 +1017,20 @@
     const rect = await callResult('canvas', 'ViewRect', '');
     if (!rect) return;
     const hue = (shareHueEl.value || myHue()).replace('#', '');
-    const line = rect.trim().replace(/\s+/g, '/') + '/' + hue;
+    /*
+     * AND WHAT THE PICTURE IS, beside where this page is looking: the record
+     * head it has taken in and the hash of what it made of it (PaintDocument::
+     * PictureHash). Presence already goes to everyone, so this is how the
+     * members compare pictures without a verb for it -- readViews, below.
+     */
+    // "<hash> <record-seq> <settled>": the picture is sent only when it IS the
+    // record's -- nothing of this page's still to be pushed -- and '-' otherwise,
+    // which no member compares against.
+    const picture = await callResult('doc', 'PictureHash', String(share.sent));
+    const pf = picture ? picture.trim().split(' ') : [];
+    share.picture = (pf[2] === '1' && pf[0]) ? pf[0] : '-';
+    share.picture_at = parseInt(pf[1], 10);
+    const line = rect.trim().replace(/\s+/g, '/') + '/' + hue + '/' + share.picture_at + '/' + share.picture;
     if (line === share.sent_view) return;          // nothing moved
     share.sent_view = line;
     await nodeGet(tokenPath('view') + '/' + line);
@@ -1003,6 +1054,43 @@
     for (const line of lines) {
       const f = line.trim().split(/\s+/);
       if (f.length < 6) continue;
+      /*
+       * THE OWNER'S PICTURE IS THE ROOM'S. A member at the same record head as
+       * the owner whose picture hashes differently has diverged -- whatever the
+       * chain says it received, what it made of it is not what the owner made
+       * -- and it reads the record again from zero (readTheirs). Same head
+       * only: a head apart is a stroke in flight, not a divergence. The owner
+       * never resyncs to anyone.
+       */
+      if (f[0] === share.owner && share.role !== 'owner' && f.length >= 8) {
+        share.owner_head = parseInt(f[6], 10);
+        share.owner_picture = f[7];
+        /*
+         * ONLY WHEN NOTHING IS MOVING. A stroke being made is in its maker's
+         * picture before it is in the record, so pictures at one head differ
+         * for a second or two around every stroke; the head then moves. A
+         * divergence is a difference that stays while the head does not --
+         * two ticks running, with the head where it was.
+         */
+        const at = share.picture_at;
+        const still = share.owner_head === at && at > 0
+                   && at === share.last_head
+                   && share.picture && share.picture !== '-'
+                   && share.owner_picture && share.owner_picture !== '-'
+                   && share.picture !== share.owner_picture;
+        share.mismatch = still ? share.mismatch + 1 : 0;
+        share.last_head = at;
+        // Three ticks: a settled line can still be a read-back behind the
+        // record for a tick or two (pushed, not yet read), and its refresh
+        // one more; a difference that outlives that is not in flight.
+        if (share.mismatch >= 3) {
+          share.mismatch = 0;
+          share.resyncs++;
+          log('[etcs] this picture (' + share.picture + ') is not the owner\'s (' + share.owner_picture
+              + ') at ' + at + ' -- reading the record again from the start\n', 'err');
+          share.head = 0; share.chain = ''; share.picture = '';
+        }
+      }
       const hex = f[5].replace('#', '');
       if (hex.length < 6) continue;
       const r = parseInt(hex.slice(0, 2), 16) / 255;
@@ -1038,6 +1126,7 @@
     shareTimers(false);
     share.token = null; share.id = null;
     share.head = 0; share.sent = 0;
+    share.chain = ''; share.owner = ''; share.picture = ''; share.owner_picture = '';
     setRole(null);                      // editable again: the canvas is theirs now
     if (runtimeUp()) {
       callVerb('doc', 'SetAuthor', '');
@@ -1097,7 +1186,18 @@
     share.base = defaultNode();
     share.self = myName();
 
-    const answer = await nodeGet(share.self + '/join/' + id);
+    /*
+     * THE TOKEN IS THIS TAB'S, so it is kept per tab (sessionStorage) and
+     * handed back on a reload; a fresh tab has none and is a new member. The
+     * name is only what this page ASKS for -- every tab of one browser reads
+     * the same stored name, and the node grants a free one (suffixed when
+     * taken), which is the name this page then goes by: as the author of what
+     * it pushes, and as the author it passes over on the way back in. Two tabs
+     * that both believed they were the host dropped every one of its lines.
+     */
+    let had = '';
+    try { had = window.sessionStorage.getItem('etcs-paint-token-' + id) || ''; } catch (e) {}
+    const answer = await nodeGet(share.self + '/join/' + id + (had ? '/' + had : ''));
     if (answer === null || answer === 'NO SUCH SESSION') {
       log('[etcs] that share link is not open any more\n', 'err');
       return;
@@ -1105,8 +1205,11 @@
     const bits = answer.trim().split(' ');
     share.id    = id;
     share.token = bits[0];
+    if (bits[2]) share.self = bits[2];
+    try { window.sessionStorage.setItem('etcs-paint-token-' + id, share.token); } catch (e) {}
     share.head  = 0;                    // from the beginning: give us the picture
     share.sent  = 0;
+    share.chain = '';
 
     /*
      * WHAT WAS ON THIS CANVAS IS PUT AWAY FIRST, into the page store, and the

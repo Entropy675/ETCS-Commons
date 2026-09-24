@@ -384,6 +384,11 @@ page in a shared session. A font whose file is missing keeps its number and
 draws in the pixel font (`PaintProvider/fonts/README.md` says where the files
 come from). A new box starts in the last font and size the bar set.
 
+**Undo and redo have buttons** under the picture, in the row above the zoom
+steps (`boot_paint_panels.etcs`), for a hand on a touch screen: the same step
+ctrl+z and ctrl+y take, through the pane's input so the view repaints with it
+(`PaintInput::Undo`).
+
 **Undo.** An edit is a step: from opening a box to letting it go -- the typing,
 the font, the size, the colour, a move, a resize -- is recorded when it ends as
 one `text` entry on the notebook (`PaintOpKind::Text`), carrying the whole box.
@@ -659,8 +664,43 @@ same way and changes every stack in the room.
 **What you push is what you made.** Lines that arrived from the session sit in
 your notebook too, so undo and keyframes see the whole picture, but
 `ExportOps` sends only the lines with your name on them -- a joiner promoted to
-writer used to send the host's own history back to the host. An undo that winds
-back past what was already sent re-sends the whole page as a new baseline.
+writer used to send the host's own history back to the host -- and never your
+keyframes: a keyframe is your own cache of the picture as YOU derived it, and on
+another member it overwrote whatever they had drawn on that layer since. Each
+member takes its own keyframes of arriving strokes instead (`AcceptOp`), so the
+record past the baseline is strokes and nothing else.
+
+**You are who the node says you are.** A page asks to join under the name it
+keeps in the browser, and the node grants a free one -- suffixed when somebody
+in the room has it -- which is the name the page then goes by, as the author of
+what it pushes and the author it passes over on the way back in. The token is
+the identity and is kept per tab, so a reload comes back as the same member and
+a second tab is a new one. Three tabs of one browser used to be one member to
+the node, and each reader dropped every one of the host's lines as its own.
+
+**An undo is a line in the record.** In a session ctrl+z does not wind your
+notebook back; it appends an `undo` entry naming YOUR newest stroke that still
+stands -- by your name and its ordinal among your strokes, never by a sequence
+number, since the node renumbers everything -- and every member, you included,
+applies it the same way: the path is re-derived without that entry
+(`PaintNotebook::EffectivePath`), from the last keyframe before it. Redo appends
+the reverse. Only your own strokes are yours to take back. Winding a tree back
+was what re-baselined the room with one page's whole picture on every undo,
+and wiped the strokes the others had not sent yet.
+
+**The record checks itself, two ways.** The node chains every stored line
+(`PaintNode::Session::chain`, XXH3 seeded with the chain before it) and answers
+the chain with the head; the runtime chains every line it takes in, own lines
+included (`PaintDocument::ImportOps`), and the page compares the two after each
+read. Equal heads with different chains is a line this page never took in --
+which nothing else can tell from silence -- and the page reads the record again
+from zero, whose `page` line replaces the document. Separately each member
+sends, with its presence, the hash of what it MADE of the record
+(`PaintDocument::PictureHash`: extent, each layer's place and pixels, the boxes)
+and the record position it is the picture of, only once nothing of its own is
+still to be pushed. A member at the owner's position whose picture differs for
+three presence ticks running has diverged, whatever it received, and reads the
+record again. The owner never resyncs to anyone.
 
 **A reader's canvas is view only.** Joining makes you a reader; the host
 promotes. While you are a reader the document refuses every edit
@@ -716,6 +756,12 @@ process exits, because an `HttpServer` thread is not a detached executor. A serv
 script that looks like it worked and leaves nothing listening.
 
 ## What is not solved here
+
+A retracted structural entry (a layer added, removed or merged) is taken off the
+path like a stroke, so the stack goes back to the previous `layers` entry -- but
+a merge's carried bytes go with it, and a keyframe of the surviving layer taken
+before the merge is what the layer falls back to. Nobody has undone a merge in a
+room yet; when somebody does, that is where to look.
 
 The strip renders and picks, but it does not follow the window: `ResizeTo` made it
 a fixed 640x64, so a very narrow viewport scales it down rather than reflowing the
