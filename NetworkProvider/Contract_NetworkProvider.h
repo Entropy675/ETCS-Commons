@@ -1,14 +1,14 @@
 #ifndef NETWORKPROVIDER_CONTRACT__
-#if defined(__EMSCRIPTEN__)
-    //#define NETWORKPROVIDER_CONTRACT__
-    //#include "Web/WASMNetworkProviderType.h"
-    //typedef WASMNetworkProviderType NetworkProviderType;
-    // We don't support WASM globally yet... 
-#elif defined(_WIN32)
+#if defined(_WIN32)
     //#define NETWORKPROVIDER_CONTRACT__
     //#include "Win/WinNetworkProviderType.h"
     //typedef WinNetworkProviderType NetworkProviderType;
-#elif defined(__linux__)
+#elif defined(__EMSCRIPTEN__) || defined(__linux__)
+    // One branch for both: this provider is formatting, and the transport under
+    // it is core's (ThreadPool's IO). Its socket calls resolve to emscripten's
+    // POSIX layer, so every header below compiles unmodified. A browser has no
+    // listening socket, so HttpServer.Start is refused at listen() at runtime --
+    // the browser's constraint, not a second contract.
     #define NETWORKPROVIDER_CONTRACT__
     #include "NetworkProvider/MbedTLSContext.h"
     #include "NetworkProvider/PicoHTTPParser.h"

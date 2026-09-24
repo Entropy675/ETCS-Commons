@@ -73,10 +73,16 @@ sheet_root.SetHidden(1)
 # Spawned once, here, because this is the first thing that needs one, and kept
 # afterwards rather than deleted, so anything else with a wait in it (a new
 # canvas, a page switch, an import) shows THIS one instead of building another.
-# Two lines, from any subscript:
+# Two lines, from any subscript, for a wait the subscript owns:
 #
 #     ensure RenderProvider::Throbber main_throbber
 #     main_throbber.SetHidden(0)
+#
+# -- unless a Watch is bound (below), in which case the throbber follows that
+# flag and SetHidden is overruled a frame later. A type with a wait of its own
+# raises a flag on itself and the subscript points the watch at it:
+#
+#     main_throbber.Watch(@thing, busy)
 #
 # ENSURE, NOT SPAWN, and the difference is the whole point of the name. The
 # three acquire verbs differ only in what happens when the word is already
@@ -102,7 +108,8 @@ sheet_root.SetHidden(1)
 # No SetOrder: the type defaults to the top (Throbber::ORDER_ON_TOP), because
 # for a wait indicator that is not a layout choice but what the thing is.
 # 464,336 is (1024-96)/2, (768-96)/2: the raster is exactly the ring's square
-# (the caption sits inside it), so this is the centre of the sheet.
+# (the caption sits inside it), so this is the centre of the sheet -- until the
+# canvas exists, when CenterOn (below, beside the Watch) takes over.
 stage.spawn(RenderProvider::Throbber main_throbber)
 main_throbber.Create(96)
 main_throbber.SetPosition(464, 336)
@@ -112,7 +119,7 @@ main_throbber.SetPosition(464, 336)
 # whatever the script contains (bootThrobber in www/index.html has the
 # measurement). The page covers that interval with the same twelve dots in the
 # same two colours. THIS one is for the waits that happen afterwards, when the
-# runtime is up and can draw: a new page, a page switch, a load (pages.BindWait
+# runtime is up and can draw: a new page, a page switch, a load (the Watch
 # below). Hidden, it costs one virtual call a frame.
 main_throbber.SetHidden(1)
 
@@ -149,7 +156,19 @@ doc.SetActiveLayer(@ink)
 # never positioned or drawn, it is asked to rasterise into somebody else's pixels.
 spawn RenderProvider::TextLabel glyph_src
 glyph_src.Create()
-doc.BindGlyphs(@glyph_src)
+
+# THE TEXT BOXES' FONTS: the label above as font 0, the sheet's own pixel face,
+# and the TrueType files after it in this order -- the order is the number the
+# text bar's buttons name (paint_textbar.etcs), so a font added here goes at the
+# end. The files are staged beside the scripts (modules.json, "assets").
+spawn PaintProvider::PaintFonts fonts
+fonts.Create()
+fonts.BindPixel(@glyph_src)
+fonts.Load(sans, PaintProvider/fonts/InstrumentSans-Regular.ttf)
+fonts.Load(serif, PaintProvider/fonts/YoungSerif-Regular.ttf)
+fonts.Load(mono, PaintProvider/fonts/RedHatMono-Regular.ttf)
+fonts.Load(hand, PaintProvider/fonts/NothingYouCouldDo-Regular.ttf)
+doc.BindGlyphs(@fonts)
 
 spawn PaintProvider::PaintTool brush
 brush.SetRadius(6.0)
@@ -247,10 +266,13 @@ canvas.BindGlyphs(@glyph_src)
 # touched, so it stays transparent from Allocate. Order 2, just over the pane:
 # the ruler is chrome, and everything else is over chrome.
 #
-# NOT PICKABLE, and this is the line that makes a full-sheet sibling possible:
+# PASSTHROUGH, and this is the line that makes a full-sheet sibling possible:
 # the pick walks children top down and a compositor answers for its whole
 # rectangle, so without it every press on the paper would have landed on the
-# ruler and no stroke would ever have started (CompositeDrawable2D::SetPickable).
+# ruler and no stroke would ever have started. It is a state tag on the node
+# (`passthrough`, asked by Drawable2D_::PickAt beside Hidden) rather than a
+# property of the composite: any leaf that raises it is passed over the same
+# way, and `unflag ruler_pane passthrough` would make it pickable again.
 # It is at the sheet's origin so the pane's Bounds() -- in the sheet's space --
 # are the same offsets in the ruler's space, which is what draw_edge_ruler
 # reads (PaintSurface::BindRulerFrame).
@@ -259,7 +281,14 @@ ruler_pane.Create(1024, 768)
 ruler_pane.SetPosition(0, 0)
 ruler_pane.SetOrder(2)
 ruler_pane.SetRetain(1)
-ruler_pane.SetPickable(0)
+ruler_pane.SetPassthrough(1)
+# THE ONE PANE THAT IS NOT A LAYOUT BOX. It is the sheet, at the sheet's
+# origin, overlapping the picture -- which is not a row or a column and so is
+# not something a solver has anything to say about. It follows the window
+# straight (CompositeDrawable2D::FollowResize), and the equality the comment
+# above depends on -- the pane's offsets in the sheet's space are the same in
+# this one's -- holds at every size because both are the window's.
+ruler_pane.FollowResize(@main)
 canvas.BindRulerFrame(@ruler_pane)
 canvas.Render()
 
@@ -271,69 +300,39 @@ canvas.Render()
 # the walk draws everything.
 
 # ── the toolbar, ON the sheet ───────────────────────────────────────────────
-sheet_root.spawn(RenderProvider::PolygonDrawable2D bar_bg)
-bar_bg.Create()
-bar_bg.AddPoint(0, 704)
-bar_bg.AddPoint(1024, 704)
-bar_bg.AddPoint(1024, 768)
-bar_bg.AddPoint(0, 768)
-bar_bg.SetFill(0.16, 0.16, 0.19, 1.0)
-bar_bg.SetOrder(19)
-
+#
+# THE BACKING STRIP IS GONE. It was a PolygonDrawable2D with 0/1024/704/768
+# baked into its corners, which is geometry and not a position -- so it could
+# not follow a resize, and at any width but 1024 it stopped painting before the
+# sheet's edge. A compositor's own background is the same picture with nothing
+# to keep in step, and the bar is one.
+#
 # Sixteen 60px slices: six colours, eight tools, radius and alpha
 # (paint_toolbar.etcs) -- rect and oval are one shape slice now, which is what
-# gave the row its margins back.
+# gave the row its margins back. The bar is a layout box from here on (the
+# layout, at the foot of this file); the slices keep their 60px cells, so a
+# wider bar has slack at the right end rather than stretched buttons.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D bar)
 bar.Create(960, 64)
 bar.SetPosition(32, 704)
 bar.SetOrder(20)
+bar.SetBackground(0.16, 0.16, 0.19, 1.0)
 
 spawn PaintProvider::PaintPalette palette
 palette.BindTool(@brush)
 palette.BindSurface(@canvas)
 
-run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette
+# THE SOLVER, SPAWNED HERE rather than at the foot of the file, because the
+# toolbar declares its own cells into it (paint_toolbar.etcs) and a box has to
+# have somewhere to be declared. Only Create is called now; the boxes this file
+# owns, the first Solve and FollowResize are all at the end, once everything
+# they name exists.
+spawn LayoutProvider::Layout layout
+layout.Create(1024, 768)
+
+run PaintProvider/scripts/paint_toolbar.etcs bar=bar palette=palette layout=layout
 
 
-# ── the zoom readout, bottom-left of the drawing pane ────────────────────────
-#
-# Two steps and a percentage, deliberately faint: it is a thing you reach for
-# occasionally and should not compete with the picture. Children of sheet_root,
-# so they move with the pane and are picked in its space.
-#
-# The steps are PaintPalette entries -- a node that means a zoom, mapped by the
-# same type that maps a node meaning a colour (AddZoom says why a view setting
-# lives there). The label is pushed by the surface rather than by whoever zoomed,
-# so the wheel, these buttons and a script all keep it honest.
-sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_out)
-zoom_out.Create()
-zoom_out.AddPoint(12, 668)
-zoom_out.AddPoint(36, 668)
-zoom_out.AddPoint(36, 692)
-zoom_out.AddPoint(12, 692)
-zoom_out.SetFill(0.85, 0.85, 0.88, 0.30)
-zoom_out.SetOrder(21)
-palette.AddZoom(@zoom_out, 0.8)
-
-sheet_root.spawn(RenderProvider::PolygonDrawable2D zoom_in)
-zoom_in.Create()
-zoom_in.AddPoint(44, 668)
-zoom_in.AddPoint(68, 668)
-zoom_in.AddPoint(68, 692)
-zoom_in.AddPoint(44, 692)
-zoom_in.SetFill(0.85, 0.85, 0.88, 0.30)
-zoom_in.SetOrder(21)
-palette.AddZoom(@zoom_in, 1.25)
-
-sheet_root.spawn(RenderProvider::TextLabel zoom_label)
-zoom_label.Create()
-zoom_label.SetPosition(78, 672)
-zoom_label.SetSize(2)
-zoom_label.SetColor(0.80, 0.80, 0.84, 1.0)
-zoom_label.SetText(100%)
-zoom_label.SetOrder(21)
-
-canvas.BindZoomLabel(@zoom_label)
 
 # ── the layer window, top-right of the paper ─────────────────────────────────
 #
@@ -370,6 +369,42 @@ run PaintProvider/scripts/paint_layers.etcs panel=layers_pane doc=doc list=layer
 # a restack, an eye, a delete (PaintLayerPanel::BindSurface).
 layers.BindSurface(@canvas)
 layers.Refresh()
+
+# ── the animation window, under the layer window ─────────────────────────────
+#
+# THE REEL: frames cut from a region of the page by the animation tool's drag
+# and put back (PaintAnimation, paint_anim.etcs). A pane like the layer
+# window's, one order below it, and hidden until a region exists -- the drag
+# is what brings it up.
+#
+# THE CAMERA -- the region -- is drawn by the canvas itself, in page space
+# (PaintSurface::SetCamera), so it stays on the page as the view moves.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D anim_pane)
+anim_pane.Create(240, 300)
+anim_pane.SetPosition(700, 290)
+anim_pane.SetOrder(14)
+anim_pane.SetHidden(1)
+spawn PaintProvider::PaintAnimation anim
+anim.Create(@doc)
+anim.BindSurface(@canvas)
+anim.BindWindow(@anim_pane)
+run PaintProvider/scripts/paint_anim.etcs panel=anim_pane anim=anim palette=palette
+
+# ── the text bar ─────────────────────────────────────────────────────────────
+#
+# Over the open text box, and only while there is one (PaintTextBar::Follow):
+# font, size, colour, remove, ok. Order 13, over the paper and its outlines and
+# under the windows. The sheet's own input places it whenever it repaints the
+# view (input.BindTextBar, below); it checks itself on the frame edge too.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D textbar_pane)
+textbar_pane.Create(480, 28)
+textbar_pane.SetOrder(13)
+textbar_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
+spawn PaintProvider::PaintTextBar textbar
+textbar.Create(@doc)
+textbar.BindSurface(@canvas)
+textbar.BindWindow(@textbar_pane)
+run PaintProvider/scripts/paint_textbar.etcs pane=textbar_pane bar=textbar palette=palette
 
 # THE CLOCK THE FADE RIDES IS NOT SPAWNED HERE ANY MORE. The isolation fade used
 # to need a node in the tree -- a drawable that drew nothing, present only so the
@@ -431,7 +466,145 @@ input.BindRoot(@sheet_root)
 # sheet so the toolbar and the zoom steps are still reachable by the same pick.
 input.BindCanvas(@paper_pane)
 input.BindPalette(@palette)
+
+# ── undo/redo and the zoom readout, in two rows of their own under the picture ─
+#
+# Two steps and a percentage, deliberately faint: it is a thing you reach for
+# occasionally and should not compete with the picture. Undo and redo sit in the
+# row above them -- the two things a hand reaches for most that the toolbar does
+# not hold, and on a touch screen the only way to reach them at all.
+#
+# IN A PANE, and the pane is why. These were children of sheet_root at y=668 --
+# four pixels above a toolbar that was at 704 because the sheet was 768. Every
+# one of those numbers is the old height read backwards, so a taller sheet left
+# the row stranded in the middle of the picture. A pane is a layout box (the
+# layout, at the foot of this file), so the rows sit under the picture and over
+# the bar at any height, and the coordinates below are its own 52px band rather
+# than a subtraction from a size nothing guarantees.
+#
+# The steps are PaintPalette entries -- a node that means a zoom, mapped by the
+# same type that maps a node meaning a colour (AddZoom says why a view setting
+# lives there). The label is pushed by the surface rather than by whoever zoomed,
+# so the wheel, these buttons and a script all keep it honest. Undo and redo are
+# calls (AddCall) on the pane's input -- the step AND the repaint, as ctrl+z is
+# -- which is why this block sits after the input is spawned.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D zoom_pane)
+zoom_pane.Create(960, 52)
+zoom_pane.SetPosition(36, 646)
+zoom_pane.SetOrder(21)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D undo_btn)
+undo_btn.Create()
+undo_btn.AddPoint(0, 1)
+undo_btn.AddPoint(44, 1)
+undo_btn.AddPoint(44, 25)
+undo_btn.AddPoint(0, 25)
+undo_btn.SetFill(0.85, 0.85, 0.88, 0.30)
+undo_btn.SetOrder(21)
+palette.AddCall(@undo_btn, @input, PaintInput.Undo)
+zoom_pane.spawn(RenderProvider::TextLabel undo_word)
+undo_word.Create()
+undo_word.SetPosition(10, 9)
+undo_word.SetSize(1)
+undo_word.SetColor(0.80, 0.80, 0.84, 1.0)
+undo_word.SetText(undo)
+undo_word.SetOrder(22)
+palette.AddCall(@undo_word, @input, PaintInput.Undo)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D redo_btn)
+redo_btn.Create()
+redo_btn.AddPoint(52, 1)
+redo_btn.AddPoint(96, 1)
+redo_btn.AddPoint(96, 25)
+redo_btn.AddPoint(52, 25)
+redo_btn.SetFill(0.85, 0.85, 0.88, 0.30)
+redo_btn.SetOrder(21)
+palette.AddCall(@redo_btn, @input, PaintInput.Redo)
+zoom_pane.spawn(RenderProvider::TextLabel redo_word)
+redo_word.Create()
+redo_word.SetPosition(62, 9)
+redo_word.SetSize(1)
+redo_word.SetColor(0.80, 0.80, 0.84, 1.0)
+redo_word.SetText(redo)
+redo_word.SetOrder(22)
+palette.AddCall(@redo_word, @input, PaintInput.Redo)
+
+# THE OTHER WAY FORWARD. Draw after an undo and the history forks: redo takes
+# the newer branch, and this takes the older one (PaintDocument::RedoAlt).
+# Shown only while a fork sits under the cursor (PaintInput::BindRedoAlt),
+# which is the only time it means anything; both parts are bound so both hide.
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D redo_alt_btn)
+redo_alt_btn.Create()
+redo_alt_btn.AddPoint(104, 1)
+redo_alt_btn.AddPoint(176, 1)
+redo_alt_btn.AddPoint(176, 25)
+redo_alt_btn.AddPoint(104, 25)
+redo_alt_btn.SetFill(0.85, 0.85, 0.88, 0.30)
+redo_alt_btn.SetOrder(21)
+redo_alt_btn.SetHidden(1)
+palette.AddCall(@redo_alt_btn, @input, PaintInput.RedoAlt)
+zoom_pane.spawn(RenderProvider::TextLabel redo_alt_word)
+redo_alt_word.Create()
+redo_alt_word.SetPosition(112, 9)
+redo_alt_word.SetSize(1)
+redo_alt_word.SetColor(0.80, 0.80, 0.84, 1.0)
+redo_alt_word.SetText(redo alt)
+redo_alt_word.SetOrder(22)
+redo_alt_word.SetHidden(1)
+palette.AddCall(@redo_alt_word, @input, PaintInput.RedoAlt)
+input.BindRedoAlt(@redo_alt_btn)
+input.BindRedoAlt(@redo_alt_word)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_out)
+zoom_out.Create()
+zoom_out.AddPoint(0, 27)
+zoom_out.AddPoint(24, 27)
+zoom_out.AddPoint(24, 51)
+zoom_out.AddPoint(0, 51)
+zoom_out.SetFill(0.85, 0.85, 0.88, 0.30)
+zoom_out.SetOrder(21)
+palette.AddZoom(@zoom_out, 0.8)
+zoom_pane.spawn(RenderProvider::TextLabel zoom_out_sign)
+zoom_out_sign.Create()
+zoom_out_sign.SetPosition(7, 31)
+zoom_out_sign.SetSize(2)
+zoom_out_sign.SetColor(0.80, 0.80, 0.84, 1.0)
+zoom_out_sign.SetText(-)
+zoom_out_sign.SetOrder(22)
+palette.AddZoom(@zoom_out_sign, 0.8)
+
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_in)
+zoom_in.Create()
+zoom_in.AddPoint(32, 27)
+zoom_in.AddPoint(56, 27)
+zoom_in.AddPoint(56, 51)
+zoom_in.AddPoint(32, 51)
+zoom_in.SetFill(0.85, 0.85, 0.88, 0.30)
+zoom_in.SetOrder(21)
+palette.AddZoom(@zoom_in, 1.25)
+zoom_pane.spawn(RenderProvider::TextLabel zoom_in_sign)
+zoom_in_sign.Create()
+zoom_in_sign.SetPosition(39, 31)
+zoom_in_sign.SetSize(2)
+zoom_in_sign.SetColor(0.80, 0.80, 0.84, 1.0)
+zoom_in_sign.SetText(+)
+zoom_in_sign.SetOrder(22)
+palette.AddZoom(@zoom_in_sign, 1.25)
+
+zoom_pane.spawn(RenderProvider::TextLabel zoom_label)
+zoom_label.Create()
+zoom_label.SetPosition(66, 31)
+zoom_label.SetSize(2)
+zoom_label.SetColor(0.80, 0.80, 0.84, 1.0)
+zoom_label.SetText(100%)
+zoom_label.SetOrder(21)
+
+canvas.BindZoomLabel(@zoom_label)
 input.BindPanel(@layers)
+# The animation tool's drag frames the reel, and the reel's window rows and
+# wheel are this input's too (PaintInput::BindAnimation).
+input.BindAnimation(@anim)
+input.BindTextBar(@textbar)
 input.BindWheel(@wheel)
 input.SetWheelPane(0)
 
@@ -452,10 +625,22 @@ db.Connect(/persist/pages.db)
 spawn PaintProvider::PaintPages pages
 pages.Create(@doc, @db)
 pages.BindSurface(@canvas)
-# Shown while a page is saved, loaded or made -- the one wait in this session
-# long enough to see (PaintPages::BindWait has the numbers). This is what the
-# throbber above was kept for.
-pages.BindWait(@main_throbber)
+# THE THROBBER FOLLOWS THE STORE'S FLAG. PaintPages raises `busy` on itself
+# for as long as a page is saved, loaded, made or deleted -- the one wait in this
+# session long enough to see (PaintPages::Waiting has the numbers) -- and the
+# throbber shows exactly while the flag is up (Throbber::Watch, read on the
+# frame edge). The store never learns there is a throbber; the throbber never
+# learns what the work is; a flag is what a state tag is for. This is what
+# the throbber above was kept for.
+main_throbber.Watch(@pages, busy)
+# AND THE DOCUMENT'S, while a shared page reads the record again after it
+# found itself out of step with the room (PaintDocument::Syncing) -- the same
+# wait, told the same way. The throbber shows while either flag is up.
+main_throbber.Watch(@doc, syncing)
+# AND IT SITS OVER THE CANVAS, not over the middle of the sheet it was placed
+# on above: the layout moves and resizes the canvas pane with the window, so
+# the throbber reads the pane's box each frame it shows (Throbber::CenterOn).
+main_throbber.CenterOn(@paper_pane)
 input.BindPages(@pages)
 
 spawn PaintProvider::PaintInput wheel_input
@@ -501,13 +686,35 @@ gear.AddPoint(4, 4)
 gear.SetFill(0.94, 0.89, 0.78, 0.92)
 gear.SetOrder(21)
 
+# THE WORD, so the dot says what it is. Same fill as the octagon, exactly: the
+# association IS the colour, and a label in the ruler's ordinary ink would read
+# as one more piece of margin furniture next to an unexplained dot.
+#
+# x=18 clears the octagon's 2..14 by four; y=4 centres a scale-1 cell (five
+# columns, seven rows of face -- TextLabel::CELL_W/CELL_H) against its middle.
+# Four glyphs at ADVANCE 6 is 23px, so this ends around x=41, well inside the
+# margin and well above the extent label at y=16.
+#
+# BOUND TO THE SAME POPUP as the octagon, because a word beside a button that
+# does nothing when pressed is worse than no word: the label is a sibling, not a
+# child, so a press on it picks the LABEL and the palette has to know it opens
+# the same thing. paint_menu.etcs does this for every control in the panel and
+# says so on its own top comment; this is that convention, one level out.
+sheet_root.spawn(RenderProvider::TextLabel gear_word)
+gear_word.Create()
+gear_word.SetPosition(18, 4)
+gear_word.SetSize(1)
+gear_word.SetColor(0.94, 0.89, 0.78, 0.92)
+gear_word.SetText(menu)
+gear_word.SetOrder(21)
+
 # The menu's pane: order 29, above everything but the wheel, so the two popups
 # rank as popups against the sheet and the wheel still wins if both were open
 # (the palette closes the wheel when it opens this, so they are not). Hidden
 # until opened, for the reason wheel_pane is. Not retained: its contents are
 # nodes (paint_menu.etcs) and the compositor draws them from the tree.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D menu_pane)
-menu_pane.Create(200, 372)
+menu_pane.Create(200, 414)
 menu_pane.SetPosition(4, 18)
 menu_pane.SetOrder(29)
 menu_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
@@ -530,14 +737,65 @@ menu_input.Create(@doc, @brush, @canvas)
 menu_input.BindRoot(@menu_pane)
 menu_input.BindPalette(@palette)
 
-run PaintProvider/scripts/paint_menu.etcs pane=menu_pane palette=palette menu=menu
+# THE PAGE LIST on the menu's pane: the store as rows you can press, scroll,
+# rename and delete (PaintPagePanel, paint_page_row.etcs). Bound to the pane's
+# own input for its presses and its wheel, to the store for what it lists, and
+# to the menu so a load moves the size readouts.
+spawn PaintProvider::PaintPagePanel page_list
+page_list.Create()
+page_list.BindPages(@pages)
+page_list.BindMenu(@menu)
+menu_input.BindPagePanel(@page_list)
+menu.BindPagePanel(@page_list)
+run PaintProvider/scripts/paint_menu.etcs pane=menu_pane palette=palette menu=menu pages=page_list
 
-# The store the menu lists and that `new` adds to. Bound after the script has
-# declared the rows, so the first RefreshPages has somewhere to write.
+# The store `new` adds to and `save` writes.
 menu.BindPages(@pages)
+# A GIF with more than one frame uploaded to the page goes to the reel rather
+# than to the layer-or-canvas question (PaintCanvasMenu::OfferImport).
+menu.BindAnimation(@anim)
 
 palette.BindRouter(@router)
 palette.AddPopup(@gear, @menu_pane, @menu_input)
+palette.AddPopup(@gear_word, @menu_pane, @menu_input)
+
+# ── who is in the session ────────────────────────────────────────────────────
+#
+# A SECOND POPUP, on the same machinery as the settings menu: its own pane, its
+# own input, and the palette answering presses on it. Order 30 -- above the
+# menu, because it is opened FROM a header button rather than from the gear and
+# should not end up behind whatever was last up.
+#
+# Hidden until the page opens it (PaintVisitors.OpenAs), which the page does the
+# moment a session exists -- as the host's window or a guest's. The host's end
+# button ends the session: the runtime raises the event, the page tells the
+# node, and every other page's next read answers NO SUCH SESSION and falls back
+# to the canvas it already has. A guest's leaves it.
+sheet_root.spawn(RenderProvider::CompositeDrawable2D visitors_pane)
+visitors_pane.Create(300, 372)
+visitors_pane.SetPosition(4, 18)
+visitors_pane.SetOrder(30)
+visitors_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
+visitors_pane.SetHidden(1)
+
+spawn PaintProvider::PaintVisitors visitors
+visitors.Create()
+visitors.BindWindow(@visitors_pane)
+
+spawn PaintProvider::PaintInput visitors_input
+visitors_input.Create(@doc, @brush, @canvas)
+visitors_input.BindRoot(@visitors_pane)
+visitors_input.BindPalette(@palette)
+# The two things a palette call cannot carry: where the pointer is, for dragging
+# the window by its title, and the keys while a name is being typed.
+visitors_input.BindVisitors(@visitors)
+
+run PaintProvider/scripts/paint_visitors.etcs pane=visitors_pane palette=palette visitors=visitors
+
+# The pane joins the router the same way the wheel and the menu do -- a pane is
+# a root to pick in and an input to hand the pick to. Registered here rather
+# than as an AddPopup because nothing on the sheet OPENS it: the page does.
+router.AddPane(@visitors_pane, @visitors_input)
 
 # ── the import prompt ────────────────────────────────────────────────────────
 #
@@ -568,6 +826,65 @@ menu.BindImportPrompt(@palette, @import_pane, @import_input, @import_name)
 # between showing half of one. No Compose: stage has been the compose root since
 # the top of this file, and everything above simply filled it in.
 sheet_root.SetHidden(0)
+
+# ── the layout ───────────────────────────────────────────────────────────────
+#
+# WHY THERE IS ONE AT ALL. Every size and position above this line was a number
+# typed against 1024x768, and half of them were that number read backwards --
+# the bar at y=704 because 768-64, the throbber at 464,336 because the centre.
+# A window that is any other size makes every one of them wrong, which is why
+# the canvas was pinned to 4:3 by the page's CSS: the shape could not change
+# because the scene could not follow it.
+#
+# So the boxes that have to follow are declared here and the solver answers,
+# writing back through MoveTo and ResizeTo (Clayout.h). The document is NOT one
+# of them and must not be: a picture is 1024x768 whatever the window is, and
+# PaintSurface already blits it into the pane with a zoom and a pan. Growing
+# the pane gives the picture more room around it; it does not stretch it.
+#
+# kinds: 0 fit, 1 grow, 2 fixed, 3 percent. parent 0 is the root.
+#
+# Declared LAST because a box has to exist to be named, and solved once here so
+# the scene is right at the size we came up at -- FollowResize then hands the
+# window the reins, and re-solves where the size arrives rather than on a tick.
+# The solver itself is spawned further up, where the toolbar can reach it.
+
+# The sheet is the whole window, and the stage is the sheet -- one column each,
+# because the wrapper exists to switch the throbber against the scene and not
+# to arrange anything (see THE STAGE, above).
+layout.AddBox(@stage, 0, 1, 0.0, 1, 0.0)
+layout.SetDirection(@stage, 1)
+layout.AddBox(@sheet_root, @stage, 1, 0.0, 1, 0.0)
+layout.SetDirection(@sheet_root, 1)
+
+# THE MARGIN IS THE PADDING NOW, and it is the same 36px the inset was -- the
+# band the ruler draws in, which is a property of the sheet rather than a
+# subtraction the pane has to remember. The bar is inside it too, which the
+# full-bleed backing strip used to hide; the band now runs round the toolbar as
+# well as the picture.
+layout.SetPadding(@sheet_root, 36.0)
+layout.SetGap(@sheet_root, 8.0)
+
+# The picture takes everything the two fixed rows under it do not.
+layout.AddBox(@paper_pane, @sheet_root, 1, 0.0, 1, 0.0)
+layout.AddBox(@zoom_pane, @sheet_root, 1, 0.0, 2, 52.0)
+layout.AddBox(@bar, @sheet_root, 1, 0.0, 2, 64.0)
+# THE BAR IS A ROW, and this is what makes the toolbar's sixteen cells share the
+# width instead of stopping at 960. AFTER its AddBox and not before: SetDirection
+# finds the box or does nothing, and AddBox defaults a new one to a column -- so
+# stated earlier this line is silently dropped and the bar lays its cells out
+# vertically, sixteen four-pixel strips in a 64px bar.
+layout.SetDirection(@bar, 0)
+
+layout.Solve()
+layout.FollowResize(@main)
+
+# NOTHING RE-RENDERS HERE, and that is deliberate. The solve above resized the
+# pane, but a compositor applies an extent on its next recompose rather than
+# when it is asked (CompositeDrawable2D::ResizeTo) -- so a Render on this line
+# would draw the view, and the ruler's band with it, for the size the pane is
+# about to stop having. The surface watches its own pane for exactly this and
+# redraws a frame later (PaintSurface::AnimatingConcrete).
 
 # ── the pumps ────────────────────────────────────────────────────────────────
 #

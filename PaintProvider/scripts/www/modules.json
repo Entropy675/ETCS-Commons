@@ -18,19 +18,19 @@
   "modules": [
     "WindowProvider.wasm",
     "RenderProvider.wasm",
+    "LayoutProvider.wasm",
     "PaintProvider.wasm",
     "DatabaseProvider.wasm",
     "ShellProvider.wasm"
   ],
   "_scripts": [
     "Staged into the browser's filesystem by the page, under these names, before",
-    "main() runs -- so each one must also answer over HTTP. THREE scripts mount",
-    "them and this list is the source of truth for all three: ../serve_paint.etcs",
-    "at the root of its own server, and ETCS's scripts/run_website.etcs and",
-    "run_tls_website.etcs under /paint/ on the whole site. Adding a script here",
-    "means adding one mount line to each -- a name the page asks for and a server",
-    "does not mount is a 404, and render_frames.etcs is the frame pump, so losing",
-    "it leaves a black canvas on a runtime that is otherwise working perfectly.",
+    "main() runs -- so each one must also answer over HTTP. They are mounted from",
+    "ONE list, ../paint_mounts.etcs, which every server runs (serve_paint.etcs at",
+    "its root, ETCS's run_website.etcs and run_tls_website.etcs under /paint/).",
+    "Adding a script here means adding its mount line there -- a name the page",
+    "asks for and no server mounts is a 404, and render_frames.etcs is the frame",
+    "pump, so losing it leaves a black canvas on a working runtime.",
     "A NAME MAY BE A PATH: the page creates the directories first",
     "(FS.mkdirTree), which is what lets a script be staged at the same relative",
     "path the OS side reads it from, so boot_paint_panels.etcs's `detach` and",
@@ -44,7 +44,29 @@
     "PaintProvider/scripts/paint_menu.etcs",
     "PaintProvider/scripts/paint_layers.etcs",
     "PaintProvider/scripts/paint_import.etcs",
+    "PaintProvider/scripts/paint_visitors.etcs",
+    "PaintProvider/scripts/paint_eye.etcs",
+    "PaintProvider/scripts/paint_cell_arrow.etcs",
+    "PaintProvider/scripts/paint_layer_row.etcs",
+    "PaintProvider/scripts/paint_page_row.etcs",
+    "PaintProvider/scripts/paint_anim.etcs",
+    "PaintProvider/scripts/paint_anim_row.etcs",
+    "PaintProvider/scripts/paint_visitor_row.etcs",
+    "PaintProvider/scripts/paint_textbar.etcs",
     "RenderProvider/scripts/render_frames.etcs"
+  ],
+  "_assets": [
+    "Files that are not scripts but are read by one, staged exactly as the",
+    "scripts are and mounted from the same list: the text boxes' fonts",
+    "(PaintFonts::Load in boot_paint_panels.etcs). Binary, so they skip the",
+    "is-this-markup check the scripts get; optional, so one that is not there",
+    "is skipped and its font draws in the pixel font (fonts/README.md)."
+  ],
+  "assets": [
+    "PaintProvider/fonts/InstrumentSans-Regular.ttf",
+    "PaintProvider/fonts/YoungSerif-Regular.ttf",
+    "PaintProvider/fonts/RedHatMono-Regular.ttf",
+    "PaintProvider/fonts/NothingYouCouldDo-Regular.ttf"
   ],
   "boot": "boot_paint_panels.etcs",
   "_glue": [

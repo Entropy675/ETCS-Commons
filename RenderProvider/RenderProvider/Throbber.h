@@ -99,6 +99,19 @@
  * (ontology/DrawableBase.h). AnimatingConcrete reads it, so a hidden throbber
  * costs exactly one virtual call per frame and advances nothing -- there is no
  * second "is it running" fact to keep in step with "is it showing".
+ *
+ * AND THE SWITCH CAN FOLLOW A FLAG. Watch(entity, flag) binds visibility to a
+ * state tag on another entity -- `busy` on the paint page store, say -- and
+ * from then on the throbber is shown exactly while that entity carries the
+ * tag. The read happens in AnimatingConcrete, on the frame edge's thread,
+ * once per frame: the thing doing the work raises a flag on itself and never
+ * learns that a throbber exists, and the throbber never learns what the work
+ * is. That is the difference from being told by verb: a raise of the flag is
+ * a change to that entity's own state, ordered within its module, and the
+ * observer reads it on the presenting side. Anything that raises the same
+ * flag gets the indicator, including work not written yet. Several watches
+ * may be bound, one per entity, and the throbber shows while ANY of them is
+ * raised: a wait is a wait, whichever part of the session is doing it.
  */
 class Throbber : public Drawable2DBase<Throbber>,
                  public PixelsBase<Throbber>,
@@ -255,11 +268,63 @@ public:
 
     void SetOrder(int32_t z) { m_order = z; this->Reorder(); etcs_mark_observed(this); }
 
+    /*
+ * Follow a state tag on another entity -- see the header. The entity is named
+ * by RID and resolved on every read rather than held: the store may be
+ * retired while the throbber lives, and a pointer kept across that is the
+ * failure lifetime holds exist to prevent. A bare RID resolves through the
+ * loader's lists (etcs_resolve_rid_anywhere), the same walk every subscriber
+ * by RID takes; a RID is unique per provider-type, and a watch names one
+ * entity, so the first list that answers is the one meant. Watching an
+ * entity again replaces its flag; an empty flag unbinds that entity, and
+ * with none left the throbber stays wherever SetHidden last put it.
+ */
+    void Watch(ETCS::RID entity, const std::string& flag)
+    {
+        for (size_t i = 0; i < m_watches.size(); ++i)
+            if (m_watches[i].entity == entity) { m_watches.erase(m_watches.begin() + static_cast<std::ptrdiff_t>(i)); break; }
+        if (!flag.empty()) m_watches.push_back(Watched{ entity, flag });
+    }
+
+    /*
+ * Keep the ring centred on another node, re-read every frame it shows.
+ *
+ * A position typed into a script is the centre of the size the script was
+ * written against; the layout resizes the panes afterwards (FollowResize), so
+ * a throbber placed once sat where the middle of a 1024x768 sheet used to be
+ * rather than over the canvas it was waiting on. Reading the node's bounds on
+ * the frame edge, as Watch reads its flag, follows every resize with no one
+ * having to tell the throbber one happened -- and costs nothing while hidden.
+ *
+ * The node has to be in this throbber's parent's subtree: its box is summed up
+ * to that parent, which is the space SetPosition is in. A node elsewhere is
+ * ignored rather than guessed at, and 0 unbinds.
+ */
+    void CenterOn(ETCS::RID node) { m_center_on = node; if (!this->Hidden()) follow_center(); }
+
     // ── Animated_ ────────────────────────────────────────────────────────
     //
-    // Hidden is the whole answer. See the header note on why there is no
-    // separate running flag.
-    bool AnimatingConcrete() override { return !this->Hidden(); }
+    // Hidden is the whole answer -- and with a watch bound, Hidden follows
+    // the flag. Asked every frame for every child, hidden or not
+    // (CompositeDrawable2D::anyChildNeedsFrame), which is what makes this the
+    // right place to read it: no second clock, no verb from the writer.
+    bool AnimatingConcrete() override
+    {
+        if (!m_watches.empty())
+        {
+            bool raised = false;
+            for (const Watched& w : m_watches)
+            {
+                ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(ETCS::etcs_loader_event_node(), w.entity);
+                if (!e) continue;
+                ETCS::LifetimeHold hold(e);
+                if (hold && e->hasTag(ETCS::Buffer(w.flag.c_str()))) { raised = true; break; }
+            }
+            if (raised == this->Hidden()) this->SetHidden(!raised);
+        }
+        if (!this->Hidden()) follow_center();
+        return !this->Hidden();
+    }
 
     /*
  * ONE STEP PER VISIT: dt_ms IS TAKEN AND DROPPED. The only question a leaf
@@ -485,6 +550,32 @@ private:
 
     TextLabel* m_label = nullptr;
     std::string m_text = "ETCS";
+
+    struct Watched { ETCS::RID entity; std::string flag; };
+    std::vector<Watched> m_watches;    // see Watch
+    ETCS::RID   m_center_on = 0;       // see CenterOn
+
+    void follow_center()
+    {
+        if (m_center_on == 0) return;
+        ETCS::Held<Drawable2D_> t = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_center_on);
+        if (!t) return;
+        const Rect2D b = t->Bounds();
+        int32_t ox = b.x, oy = b.y;
+        ETCS::Entity* const stop = this->getParent();
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(t.get())->getParent();
+        for (; e && e != stop; e = e->getParent())
+        {
+            void* d2 = e->getInterfacePointer(ETCS::Buffer("Drawable2D"));
+            if (!d2) return;
+            const Rect2D pb = static_cast<Drawable2D_*>(d2)->Bounds();
+            ox += pb.x; oy += pb.y;
+        }
+        if (e != stop) return;
+        const int32_t x = ox + (static_cast<int32_t>(b.w) - static_cast<int32_t>(m_w)) / 2;
+        const int32_t y = oy + (static_cast<int32_t>(b.h) - static_cast<int32_t>(m_h)) / 2;
+        if (x != m_x || y != m_y) SetPosition(x, y);
+    }
 
     int32_t  m_x = 0, m_y = 0;
     uint32_t m_w = 0, m_h = 0;        // always m_ring square -- see the header

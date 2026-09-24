@@ -1,0 +1,119 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── ONE ROW OF THE SHARING WINDOW ────────────────────────────────────────────
+#
+#     run PaintProvider/scripts/paint_visitor_row.etcs pane=<Drawable2D> palette=<PaintPalette> visitors=<PaintVisitors>
+#
+# ONE FILE, RUN ONCE PER ROW. The pane is the row -- the caller positions it and
+# everything here is drawn in its own space, which is what lets one file serve
+# every row: `run` carries RIDs and not numbers, so a script can never be told
+# where to draw, but a pane is a coordinate origin.
+#
+# AND THE BUTTONS CARRY NO ROW NUMBER. Each one passes its OWN RID to the verb
+# it calls, and PaintVisitors looks up which row that node belongs to. An index
+# would have had to be a literal here, which means a file per row.
+#
+# A ROW IS [colour][name][role][draw][view][out]. The colour is the one that
+# person's frame is drawn in on your canvas. The three buttons are the host's
+# and are hidden everywhere else -- on a guest's window, and on the host's own
+# row, where they could only ever be refused. Each has its word on it: three
+# unlabelled plates were three guesses.
+
+requires pane     [Drawable2D]
+requires palette  [PaintPalette]
+requires visitors [PaintVisitors]
+
+visitors.BeginRow()
+visitors.RowNode(bg, @pane)
+
+pane.spawn(RenderProvider::PolygonDrawable2D chip)
+chip.Create()
+chip.AddPoint(6, 8)
+chip.AddPoint(16, 8)
+chip.AddPoint(16, 18)
+chip.AddPoint(6, 18)
+chip.SetFill(0.30, 0.31, 0.26, 1.0)
+chip.SetOrder(2)
+visitors.RowNode(chip, @chip)
+
+pane.spawn(RenderProvider::TextLabel who)
+who.Create()
+who.SetPosition(22, 9)
+who.SetSize(1)
+who.SetColor(0.94, 0.89, 0.78, 1.0)
+who.SetText(-)
+who.SetOrder(2)
+visitors.RowNode(name, @who)
+
+pane.spawn(RenderProvider::TextLabel role)
+role.Create()
+role.SetPosition(124, 9)
+role.SetSize(1)
+role.SetColor(0.55, 0.57, 0.50, 1.0)
+role.SetText(-)
+role.SetOrder(2)
+visitors.RowNode(role, @role)
+
+pane.spawn(RenderProvider::PolygonDrawable2D to_writer)
+to_writer.Create()
+to_writer.AddPoint(168, 4)
+to_writer.AddPoint(204, 4)
+to_writer.AddPoint(204, 22)
+to_writer.AddPoint(168, 22)
+to_writer.SetFill(0.17, 0.26, 0.15, 1.0)
+to_writer.SetOrder(2)
+visitors.RowNode(up, @to_writer)
+palette.AddCall(@to_writer, @visitors, PaintVisitors.Promote, @to_writer)
+
+pane.spawn(RenderProvider::TextLabel to_writer_word)
+to_writer_word.Create()
+to_writer_word.SetPosition(174, 9)
+to_writer_word.SetSize(1)
+to_writer_word.SetColor(0.94, 0.89, 0.78, 1.0)
+to_writer_word.SetText(draw)
+to_writer_word.SetOrder(3)
+visitors.RowNode(word, @to_writer_word)
+palette.AddCall(@to_writer_word, @visitors, PaintVisitors.Promote, @to_writer_word)
+
+pane.spawn(RenderProvider::PolygonDrawable2D to_reader)
+to_reader.Create()
+to_reader.AddPoint(208, 4)
+to_reader.AddPoint(244, 4)
+to_reader.AddPoint(244, 22)
+to_reader.AddPoint(208, 22)
+to_reader.SetFill(0.17, 0.18, 0.13, 1.0)
+to_reader.SetOrder(2)
+visitors.RowNode(down, @to_reader)
+palette.AddCall(@to_reader, @visitors, PaintVisitors.Demote, @to_reader)
+
+pane.spawn(RenderProvider::TextLabel to_reader_word)
+to_reader_word.Create()
+to_reader_word.SetPosition(214, 9)
+to_reader_word.SetSize(1)
+to_reader_word.SetColor(0.94, 0.89, 0.78, 1.0)
+to_reader_word.SetText(view)
+to_reader_word.SetOrder(3)
+visitors.RowNode(word, @to_reader_word)
+palette.AddCall(@to_reader_word, @visitors, PaintVisitors.Demote, @to_reader_word)
+
+pane.spawn(RenderProvider::PolygonDrawable2D drop)
+drop.Create()
+drop.AddPoint(248, 4)
+drop.AddPoint(284, 4)
+drop.AddPoint(284, 22)
+drop.AddPoint(248, 22)
+drop.SetFill(0.26, 0.15, 0.14, 1.0)
+drop.SetOrder(2)
+visitors.RowNode(out, @drop)
+palette.AddCall(@drop, @visitors, PaintVisitors.Remove, @drop)
+
+pane.spawn(RenderProvider::TextLabel drop_word)
+drop_word.Create()
+drop_word.SetPosition(257, 9)
+drop_word.SetSize(1)
+drop_word.SetColor(0.94, 0.89, 0.78, 1.0)
+drop_word.SetText(out)
+drop_word.SetOrder(3)
+visitors.RowNode(word, @drop_word)
+palette.AddCall(@drop_word, @visitors, PaintVisitors.Remove, @drop_word)

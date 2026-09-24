@@ -1,0 +1,42 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── ONE ROW OF THE ANIMATION WINDOW ──────────────────────────────────
+#
+#     run paint_anim_row.etcs pane=<Drawable2D> anim=<PaintAnimation>
+#
+# A frame of the reel: [thumb][#][x]. The pane is the row and its background
+# (the layer row's bargain, paint_layer_row.etcs). A press on the thumb or the
+# number makes it the current frame; x removes it.
+
+requires pane [Drawable2D]
+requires anim [PaintAnimation]
+
+anim.BeginRow()
+anim.RowNode(bg, @pane)
+
+pane.spawn(RenderProvider::CompositeDrawable2D thumb)
+thumb.Create(32, 24)
+thumb.SetPosition(2, 1)
+thumb.SetOrder(2)
+thumb.SetRetain(1)
+anim.RowNode(thumb, @thumb)
+
+pane.spawn(RenderProvider::TextLabel num)
+num.Create()
+num.SetPosition(40, 9)
+num.SetSize(1)
+num.SetColor(0.90, 0.90, 0.94, 1.0)
+num.SetText(-)
+num.SetOrder(2)
+anim.RowNode(label, @num)
+
+pane.spawn(RenderProvider::PolygonDrawable2D del)
+del.Create()
+del.AddPoint(216, 5)
+del.AddPoint(232, 5)
+del.AddPoint(232, 21)
+del.AddPoint(216, 21)
+del.SetFill(0.72, 0.31, 0.23, 1.0)
+del.SetOrder(2)
+anim.RowNode(del, @del)

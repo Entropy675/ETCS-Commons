@@ -89,8 +89,42 @@ public:
         return true;
     }
 
-    void AddPoint(int32_t x, int32_t y) { m_points.push_back(Vertex{x, y}); markCompositorsDirty(); }
-    void ClearPoints()                  { m_points.clear(); m_ops.clear(); markCompositorsDirty(); }
+    void AddPoint(int32_t x, int32_t y) { m_oval = false; m_points.push_back(Vertex{x, y}); markCompositorsDirty(); }
+    void ClearPoints()                  { m_oval = false; m_points.clear(); m_ops.clear(); markCompositorsDirty(); }
+
+    /*
+ * AN OVAL, INSCRIBED IN THE BOX (x, y, w, h) of the parent's space, and FILLED
+ * SMOOTH: pixels the edge crosses are drawn at the fraction of them it covers.
+ *
+ * A curve through integer corners cannot be smooth however many of them there
+ * are -- the span fill decides each pixel in or out, so the edge is a staircase
+ * and a small shape (an eye, a dot) is mostly staircase. Coverage is the one
+ * thing that fixes that, and it needs the true curve rather than a polygon
+ * standing in for it, which is why this is a verb and not a point list.
+ *
+ * The points are still set, to a polygon close to the curve, so every question
+ * that is not "what colour is this pixel" -- Bounds, the pick, the clip of a
+ * retained rect -- keeps its one implementation. AddPoint or ClearPoints ends
+ * the oval and the node is a polygon again.
+ */
+    void SetOval(int32_t x, int32_t y, uint32_t w, uint32_t h)
+    {
+        m_points.clear();
+        m_oval = (w > 0 && h > 0);
+        m_ox = x; m_oy = y; m_ow = w; m_oh = h;
+        if (m_oval)
+        {
+            constexpr int SIDES = 32;   // a multiple of 4, so the extremes are vertices and Bounds is the box
+            const double cx = x + w * 0.5, cy = y + h * 0.5, rx = w * 0.5, ry = h * 0.5;
+            for (int i = 0; i < SIDES; ++i)
+            {
+                const double t = 6.283185307179586 * i / SIDES;
+                m_points.push_back(Vertex{ static_cast<int32_t>(std::lround(cx + rx * std::cos(t))),
+                                           static_cast<int32_t>(std::lround(cy + ry * std::sin(t))) });
+            }
+        }
+        markCompositorsDirty();
+    }
     void SetFill(float r, float g, float b, float a)
     { m_fill = {r, g, b, a}; m_filled = true; markCompositorsDirty(); }
     void SetOrder(int32_t z)            { m_order = z; Reorder(); markCompositorsDirty(); }
@@ -191,7 +225,9 @@ public:
         const Point2D base = parentAbsoluteOrigin();
         const Rect2D  b    = BoundsConcrete();
 
-        if (m_filled && m_points.size() >= 3)
+        if (m_filled && m_oval)
+            fillOval(dst, base, m_fill);
+        else if (m_filled && m_points.size() >= 3)
             fillShape(dst, base, m_fill);
 
         for (const Op& op : m_ops)
@@ -253,6 +289,10 @@ private:
     std::vector<Op>     m_ops;
     Colour              m_fill{1.0f, 1.0f, 1.0f, 1.0f};
     bool                m_filled = false;
+    // The oval's box, in the parent's space -- see SetOval.
+    bool                m_oval = false;
+    int32_t             m_ox = 0, m_oy = 0;
+    uint32_t            m_ow = 0, m_oh = 0;
 
     // Every pixel-owning ancestor cached this node, so every one of them is
     // stale (ontology/Pixels.h). From the PARENT up: this leaf owns no pixels
@@ -294,6 +334,51 @@ private:
                 dst->DrawRect(base.x + x0, base.y + y,
                               static_cast<uint32_t>(x1 - x0), 1,
                               c.r, c.g, c.b, c.a);
+            }
+        }
+    }
+
+    /*
+ * The oval by coverage. Each row splits into what the curve leaves wholly
+ * inside -- one DrawRect -- and the pixels either side of it that the curve
+ * crosses, each drawn at the colour's alpha times the share of it inside,
+ * measured on a 4x4 grid. The destination blends source-over, so a partly
+ * covered pixel is the right mix of the fill and whatever is under it: a
+ * smooth edge on any background, which is the point, not on one baked in.
+ */
+    void fillOval(Surface_* dst, Point2D base, Colour c)
+    {
+        const double cx = m_ox + m_ow * 0.5, cy = m_oy + m_oh * 0.5;
+        const double rx = m_ow * 0.5, ry = m_oh * 0.5;
+        auto inside = [&](double px, double py)
+        {
+            const double dx = (px - cx) / rx, dy = (py - cy) / ry;
+            return dx * dx + dy * dy <= 1.0;
+        };
+        auto coverage = [&](int32_t px, int32_t py)
+        {
+            int n = 0;
+            for (int j = 0; j < 4; ++j)
+                for (int i = 0; i < 4; ++i)
+                    n += inside(px + (i + 0.5) / 4.0, py + (j + 0.5) / 4.0) ? 1 : 0;
+            return n / 16.0f;
+        };
+        const int32_t x_end = m_ox + static_cast<int32_t>(m_ow);
+        for (int32_t py = m_oy; py < m_oy + static_cast<int32_t>(m_oh); ++py)
+        {
+            int32_t run = -1;   // start of the current fully covered run
+            for (int32_t px = m_ox; px <= x_end; ++px)
+            {
+                const float k = (px < x_end) ? coverage(px, py) : 0.0f;
+                if (k >= 1.0f) { if (run < 0) run = px; continue; }
+                if (run >= 0)
+                {
+                    dst->DrawRect(base.x + run, base.y + py, static_cast<uint32_t>(px - run), 1,
+                                  c.r, c.g, c.b, c.a);
+                    run = -1;
+                }
+                if (k > 0.0f)
+                    dst->DrawRect(base.x + px, base.y + py, 1, 1, c.r, c.g, c.b, c.a * k);
             }
         }
     }

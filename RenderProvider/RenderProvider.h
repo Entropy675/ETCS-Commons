@@ -388,6 +388,14 @@ DEFINE_WORK_FUNC(PolygonDrawable2D, ClearPoints)
     self.ClearPoints();
 }
 
+// SetOval <x> <y> <w> <h> -- an oval filling that box of the parent's space,
+// with smooth edges. See PolygonDrawable2D::SetOval.
+DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, SetOval, (int32_t, x), (int32_t, y), (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    self.SetOval(x, y, w, h);
+}
+
 DEFINE_WORK_FUNC_TYPED(PolygonDrawable2D, SetFill,
                        (float, r), (float, g), (float, b), (float, a))
 {
@@ -513,12 +521,12 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetRetain, (int32_t, on))
                                                     : "OFF -- the buffer is derived from the tree"));
 }
 
-// SetPickable <0|1> -- 0 makes the node scenery: drawn, and no pick lands on
-// it or on anything inside it. See SetPickable itself.
-DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPickable, (int32_t, on))
+// SetPassthrough <0|1> -- 1 raises the `passthrough` flag: drawn, and no pick
+// lands on the node or on anything inside it. See SetPassthrough itself.
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, SetPassthrough, (int32_t, on))
 {
     (void)ctx;
-    self.SetPickable(on != 0);
+    self.SetPassthrough(on != 0);
 }
 
 /*
@@ -545,6 +553,33 @@ DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, ResizeTo, (uint32_t, w), (uint32_t, 
     (void)ctx;
     if (!self.ResizeTo(WindowSize{ w, h }))
         ETCS_LOG("CompositeDrawable2D::ResizeTo", "refused " << w << "x" << h << ".");
+}
+
+/*
+ * FollowResize <rid> -- be whatever size that Resizable is, from now on.
+ *
+ * The ontology verb (Resizable_::FollowResize), exported here because a
+ * full-bleed pane is not a layout question: a box that is simply the window, at
+ * the window's origin, needs no solver and cannot be stated as a row or a
+ * column. A full-sheet overlay is exactly that -- the ruler's own raster is one
+ * -- and before this the only way to have one follow anything was to declare it
+ * in a Layout it does not belong in.
+ *
+ * Pushed, for the reason Layout's is (LayoutProvider.h): a drawable sits in no
+ * loop that would ask on its own, and the wake carries no size, so one that
+ * lands late still reads the current one.
+ */
+DEFINE_WORK_FUNC_TYPED(CompositeDrawable2D, FollowResize, (ETCS::RID, source))
+{
+    (void)ctx;
+    ETCS::Held<Resizable_> src = ETCS::resolve_held<Resizable_>("Resizable", source);
+    if (!src)
+    {
+        ETCS_LOG("CompositeDrawable2D::FollowResize", "RID:" << source
+                 << " is not a live Resizable -- nothing to follow.");
+        return;
+    }
+    self.FollowResize(src.get(), ResizeDelivery::Pushed);
 }
 
 // Recompose if anything beneath changed, then blit once. The same verb
@@ -1291,6 +1326,31 @@ DEFINE_WORK_FUNC_TYPED(Throbber, SetHidden, (int32_t, hidden))
 {
     (void)ctx;
     self.SetHidden(hidden != 0);
+}
+
+// Watch <@entity> <flag> -- shown exactly while that entity carries the
+// (lowercase) state tag; see Throbber::Watch. An empty flag unbinds.
+DEFINE_WORK_FUNC_TYPED(Throbber, Watch, (ETCS::RID, entity), (std::string, flag))
+{
+    (void)ctx;
+    self.Watch(entity, flag);
+    ETCS_LOG("Throbber::Watch", (flag.empty() ? "unbound" : "following '" + flag + "' on RID:" + std::to_string(entity))
+                                << " for RID:" << self.getRID());
+}
+
+// SetPlate r g b a -- a square behind the ring; alpha 0 (the default) is none.
+// CenterOn <@node> -- keep the ring centred on that node as it moves and
+// resizes; see Throbber::CenterOn. 0 unbinds.
+DEFINE_WORK_FUNC_TYPED(Throbber, CenterOn, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.CenterOn(node);
+}
+
+DEFINE_WORK_FUNC_TYPED(Throbber, SetPlate, (float, r), (float, g), (float, b), (float, a))
+{
+    (void)ctx;
+    self.SetPlate(r, g, b, a);
 }
 
 DEFINE_WORK_FUNC(Throbber, Delete)

@@ -1,146 +1,231 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# Toolbar: full-height slices (960x64). Labels use order 2 so they draw ABOVE
-# the slice rects (order 1); otherwise the opaque fill hides the text.
+# Toolbar: seventeen cells in a ROW THE LAYOUT SOLVES, not seventeen rectangles at
+# typed-in coordinates.
+#
+# Every slice used to be a PolygonDrawable2D with its corners written out --
+# (360,0) (420,0) (420,64) (360,64) and so on to 960. Those numbers are
+# geometry, not position: a polygon answers MoveTo and has nothing to say to
+# ResizeTo, so the row could not follow a bar that had stopped being 960 wide.
+# It was also 960 of fixed content in a bar that is now the window minus its
+# margins, which clips the right-hand end on any window under about 1030.
+#
+# So a cell is a CompositeDrawable2D with a background, declared to the layout
+# as a grow/grow child of `bar` (a row -- SetDirection in the boot script), and
+# its label and arrow are its CHILDREN at cell-relative coordinates. The solver
+# gives every cell an equal share of whatever width there is and the contents
+# come with it. Nothing here states a width.
+#
+# THE ARROWS ARE NOT WRITTEN HERE. A cell's arrow is three points and a fill,
+# and it was those nine times -- until it learned to stretch. A polygon has no
+# transform, so growing one means rebuilding it, which PaintPalette does at the
+# cell's real width whenever the layout changes it (stretchArrows). That put the
+# shape's rule in PaintProvider.h and left nine authored copies of it in this
+# file for the rule to overwrite, which is one copy too many and eight too many
+# after that. It is paint_cell_arrow.etcs now, `run` once per cell.
+#
+# WHAT IS STILL WRITTEN OUT, and why it has to be. Every remaining repeat in
+# this file carries a LITERAL that differs: a swatch's colour, a tool's name, a
+# stepper's delta. `run` hands a sub-script RIDs and nothing else
+# (resolve_run_bindings), so a cell whose identity is a number or a word cannot
+# be handed its identity -- the arrow compressed precisely because it has none.
+# That is the boundary, not an unfinished pass.
+#
+# Labels use order 2 so they draw ABOVE the cell's own background (order 1).
 
 requires bar     [Drawable2D]
 requires palette [PaintPalette]
+requires layout  [Layout]
 
-bar.spawn(RenderProvider::PolygonDrawable2D swatch_ink)
-swatch_ink.Create()
-swatch_ink.AddPoint(0, 0)
-swatch_ink.AddPoint(60, 0)
-swatch_ink.AddPoint(60, 64)
-swatch_ink.AddPoint(0, 64)
-swatch_ink.SetFill(0.1, 0.1, 0.12, 1.0)
+# ── the colours ──────────────────────────────────────────────────────────────
+#
+# Each swatch is its own cell, and the arrow across the top of it opens the
+# colour wheel FOR THAT SWATCH -- the target named here, at layout time, so it
+# cannot be the wrong one. A single shared wheel button had to guess from
+# whatever was selected last. The swatch is still pressable everywhere the
+# arrow is not, which at 12px of 64 is most of it.
+bar.spawn(RenderProvider::CompositeDrawable2D swatch_ink)
+swatch_ink.Create(60, 64)
 swatch_ink.SetOrder(1)
+swatch_ink.SetBackground(0.1, 0.1, 0.12, 1.0)
+layout.AddBox(@swatch_ink, @bar, 1, 0.0, 1, 0.0)
 palette.AddColor(@swatch_ink, 0.1, 0.1, 0.12, 1.0)
+#
+# NAMED AS A SIBLING, not by its path from the module root, and that is not a
+# style choice. resolve_script_path tries the caller's OWN directory first and
+# falls back to the caller's #IMPORT target; a nested run spelled
+# "PaintProvider/scripts/x.etcs" from inside PaintProvider/scripts/ asks for
+# PaintProvider/scripts/PaintProvider/scripts/x.etcs, misses, and is saved only
+# by the #IMPORT fallback -- which exists natively and does NOT in the browser,
+# where the scripts are staged into MEMFS at their relative paths and ACE_ROOT
+# means nothing. Spelled as a sibling it resolves on the FIRST candidate in both
+# places. A top-level run from the boot script still names the full path,
+# because from there it is not a sibling.
+run paint_cell_arrow.etcs cell=swatch_ink palette=palette
 
-bar.spawn(RenderProvider::PolygonDrawable2D swatch_red)
-swatch_red.Create()
-swatch_red.AddPoint(60, 0)
-swatch_red.AddPoint(120, 0)
-swatch_red.AddPoint(120, 64)
-swatch_red.AddPoint(60, 64)
-swatch_red.SetFill(0.85, 0.18, 0.22, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D swatch_red)
+swatch_red.Create(60, 64)
 swatch_red.SetOrder(1)
+swatch_red.SetBackground(0.85, 0.18, 0.22, 1.0)
+layout.AddBox(@swatch_red, @bar, 1, 0.0, 1, 0.0)
 palette.AddColor(@swatch_red, 0.85, 0.18, 0.22, 1.0)
+run paint_cell_arrow.etcs cell=swatch_red palette=palette
 
-bar.spawn(RenderProvider::PolygonDrawable2D swatch_amber)
-swatch_amber.Create()
-swatch_amber.AddPoint(120, 0)
-swatch_amber.AddPoint(180, 0)
-swatch_amber.AddPoint(180, 64)
-swatch_amber.AddPoint(120, 64)
-swatch_amber.SetFill(0.95, 0.66, 0.15, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D swatch_amber)
+swatch_amber.Create(60, 64)
 swatch_amber.SetOrder(1)
+swatch_amber.SetBackground(0.95, 0.66, 0.15, 1.0)
+layout.AddBox(@swatch_amber, @bar, 1, 0.0, 1, 0.0)
 palette.AddColor(@swatch_amber, 0.95, 0.66, 0.15, 1.0)
+run paint_cell_arrow.etcs cell=swatch_amber palette=palette
 
-bar.spawn(RenderProvider::PolygonDrawable2D swatch_green)
-swatch_green.Create()
-swatch_green.AddPoint(180, 0)
-swatch_green.AddPoint(240, 0)
-swatch_green.AddPoint(240, 64)
-swatch_green.AddPoint(180, 64)
-swatch_green.SetFill(0.22, 0.62, 0.35, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D swatch_green)
+swatch_green.Create(60, 64)
 swatch_green.SetOrder(1)
+swatch_green.SetBackground(0.22, 0.62, 0.35, 1.0)
+layout.AddBox(@swatch_green, @bar, 1, 0.0, 1, 0.0)
 palette.AddColor(@swatch_green, 0.22, 0.62, 0.35, 1.0)
+run paint_cell_arrow.etcs cell=swatch_green palette=palette
 
-bar.spawn(RenderProvider::PolygonDrawable2D swatch_blue)
-swatch_blue.Create()
-swatch_blue.AddPoint(240, 0)
-swatch_blue.AddPoint(300, 0)
-swatch_blue.AddPoint(300, 64)
-swatch_blue.AddPoint(240, 64)
-swatch_blue.SetFill(0.2, 0.42, 0.8, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D swatch_blue)
+swatch_blue.Create(60, 64)
 swatch_blue.SetOrder(1)
+swatch_blue.SetBackground(0.2, 0.42, 0.8, 1.0)
+layout.AddBox(@swatch_blue, @bar, 1, 0.0, 1, 0.0)
 palette.AddColor(@swatch_blue, 0.2, 0.42, 0.8, 1.0)
+run paint_cell_arrow.etcs cell=swatch_blue palette=palette
 
-bar.spawn(RenderProvider::PolygonDrawable2D swatch_paper)
-swatch_paper.Create()
-swatch_paper.AddPoint(300, 0)
-swatch_paper.AddPoint(360, 0)
-swatch_paper.AddPoint(360, 64)
-swatch_paper.AddPoint(300, 64)
-swatch_paper.SetFill(1.0, 1.0, 1.0, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D swatch_paper)
+swatch_paper.Create(60, 64)
 swatch_paper.SetOrder(1)
+swatch_paper.SetBackground(1.0, 1.0, 1.0, 1.0)
+layout.AddBox(@swatch_paper, @bar, 1, 0.0, 1, 0.0)
 palette.AddColor(@swatch_paper, 1.0, 1.0, 1.0, 1.0)
+run paint_cell_arrow.etcs cell=swatch_paper palette=palette
 
-bar.spawn(RenderProvider::PolygonDrawable2D tool_brush)
-tool_brush.Create()
-tool_brush.AddPoint(360, 0)
-tool_brush.AddPoint(420, 0)
-tool_brush.AddPoint(420, 64)
-tool_brush.AddPoint(360, 64)
-tool_brush.SetFill(0.16, 0.16, 0.20, 1.0)
+# ── move ─────────────────────────────────────────────────────────────────────
+#
+# THE PAN, AS A TOOL, AND IT EXISTS FOR TOUCH. Panning has always been the right
+# or middle button (paint_is_pan_button), and a phone has neither -- so on a
+# tablet the picture could not be moved at all. This is the same pan reached by
+# an ordinary drag, which is the one gesture a single contact point can make.
+#
+# FIRST OF THE TOOLS, between the colours and the brush: it is the one that
+# does not mark, and a hand reaching past the swatches meets it before anything
+# that would. The bar is laid out in AddBox order, so its place is this file's.
+bar.spawn(RenderProvider::CompositeDrawable2D tool_move)
+tool_move.Create(60, 64)
+tool_move.SetOrder(1)
+tool_move.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_move, @bar, 1, 0.0, 1, 0.0)
+palette.AddTool(@tool_move, move)
+tool_move.spawn(RenderProvider::TextLabel label_move)
+label_move.Create()
+label_move.SetPosition(8, 28)
+label_move.SetSize(1)
+label_move.SetColor(0.90, 0.90, 0.88, 1.0)
+label_move.SetText(move)
+label_move.SetOrder(2)
+palette.AddTool(@label_move, move)
+
+# ── brush ────────────────────────────────────────────────────────────────────
+#
+# ONE SLICE, THREE NIBS, the select slice's arrangement for the same reason:
+# what is loaded is a property of the brush and not a second tool (PaintTipMode,
+# and PaintToolKind's own comment on why a kind is not "which brush"). The
+# caption under the word is the nib in hand; the arrow steps it round -- round,
+# stylus, erase -- and pressing the slice takes the brush up with whatever the
+# caption shows.
+bar.spawn(RenderProvider::CompositeDrawable2D tool_brush)
+tool_brush.Create(60, 64)
 tool_brush.SetOrder(1)
+tool_brush.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_brush, @bar, 1, 0.0, 1, 0.0)
 palette.AddTool(@tool_brush, brush)
-bar.spawn(RenderProvider::TextLabel label_brush)
+tool_brush.spawn(RenderProvider::TextLabel label_brush)
 label_brush.Create()
-label_brush.SetPosition(368, 28)
+label_brush.SetPosition(8, 28)
 label_brush.SetSize(1)
 label_brush.SetColor(0.90, 0.90, 0.88, 1.0)
 label_brush.SetText(brush)
 label_brush.SetOrder(2)
 palette.AddTool(@label_brush, brush)
+# "round" because that is PaintTipMode's starting nib; SetTipReadout seeds it
+# from the tool anyway, so the two cannot disagree at boot.
+tool_brush.spawn(RenderProvider::TextLabel label_brush_tip)
+label_brush_tip.Create()
+label_brush_tip.SetPosition(8, 46)
+label_brush_tip.SetSize(1)
+label_brush_tip.SetColor(0.79, 0.71, 0.35, 1.0)
+label_brush_tip.SetText(round)
+label_brush_tip.SetOrder(2)
+palette.AddTool(@label_brush_tip, brush)
+palette.SetTipReadout(@label_brush_tip)
+run paint_cell_arrow.etcs cell=tool_brush palette=palette
 
 # ── select ───────────────────────────────────────────────────────────────────
 #
-# One slice, four modes: the word under "select" is the mode in hand, and the
-# arrow at the top of the slice steps it (PaintPalette::AddModeArrow -- the same
-# arrow a swatch has, doing the one thing a four-way choice needs). Pressing the
-# slice itself, either word included, takes the tool up in whatever mode the
-# readout shows.
-bar.spawn(RenderProvider::PolygonDrawable2D tool_select)
-tool_select.Create()
-tool_select.AddPoint(420, 0)
-tool_select.AddPoint(480, 0)
-tool_select.AddPoint(480, 64)
-tool_select.AddPoint(420, 64)
-tool_select.SetFill(0.16, 0.16, 0.20, 1.0)
+# One slice, four modes: the word under "select" is the mode in hand and the
+# arrow steps it (PaintPalette::AddModeArrow -- the same arrow a swatch has,
+# doing the one thing a four-way choice needs). Pressing the slice, either word
+# included, takes the tool up in whatever mode the readout shows.
+bar.spawn(RenderProvider::CompositeDrawable2D tool_select)
+tool_select.Create(60, 64)
 tool_select.SetOrder(1)
+tool_select.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_select, @bar, 1, 0.0, 1, 0.0)
 palette.AddTool(@tool_select, select)
-bar.spawn(RenderProvider::TextLabel label_select)
+tool_select.spawn(RenderProvider::TextLabel label_select)
 label_select.Create()
-label_select.SetPosition(428, 28)
+label_select.SetPosition(8, 28)
 label_select.SetSize(1)
 label_select.SetColor(0.90, 0.90, 0.88, 1.0)
 label_select.SetText(select)
 label_select.SetOrder(2)
 palette.AddTool(@label_select, select)
-# The readout. "rect" because that is PaintTool's starting mode; the arrow
-# rewrites it from then on.
-bar.spawn(RenderProvider::TextLabel label_select_mode)
+# "rect" is PaintTool's starting mode; the arrow rewrites it from then on.
+tool_select.spawn(RenderProvider::TextLabel label_select_mode)
 label_select_mode.Create()
-label_select_mode.SetPosition(428, 46)
+label_select_mode.SetPosition(8, 46)
 label_select_mode.SetSize(1)
 label_select_mode.SetColor(0.70, 0.72, 0.80, 1.0)
 label_select_mode.SetText(rect)
 label_select_mode.SetOrder(2)
 palette.AddTool(@label_select_mode, select)
 palette.SetModeReadout(@label_select_mode)
-bar.spawn(RenderProvider::PolygonDrawable2D mode_arrow_select)
-mode_arrow_select.Create()
-mode_arrow_select.AddPoint(450, 3)
-mode_arrow_select.AddPoint(457, 13)
-mode_arrow_select.AddPoint(443, 13)
-mode_arrow_select.SetFill(0.92, 0.92, 0.90, 0.85)
-mode_arrow_select.SetOrder(2)
-palette.AddModeArrow(@mode_arrow_select, @tool_select)
+run paint_cell_arrow.etcs cell=tool_select palette=palette
 
-bar.spawn(RenderProvider::PolygonDrawable2D tool_line)
-tool_line.Create()
-tool_line.AddPoint(480, 0)
-tool_line.AddPoint(540, 0)
-tool_line.AddPoint(540, 64)
-tool_line.AddPoint(480, 64)
-tool_line.SetFill(0.16, 0.16, 0.20, 1.0)
+# ── anim ─────────────────────────────────────────────────────────────────────
+#
+# THE ANIMATION TOOL: a drag on the page frames the reel (PaintAnimation::
+# SetRegion, from PaintInput's release) and brings up the animation window.
+# Marks nothing, like move and select. Beside select because it is the same
+# gesture -- two corners -- put to a different use.
+bar.spawn(RenderProvider::CompositeDrawable2D tool_anim)
+tool_anim.Create(60, 64)
+tool_anim.SetOrder(1)
+tool_anim.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_anim, @bar, 1, 0.0, 1, 0.0)
+palette.AddTool(@tool_anim, anim)
+tool_anim.spawn(RenderProvider::TextLabel label_anim)
+label_anim.Create()
+label_anim.SetPosition(8, 28)
+label_anim.SetSize(1)
+label_anim.SetColor(0.90, 0.90, 0.88, 1.0)
+label_anim.SetText(anim)
+label_anim.SetOrder(2)
+palette.AddTool(@label_anim, anim)
+
+bar.spawn(RenderProvider::CompositeDrawable2D tool_line)
+tool_line.Create(60, 64)
 tool_line.SetOrder(1)
+tool_line.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_line, @bar, 1, 0.0, 1, 0.0)
 palette.AddTool(@tool_line, line)
-bar.spawn(RenderProvider::TextLabel label_line)
+tool_line.spawn(RenderProvider::TextLabel label_line)
 label_line.Create()
-label_line.SetPosition(488, 28)
+label_line.SetPosition(8, 28)
 label_line.SetSize(1)
 label_line.SetColor(0.90, 0.90, 0.88, 1.0)
 label_line.SetText(line)
@@ -149,288 +234,212 @@ palette.AddTool(@label_line, line)
 
 # ONE SHAPE SLICE where rect and oval were two. They are one gesture -- two
 # corners -- and which outline goes between them is a MODE, stepped by the arrow
-# at the top exactly as the select slice's is (PaintShapeMode). The name of the
-# current outline is a caption under the word, always shown, as the select
-# slice's mode is: in the page's gold rather than the readout white, so it reads
-# as "what the arrow chose" and not as a second tool name.
-bar.spawn(RenderProvider::PolygonDrawable2D tool_shape)
-tool_shape.Create()
-tool_shape.AddPoint(540, 0)
-tool_shape.AddPoint(600, 0)
-tool_shape.AddPoint(600, 64)
-tool_shape.AddPoint(540, 64)
-tool_shape.SetFill(0.16, 0.16, 0.20, 1.0)
+# exactly as the select slice's is (PaintShapeMode). Rect and Ellipse stay as
+# kinds of their own for the scripts that name them. The caption is in the
+# page's gold rather than the readout white, so it reads as "what the arrow
+# chose" and not as a second tool name.
+bar.spawn(RenderProvider::CompositeDrawable2D tool_shape)
+tool_shape.Create(60, 64)
 tool_shape.SetOrder(1)
+tool_shape.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_shape, @bar, 1, 0.0, 1, 0.0)
 palette.AddTool(@tool_shape, shape)
-bar.spawn(RenderProvider::TextLabel label_shape)
+tool_shape.spawn(RenderProvider::TextLabel label_shape)
 label_shape.Create()
-label_shape.SetPosition(548, 28)
+label_shape.SetPosition(8, 28)
 label_shape.SetSize(1)
 label_shape.SetColor(0.90, 0.90, 0.88, 1.0)
 label_shape.SetText(shape)
 label_shape.SetOrder(2)
 palette.AddTool(@label_shape, shape)
-bar.spawn(RenderProvider::TextLabel label_shape_mode)
+tool_shape.spawn(RenderProvider::TextLabel label_shape_mode)
 label_shape_mode.Create()
-label_shape_mode.SetPosition(548, 46)
+label_shape_mode.SetPosition(8, 46)
 label_shape_mode.SetSize(1)
 label_shape_mode.SetColor(0.79, 0.71, 0.35, 1.0)
 label_shape_mode.SetText(rect)
 label_shape_mode.SetOrder(2)
 palette.AddTool(@label_shape_mode, shape)
 palette.SetShapeReadout(@label_shape_mode)
-bar.spawn(RenderProvider::PolygonDrawable2D mode_arrow_shape)
-mode_arrow_shape.Create()
-mode_arrow_shape.AddPoint(570, 3)
-mode_arrow_shape.AddPoint(577, 13)
-mode_arrow_shape.AddPoint(563, 13)
-mode_arrow_shape.SetFill(0.92, 0.92, 0.90, 0.85)
-mode_arrow_shape.SetOrder(2)
-palette.AddModeArrow(@mode_arrow_shape, @tool_shape)
+run paint_cell_arrow.etcs cell=tool_shape palette=palette
 
-bar.spawn(RenderProvider::PolygonDrawable2D tool_fill)
-tool_fill.Create()
-tool_fill.AddPoint(600, 0)
-tool_fill.AddPoint(660, 0)
-tool_fill.AddPoint(660, 64)
-tool_fill.AddPoint(600, 64)
-tool_fill.SetFill(0.16, 0.16, 0.20, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D tool_fill)
+tool_fill.Create(60, 64)
 tool_fill.SetOrder(1)
+tool_fill.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_fill, @bar, 1, 0.0, 1, 0.0)
 palette.AddTool(@tool_fill, fill)
-bar.spawn(RenderProvider::TextLabel label_fill)
+tool_fill.spawn(RenderProvider::TextLabel label_fill)
 label_fill.Create()
-label_fill.SetPosition(608, 28)
+label_fill.SetPosition(8, 28)
 label_fill.SetSize(1)
 label_fill.SetColor(0.90, 0.90, 0.88, 1.0)
 label_fill.SetText(fill)
 label_fill.SetOrder(2)
 palette.AddTool(@label_fill, fill)
 
-bar.spawn(RenderProvider::PolygonDrawable2D tool_smudge)
-tool_smudge.Create()
-tool_smudge.AddPoint(660, 0)
-tool_smudge.AddPoint(720, 0)
-tool_smudge.AddPoint(720, 64)
-tool_smudge.AddPoint(660, 64)
-tool_smudge.SetFill(0.16, 0.16, 0.20, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D tool_smudge)
+tool_smudge.Create(60, 64)
 tool_smudge.SetOrder(1)
+tool_smudge.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_smudge, @bar, 1, 0.0, 1, 0.0)
 palette.AddTool(@tool_smudge, smudge)
-bar.spawn(RenderProvider::TextLabel label_smudge)
+tool_smudge.spawn(RenderProvider::TextLabel label_smudge)
 label_smudge.Create()
-label_smudge.SetPosition(668, 28)
+label_smudge.SetPosition(8, 28)
 label_smudge.SetSize(1)
 label_smudge.SetColor(0.90, 0.90, 0.88, 1.0)
 label_smudge.SetText(smear)
 label_smudge.SetOrder(2)
 palette.AddTool(@label_smudge, smudge)
 
-bar.spawn(RenderProvider::PolygonDrawable2D tool_ruler)
-tool_ruler.Create()
-tool_ruler.AddPoint(720, 0)
-tool_ruler.AddPoint(780, 0)
-tool_ruler.AddPoint(780, 64)
-tool_ruler.AddPoint(720, 64)
-tool_ruler.SetFill(0.16, 0.16, 0.20, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D tool_ruler)
+tool_ruler.Create(60, 64)
 tool_ruler.SetOrder(1)
+tool_ruler.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_ruler, @bar, 1, 0.0, 1, 0.0)
 palette.AddTool(@tool_ruler, ruler)
-bar.spawn(RenderProvider::TextLabel label_ruler)
+tool_ruler.spawn(RenderProvider::TextLabel label_ruler)
 label_ruler.Create()
-label_ruler.SetPosition(728, 28)
+label_ruler.SetPosition(8, 28)
 label_ruler.SetSize(1)
 label_ruler.SetColor(0.90, 0.90, 0.88, 1.0)
 label_ruler.SetText(rule)
 label_ruler.SetOrder(2)
 palette.AddTool(@label_ruler, ruler)
 
-bar.spawn(RenderProvider::PolygonDrawable2D tool_glyph)
-tool_glyph.Create()
-tool_glyph.AddPoint(780, 0)
-tool_glyph.AddPoint(840, 0)
-tool_glyph.AddPoint(840, 64)
-tool_glyph.AddPoint(780, 64)
-tool_glyph.SetFill(0.16, 0.16, 0.20, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D tool_glyph)
+tool_glyph.Create(60, 64)
 tool_glyph.SetOrder(1)
+tool_glyph.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@tool_glyph, @bar, 1, 0.0, 1, 0.0)
 palette.AddTool(@tool_glyph, glyph)
-bar.spawn(RenderProvider::TextLabel label_glyph)
+tool_glyph.spawn(RenderProvider::TextLabel label_glyph)
 label_glyph.Create()
-label_glyph.SetPosition(788, 28)
+label_glyph.SetPosition(8, 28)
 label_glyph.SetSize(1)
 label_glyph.SetColor(0.90, 0.90, 0.88, 1.0)
 label_glyph.SetText(text)
 label_glyph.SetOrder(2)
 palette.AddTool(@label_glyph, glyph)
 
-
-# ── the wheel arrows ─────────────────────────────────────────────────────────
+# ── the two steppers ─────────────────────────────────────────────────────────
 #
-# One per swatch, at the TOP of it, pointing up: pressing it opens the colour
-# wheel above that swatch and the pick replaces THAT swatch. A single shared
-# wheel button had to guess which colour was meant from whatever was selected
-# last; naming the target here means it cannot guess wrong.
+# A COLUMN INSIDE A CELL, which is what the layout buys here: +/- were two
+# half-height rectangles at y 0..32 and 32..64 of a 60px slot, and now they are
+# two grow/grow children of a column that is one cell of the row. The numbers
+# that said 32 are gone; the halving is the solver's.
 #
-# Order 2 so it sits over the swatch's own fill (order 1), same as the labels.
-# Small on purpose -- it shares its cell with the swatch, which is still pressable
-# everywhere the arrow is not.
-bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_ink)
-wheel_arrow_ink.Create()
-wheel_arrow_ink.AddPoint(30, 3)
-wheel_arrow_ink.AddPoint(37, 13)
-wheel_arrow_ink.AddPoint(23, 13)
-wheel_arrow_ink.SetFill(0.92, 0.92, 0.90, 0.85)
-wheel_arrow_ink.SetOrder(2)
-palette.AddWheelArrow(@wheel_arrow_ink, @swatch_ink)
-bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_red)
-wheel_arrow_red.Create()
-wheel_arrow_red.AddPoint(90, 3)
-wheel_arrow_red.AddPoint(97, 13)
-wheel_arrow_red.AddPoint(83, 13)
-wheel_arrow_red.SetFill(0.92, 0.92, 0.90, 0.85)
-wheel_arrow_red.SetOrder(2)
-palette.AddWheelArrow(@wheel_arrow_red, @swatch_red)
-bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_amber)
-wheel_arrow_amber.Create()
-wheel_arrow_amber.AddPoint(150, 3)
-wheel_arrow_amber.AddPoint(157, 13)
-wheel_arrow_amber.AddPoint(143, 13)
-wheel_arrow_amber.SetFill(0.92, 0.92, 0.90, 0.85)
-wheel_arrow_amber.SetOrder(2)
-palette.AddWheelArrow(@wheel_arrow_amber, @swatch_amber)
-bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_green)
-wheel_arrow_green.Create()
-wheel_arrow_green.AddPoint(210, 3)
-wheel_arrow_green.AddPoint(217, 13)
-wheel_arrow_green.AddPoint(203, 13)
-wheel_arrow_green.SetFill(0.92, 0.92, 0.90, 0.85)
-wheel_arrow_green.SetOrder(2)
-palette.AddWheelArrow(@wheel_arrow_green, @swatch_green)
-bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_blue)
-wheel_arrow_blue.Create()
-wheel_arrow_blue.AddPoint(270, 3)
-wheel_arrow_blue.AddPoint(277, 13)
-wheel_arrow_blue.AddPoint(263, 13)
-wheel_arrow_blue.SetFill(0.92, 0.92, 0.90, 0.85)
-wheel_arrow_blue.SetOrder(2)
-palette.AddWheelArrow(@wheel_arrow_blue, @swatch_blue)
-bar.spawn(RenderProvider::PolygonDrawable2D wheel_arrow_paper)
-wheel_arrow_paper.Create()
-wheel_arrow_paper.AddPoint(330, 3)
-wheel_arrow_paper.AddPoint(337, 13)
-wheel_arrow_paper.AddPoint(323, 13)
-wheel_arrow_paper.SetFill(0.92, 0.92, 0.90, 0.85)
-wheel_arrow_paper.SetOrder(2)
-palette.AddWheelArrow(@wheel_arrow_paper, @swatch_paper)
+# Click-and-hold keeps stepping and nothing in this page ticks while a button is
+# held still: the palette claims Animated (ontology/Animated.h) and is stepped
+# by whatever drives that family, so the repeat costs this script nothing.
+bar.spawn(RenderProvider::CompositeDrawable2D cell_radius)
+cell_radius.Create(60, 64)
+cell_radius.SetOrder(1)
+layout.AddBox(@cell_radius, @bar, 1, 0.0, 1, 0.0)
+layout.SetDirection(@cell_radius, 1)
 
-bar.spawn(RenderProvider::PolygonDrawable2D radius_plus)
-radius_plus.Create()
-radius_plus.AddPoint(840, 0)
-radius_plus.AddPoint(900, 0)
-radius_plus.AddPoint(900, 32)
-radius_plus.AddPoint(840, 32)
-radius_plus.SetFill(0.16, 0.16, 0.20, 1.0)
+cell_radius.spawn(RenderProvider::CompositeDrawable2D radius_plus)
+radius_plus.Create(60, 32)
 radius_plus.SetOrder(1)
+radius_plus.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@radius_plus, @cell_radius, 1, 0.0, 1, 0.0)
 palette.AddRadiusDelta(@radius_plus, 3.0)
-bar.spawn(RenderProvider::PolygonDrawable2D radius_minus)
-radius_minus.Create()
-radius_minus.AddPoint(840, 32)
-radius_minus.AddPoint(900, 32)
-radius_minus.AddPoint(900, 64)
-radius_minus.AddPoint(840, 64)
-radius_minus.SetFill(0.16, 0.16, 0.20, 1.0)
+
+cell_radius.spawn(RenderProvider::CompositeDrawable2D radius_minus)
+radius_minus.Create(60, 32)
 radius_minus.SetOrder(1)
+radius_minus.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@radius_minus, @cell_radius, 1, 0.0, 1, 0.0)
 palette.AddRadiusDelta(@radius_minus, -3.0)
-bar.spawn(RenderProvider::TextLabel label_radius_num)
+
+radius_plus.spawn(RenderProvider::TextLabel label_radius_plus)
+label_radius_plus.Create()
+label_radius_plus.SetPosition(26, 8)
+label_radius_plus.SetSize(1)
+label_radius_plus.SetColor(0.90, 0.90, 0.88, 1.0)
+label_radius_plus.SetText(+)
+label_radius_plus.SetOrder(2)
+radius_minus.spawn(RenderProvider::TextLabel label_radius_minus)
+label_radius_minus.Create()
+label_radius_minus.SetPosition(26, 16)
+label_radius_minus.SetSize(1)
+label_radius_minus.SetColor(0.90, 0.90, 0.88, 1.0)
+label_radius_minus.SetText(-)
+label_radius_minus.SetOrder(2)
+palette.AddRadiusDelta(@label_radius_plus, 3.0)
+palette.AddRadiusDelta(@label_radius_minus, -3.0)
+cell_radius.spawn(RenderProvider::TextLabel label_radius_num)
 label_radius_num.Create()
-label_radius_num.SetPosition(862, 22)
+label_radius_num.SetPosition(22, 22)
 label_radius_num.SetSize(1)
 label_radius_num.SetColor(0.90, 0.90, 0.88, 1.0)
 label_radius_num.SetText(3)
 label_radius_num.SetOrder(2)
-bar.spawn(RenderProvider::TextLabel label_radius_top)
-label_radius_top.Create()
-label_radius_top.SetPosition(866, 8)
-label_radius_top.SetSize(1)
-label_radius_top.SetColor(0.90, 0.90, 0.88, 1.0)
-label_radius_top.SetText(+)
-label_radius_top.SetOrder(2)
-bar.spawn(RenderProvider::TextLabel label_radius_bot)
-label_radius_bot.Create()
-label_radius_bot.SetPosition(866, 48)
-label_radius_bot.SetSize(1)
-label_radius_bot.SetColor(0.90, 0.90, 0.88, 1.0)
-label_radius_bot.SetText(-)
-label_radius_bot.SetOrder(2)
 # WHAT THE NUMBER IS, under it: two bare numbers at the end of the bar were a
-# guess as to which was which.
-bar.spawn(RenderProvider::TextLabel label_radius_what)
-label_radius_what.Create()
-label_radius_what.SetPosition(858, 34)
-label_radius_what.SetSize(1)
-label_radius_what.SetColor(0.79, 0.71, 0.35, 1.0)
-label_radius_what.SetText(size)
-label_radius_what.SetOrder(2)
-# In the page's gold (--sel) so it is a different colour from the white number
-# above it rather than a dimmer one. Always shown: the caption sits between the
-# number and the minus, a space nothing else uses.
-palette.SetRadiusReadout(@label_radius_num)
-palette.AddRadiusDelta(@label_radius_top, 3.0)
-palette.AddRadiusDelta(@label_radius_bot, -3.0)
+# guess as to which was which. In the page's gold so it is a different colour
+# from the white number above rather than a dimmer one.
+cell_radius.spawn(RenderProvider::TextLabel label_cell_radius_what)
+label_cell_radius_what.Create()
+label_cell_radius_what.SetPosition(8, 34)
+label_cell_radius_what.SetSize(1)
+label_cell_radius_what.SetColor(0.79, 0.71, 0.35, 1.0)
+label_cell_radius_what.SetText(size)
+label_cell_radius_what.SetOrder(2)
 
-bar.spawn(RenderProvider::PolygonDrawable2D alpha_plus)
-alpha_plus.Create()
-alpha_plus.AddPoint(900, 0)
-alpha_plus.AddPoint(960, 0)
-alpha_plus.AddPoint(960, 32)
-alpha_plus.AddPoint(900, 32)
-alpha_plus.SetFill(0.16, 0.16, 0.20, 1.0)
+bar.spawn(RenderProvider::CompositeDrawable2D cell_alpha)
+cell_alpha.Create(60, 64)
+cell_alpha.SetOrder(1)
+layout.AddBox(@cell_alpha, @bar, 1, 0.0, 1, 0.0)
+layout.SetDirection(@cell_alpha, 1)
+
+cell_alpha.spawn(RenderProvider::CompositeDrawable2D alpha_plus)
+alpha_plus.Create(60, 32)
 alpha_plus.SetOrder(1)
+alpha_plus.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@alpha_plus, @cell_alpha, 1, 0.0, 1, 0.0)
 palette.AddAlphaDelta(@alpha_plus, 5.0)
-bar.spawn(RenderProvider::PolygonDrawable2D alpha_minus)
-alpha_minus.Create()
-alpha_minus.AddPoint(900, 32)
-alpha_minus.AddPoint(960, 32)
-alpha_minus.AddPoint(960, 64)
-alpha_minus.AddPoint(900, 64)
-alpha_minus.SetFill(0.16, 0.16, 0.20, 1.0)
+
+cell_alpha.spawn(RenderProvider::CompositeDrawable2D alpha_minus)
+alpha_minus.Create(60, 32)
 alpha_minus.SetOrder(1)
+alpha_minus.SetBackground(0.16, 0.16, 0.20, 1.0)
+layout.AddBox(@alpha_minus, @cell_alpha, 1, 0.0, 1, 0.0)
 palette.AddAlphaDelta(@alpha_minus, -5.0)
-bar.spawn(RenderProvider::TextLabel label_alpha_num)
+
+alpha_plus.spawn(RenderProvider::TextLabel label_alpha_plus)
+label_alpha_plus.Create()
+label_alpha_plus.SetPosition(26, 8)
+label_alpha_plus.SetSize(1)
+label_alpha_plus.SetColor(0.90, 0.90, 0.88, 1.0)
+label_alpha_plus.SetText(+)
+label_alpha_plus.SetOrder(2)
+alpha_minus.spawn(RenderProvider::TextLabel label_alpha_minus)
+label_alpha_minus.Create()
+label_alpha_minus.SetPosition(26, 16)
+label_alpha_minus.SetSize(1)
+label_alpha_minus.SetColor(0.90, 0.90, 0.88, 1.0)
+label_alpha_minus.SetText(-)
+label_alpha_minus.SetOrder(2)
+palette.AddAlphaDelta(@label_alpha_plus, 5.0)
+palette.AddAlphaDelta(@label_alpha_minus, -5.0)
+cell_alpha.spawn(RenderProvider::TextLabel label_alpha_num)
 label_alpha_num.Create()
-label_alpha_num.SetPosition(910, 22)
+label_alpha_num.SetPosition(22, 22)
 label_alpha_num.SetSize(1)
 label_alpha_num.SetColor(0.90, 0.90, 0.88, 1.0)
 label_alpha_num.SetText(100)
 label_alpha_num.SetOrder(2)
-bar.spawn(RenderProvider::TextLabel label_alpha_top)
-label_alpha_top.Create()
-label_alpha_top.SetPosition(926, 8)
-label_alpha_top.SetSize(1)
-label_alpha_top.SetColor(0.90, 0.90, 0.88, 1.0)
-label_alpha_top.SetText(+)
-label_alpha_top.SetOrder(2)
-bar.spawn(RenderProvider::TextLabel label_alpha_bot)
-label_alpha_bot.Create()
-label_alpha_bot.SetPosition(926, 48)
-label_alpha_bot.SetSize(1)
-label_alpha_bot.SetColor(0.90, 0.90, 0.88, 1.0)
-label_alpha_bot.SetText(-)
-label_alpha_bot.SetOrder(2)
-bar.spawn(RenderProvider::TextLabel label_alpha_what)
-label_alpha_what.Create()
-label_alpha_what.SetPosition(909, 34)
-label_alpha_what.SetSize(1)
-label_alpha_what.SetColor(0.79, 0.71, 0.35, 1.0)
-label_alpha_what.SetText(opacity)
-label_alpha_what.SetOrder(2)
-palette.SetAlphaReadout(@label_alpha_num)
-palette.AddAlphaDelta(@label_alpha_top, 5.0)
-palette.AddAlphaDelta(@label_alpha_bot, -5.0)
+# WHAT THE NUMBER IS, under it: two bare numbers at the end of the bar were a
+# guess as to which was which. In the page's gold so it is a different colour
+# from the white number above rather than a dimmer one.
+cell_alpha.spawn(RenderProvider::TextLabel label_cell_alpha_what)
+label_cell_alpha_what.Create()
+label_cell_alpha_what.SetPosition(8, 34)
+label_cell_alpha_what.SetSize(1)
+label_cell_alpha_what.SetColor(0.79, 0.71, 0.35, 1.0)
+label_cell_alpha_what.SetText(opacity)
+label_cell_alpha_what.SetOrder(2)
 
-# ── nothing here, and that is the change ─────────────────────────────────────
-#
-# Click-and-hold on any +/- keeps stepping, and nothing in this page ticks while
-# a button is held still. This used to need a node -- a drawable that drew
-# nothing, spawned into the bar so the compose walk would visit it and it could
-# tick the palette from inside its own DrawInto. The palette now claims Animated
-# (ontology/Animated.h) and is stepped by whatever drives that family, so the
-# relation is stated on the palette instead of smuggled through a child of the
-# thing it steps. A script that wants the repeat spawns nothing.
+palette.SetRadiusReadout(@label_radius_num)
+palette.SetAlphaReadout(@label_alpha_num)

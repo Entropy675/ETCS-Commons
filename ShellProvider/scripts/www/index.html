@@ -88,6 +88,45 @@
       font: inherit;
     }
     #cmdline:disabled { opacity: 0.5; }
+    /*
+     * THE MENU AS BUTTONS. What the navigator just printed as a numbered list,
+     * drawn as things to press (etcs_web_shell_menu). Big enough for a finger:
+     * a button is a 40px row on a phone, and the same on a desktop, where it is
+     * still the easier way to read "what can I do here".
+     */
+    #menu {
+      display: none; flex-direction: column; gap: 0.4rem;
+      border: 1px solid var(--border); background: var(--panel); border-radius: 6px;
+      padding: 0.5rem 0.75rem; max-height: 45vh; overflow-y: auto;
+    }
+    #menu.visible { display: flex; }
+    #menu .title { color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 8px; }
+    #menu .items { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    #menu button {
+      font: inherit; color: var(--fg); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 0.55rem 0.8rem; min-height: 40px; cursor: pointer;
+      max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #menu button:active { background: var(--border); }
+    #menu button.module, #menu button.tag { color: var(--ansi10); }
+    #menu button.instance, #menu button.child { color: var(--ansi13); }
+    #menu button.action { color: var(--ansi12); }
+    #menu button.dir { color: var(--ansi14); }
+    #menu button.script { color: var(--ansi11); }
+    #menu button.scope { color: var(--ansi11); }
+    #menu button.command { color: var(--muted); }
+    #menu .args { display: none; gap: 0.5rem; align-items: center; }
+    #menu .args.visible { display: flex; }
+    #menu .args input {
+      flex: 1; font: inherit; color: var(--fg); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; min-height: 40px;
+    }
+    #viewtoggle {
+      font: inherit; font-size: 12px; color: var(--muted); background: transparent;
+      border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.5rem; cursor: pointer;
+    }
+    #input-row.hidden { display: none; }
     canvas#canvas {
       display: none; width: 100%; max-height: 40vh;
       background: #0a0b08; border: 1px solid var(--border); border-radius: 6px;
@@ -103,10 +142,21 @@
     </header>
     <canvas id="canvas" width="600" height="400"></canvas>
     <div id="term" aria-live="polite"></div>
+    <div id="menu">
+      <div class="title"><span id="menutitle">waiting for a prompt…</span><button id="viewtoggle" type="button">type instead</button></div>
+      <div class="items" id="menuitems"></div>
+      <form class="args" id="menuargs">
+        <span id="menuargslabel" class="ps1"></span>
+        <input id="menuargsinput" type="text" autocomplete="off" spellcheck="false" placeholder=""/>
+        <button type="submit">go</button>
+        <button type="button" id="menuargscancel">cancel</button>
+      </form>
+    </div>
     <div id="input-row">
       <span class="ps1">›</span>
       <input id="cmdline" type="text" autocomplete="off" spellcheck="false"
              placeholder="waiting for runtime…" disabled/>
+      <button id="viewtoggle2" type="button">buttons instead</button>
     </div>
   </div>
   <script>
@@ -247,7 +297,118 @@
     try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
     catch (e) { return; }
     if (text) window.etcsTermWrite(text);
+    pollMenu();
   }
+
+  /*
+   * ── the menu, as buttons ────────────────────────────────────────────────────
+   *
+   * Every prompt the navigator puts up is a choice from a list it printed
+   * (CommandExecutor.h, repl_menu_publish), and the runtime hands that list over
+   * as data (etcs_web_shell_menu): what each entry sends, what to call it, what
+   * kind of thing it is, and whether it wants words after it. So the same
+   * choice can be a row of buttons, which is the readable form on a phone and
+   * no worse on a desktop -- and it is the default. `type instead` is the
+   * command line, kept for whoever wants it; the choice is remembered.
+   *
+   * A BUTTON SENDS A LINE. Nothing else changes: the entry's `send` goes down
+   * the same path a typed line does, so every loop in the navigator sees a
+   * line and never knows there was a button. An entry that wants words -- an
+   * action's payload, spawn's name, cd's path -- opens the one input under the
+   * buttons, and `go` sends "<send> <words>"; empty words are allowed (an
+   * action that reads no payload).
+   */
+  const menuEl = document.getElementById('menu');
+  const menuTitle = document.getElementById('menutitle');
+  const menuItems = document.getElementById('menuitems');
+  const menuArgs = document.getElementById('menuargs');
+  const menuArgsLabel = document.getElementById('menuargslabel');
+  const menuArgsInput = document.getElementById('menuargsinput');
+  const inputRow = document.getElementById('input-row');
+  let menuSerial = 0, menuPending = null, menuEnabled = false;
+
+  /*
+   * The view a page framing this one asks for (`?view=line|buttons`) is its
+   * default -- a short pane has no room for the menu as buttons -- and a
+   * choice made in it is kept per frame path, so switching one embedded shell
+   * does not switch every other shell on the site.
+   */
+  const askedView = new URLSearchParams(window.location.search).get('view');
+  const viewDefault = (askedView === 'line' || askedView === 'buttons') ? askedView : 'buttons';
+  const viewKey = 'etcs-shell-view' + (askedView ? ':' + window.location.pathname : '');
+  function menuView() {
+    try { return window.localStorage.getItem(viewKey) || viewDefault; } catch (e) { return viewDefault; }
+  }
+  function setMenuView(v) {
+    try { window.localStorage.setItem(viewKey, v); } catch (e) {}
+    applyMenuView();
+  }
+  function applyMenuView() {
+    const buttons = menuView() === 'buttons';
+    menuEl.classList.toggle('visible', buttons);
+    inputRow.classList.toggle('hidden', buttons);
+    if (!buttons) cmdline.focus();
+  }
+  document.getElementById('viewtoggle').addEventListener('click', function () { setMenuView('line'); });
+  document.getElementById('viewtoggle2').addEventListener('click', function () { setMenuView('buttons'); });
+
+  function renderMenu(m) {
+    menuTitle.textContent = (m.title || '') + '  ' + (m.prompt || '');
+    menuItems.textContent = '';
+    menuArgs.classList.remove('visible');
+    menuPending = null;
+    for (const it of (m.items || [])) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = it.kind || '';
+      b.textContent = it.label + (it.args ? ' …' : '');
+      b.title = it.send;
+      b.addEventListener('click', function () {
+        if (!menuEnabled) return;
+        if (it.args) {
+          menuPending = it;
+          menuArgsLabel.textContent = it.label.replace(/\s+\[stream\]$/, '') + ' ';
+          menuArgsInput.placeholder = it.hint || '';
+          menuArgsInput.value = '';
+          menuArgs.classList.add('visible');
+          menuArgsInput.focus();
+          return;
+        }
+        submitLine(it.send);
+      });
+      menuItems.appendChild(b);
+    }
+  }
+  menuArgs.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    if (!menuPending) return;
+    const words = menuArgsInput.value.trim();
+    submitLine(words ? menuPending.send + ' ' + words : menuPending.send);
+    menuArgs.classList.remove('visible');
+    menuPending = null;
+  });
+  document.getElementById('menuargscancel').addEventListener('click', function () {
+    menuArgs.classList.remove('visible');
+    menuPending = null;
+  });
+
+  function takeMenu(json) {
+    if (!json) return;
+    let m = null;
+    try { m = JSON.parse(json); } catch (e) { return; }
+    if (!m || m.serial === menuSerial) return;
+    menuSerial = m.serial;
+    renderMenu(m);
+  }
+  function pollMenu() {
+    const mod = window.Module;
+    if (!mod || !mod.ccall) return;
+    let json = '';
+    try { json = mod.ccall('etcs_web_shell_menu', 'string', [], []); }
+    catch (e) { return; }
+    takeMenu(json);
+  }
+  applyMenuView();
   function startShellDrain() {
     if (shellDrainTimer) return;
     shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
@@ -292,7 +453,9 @@
       const m = ev.data;
       if (!m || typeof m !== 'object') return;
       if (m.etcs === 'out') { append(String(m.text == null ? '' : m.text), null); return; }
+      if (m.etcs === 'menu') { takeMenu(m.json); return; }
       if (m.etcs === 'enable') {
+        menuEnabled = !!m.enabled;
         cmdline.disabled = !m.enabled;
         cmdline.placeholder = m.enabled ? 'type an ETCS line, Enter to send'
                                         : 'waiting for runtime…';
@@ -527,6 +690,7 @@
       onRuntimeInitialized: function () {
         setStatus('runtime ready');
         startShellDrain();
+        menuEnabled = true;
         cmdline.disabled = false;
         cmdline.placeholder = 'type an ETCS line, Enter to send';
         cmdline.focus();

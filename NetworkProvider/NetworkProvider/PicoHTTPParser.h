@@ -4,6 +4,9 @@
 #include "../../../ontology.h"
 #include <iostream>
 #include <cstring>
+#include <cctype>
+#include <cstdint>
+#include <string_view>
 #include "../picohttpparser/picohttpparser.h"
 
 class PicoHTTPParser : 
@@ -72,6 +75,21 @@ private:
     size_t accum_len_    = 0;
     size_t prev_len_     = 0;
 
+    // Where the header block ended -- phr_parse_request's own return on
+    // success, which was being used for flushParsed's body slice and then
+    // dropped. Kept so a route can see the BODY at all: everything downstream
+    // of the parser had a method-and-path view of a request and no way to ask
+    // for anything else, which is what made every node in this tree a GET
+    // surface whose whole vocabulary had to fit in a URL.
+    //
+    // Zero means "no complete request parsed", not "no body" -- the two differ
+    // and only one of them is safe to read from.
+    size_t header_len_   = 0;
+    // The entity the headers promised (Content-Length), once they have been
+    // read; SIZE_MAX until then. A request is complete when the accumulator
+    // holds header_len_ + body_want_ bytes, not when the header block ends.
+    size_t body_want_    = SIZE_MAX;
+
 public:
     // Was private and unreferenced. HttpServer::Serve needs it: without a
     // reader, every response said Connection: close and the client burned a
@@ -114,6 +132,17 @@ public:
 
     void SetMode(Mode mode) { mode_ = mode; }
 
+    /*
+     * COMPLETE MEANS HEADERS AND BODY. picohttpparser answers when the
+     * header block ends, and a request used to be handed on at that moment
+     * with whatever of its body shared the same read -- often none: a client
+     * commonly writes the headers and the entity as two segments, so a POST
+     * arrived with Content-Length: 48000 and an empty body, and a route saw
+     * a valid, empty request. Here the headers are parsed once, and every
+     * read after them accumulates until the entity is whole. One request per
+     * accumulator: a body that cannot fit beside its headers is refused as
+     * an overflow, the same ceiling as before, now reached honestly.
+     */
     bool FeedRaw(const char* data, size_t len)
     {
         if (accum_len_ + len >= kAccumCapacity)
@@ -126,21 +155,59 @@ public:
         std::memcpy(accum_ + accum_len_, data, len);
         prev_len_   = accum_len_;
         accum_len_ += len;
-        num_headers_ = 32;
 
-        int result = phr_parse_request(
-            accum_, accum_len_,
-            &method_,  &method_len_,
-            &path_,    &path_len_,
-            &minor_ver_,
-            headers_,  &num_headers_,
-            prev_len_
-        );
+        if (header_len_ == 0)
+        {
+            num_headers_ = 32;
+            const int result = phr_parse_request(
+                accum_, accum_len_,
+                &method_,  &method_len_,
+                &path_,    &path_len_,
+                &minor_ver_,
+                headers_,  &num_headers_,
+                prev_len_
+            );
+            if (result == -1) { state_ = State::Error; return false; }
+            if (result < 0)   { state_ = State::Parsing; return false; }
+            header_len_ = static_cast<size_t>(result);
+            body_want_  = declaredBodyLength();
+            if (body_want_ != SIZE_MAX && header_len_ + body_want_ >= kAccumCapacity)
+            {
+                std::cerr << "[PicoHTTPParser] Body of " << body_want_
+                          << " bytes exceeds the accumulator\n";
+                state_ = State::Error;
+                return false;
+            }
+        }
 
-        if (result > 0)  { state_ = State::Complete; return true; }
-        if (result == -1){ state_ = State::Error;    return false; }
-        state_ = State::Parsing;
-        return false;
+        // No Content-Length is no body (this parser does not read chunked
+        // entities); a declared one is waited for.
+        const size_t want = (body_want_ == SIZE_MAX) ? 0 : body_want_;
+        if (accum_len_ - header_len_ < want) { state_ = State::Parsing; return false; }
+        state_ = State::Complete;
+        return true;
+    }
+
+    size_t declaredBodyLength() const
+    {
+        for (size_t i = 0; i < num_headers_; ++i)
+        {
+            const std::string_view name(headers_[i].name, headers_[i].name_len);
+            if (name.size() != 14) continue;
+            bool same = true;
+            for (size_t k = 0; k < 14 && same; ++k)
+                same = (std::tolower(static_cast<unsigned char>(name[k])) == "content-length"[k]);
+            if (!same) continue;
+            size_t n = 0;
+            for (size_t k = 0; k < headers_[i].value_len; ++k)
+            {
+                const char c = headers_[i].value[k];
+                if (c < '0' || c > '9') break;
+                n = n * 10 + static_cast<size_t>(c - '0');
+            }
+            return n;
+        }
+        return SIZE_MAX;
     }
 
     void ParseConcrete(ETCS::MirrorBuffer& io, ETCS::SignalContext ctx) override
@@ -192,6 +259,7 @@ public:
 
             if (result > 0)
             {
+                header_len_ = static_cast<size_t>(result);
                 state_ = State::Complete;
                 flushParsed(io, result);
                 return;
@@ -215,13 +283,15 @@ public:
         num_headers_ = 0;
         accum_len_  = 0;
         prev_len_   = 0;
+        header_len_ = 0;
+        body_want_  = SIZE_MAX;
         state_      = State::Idle;
         std::memset(accum_,   0, kAccumCapacity);
         std::memset(headers_, 0, sizeof(headers_));
         return true;
     }
 
-    bool DeleteConcrete() 
+    bool DeleteConcrete() override
     {
         std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();
         ETCS_LOG("Delete: firing self-DestroyEvent for RID:"
@@ -240,6 +310,25 @@ public:
 
     size_t GetNumHeaders() const { return num_headers_; }
     const struct phr_header* GetHeaders() const { return headers_; }
+
+    // The body, as a slice of the accumulator -- BORROWED, and only valid
+    // until this parser is reset for the next request on the connection.
+    // Whole: a request is Complete only once its Content-Length has arrived
+    // (FeedRaw), so the ceiling on a body is the accumulator itself,
+    // ETCS_NETWORK_MAX_HEADER_SIZE, less the headers.
+    const char* GetBody() const
+    {
+        if (state_ != State::Complete || header_len_ == 0) return nullptr;
+        if (accum_len_ <= header_len_) return nullptr;
+        return accum_ + header_len_;
+    }
+
+    size_t GetBodyLen() const
+    {
+        if (state_ != State::Complete || header_len_ == 0) return 0;
+        if (accum_len_ <= header_len_) return 0;
+        return accum_len_ - header_len_;
+    }
 
 private:
     // Write the parsed header block back into io as one or more Buffer frames.

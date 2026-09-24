@@ -156,8 +156,9 @@ Nothing enforces that the band is unpaintable; two facts already in the tree do 
 
 `canvas.BindRulerFrame(@ruler_pane)` is what tells the surface which raster to
 draw on: a sibling of the pane at the sheet's origin and size, retained (the
-surface is its one writer) and not pickable (`CompositeDrawable2D::SetPickable`,
-or every press on the paper would land on it). Its own raster and not the sheet's,
+surface is its one writer) and flagged `passthrough` (`SetPassthrough(1)`; the
+pick walk asks the flag beside `Hidden`, or every press on the paper would land
+on it). Its own raster and not the sheet's,
 because the sheet is composed on the frame edge's thread while `Render` draws on
 the input thread; when the band was written straight into the sheet, which of
 the two got there last decided whether a frame showed the band or the toolbar
@@ -229,8 +230,10 @@ exported verb, a page load, an import.
 
 ## Selecting, and moving what is selected
 
-The `select` slice sits between `brush` and `line` in the bar, which is now
-sixteen 60px slices (960x64, 32px in from either edge of the 1024 sheet; rect and
+The `move` slice is the first tool, between the last swatch and `brush` -- the
+one tool that does not mark comes before the ones that do. The `select` slice
+sits between `brush` and `anim` in the bar, which is now
+seventeen slices (960x64, 32px in from either edge of the 1024 sheet; rect and
 oval share one `shape` slice whose arrow steps rect, oval, triangle, diamond, star,
 with the current outline's name under the word in gold, as `select`'s mode is
 under its word; the two steppers at the end carry `size` and `opacity` captions
@@ -360,6 +363,54 @@ the hover dim, not the selection outline, and not the text boxes, which are stri
 drawn through a `Glyphs` target by RID; the export log counts those so a file that
 lost its captions says so.
 
+## Text boxes
+
+The `text` tool drags a box; the box is a COLUMN. What is typed into it is set
+in the box's font at the box's size and wraps where the box's width runs out --
+between words, or inside one wider than the whole box -- and Enter starts a new
+line. Lines that would pass the bottom of the box are not drawn; the open box
+has a handle on its bottom-right corner that resizes it, and the text reflows as
+it goes (`PaintDocument::wrap_text`). A press inside a box opens it; a drag from
+inside moves it. Shift works: capitals and the shifted symbols of a US layout.
+
+**The bar.** While a box is open a bar sits over it (`PaintTextBar`,
+`paint_textbar.etcs`): the five fonts, the size (a ladder from 8 to 400, the
+height of a line in the page's pixels), eight colours, `x` to remove the box and
+`ok` to let it go. The fonts are the sheet's own pixel face and four TrueType
+files that ship with the program (`PaintProvider/fonts`, each with its OFL
+licence), drawn antialiased by `PaintFonts` through stb_truetype -- files rather
+than the machine's fonts because a box has to wrap at the same words on every
+page in a shared session. A font whose file is missing keeps its number and
+draws in the pixel font (`PaintProvider/fonts/README.md` says where the files
+come from). A new box starts in the last font and size the bar set.
+
+**Undo and redo have buttons** under the picture, in the row above the zoom
+steps (`boot_paint_panels.etcs`), for a hand on a touch screen: the same step
+ctrl+z and ctrl+y take, through the pane's input so the view repaints with it
+(`PaintInput::Undo`).
+
+**And `redo alt`, when there are two ways forward.** Undo, then draw, and the
+history forks: the stroke you undid and the one you drew are both children of
+where you stood. Redo takes the newer; the older used to be a picture no key
+could reach. `redo alt` (or ctrl+shift+y) takes it (`PaintDocument::RedoAlt`),
+and the button is there only while the place you stand has a second branch.
+The document publishes that on every move of its cursor (`PaintDocument::
+forked`, an atomic), and the control follows it on the frame edge
+(`PaintInput`'s `Animated` step) rather than where the history changed:
+flipped from an input's thread it raced the compose walk and appeared only when
+some later input drove another frame -- and a key reaches the input of the
+pane it lands on, which is not the one holding the button. Not in a shared
+session, whose record does not fork (an undo there is a line).
+
+**Undo.** An edit is a step: from opening a box to letting it go -- the typing,
+the font, the size, the colour, a move, a resize -- is recorded when it ends as
+one `text` entry on the notebook (`PaintOpKind::Text`), carrying the whole box.
+Undo and redo rebuild the boxes from those entries along the path, the same
+walk that restores the pixels, so ctrl+z after typing a caption takes the
+caption away and ctrl+y brings it back. Removing a box is a step; a box placed
+and let go empty is not recorded at all. Ctrl+z with a box open ends the edit
+first, then undoes it.
+
 ## The layer window
 
 Top-right of the paper: a title bar with a **+** on it and seven rows, built by
@@ -392,6 +443,14 @@ the stack a row per notch, up toward the top, clamped at both ends
 of the zoom when the pointer is over the window). The rows are re-bound to
 different layers rather than moved.
 
+**The eye on the title bar folds the window to its bar**, and opens it again.
+Folded, the window IS its bar: the pane shrinks to it (`paint_window_fold`),
+since a pane is its whole rectangle to a pick and to the router -- a window
+that only hid its rows kept the rectangle they left, and a stroke drawn toward
+it stopped at an edge nobody could see. The sharing window has the same eye,
+left of `end` (`PaintVisitors::PressView`), and so does the animation window
+(`PaintAnimation::PressView`).
+
 The window re-renders the canvas itself whenever it changes the PICTURE rather
 than the list -- a restack, an eye, a delete, a press that lands a carry
 (`PaintLayerPanel::BindSurface`). A press on a row returns from the input edge
@@ -399,14 +458,26 @@ before any tool runs, so nothing else was asking the surface to draw, and the
 rows updated while the canvas kept showing the arrangement from before the
 press.
 
-Dragging a row onto another restacks. **Hovering an EYE** isolates that layer --
+**Dragging a row by its grip** (the `::` strip, dots included) restacks. It
+becomes a drag once the pointer has moved four pixels; before that a press and
+release on the grip only chooses the row. While it is live the row turns amber,
+a ghost of it -- thumb and name -- follows the pointer, and a bar sits in the
+gap the layer will land in. Where it lands is read from the pointer's HEIGHT in
+the window, clamped to the rows that hold layers, so a release in the gap
+between two rows, on a row's dots, over the title or below the last layer still
+lands; a release outside the window cancels (`PaintLayerPanel::DragRow`/`Drop`).
+
+**Hovering an EYE** isolates that layer --
 everything else fades to 0.25 -- so a layer can be found by looking. The eye and
 not the row: isolating on the row meant the picture faded whenever the pointer
 crossed the window on its way to anything, so the answer to "which layer is
 this" arrived constantly and uninvited, and the thing being looked at was the
 thing being hidden. The eye is the control that is ABOUT visibility, so hovering
 it is the one moment where "show me only this layer" is what the hand is already
-asking.
+asking. A SHUT eye answers too: the hidden layer fades in to 0.75 as the rest
+fades out (`PaintLayer::SetPeek`), so a layer you switched off can be looked at
+without switching it back on. The peek is the screen's only -- an export, a
+thumbnail and the eyedropper still see the layer as hidden.
 
 It FADES rather than snaps, over about 150ms each way. A hover has a
 duration -- the pointer rests on the eye for as long as the question is being
@@ -436,6 +507,55 @@ By verb:
     layers.SelectRow(1)   layers.ToggleRow(0)   layers.RemoveRow(0)   layers.MoveRow(0, 1)
     doc.NewLayer()        layers.CommitRename(backdrop)               layers.Report()
 
+## Animation: frames cut from the page and put back
+
+The `anim` tool (beside `select`) drags a region on the page. That region is
+the CAMERA: the animation window comes up under the layer window, the region is
+outlined on the page in the page's highlight, and from then on the page is the
+drawing board and the window is the reel (`PaintAnimation`,
+`PaintProvider/scripts/paint_anim.etcs`, rows from `paint_anim_row.etcs`).
+The tool pressed inside the camera carries it, same size, and while it moves
+the preview is a viewfinder onto what it frames (the readout says `camera`);
+snap there and the frame is taken there. Every frame remembers where on the
+page it was snapped.
+
+    snap    a frame from what is visible in the camera now, after the current
+            one -- draw, snap, draw, snap builds the reel in order
+    put     the current frame back onto the active layer where it was
+            snapped, as one undo step (PaintDocument::PastePixels)
+    < >     step the current frame, and take the camera to where it was
+            snapped; a press on a row does the same
+    play    run the reel at the rate; the same button pauses. The window claims
+            Animated (ontology/Animated.h) and honours dt, unlike the throbber,
+            because "12 a second" is a duration and must mean the same on every
+            display
+    - +     the rate, 1..60 frames a second
+    x       remove that frame
+    gif     the reel as a GIF, to the page's download (`anim.gif`)
+
+The window onto the reel is four rows; the wheel over it scrolls, and playing
+keeps the current frame in view; playing leaves the camera where it is.
+Resizing the region drops the frames (a frame is the region's size by
+definition); moving it keeps them. The camera is drawn by the canvas in page
+space (`PaintSurface::SetCamera`), so it stays on the page under every pan and
+zoom, as a selection does -- it was four panes on the sheet, re-placed only by
+the pointer's own repaints, and a zoom from the toolbar left it on the screen.
+The window's bar carries it; the eye on the bar folds it to the bar, as the
+layer and sharing windows' eyes do, and takes the camera off the page; the `x`
+closes window and camera and puts the move tool in hand (`PaintPalette::
+PickTool` lights it on the bar). The reel is kept either way, and the anim
+tool -- a click, or a new drag -- brings the window back.
+
+**GIF both ways.** An uploaded GIF with more than one frame goes straight to the
+reel rather than to the layer-or-canvas question (`PaintCanvasMenu::OfferImport`
+decides, since "a file came in" is the same event on every substrate): the
+region takes the file's size at its own corner, the frames replace the reel,
+and the file's delay sets the rate. A still GIF is a picture and takes the
+question. Out is the encoder in `PaintProvider.h` (`paint_gif`), since stb has
+none: one global 256-colour table by median cut over every frame, plain LZW,
+every frame whole, looping. Not small, and every viewer plays it -- verified by
+exporting a reel and reading it back through the same upload.
+
 ## Pages: `new` keeps the one you were on
 
 The gear menu's **new** makes a NEW PAGE at the size the two steppers show. It
@@ -445,8 +565,21 @@ stayed empty however many times it was pressed. It goes through the store now
 (`PaintPages::NewAt`) -- the present page is saved to its slot first, then a
 fresh one opens -- which is what makes a second page exist to go back to.
 
-The menu lists the last five, newest first, with the one on screen highlighted;
-a press on a row loads that page. The store is the same sqlite database
+**The list under the buttons is the store**, the layer window's bargain again
+(`PaintPagePanel`, rows from `PaintProvider/scripts/paint_page_row.etcs`): a row
+is `[thumb][name WxH][x]`, newest first, the page on screen highlighted, and
+five rows is the window -- the wheel over the list scrolls it a row per notch.
+The thumbnail is the picture the store took when the page was saved
+(`page_thumbs`, 32x24, every visible layer averaged and composited), kept beside
+the page so the list never decodes one to draw a row.
+
+    thumb / name   load that page (the present is saved to its slot first)
+    name, again    on the page already on screen: opens it for renaming, with
+                   its name in the field -- Enter keeps, Escape drops
+    x              delete that page from the store; the page on screen stays
+                   on screen and gets a new slot at its next save
+
+The store is the same sqlite database
 `ctrl+PageUp` / `ctrl+PageDown` already stepped through, and it holds the
 pixels: each layer goes in as its raw bytes behind a PAM header (about 6 MB for
 a two-layer 1024x768 page), so a page comes back as the picture it was rather
@@ -454,12 +587,17 @@ than as its dimensions. Verified end to end in the browser: a mark on page 1,
 `new`, a different mark on page 2, then the page-1 row -- and the first mark is
 back and the second is gone.
 
-Saving and loading those bytes takes a moment -- a second or so in the
-browser -- on the thread the press arrived on, so the pointer is not answered
-until it is done. The session's throbber shows for exactly that interval
-(`PaintPages::BindWait`, bound to `main_throbber` in `boot_paint_panels.etcs`):
-the frame edge is another thread, so the ring turns while the store works, and
-it is hidden again when the page is up.
+Saving, loading and deleting those bytes takes a moment -- a second or so in
+the browser -- on the thread the press arrived on, so the pointer is not
+answered until it is done. The store raises a `busy` state tag on itself for
+exactly that interval (`PaintPages::Waiting`), and the session's throbber follows the
+flag (`main_throbber.Watch(@pages, busy)` in `boot_paint_panels.etcs`,
+`Throbber::Watch`): the frame edge is another thread and reads the flag once a
+frame, so the ring turns while the store works and goes when the page is up.
+Neither side knows the other exists -- anything else that raises `busy` gets
+the same indicator. It sits over the middle of the canvas whatever size the
+window made it: `main_throbber.CenterOn(@paper_pane)` has it read the pane's box
+each frame it shows.
 
 ## Sizes, and 1920x1080
 
@@ -490,7 +628,9 @@ settings menu over the sheet. It holds a width and a height stepped by 64
              which is the bottom layer when nothing shows through it
              (PaintDocument::Resize)
     new      a NEW PAGE at the size shown, the present one saved first
-    save     the header's download, from inside the sheet
+    save     the present page into its slot in the store (`PaintPages::Save`),
+             the same store the page list below the buttons reads; the header's
+             download is where a PNG leaves the page
     load     the header's upload -- see below
 
 Neither `resize` nor `new` is an undo step: the history is three whole-layer
@@ -511,10 +651,12 @@ the way the colour wheel opens (into the router and drawn, one fact), and a
 press anywhere outside the pane closes it and is swallowed, so putting the menu
 away never leaves a dab.
 
-`save` and `load` cannot finish in the runtime -- a path becomes a file the user
-can see only through the page -- so the verbs raise a DOM event (`etcs-menu`)
-and `index.html` answers with the same download and upload the header buttons
-run (so `load` ends in the same layer-or-canvas prompt). `load` clicks the file
+`load` cannot finish in the runtime -- a path becomes a file the user can see
+only through the page -- so the verb raises a DOM event (`etcs-menu`) and
+`index.html` answers with the same upload the header button runs (so `load`
+ends in the same layer-or-canvas prompt); `save` raises the same event only on
+a runtime with no store bound, where the download is the one place a picture
+can go. `load` clicks the file
 input from a call proxied off the router's Worker; a file dialog needs transient
 user activation, and whether the canvas press that opened the menu still counts
 by then is the browser's decision and is untested from this path. The header's
@@ -531,6 +673,224 @@ layer `Rebase` holds while it copies) and refuse with the numbers -- `needs 832
 MB and the page has 264 MB to spare` -- rather than letting `malloc` abort the
 tab, which is what `unreachable executed` on a two-axis resize was.
 
+## Sharing a canvas
+
+`share` in the header opens a session on the node that served the page (`/art`,
+`PaintNode`, started by `paint_lobby.etcs`) and puts the link in the header.
+Whoever opens the link joins. Everything travels as notebook lines through that
+node: each page pushes what it made and reads what everyone else made, on a
+timer (`index.html`, `pushMine` / `readTheirs`).
+
+**Joining takes the host's page, and keeps yours.** The session opens with a
+BASELINE, not with history: a `page` line (the page's size and its layer stack)
+and a keyframe of every layer (`PaintDocument::ExportBaseline`). A page loaded
+from the store or opened from a file is pixels no entry describes, so pushing
+the history from zero sent the strokes without the picture under them. A
+joiner first puts their own canvas away (`PaintPages::Stash`: saved to the page
+list if it changed, and then in no slot), and the `page` line then makes their
+document the host's -- same size, same layers -- before the keyframes fill it
+(`PaintDocument::AcceptOp`). A change to the layer stack made later travels the
+same way and changes every stack in the room.
+
+**What you push is what you have not sent.** Every entry carries a mark saying
+it is in the record (`PaintOp::sent`): set when it arrives from the session,
+when it goes out, and on a keyframe when it is taken. A push is the entries on
+your path without it, so nothing about it depends on how your notebook happens
+to be numbered. It used to be "everything after my entry N", and a `page` line
+from the room empties the notebook under N; that read as your own history
+having been wound back, and you re-sent your whole page -- which emptied
+everyone else's notebook, and they answered the same way, for as long as the
+room lasted. Nobody could draw. A page-level change you make (New, a resize,
+another page from the list) you now SAY you made (`m_page_changed`), and that
+one push is your whole page.
+
+**What you push is what you made.** Lines that arrived from the session sit in
+your notebook too, so undo and keyframes see the whole picture, but they are
+the room's already, and your keyframes are your own cache of the picture as
+YOU derived it -- on another member one overwrote whatever they had drawn on
+that layer since. Each member takes its own keyframes of arriving strokes
+(`AcceptOp`), so the record past the baseline is changes and nothing else.
+
+**Every change is a line.** A stroke is its path; everything else that
+changes the picture is recorded as the change it is and pushed like one: a
+layer's eye, opacity, name or place in the stack (`PaintLayer`'s setters, each
+a pair of `layers` entries -- the stack before, the stack after), a new layer,
+a merge, an import (the `layers` line then carries the layer's pixels), a
+carried selection landing, a paste, a cut or a delete (`patch`: the rectangle
+as it now is), a whole layer cleared (`clear`), a smear (`smudge`, its path).
+Each used to be a whole-layer keyframe here and nothing at all to the room, so
+a hidden layer was hidden on one canvas, and the picture check read that as a
+divergence for as long as it stayed hidden. A mark made under a selection
+carries the selection (`PaintOp::Clip`) and lands under it everywhere,
+replay here included. Names travel as typed: `layer 3` used to arrive as
+`layer_3`.
+
+**A line is a change's exact input, and the change has one implementation.**
+Every entry names its layer by the layer's key (`PaintLayer::key`: the same
+number on every member, kept when an undo brings the layer back), never by a
+RID, which is one runtime's own. Numbers travel with nine significant digits
+(`paint_float_text`), which brings every float back to the same bits -- six
+decimal places brought a brush size or an opacity back as a neighbouring value,
+and a replay of the same input drew a different picture. And a change made here
+is BUILT as its entry and handed to the document, which lands it through the
+same code a replay runs: a shape, a fill or a cleared layer through `Perform`,
+a stroke point by point through `StrokeTo` (the step `ApplyOp` takes for each of
+its points), every change to the stack -- a new layer, a removal, a merge, an
+import, a restack, a layer's eye, opacity or name -- through `PerformStack`,
+which is reconcile and then the raster the entry carries, exactly what a
+member reading it does. The replay itself is a call: `ImportOps` hands each
+entry to the `Accept` verb by reference (`PaintOpRef`, the shape `RouteRef`
+gives a request), so a replayed change passes the same dispatch a made one
+does. `doc.Perform(<a record line without its sequence>)` replays a line from a
+script.
+
+**A reader's eye comes back off with every other edit**, since a layer's
+visibility is part of the picture now; the hover peek still shows a hidden
+layer to you alone.
+
+**You are who the node says you are.** A page asks to join under the name it
+keeps in the browser, and the node grants a free one -- suffixed when somebody
+in the room has it -- which is the name the page then goes by, as the author of
+what it pushes and the author it passes over on the way back in. The token is
+the identity and is kept per tab, so a reload comes back as the same member and
+a second tab is a new one. Three tabs of one browser used to be one member to
+the node, and each reader dropped every one of the host's lines as its own.
+
+**An undo is a line in the record.** In a session ctrl+z does not wind your
+notebook back; it appends an `undo` entry naming YOUR newest stroke that still
+stands -- by your name and its ordinal among your strokes, never by a sequence
+number, since the node renumbers everything -- and every member, you included,
+applies it the same way: the path is re-derived without that entry
+(`PaintNotebook::EffectivePath`), from the last keyframe before it. Redo appends
+the reverse. Only your own strokes are yours to take back. Winding a tree back
+was what re-baselined the room with one page's whole picture on every undo,
+and wiped the strokes the others had not sent yet.
+
+**The record checks itself, two ways.** The node chains every stored line
+(`PaintNode::Session::chain`, XXH3 seeded with the chain before it) and answers
+the chain with the head; the runtime chains every line it takes in, own lines
+included (`PaintDocument::ImportOps`), and the page compares the two after each
+read. Equal heads with different chains is a line this page never took in --
+which nothing else can tell from silence -- and the page reads the record again
+from zero, whose `page` line replaces the document. Separately each member
+sends, with its presence, the hash of what it MADE of the record
+(`PaintDocument::PictureHash`: extent, each layer's place and pixels, the boxes)
+and the record position it is the picture of, only once nothing of its own is
+still to be pushed. A member at the owner's position whose picture differs for
+three presence ticks running has diverged, whatever it received, and reads the
+record again. The owner never resyncs to anyone.
+
+**Out of step, the canvas waits, and the owner states the page if it has
+to.** A member that finds itself out of step -- either check -- raises
+`syncing` on the document (`PaintDocument::Syncing`) while it reads the record
+again from zero: the throbber shows (it watches that flag as well as the page
+store's `busy`), and the canvas starts no stroke until the read lands, or for
+fifteen seconds at most. What it had pending survives the read. The red line
+that said so goes once the picture is the owner's again. A second time without
+having got back into step in between -- or a line the runtime cannot read,
+which no re-read changes -- means the record will not rebuild this picture, so
+the member asks for the page whole (the last field of its presence); the owner
+states it with its next push (`PaintDocument::Restate`), at most every twenty
+seconds, and every member follows it as a new page. The room's history starts
+again there -- an undo counts its author's strokes from the page, and a count
+that went on from before it would name a stroke other members no longer have
+-- so the owner's does too. A page this runtime states is passed over when it
+comes back (`write_baseline` remembers its Page line), with its own lines
+still in flight ahead of it, which are in it already.
+
+**Draw now; the room decides.** A change you make lands on your canvas at
+once and is held as PENDING (your own entry, not yet read back from the node:
+`PaintOp::confirmed`). The node is the source of truth, so nothing is refused
+up front -- a reader draws like anyone -- and what the room refuses comes back
+off. Everyone's lines, the host's included, arrive through the same read. When
+another member's line arrives while you hold pending entries, the document
+REWINDS: it sets the pending ones aside, appends what arrived after the
+confirmed ones, and when the read is done puts yours back on top and replays
+the page once (`PaintDocument::ImportOps`), so every member ends with the
+node's order -- a stroke drawn over yours while yours was in flight used to
+land under it on your canvas and over it on everyone else's. Your own line
+coming back confirms the entry it was pushed as (matched by its text, in
+order); one pushed earlier that never came back was not taken, and goes. A
+push the node refuses -- you are a reader, or were just made one -- or that
+fails takes every pending entry off (`doc.RevertPending`, and the page says
+once that the room has you as a reader), so no mark of yours stands on your
+canvas that is not on the host's. An open stroke or an open text box survives
+the rewind and is put back where it was. Promotion takes effect within a few
+seconds (the page asks the node for its role on a timer). A document change
+takes the document's lock (`PaintDocument::m_doc_mu`), since the read runs on
+its own thread and your pen on another.
+
+**Everyone has a sharing window** (`PaintVisitors`, drawn by
+`paint_visitors.etcs`), opened as the host's or a guest's (`OpenAs`). Its top
+line is you: the name you go by in the room -- two words and a number made up
+the first time, kept in the browser -- pressed to rename it (the field takes
+every key until Enter or Escape; the node refuses a name somebody there
+already has), and the colour your frame is drawn in on everyone else's canvas,
+with eight swatches to change it. Under that, who is here, each with their
+colour and role, your own row lit. The host's window adds `copy link` and, on
+every row but their own, `draw` (make a writer), `view` (back to reader) and
+`out`; its `end` ends the session. A guest's has `leave` instead. The title bar
+moves the window: the router holds the pointer on it for the length of the drag
+(`PaintRouter::Route`, the capture), because it is its own pane and a fast
+flick would otherwise leave it behind.
+
+**Text boxes travel too, one hand at a time.** Selecting a box claims it: the
+page asks the node, which gives each box to the first person who asks and to
+nobody else until they let go (`claim/<key>`; a box is named in the room by who
+made it and their number for it, `PaintTextBox::key`). Someone else pressing a
+held box is told who has it, and anything they typed into it is put back
+(`PaintDocument::TextDenied`). The text bar being up IS the claim. Letting go
+-- Escape, `ok`, a press elsewhere, or twenty seconds without a key -- ends the
+edit, which is recorded as one `text` entry and pushed like any stroke, and
+only then released, so it is in the room before anyone else can take it. The
+node refuses a box entry from anyone but the holder, and a claim nobody has
+touched for twenty seconds lapses. What travels is each finished edit, not the
+keystrokes.
+
+**Pushes of any size.** A request to the node is bounded (64 KB with its
+headers, `ETCS_NETWORK_MAX_HEADER_SIZE`) and a keyframe is a layer's PNG, so a
+push bigger than one request goes as numbered parts the node joins back
+together before reading a line (`part/<i>/<n>`). The server hands a request on
+only once its whole body has arrived (`PicoHTTPParser::FeedRaw` reads to the
+`Content-Length`); it used to hand it on at the end of the headers, and a
+browser that sent the body as a second segment pushed an empty part -- the
+node then joined a keyframe from its second half, and every member logged it
+as an unreadable `snap` line. The node's answer lives with the request
+(`RouteRequest::reply`) rather than on the node, which is what two members
+polling at once used to overwrite in each other's replies.
+
+## On a phone
+
+**Bigger under a finger.** On a touch screen the page tells the window a
+framebuffer smaller than its box and lets the canvas stretch back over it
+(`UI_SCALE`, `stageResize` in `index.html`), so every pane, row and button the
+boot script lays out in its own pixels is that much bigger on the glass, with no
+script knowing; GLFW maps a touch through the same ratio, and the picture keeps
+its own pixels through the zoom. The scale is the width's to give -- one at
+512 CSS pixels and under, two at 1024 and over -- because the toolbar is laid
+out 640 wide and scaled down to fit anything narrower: below that width it is
+already as small as the width makes it, and halving the framebuffer would only
+halve the picture. `?ui=<n>` overrides. A phone held upright therefore gets no
+bigger toolbar; that wants the reflow noted under "What is not solved".
+
+**The keyboard comes up when something takes keys.** A phone raises its
+keyboard for a focused field, and the canvas has none. So the page keeps one,
+invisible (`#keys`), and while the runtime says a box or a name field is taking
+keys (`PaintRouter::Editing`, polled, and asked right after every tap) that
+field is focused and the keyboard is up; when the edit ends the field lets go.
+What the keyboard delivers is characters, not keys -- its key events carry no
+code -- so the page hands them to the router as presses (`PaintRouter::Type`,
+through the same US-layout table the key path reads). Enter and backspace do
+arrive as keys, and GLFW's window listener takes those as it always did. A
+focus made from a timer with no tap behind it is refused on iOS, so a keyboard
+button sits in the corner while something is taking keys, for when the tap that
+opened the box was not enough. Desktop pages leave all of this off (`?kbd=1`
+turns it on for a look).
+
+**A short screen is the canvas's.** Under 30rem of height -- a phone on its
+side -- the terminal keeps a 4rem strip and the stage takes the rest, where the
+terminal's 15rem floor used to leave the picture a sliver.
+
 ## Deploying
 
 `ace make loader etcs` and `ace make loaders` both produce the INTERACTIVE
@@ -545,6 +905,12 @@ process exits, because an `HttpServer` thread is not a detached executor. A serv
 script that looks like it worked and leaves nothing listening.
 
 ## What is not solved here
+
+A retracted structural entry (a layer added, removed or merged) is taken off the
+path like a stroke, so the stack goes back to the previous `layers` entry -- but
+a merge's carried bytes go with it, and a keyframe of the surviving layer taken
+before the merge is what the layer falls back to. Nobody has undone a merge in a
+room yet; when somebody does, that is where to look.
 
 The strip renders and picks, but it does not follow the window: `ResizeTo` made it
 a fixed 640x64, so a very narrow viewport scales it down rather than reflowing the

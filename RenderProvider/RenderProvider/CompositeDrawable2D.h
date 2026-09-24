@@ -176,13 +176,31 @@ public:
         return true;
     }
 
-    // The colour the buffer is reset to at the start of every recomposition.
-    // Transparent by default, which is what a layer wants -- an opaque
-    // default would make every compositor a rectangle you cannot see past.
+    /*
+     * The colour the buffer is reset to at the start of every recomposition.
+     * Transparent by default, which is what a layer wants -- an opaque default
+     * would make every compositor a rectangle you cannot see past.
+     *
+     * MARKED WITH NO ORIGIN, and that is the whole of the fix. This is not a
+     * change a child made and it is not a foreign write into my pixels; it is a
+     * change to what my OWN recompose derives, so the edge that has to be set
+     * is my own -- the one DrawIntoConcrete reads to decide whether to
+     * recompose at all.
+     *
+     * etcs_mark_observed(this) is exactly the statement that does NOT set it: it
+     * marks with origin = my RID, and MarkObservedLocal excludes the origin's
+     * edge deliberately, so a stroke painted straight into my pixels does not
+     * make me rebuild my subtree. Right there, wrong here. Marked that way the
+     * new colour reached every observer of this node and never reached the clear
+     * that paints it -- so the background changed and the picture did not, until
+     * something else in the subtree happened to dirty the node. A toolbar whose
+     * slices are compositors is where that finally showed: the highlight moved
+     * only when an arrow inside the slice was repainted in the same pass.
+     */
     void SetBackground(float r, float g, float b, float a)
     {
         m_bg[0] = r; m_bg[1] = g; m_bg[2] = b; m_bg[3] = a;
-        etcs_mark_observed(this);
+        this->MarkObserved(0);
     }
 
     /*
@@ -210,31 +228,33 @@ public:
 
     // Rectangular, and see the header comment for why that is the honest
     // answer rather than a simplification: the shape of a buffer is the
-    // buffer. Unless the node is scenery (SetPickable), in which case it
-    // contains nothing as far as a pick is concerned.
+    // buffer.
     bool ContainsLocalConcrete(int32_t x, int32_t y) override
     {
-        return m_pickable
-            && x >= 0 && y >= 0
+        return x >= 0 && y >= 0
             && x < static_cast<int32_t>(m_w)
             && y < static_cast<int32_t>(m_h);
     }
 
     /*
- * SCENERY: DRAWN, NEVER HIT. A buffer that lies over other nodes -- a ruler
- * frame around a pane, a grid, a vignette -- would otherwise take every pick
- * inside its rectangle, because Drawable2D_::PickAt walks the children top
- * down and a compositor is its whole rectangle. Answering "I contain nothing"
- * is what lets the walk fall through to what is under it, and since the walk
- * asks ContainsLocal before it looks at children, the node's own children
- * are skipped with it -- which is what a scenery node's children are.
+ * PASSTHROUGH: DRAWN, NEVER HIT. A buffer that lies over other nodes -- a
+ * ruler frame around a pane, a grid, a vignette -- would otherwise take every
+ * pick inside its rectangle, because Drawable2D_::PickAt walks the children
+ * top down and a compositor is its whole rectangle.
  *
- * On the node rather than on the family because the family's rule is right:
- * the shape of a buffer is the buffer. This is one node declining to be
- * asked, not a second notion of shape.
+ * A FLAG, NOT A MEMBER. The pick walk asks the entity's own state tags
+ * (`passthrough`, ontology/Drawable2D.h), so this verb only raises or lowers
+ * that tag: the answer is the family's and holds for any leaf that raises it,
+ * a script can `requires` it, and a script can `unflag` it. The rectangle is
+ * untouched -- ContainsLocal still says what the buffer's shape is; the node
+ * is declining to be the answer to a pick, not claiming to be a different
+ * shape.
  */
-    void SetPickable(bool on) { m_pickable = on; }
-    bool Pickable() const     { return m_pickable; }
+    void SetPassthrough(bool on)
+    {
+        if (on) this->addTag("passthrough");
+        else    this->removeTag(ETCS::Buffer("passthrough"));
+    }
 
     // ── Surface_ dispatch: these RASTERISE, they do not retain ───────────
     //
@@ -599,8 +619,6 @@ private:
     uint32_t m_h = 0;
     // See SetRetain.
     bool m_retain = false;
-    // See SetPickable.
-    bool m_pickable = true;
 
     /*
      * ── THE PUBLISHED FRAME ──────────────────────────────────────────────

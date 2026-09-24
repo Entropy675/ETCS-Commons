@@ -1,0 +1,297 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── THE ANIMATION WINDOW ─────────────────────────────────────────────────────
+#
+#     run paint_anim.etcs panel=<Drawable2D> anim=<PaintAnimation> palette=<PaintPalette>
+#
+# The layer window's bargain for the reel (PaintAnimation): every part is a
+# RenderProvider leaf in the caller's pane, PaintAnimation maps the rows to
+# frames and draws nothing, and the buttons are palette calls to its verbs
+# (PaintPalette::AddCall) -- so the window's look is this file, and the reel
+# works from a script with no window at all.
+#
+# TOP TO BOTTOM: the bar; the preview, the current frame fitted into a raster
+# with the checker behind it; a row of buttons; the readout ("12 fps  3/8");
+# and four rows of [thumb][#][x], the window onto the reel the wheel scrolls.
+#
+#   snap   a frame from what the camera shows now, after the current one
+#   put    the current frame back onto the active layer, where it was snapped
+#   <  >   step the current frame
+#   play   run the reel at the rate (pause is the same button)
+#   -  +   the rate, one frame a second at a time
+#   gif    the reel as a GIF, to the page's download
+#
+# The window is hidden until a region exists (PaintAnimation::BindWindow): the
+# animation tool's drag on the page is what brings it up, and until then there
+# is nothing here to show. The bar carries it; the eye on the bar folds it to
+# the bar and takes the camera off the page; the x closes it and hands you the
+# move tool. The reel is kept either way.
+
+requires panel   [Drawable2D]
+requires anim    [PaintAnimation]
+requires palette [PaintPalette]
+
+anim.SetRowColors(0.35, 0.55, 0.95, 0.15, 0.16, 0.11)
+
+# ── the frame ─────────────────────────────────────────────────────────────
+panel.spawn(RenderProvider::PolygonDrawable2D anim_back)
+anim_back.Create()
+anim_back.AddPoint(0, 0)
+anim_back.AddPoint(240, 0)
+anim_back.AddPoint(240, 300)
+anim_back.AddPoint(0, 300)
+anim_back.SetFill(0.106, 0.110, 0.078, 1.0)
+anim_back.SetOrder(0)
+
+panel.spawn(RenderProvider::PolygonDrawable2D anim_title)
+anim_title.Create()
+anim_title.AddPoint(0, 0)
+anim_title.AddPoint(240, 0)
+anim_title.AddPoint(240, 22)
+anim_title.AddPoint(0, 22)
+anim_title.SetFill(0.17, 0.18, 0.13, 1.0)
+anim_title.SetOrder(1)
+
+panel.spawn(RenderProvider::TextLabel anim_title_word)
+anim_title_word.Create()
+anim_title_word.SetPosition(8, 7)
+anim_title_word.SetSize(1)
+anim_title_word.SetColor(0.94, 0.89, 0.78, 1.0)
+anim_title_word.SetText(animation)
+anim_title_word.SetOrder(2)
+anim.BindTitle(@anim_title)
+anim.BindTitle(@anim_title_word)
+
+# THE EYE FOLDS IT TO ITS BAR, as the layer and sharing windows' do: the same
+# eye from the same file, left of the x (PaintAnimation::PressView). Folded,
+# the camera is off the page too; the reel is kept.
+panel.spawn(RenderProvider::CompositeDrawable2D anim_view)
+anim_view.Create(38, 26)
+anim_view.SetPosition(176, -2)
+anim_view.SetOrder(2)
+anim.BeginTitle()
+run paint_eye.etcs pane=anim_view list=anim
+
+# THE x CLOSES IT, camera and all, and puts the move tool in hand
+# (PaintAnimation::Close, through the palette so the bar lights `move`).
+anim.BindPalette(@palette)
+panel.spawn(RenderProvider::PolygonDrawable2D anim_close)
+anim_close.Create()
+anim_close.AddPoint(216, 3)
+anim_close.AddPoint(236, 3)
+anim_close.AddPoint(236, 19)
+anim_close.AddPoint(216, 19)
+anim_close.SetFill(0.32, 0.18, 0.16, 1.0)
+anim_close.SetOrder(2)
+palette.AddCall(@anim_close, @anim, PaintAnimation.Close)
+
+panel.spawn(RenderProvider::TextLabel anim_close_word)
+anim_close_word.Create()
+anim_close_word.SetPosition(223, 7)
+anim_close_word.SetSize(1)
+anim_close_word.SetColor(0.94, 0.89, 0.78, 1.0)
+anim_close_word.SetText(x)
+anim_close_word.SetOrder(3)
+palette.AddCall(@anim_close_word, @anim, PaintAnimation.Close)
+
+# ── the preview ───────────────────────────────────────────────────────────
+#
+# 4:3 like the default page; a frame of another shape is fitted inside with
+# the checker showing around it (PaintAnimation::paint_fit).
+panel.spawn(RenderProvider::CompositeDrawable2D anim_preview)
+anim_preview.Create(160, 120)
+anim_preview.SetPosition(40, 28)
+anim_preview.SetOrder(1)
+anim_preview.SetRetain(1)
+anim.BindPreview(@anim_preview)
+
+# ── the buttons ───────────────────────────────────────────────────────────
+#
+# Seven cells of 30 across the 240, in one row under the preview. Each is a
+# rectangle bound to a verb and the word on it bound to the same, so the
+# press lands on either.
+panel.spawn(RenderProvider::PolygonDrawable2D btn_snap)
+btn_snap.Create()
+btn_snap.AddPoint(4, 154)
+btn_snap.AddPoint(36, 154)
+btn_snap.AddPoint(36, 174)
+btn_snap.AddPoint(4, 174)
+btn_snap.SetFill(0.24, 0.33, 0.19, 1.0)
+btn_snap.SetOrder(1)
+palette.AddCall(@btn_snap, @anim, PaintAnimation.Snap)
+panel.spawn(RenderProvider::TextLabel btn_snap_word)
+btn_snap_word.Create()
+btn_snap_word.SetPosition(8, 160)
+btn_snap_word.SetSize(1)
+btn_snap_word.SetColor(0.94, 0.89, 0.78, 1.0)
+btn_snap_word.SetText(snap)
+btn_snap_word.SetOrder(2)
+palette.AddCall(@btn_snap_word, @anim, PaintAnimation.Snap)
+
+panel.spawn(RenderProvider::PolygonDrawable2D btn_put)
+btn_put.Create()
+btn_put.AddPoint(40, 154)
+btn_put.AddPoint(66, 154)
+btn_put.AddPoint(66, 174)
+btn_put.AddPoint(40, 174)
+btn_put.SetFill(0.19, 0.20, 0.14, 1.0)
+btn_put.SetOrder(1)
+palette.AddCall(@btn_put, @anim, PaintAnimation.Put)
+panel.spawn(RenderProvider::TextLabel btn_put_word)
+btn_put_word.Create()
+btn_put_word.SetPosition(44, 160)
+btn_put_word.SetSize(1)
+btn_put_word.SetColor(0.94, 0.89, 0.78, 1.0)
+btn_put_word.SetText(put)
+btn_put_word.SetOrder(2)
+palette.AddCall(@btn_put_word, @anim, PaintAnimation.Put)
+
+panel.spawn(RenderProvider::PolygonDrawable2D btn_prev)
+btn_prev.Create()
+btn_prev.AddPoint(70, 154)
+btn_prev.AddPoint(88, 154)
+btn_prev.AddPoint(88, 174)
+btn_prev.AddPoint(70, 174)
+btn_prev.SetFill(0.19, 0.20, 0.14, 1.0)
+btn_prev.SetOrder(1)
+palette.AddCall(@btn_prev, @anim, PaintAnimation.Prev)
+panel.spawn(RenderProvider::TextLabel btn_prev_word)
+btn_prev_word.Create()
+btn_prev_word.SetPosition(76, 160)
+btn_prev_word.SetSize(1)
+btn_prev_word.SetColor(0.94, 0.89, 0.78, 1.0)
+btn_prev_word.SetText(<)
+btn_prev_word.SetOrder(2)
+palette.AddCall(@btn_prev_word, @anim, PaintAnimation.Prev)
+
+panel.spawn(RenderProvider::PolygonDrawable2D btn_next)
+btn_next.Create()
+btn_next.AddPoint(92, 154)
+btn_next.AddPoint(110, 154)
+btn_next.AddPoint(110, 174)
+btn_next.AddPoint(92, 174)
+btn_next.SetFill(0.19, 0.20, 0.14, 1.0)
+btn_next.SetOrder(1)
+palette.AddCall(@btn_next, @anim, PaintAnimation.Next)
+panel.spawn(RenderProvider::TextLabel btn_next_word)
+btn_next_word.Create()
+btn_next_word.SetPosition(98, 160)
+btn_next_word.SetSize(1)
+btn_next_word.SetColor(0.94, 0.89, 0.78, 1.0)
+btn_next_word.SetText(>)
+btn_next_word.SetOrder(2)
+palette.AddCall(@btn_next_word, @anim, PaintAnimation.Next)
+
+panel.spawn(RenderProvider::PolygonDrawable2D btn_play)
+btn_play.Create()
+btn_play.AddPoint(114, 154)
+btn_play.AddPoint(146, 154)
+btn_play.AddPoint(146, 174)
+btn_play.AddPoint(114, 174)
+btn_play.SetFill(0.35, 0.55, 0.95, 1.0)
+btn_play.SetOrder(1)
+palette.AddCall(@btn_play, @anim, PaintAnimation.Toggle)
+panel.spawn(RenderProvider::TextLabel btn_play_word)
+btn_play_word.Create()
+btn_play_word.SetPosition(118, 160)
+btn_play_word.SetSize(1)
+btn_play_word.SetColor(0.94, 0.89, 0.78, 1.0)
+btn_play_word.SetText(play)
+btn_play_word.SetOrder(2)
+palette.AddCall(@btn_play_word, @anim, PaintAnimation.Toggle)
+
+panel.spawn(RenderProvider::PolygonDrawable2D btn_slower)
+btn_slower.Create()
+btn_slower.AddPoint(150, 154)
+btn_slower.AddPoint(168, 154)
+btn_slower.AddPoint(168, 174)
+btn_slower.AddPoint(150, 174)
+btn_slower.SetFill(0.19, 0.20, 0.14, 1.0)
+btn_slower.SetOrder(1)
+palette.AddCall(@btn_slower, @anim, PaintAnimation.StepFps, -1)
+panel.spawn(RenderProvider::TextLabel btn_slower_word)
+btn_slower_word.Create()
+btn_slower_word.SetPosition(156, 160)
+btn_slower_word.SetSize(1)
+btn_slower_word.SetColor(0.94, 0.89, 0.78, 1.0)
+btn_slower_word.SetText(-)
+btn_slower_word.SetOrder(2)
+palette.AddCall(@btn_slower_word, @anim, PaintAnimation.StepFps, -1)
+
+panel.spawn(RenderProvider::PolygonDrawable2D btn_faster)
+btn_faster.Create()
+btn_faster.AddPoint(172, 154)
+btn_faster.AddPoint(190, 154)
+btn_faster.AddPoint(190, 174)
+btn_faster.AddPoint(172, 174)
+btn_faster.SetFill(0.19, 0.20, 0.14, 1.0)
+btn_faster.SetOrder(1)
+palette.AddCall(@btn_faster, @anim, PaintAnimation.StepFps, 1)
+panel.spawn(RenderProvider::TextLabel btn_faster_word)
+btn_faster_word.Create()
+btn_faster_word.SetPosition(178, 160)
+btn_faster_word.SetSize(1)
+btn_faster_word.SetColor(0.94, 0.89, 0.78, 1.0)
+btn_faster_word.SetText(+)
+btn_faster_word.SetOrder(2)
+palette.AddCall(@btn_faster_word, @anim, PaintAnimation.StepFps, 1)
+
+panel.spawn(RenderProvider::PolygonDrawable2D btn_gif)
+btn_gif.Create()
+btn_gif.AddPoint(194, 154)
+btn_gif.AddPoint(236, 154)
+btn_gif.AddPoint(236, 174)
+btn_gif.AddPoint(194, 174)
+btn_gif.SetFill(0.19, 0.20, 0.14, 1.0)
+btn_gif.SetOrder(1)
+palette.AddCall(@btn_gif, @anim, PaintAnimation.Download)
+panel.spawn(RenderProvider::TextLabel btn_gif_word)
+btn_gif_word.Create()
+btn_gif_word.SetPosition(206, 160)
+btn_gif_word.SetSize(1)
+btn_gif_word.SetColor(0.94, 0.89, 0.78, 1.0)
+btn_gif_word.SetText(gif)
+btn_gif_word.SetOrder(2)
+palette.AddCall(@btn_gif_word, @anim, PaintAnimation.Download)
+
+# ── the readout ───────────────────────────────────────────────────────────
+panel.spawn(RenderProvider::TextLabel anim_readout)
+anim_readout.Create()
+anim_readout.SetPosition(8, 180)
+anim_readout.SetSize(1)
+anim_readout.SetColor(0.79, 0.71, 0.35, 1.0)
+anim_readout.SetText(no frames)
+anim_readout.SetOrder(2)
+anim.BindReadout(@anim_readout)
+
+# ── the rows ──────────────────────────────────────────────────────────────
+panel.spawn(RenderProvider::CompositeDrawable2D arow0)
+arow0.Create(232, 26)
+arow0.SetPosition(4, 192)
+arow0.SetOrder(1)
+arow0.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_anim_row.etcs pane=arow0 anim=anim
+
+panel.spawn(RenderProvider::CompositeDrawable2D arow1)
+arow1.Create(232, 26)
+arow1.SetPosition(4, 220)
+arow1.SetOrder(1)
+arow1.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_anim_row.etcs pane=arow1 anim=anim
+
+panel.spawn(RenderProvider::CompositeDrawable2D arow2)
+arow2.Create(232, 26)
+arow2.SetPosition(4, 248)
+arow2.SetOrder(1)
+arow2.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_anim_row.etcs pane=arow2 anim=anim
+
+panel.spawn(RenderProvider::CompositeDrawable2D arow3)
+arow3.Create(232, 26)
+arow3.SetPosition(4, 276)
+arow3.SetOrder(1)
+arow3.SetBackground(0.15, 0.16, 0.11, 1.0)
+run paint_anim_row.etcs pane=arow3 anim=anim
+
+anim.Refresh()

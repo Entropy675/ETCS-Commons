@@ -719,6 +719,34 @@ public:
         if (!w) return false;
         ETCS_GLFW_MAIN(glfwSetWindowSize(*w, static_cast<int>(s.width),
                                              static_cast<int>(s.height)));
+#if defined(__EMSCRIPTEN__)
+        /*
+         * THROUGH GLFW, NOT AROUND IT, and that is the whole of this branch's
+         * history. Setting the canvas element's size directly
+         * (emscripten_set_canvas_element_size) does resize the framebuffer and
+         * looks entirely correct -- the picture is the right shape, the scene
+         * follows, nothing logs. What it does not do is tell emscripten's GLFW,
+         * which keeps its own record of the window and scales every pointer
+         * coordinate by it. The canvas grew and the record did not, so every
+         * press arrived multiplied by the stale ratio: a click on the toolbar
+         * landed above it, a stroke landed short of the cursor, and the only
+         * visible symptom was controls that had stopped answering.
+         *
+         * glfwSetWindowSize sizes the canvas AND updates that record, which is
+         * why the call above is now shared with the desktop instead of being
+         * the #else.
+         *
+         * The paragraph on ResizeTo is still the WM's rule and not the
+         * browser's: here the set cannot be declined and there is no configure
+         * to wait for, so the size is recorded rather than only requested.
+         */
+        notifyResize(s);
+        // STATED, SO DELIVERED. notifyResize arms the settle countdown, which
+        // the poll pass counts down; the page has already debounced this call,
+        // so there is no burst left to coalesce and waiting three passes only
+        // delays the scene behind the canvas it is drawn on.
+        deliverResizeNow();
+#endif
         return true;
     }
 

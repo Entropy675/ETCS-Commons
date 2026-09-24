@@ -1,0 +1,49 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── ONE ROW OF THE PAGE LIST ─────────────────────────────────────────────────
+#
+#     run paint_page_row.etcs pane=<Drawable2D> list=<PaintPagePanel>
+#
+# The layer row's bargain, for a stored page: the pane is the row and its
+# background, everything is drawn in its own space, and the file is run once
+# per row (paint_layer_row.etcs says why a row cannot be one call).
+#
+# A ROW IS [thumb][name .......][x]: the picture the store took of the page
+# when it was saved, its name and size, and delete. A press on the thumb or the
+# name loads the page; a second press on the name of the page already on
+# screen opens it for renaming (PaintPagePanel::Apply).
+
+requires pane [Drawable2D]
+requires list [PaintPagePanel]
+
+list.BeginRow()
+list.RowNode(bg, @pane)
+
+# The thumbnail raster is exactly the store's size (PaintPages::THUMB_W x
+# THUMB_H), so the saved picture is copied in rather than resampled.
+pane.spawn(RenderProvider::CompositeDrawable2D thumb)
+thumb.Create(32, 24)
+thumb.SetPosition(2, 1)
+thumb.SetOrder(2)
+thumb.SetRetain(1)
+list.RowNode(thumb, @thumb)
+
+pane.spawn(RenderProvider::TextLabel name)
+name.Create()
+name.SetPosition(40, 9)
+name.SetSize(1)
+name.SetColor(0.90, 0.90, 0.94, 1.0)
+name.SetText(-)
+name.SetOrder(2)
+list.RowNode(label, @name)
+
+pane.spawn(RenderProvider::PolygonDrawable2D del)
+del.Create()
+del.AddPoint(166, 5)
+del.AddPoint(182, 5)
+del.AddPoint(182, 21)
+del.AddPoint(166, 21)
+del.SetFill(0.72, 0.31, 0.23, 1.0)
+del.SetOrder(2)
+list.RowNode(del, @del)

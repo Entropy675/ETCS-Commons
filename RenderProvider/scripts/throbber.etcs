@@ -68,6 +68,17 @@ throb.SetStep(5.4)
 #     throb.SetHidden(1)      # gone, and costs one virtual call per frame
 #     throb.SetHidden(0)      # back, sweeping from where it left off
 #
+# OR FOLLOW A FLAG. A type that is busy says so on itself -- a lowercase state
+# tag, `busy` on PaintProvider's page store -- and the throbber can be bound to
+# it, shown exactly while the tag is up, read once a frame on the edge:
+#
+#     throb.Watch(@pages, busy)
+#     throb.Watch(@doc, syncing)   # a second watch: shown while EITHER is up
+#     throb.Watch(@pages, )    # that one unbound; with none, SetHidden is the switch again
+#
+# While a watch is bound SetHidden is overruled a frame later, so a script that
+# wants both binds the watch to the thing that knows.
+#
 # ── reaching a throbber somebody else already made ──────────────────────────
 #
 # A session that shows one at boot keeps it (PaintProvider's

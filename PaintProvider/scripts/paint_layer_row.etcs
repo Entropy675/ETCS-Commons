@@ -1,0 +1,125 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── ONE ROW OF THE LAYER WINDOW ──────────────────────────────────────────────
+#
+#     run PaintProvider/scripts/paint_layer_row.etcs pane=<Drawable2D> list=<PaintLayerPanel>
+#
+# ONE FILE, RUN ONCE PER ROW, instead of the same ninety-six lines seven times.
+# The pane is the row: the caller spawns it, positions it, and everything below
+# is drawn in its own space -- which is what makes one file serve every row,
+# because `run` carries RIDs and not numbers and so a script can never be told
+# "draw at y=54". A pane is a coordinate origin; that is the whole trick.
+#
+# THE PANE IS ALSO THE ROW'S BACKGROUND. It is a compositor with a colour, and
+# PaintLayerPanel's own fill helper already knows that a composite takes
+# SetBackground where a polygon takes SetFill -- so the plate and the pane are
+# one node rather than two.
+#
+# A ROW IS [eye][thumb][name .....][::][^] [v][x] and each part answers one
+# complaint the old row earned:
+#
+#   ::   THE GRIP. A restack used to begin on the row BODY, and the body is also
+#        the second half of the double click that opens the name -- so on a wide
+#        window, where the body is most of the row, the rename won the gesture
+#        every time. A strip that says hold-here takes the drag.
+#   ^ v  MERGE UP / MERGE DOWN, because the direction IS the verb. Side by
+#        side with a gap, not stacked: two triangles sharing a column read as
+#        one glyph, and a merge is two different things. The panel hides the
+#        arrow at each end of the stack rather than drawing one that could
+#        only ever be refused.
+#
+# The parts are ordered above the pane so a press on a control hits the control:
+# PickAt walks the ordered list backwards, so higher wins.
+
+requires pane [Drawable2D]
+requires list [PaintLayerPanel]
+
+list.BeginRow()
+list.RowNode(bg, @pane)
+
+# The eye is its own file -- one shape, one place to change it.
+#
+# NAMED AS A SIBLING, not by its path from the module root, and that is not a
+# style choice. resolve_script_path tries the caller's OWN directory first and
+# falls back to the caller's #IMPORT target; a nested run spelled
+# "PaintProvider/scripts/x.etcs" from inside PaintProvider/scripts/ asks for
+# PaintProvider/scripts/PaintProvider/scripts/x.etcs, misses, and is saved only
+# by the #IMPORT fallback -- which exists natively and does NOT in the browser,
+# where the scripts are staged into MEMFS at their relative paths and ACE_ROOT
+# means nothing. Spelled as a sibling it resolves on the FIRST candidate in both
+# places. A top-level run from the boot script still names the full path,
+# because from there it is not a sibling.
+run paint_eye.etcs pane=pane list=list
+
+pane.spawn(RenderProvider::CompositeDrawable2D thumb)
+thumb.Create(24, 24)
+thumb.SetPosition(34, 1)
+thumb.SetOrder(2)
+thumb.SetRetain(1)
+list.RowNode(thumb, @thumb)
+
+pane.spawn(RenderProvider::TextLabel name)
+name.Create()
+name.SetPosition(64, 7)
+name.SetSize(2)
+name.SetColor(0.90, 0.90, 0.94, 1.0)
+name.SetText(-)
+name.SetOrder(2)
+list.RowNode(label, @name)
+
+# The grip: a pickable rectangle with the dots drawn on top of it. The rectangle
+# is the target -- a label is only as wide as its glyphs, which is a poor thing
+# to ask somebody to hit.
+pane.spawn(RenderProvider::PolygonDrawable2D grip)
+grip.Create()
+grip.AddPoint(150, 4)
+grip.AddPoint(166, 4)
+grip.AddPoint(166, 22)
+grip.AddPoint(150, 22)
+grip.SetFill(0.20, 0.21, 0.15, 1.0)
+grip.SetOrder(2)
+list.RowNode(grip, @grip)
+
+# Two colons, not three: the strip is 16 wide and a glyph cell is 6, so three
+# ran past its right edge (17 px); two are 11 and sit centred.
+pane.spawn(RenderProvider::TextLabel grip_dots)
+grip_dots.Create()
+grip_dots.SetPosition(153, 9)
+grip_dots.SetSize(1)
+grip_dots.SetColor(0.60, 0.61, 0.54, 1.0)
+grip_dots.SetText(::)
+grip_dots.SetOrder(3)
+# With the row, not on its own: the dots are decoration, so they ride the
+# row's trim list rather than being a control (PaintLayerPanel::RowNode).
+list.RowNode(dots, @grip_dots)
+
+# Up on the left, down on the right, 6 px of row between them: 12 wide and 10
+# tall each, in the 50 px between the grip and the delete.
+pane.spawn(RenderProvider::PolygonDrawable2D merge_up)
+merge_up.Create()
+merge_up.AddPoint(178, 7)
+merge_up.AddPoint(184, 17)
+merge_up.AddPoint(172, 17)
+merge_up.SetFill(0.55, 0.60, 0.45, 1.0)
+merge_up.SetOrder(2)
+list.RowNode(up, @merge_up)
+
+pane.spawn(RenderProvider::PolygonDrawable2D merge_down)
+merge_down.Create()
+merge_down.AddPoint(196, 19)
+merge_down.AddPoint(190, 9)
+merge_down.AddPoint(202, 9)
+merge_down.SetFill(0.55, 0.60, 0.45, 1.0)
+merge_down.SetOrder(2)
+list.RowNode(down, @merge_down)
+
+pane.spawn(RenderProvider::PolygonDrawable2D del)
+del.Create()
+del.AddPoint(216, 5)
+del.AddPoint(232, 5)
+del.AddPoint(232, 21)
+del.AddPoint(216, 21)
+del.SetFill(0.72, 0.31, 0.23, 1.0)
+del.SetOrder(2)
+list.RowNode(del, @del)

@@ -305,7 +305,7 @@ public:
     // Begins the drain; does NOT complete it. Returns true once the transition
     // is under way, idempotent on an already-draining or free connection.
     // IsActive() stays true until the last completion retires.
-    bool ResetConcrete()
+    bool ResetConcrete() override
     {
         Phase expect = Phase::Serving;
         if (!phase_.compare_exchange_strong(expect, Phase::Draining,
@@ -347,16 +347,16 @@ public:
     // Anything but Free. A draining or clearing connection is not reusable, so
     // the pool must not see it as free -- this is the distinction
     // IsConnectionOpen() (fd validity) deliberately does not make.
-    bool IsActiveConcrete() const
+    bool IsActiveConcrete() const override
     { return phase_.load(std::memory_order_acquire) != Phase::Free; }
-    int  GetClientFdConcrete() const { return client_fd_.load(std::memory_order_acquire); }
-    void SetClientFdConcrete(int fd) { client_fd_.store(fd, std::memory_order_release); }
-    ETCS::RID GetPageRIDConcrete() const       { return page_rid_; }
-    void       SetPageRIDConcrete(ETCS::RID r) { page_rid_ = r; }
+    int  GetClientFdConcrete() const override { return client_fd_.load(std::memory_order_acquire); }
+    void SetClientFdConcrete(int fd) override { client_fd_.store(fd, std::memory_order_release); }
+    ETCS::RID GetPageRIDConcrete() const override    { return page_rid_; }
+    void      SetPageRIDConcrete(ETCS::RID r) override { page_rid_ = r; }
     // Derived, not a second flag. open_ was written by Reset, by
     // CloseConnection and by SetClientFd from three different threads with no
     // ordering between them; phase_ already carries the same fact.
-    bool IsConnectionOpenConcrete() const
+    bool IsConnectionOpenConcrete() const override
     {
         return phase_.load(std::memory_order_acquire) == Phase::Serving
             && client_fd_.load(std::memory_order_acquire) != -1;

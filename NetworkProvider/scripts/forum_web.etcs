@@ -1,13 +1,20 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
+# ── A FORUM NODE ON THE WEB: its /forum route, and nothing else ──────────────
+#
+#     detach NetworkProvider/scripts/forum_web.etcs forum=<ForumNode>
+#
+# Onto the server named `web` -- the site's when a site script has one, or a
+# bare one on 8080. The page (forum.html) is the site's to serve.
+#
+# NO PAGES, for the reason chess_web.etcs gives: loading ./www into the site's
+# `tree` from here re-read the site's own directory relative to wherever the
+# process started, and replaced what the site had mounted under it.
+
 requires forum
 ensure NetworkProvider::HttpServer web
 web.SetPort(8080)
-
-web.ensure(NetworkProvider::FileHtmlPage tree)
-tree.LoadFromDisk(./www)
-tree.ListPaths()
 
 web.AddRoute(@forum Request @forum Filter)
 web.Start()

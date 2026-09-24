@@ -114,9 +114,9 @@ serving some other page's bytes -- which is exactly what
 
 There is no separate landing page here because there does not need to be: a
 Directory node resolves `/` through its own `index.html` child, and this file is
-already that child. One page entity, no ordering to depend on. The same hazard is
-still latent in `run_website.etcs`, where `landing` and `chess_web.etcs`'s
-`board_page` are both `StaticHtmlPage` children of the same server.
+already that child. One page entity, no ordering to depend on. (`run_website.etcs`
+had the same hazard while `chess_web.etcs` attached a `board_page` beside its
+`landing`; it attaches no pages now.)
 
 The consequence to know: the iframe's `src` is `shell`, a mount point, so this
 page expects to be served by `serve_web.etcs` rather than by any static file

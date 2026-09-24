@@ -154,6 +154,48 @@ DEFINE_WORK_FUNC(HttpServer, AddRoute)
     self.AddRoute(rid, action, filter_rid, filter_action);
 }
 
+// AddRequestRoute <rid> <Action> [<filter_rid> <FilterAction>] — the same
+// registration, for a target that expects a RouteRequest rather than a path.
+//
+// A SECOND VERB RATHER THAN A FLAG, because the difference is not a setting on
+// a route, it is which of two function signatures the target actually has. Both
+// arrive as an ETCS::Buffer, so a target handed the wrong one does not fail --
+// it reads a pointer as a string or a string as a pointer and carries on. There
+// is no runtime check that could catch that, and a trailing boolean on AddRoute
+// would put the one fact that prevents it at the end of a line whose earlier
+// optional arguments are already positional. Naming it in the verb means a
+// script cannot half-say it.
+//
+// The route may still answer either way -- inline or by RouteRef. That is a
+// per-request choice and not part of the registration.
+DEFINE_WORK_FUNC(HttpServer, AddRequestRoute)
+{
+    (void)ctx;
+    ETCS::RID   rid = 0;
+    std::string action;
+    data >> rid;
+    data >> action;
+
+    if (rid == 0 || action.empty())
+    {
+        ETCS_LOG("HttpServer::AddRequestRoute",
+                 "expected '<rid> <Action> [<filter_rid> <FilterAction>]' -- got: "
+                 << data.buf);
+        return;
+    }
+
+    ETCS::RID   filter_rid = 0;
+    std::string filter_action;
+    data >> filter_rid;
+    data >> filter_action;
+    if ((filter_rid == 0) != filter_action.empty())
+    {
+        ETCS_LOG("HttpServer::AddRequestRoute", "half a filter given -- registering catch-all.");
+        filter_rid = 0; filter_action.clear();
+    }
+    self.AddRoute(rid, action, filter_rid, filter_action, true);
+}
+
 DEFINE_WORK_FUNC(HttpServer, ClearRoutes)
 {
     (void)data; (void)ctx;
@@ -352,43 +394,42 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
         // do_send takes it over.
         ConnRef entry = ConnRef::Wrap(c);
 
-        std::string path(c->GetParser().GetPath(), c->GetParser().GetPathLen());
-
+        // ONE PARSE OF THE REQUEST, shared by everything below it.
+        //
         // A query string is part of the request TARGET, not the path.
         // picohttpparser hands back the target verbatim, so "/?as=alice"
-        // arrives here as the path and matches neither a route nor a page
-        // -- the landing page 404s the moment anyone appends a parameter.
-        // Strip it once, here, so every consumer below (route filters,
-        // ResolvePath, the page tree) sees the same normalized path.
+        // arrives as the path and matches neither a route nor a page -- the
+        // landing page 404s the moment anyone appends a parameter. That
+        // split, the leading-slash strip and the segment split now all
+        // happen inside RouteRequest::Parse (RouteRequest.h), so route
+        // filters, routes, ResolvePath and the page tree see one answer
+        // rather than each deriving their own.
         //
-        // The query itself is deliberately DISCARDED rather than parsed:
-        // nothing in this server reads parameters, and the one thing that
-        // wanted an identity carries it in the path instead
-        // (/<mount>/<key>/<token>/<verb>), which is the shape a peer with
-        // no server can also use.
-        const size_t qpos = path.find('?');
-        if (qpos != std::string::npos)
-        {
-            ETCS_LOG("HttpServer", "stripping query from '" << path << "'");
-            path.erase(qpos);
-        }
+        // The query is no longer DISCARDED, only unused here: it is carried
+        // on the request for a route that wants it. The identity-in-the-path
+        // shape (/<mount>/<key>/<token>/<verb>) is still the one to reach
+        // for, because it is what a peer with no server can also use -- a
+        // parameter is a convenience of having a server in front of you.
+        const RouteRequest req = RouteRequest::Parse(
+            std::string(c->GetParser().GetPath(), c->GetParser().GetPathLen()),
+            std::string(c->GetParser().GetMethod(), c->GetParser().GetMethodLen()),
+            c->GetParser().GetBody(), c->GetParser().GetBodyLen());
+
+        // The tree wants the address as asked (slash intact); everything else
+        // here only names the request in a log line or takes a filename off
+        // the end, for which either spelling reads the same.
+        const std::string& path = req.target;
 
         // Routes first, pages second. A route is a live entity answering a
         // path; a page is stored content. route_body must outlive the send
-        // below, since asset.data points into it rather than copying.
+        // below, since an INLINE route answer has asset.data pointing into it
+        // rather than copying. A RouteRef answer points at the route's own
+        // storage instead and this buffer holds only the frame -- see
+        // DispatchRoute.
         ETCS::Buffer route_body;
         HtmlPage_::ResolvedAsset asset;
-        if (self.DispatchRoute(path, route_body, ctx))
-        {
-            asset.matched   = true;
-            asset.data      = route_body.buf;
-            asset.length    = route_body.written;
-            asset.mime_type = "text/plain";
-        }
-        else
-        {
+        if (!self.DispatchRoute(req, route_body, ctx, asset))
             asset = self.ResolvePath(path);
-        }
 
         // Build custom headers string from connection/state object
         std::string custom_headers_str;
@@ -625,7 +666,7 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             send_sub.ctx        = ctx;
 
             auto send_scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
-            send_sub.callback = [c, offset, total, do_send, send_scope = std::move(send_scope)]
+            send_sub.callback = [c, offset, do_send, send_scope = std::move(send_scope)]
                                 (ETCS::IOCompletion comp) mutable
             {
                 ConnRef ref = ConnRef::Wrap(c);
@@ -1228,6 +1269,16 @@ DEFINE_WORK_FUNC(FileHtmlPage, MountExternal)
     self.MountChild(segment, target_rid);
     ETCS_LOG("FileHtmlPage::MountExternal", "Mounted RID:" << target_rid
              << " at '" << segment << "' under RID:" << self.getRID());
+}
+
+// SetMountPrefix <segment[/segment...]> -- where MountFile paths go from now
+// on; no argument clears it. See FileHtmlPage::SetMountPrefix.
+DEFINE_WORK_FUNC(FileHtmlPage, SetMountPrefix)
+{
+    (void)ctx;
+    std::string prefix;
+    data >> prefix;
+    self.SetMountPrefix(prefix);
 }
 
 DEFINE_WORK_FUNC(FileHtmlPage, MountFile)

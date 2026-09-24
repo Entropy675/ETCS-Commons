@@ -41,7 +41,7 @@ ETCS_TAG_BLOCK_BASIC(ImageSurface,
 // Draw is the whole subtree in one call, which is what a scene living in the
 // entity tree buys over one living in a script.
 ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
-    Create, AddPoint, ClearPoints, SetFill, SetOrder, SetHidden, Draw, Clear, DrawRect, Blit, Delete)
+    Create, AddPoint, ClearPoints, SetOval, SetFill, SetOrder, SetHidden, Draw, Clear, DrawRect, Blit, Delete)
 
 // The merge point: a Drawable2D that owns pixels, so everything nested under
 // it renders into its buffer and reaches the destination as one Blit. Drawing
@@ -49,7 +49,8 @@ ETCS_TAG_BLOCK_BASIC(PolygonDrawable2D,
 // at all -- see CompositeDrawable2D.h on how Pixels_'s own dirty flag ends up
 // serving both this and the device upload, in sequence.
 ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
-    Create, SetPosition, SetOrder, SetBackground, SetRetain, SetPickable, SetHidden, MoveTo, ResizeTo,
+    Create, SetPosition, SetOrder, SetBackground, SetRetain, SetPassthrough, SetHidden, MoveTo,
+    ResizeTo, FollowResize,
     Draw, Clear, DrawRect, Blit, Delete)
 
 // The 3D scene node: a box, self-similar with its children, which projects its
@@ -89,5 +90,5 @@ ETCS_TAG_BLOCK_BASIC(TextLabel,
 // from its tag block compiles, links, and fails silently at call time -- ten
 // PaintProvider controls shipped dead exactly that way (PaintProvider.cc).
 ETCS_TAG_BLOCK_BASIC(Throbber,
-    Create, SetSize, SetStep, SetDots, SetColors, SetTextColor, SetText,
-    SetPosition, SetOrder, SetHidden, Delete)
+    Create, SetSize, SetStep, SetDots, SetColors, SetTextColor, SetText, SetPlate,
+    SetPosition, SetOrder, SetHidden, Watch, CenterOn, Delete)

@@ -53,6 +53,22 @@ DEFINE_WORK_FUNC_TYPED(Window, MoveBy, (int32_t, dx), (int32_t, dy))
     self.SetPosition(new_x, new_y);
 }
 
+/*
+ * The Resizable_ verb, which the window has had all along and never exported --
+ * so a scene could follow a window's size and nothing could tell the window
+ * one. A browser is where that gap shows: no WM drags the frame, the page owns
+ * the box, and without this the canvas stays whatever Create asked for.
+ *
+ * False means declined, which on a desktop is an ordinary answer (see
+ * GLFWWindow::ResizeTo) and in a browser is not.
+ */
+DEFINE_WORK_FUNC_TYPED(Window, ResizeTo, (uint32_t, w), (uint32_t, h))
+{
+    (void)ctx;
+    if (!self.ResizeTo(WindowSize{ w, h }))
+        ETCS_LOG("Window::ResizeTo", "the window declined " << w << "x" << h << ".");
+}
+
 // Center on primary monitor
 DEFINE_WORK_FUNC(Window, CenterOnMonitor)
 {

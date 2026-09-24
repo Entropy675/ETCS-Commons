@@ -24,7 +24,7 @@ public:
     StaticHtmlPage() = default;
     virtual ~StaticHtmlPage() = default;
 
-    bool ResetConcrete()
+    bool ResetConcrete() override
     {
         html_content_.reset();
         css_content_.reset();
@@ -32,8 +32,8 @@ public:
         return true;
     }
 
-    bool IsActiveConcrete()     const { return true; }
-    bool IsFileBackedConcrete() const { return false; }
+    bool IsActiveConcrete()     const override { return true; }
+    bool IsFileBackedConcrete() const override { return false; }
 
     // The three assets, addressed by fixed path. Non-owning: the returned
     // pointers are into this page's own NBuffers and stay valid only while it
@@ -44,7 +44,7 @@ public:
     // A leading-slash-less path is accepted too, so this works identically
     // whether it is reached directly (a server routing "/style.css") or via a
     // tree mount (FileHtmlPage handing down a bare segment).
-    HtmlPage_::ResolvedAsset ResolveConcrete(const std::string& request_path) const
+    HtmlPage_::ResolvedAsset ResolveConcrete(const std::string& request_path) const override
     {
         HtmlPage_::ResolvedAsset result;
 
@@ -73,7 +73,7 @@ public:
         return result;
     }
 
-    bool DeleteConcrete()
+    bool DeleteConcrete() override
     {
         std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();
         ETCS_LOG("StaticHtmlPage", "Delete: firing self-DestroyEvent for RID:"
