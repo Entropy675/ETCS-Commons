@@ -14,6 +14,25 @@ is a view only; served on its own it boots the runtime itself.
 
 The page terminal calls `etcs_web_shell_push_line` so `lsh::read_line` unblocks.
 
+## The prompt is a menu, and the menu is buttons by default
+
+Every prompt the navigator puts up is a choice from a list it just printed --
+modules, tags, instances, actions, and a few words like `back` and `spawn`. The
+runtime publishes that list as data beside the text (`repl_menu_publish`,
+core/CommandExecutor.h; `etcs_web_shell_menu`, loaders/etcs.cc): for each entry
+the line it stands for, a label, its kind, and whether it wants words after it.
+The page polls it on the drain's clock and draws it as buttons under the
+transcript. A button sends its line down the same path a typed line takes, so
+the navigator never knows which it got. An entry that wants words -- an
+action's payload, `spawn`'s name, `cd`'s path -- opens the one input under the
+buttons; `go` sends both, and empty words are allowed (most actions read none).
+
+`type instead` switches to the command line, `buttons instead` switches back;
+the choice is kept in the browser. Buttons are the default because on a phone
+they are the only usable form and on a desktop they are the readable one.
+Embedded in the paint page, the host relays the menu JSON to the frame with the
+text (`{etcs:'menu'}`), so the framed terminal has the same two views.
+
 ## Output is pulled in chunks, not pushed per line
 
 `ETCS_LOG` writes to `std::cout` and flushes per line -- one line, one write, so

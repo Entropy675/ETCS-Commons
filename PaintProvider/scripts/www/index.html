@@ -351,7 +351,14 @@
     try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); }
     catch (e) { return; }                 // runtime gone or not exporting it
     if (text) termWrite(text);
+    // And the navigator's menu, for the terminal's button view: the runtime is
+    // here, the terminal is framed, so the JSON crosses the same way the text
+    // does (the shell page's own drain does both in one place).
+    let menu = '';
+    try { menu = mod.ccall('etcs_web_shell_menu', 'string', [], []); } catch (e) { menu = ''; }
+    if (menu && menu !== lastMenuJson) { lastMenuJson = menu; toShell({ etcs: 'menu', json: menu }); }
   }
+  let lastMenuJson = '';
   function startShellDrain() {
     if (shellDrainTimer) return;
     shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS);
@@ -1466,6 +1473,7 @@
       for (const t of pending) toShell({ etcs: 'out', text: t });
       pending.length = 0;
       toShell({ etcs: 'enable', enabled: !!(window.Module && window.Module.calledRun) });
+      if (lastMenuJson) toShell({ etcs: 'menu', json: lastMenuJson });
       return;
     }
     if (m.etcs === 'line') { pushLine(String(m.line == null ? '' : m.line)); return; }
