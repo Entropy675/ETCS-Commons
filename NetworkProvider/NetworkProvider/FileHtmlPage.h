@@ -81,7 +81,7 @@ public:
     virtual ~FileHtmlPage() = default;
 
     // --- HtmlPageBase concrete surface ---
-    bool ResetConcrete()
+    bool ResetConcrete() override
     {
         // Deliberately does NOT touch children_by_name_, fallback_page_,
         // or the underlying addTag<FileHtmlPage>()'d subtree -- those are
@@ -96,7 +96,7 @@ public:
         return true;
     }
     
-    bool DeleteConcrete() 
+    bool DeleteConcrete() override
     {
         std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();
         ETCS_LOG("Delete: firing self-DestroyEvent for RID:"
@@ -108,8 +108,8 @@ public:
         return ETCS::DestroyEvent{conjugate_key.c_str(), this}();
     }
     
-    bool IsActiveConcrete()     const { return true; }
-    bool IsFileBackedConcrete() const { return kind_ == Kind::File; }
+    bool IsActiveConcrete()     const override { return true; }
+    bool IsFileBackedConcrete() const override { return kind_ == Kind::File; }
 
     // --- Node identity ---
     Kind               GetKind()        const { return kind_; }
@@ -492,7 +492,7 @@ public:
     // response from either way (matching the existing
     // "%.*s"/Content-Length snprintf pattern NetworkProvider.h's own
     // TestPage/StartWebserver already use).
-    HtmlPage_::ResolvedAsset ResolveConcrete(const std::string& request_path) const
+    HtmlPage_::ResolvedAsset ResolveConcrete(const std::string& request_path) const override
     {
         HtmlPage_::ResolvedAsset result;
 

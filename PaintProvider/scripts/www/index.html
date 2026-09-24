@@ -458,6 +458,9 @@
   // plainly live behind it.
   let runtimeIsUp = false;
   function runtimeUp() { return runtimeIsUp && !!(window.Module && window.Module.ccall); }
+  // The boot script's scene has arrived (bootThrobber): every name it spawns
+  // is live from here on.
+  let sceneUp = false;
 
   /*
    * ── the soft keyboard ──────────────────────────────────────────────────────
@@ -670,7 +673,10 @@
        */
       if (canvas.width !== w || canvas.height !== h) return false;
       stageW = w; stageH = h;
-      callVerb('canvas', 'Render', '');
+      // Not before the scene is up: the window exists from the first lines of
+      // the boot script and the canvas from its middle, and a Render sent in
+      // between is a warning about a name that is not there yet.
+      if (sceneUp) callVerb('canvas', 'Render', '');
       return true;
     } catch (e) {
       log('[etcs] resize to ' + w + 'x' + h + ' failed: ' + e + '\n', 'err');
@@ -2152,6 +2158,7 @@
       } catch (e) { bad++; }
       if (done || bad > 25) {
         stopped = true; clearInterval(poll); el.remove();
+        sceneUp = true;
         log('[etcs] boot throbber done'
             + (bad > 25 ? ' (could not read the sheet -- leaving anyway)' : '') + '\n');
       }

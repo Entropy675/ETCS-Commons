@@ -291,7 +291,7 @@ public:
         return true;
     }
 
-    bool DeleteConcrete() 
+    bool DeleteConcrete() override
     {
         std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();
         ETCS_LOG("Delete: firing self-DestroyEvent for RID:"

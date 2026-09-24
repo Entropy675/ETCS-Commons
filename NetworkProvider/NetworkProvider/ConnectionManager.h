@@ -67,7 +67,7 @@ public:
     // failure returns false with a log rather than throwing -- Open is a work
     // action a script calls directly, so a bad port should be a visible failed
     // line, not an exception unwinding through the executor.
-    bool OpenConcrete(const ETCS::Buffer& config)
+    bool OpenConcrete(const ETCS::Buffer& config) override
     {
         if (listen_fd_ != -1)
         {
@@ -140,7 +140,7 @@ public:
     // BEFORE the close so an in-flight completion that fires during teardown
     // sees it and declines to resubmit, rather than racing to re-arm a chain
     // against a descriptor that is about to be (or already has been) closed.
-    bool CloseConcrete()
+    bool CloseConcrete() override
     {
         if (listen_fd_ == -1) return true;
 
@@ -370,11 +370,11 @@ public:
         return true;
     }
 
-    bool IsOpenConcrete() const { return listen_fd_ != -1; }
+    bool IsOpenConcrete() const override { return listen_fd_ != -1; }
 
     // --- Ephemeral_ / Deletable_ concrete surface ---
 
-    bool ResetConcrete()
+    bool ResetConcrete() override
     {
         CloseConcrete();
         {
@@ -386,9 +386,9 @@ public:
         return true;
     }
 
-    bool IsActiveConcrete() const { return listen_fd_ != -1; }
+    bool IsActiveConcrete() const override { return listen_fd_ != -1; }
 
-    bool DeleteConcrete()
+    bool DeleteConcrete() override
     {
         CloseConcrete();
         std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();

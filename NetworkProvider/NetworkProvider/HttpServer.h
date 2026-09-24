@@ -41,7 +41,7 @@ public:
 
     // --- Switchable_ concrete surface ---
 
-    bool StartConcrete()
+    bool StartConcrete() override
     {
         if (manager_) { ETCS_LOG("HttpServer", "Start: already started."); return false; }
 
@@ -107,7 +107,7 @@ public:
         return true;
     }
 
-    bool StopConcrete()
+    bool StopConcrete() override
     {
         if (!manager_) { started_ = false; return true; }
 
@@ -121,11 +121,11 @@ public:
         return true;
     }
 
-    bool IsStartedConcrete() const { return started_; }
+    bool IsStartedConcrete() const override { return started_; }
 
     // --- Deletable_ concrete surface ---
 
-    bool DeleteConcrete()
+    bool DeleteConcrete() override
     {
         StopConcrete();
         std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();

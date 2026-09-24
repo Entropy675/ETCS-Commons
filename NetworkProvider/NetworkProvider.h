@@ -666,7 +666,7 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
             send_sub.ctx        = ctx;
 
             auto send_scope = std::make_shared<ETCS::ScopeTag>(&self, "conn_io", ctx);
-            send_sub.callback = [c, offset, total, do_send, send_scope = std::move(send_scope)]
+            send_sub.callback = [c, offset, do_send, send_scope = std::move(send_scope)]
                                 (ETCS::IOCompletion comp) mutable
             {
                 ConnRef ref = ConnRef::Wrap(c);

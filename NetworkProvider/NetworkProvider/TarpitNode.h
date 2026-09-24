@@ -90,7 +90,7 @@ public:
     // beginDispatch) needing a completely different fix. Three lines that
     // name which of those actually happened cost one log call on a path that
     // already does a substring scan over a pattern list.
-    bool AcceptsConcrete(ETCS::Buffer& io) const
+    bool AcceptsConcrete(ETCS::Buffer& io) const override
     {
         ETCS::RID manager_rid = 0, conn_rid = 0;
         io >> manager_rid;
@@ -125,7 +125,7 @@ public:
     }
 
     // --- Deletable_ concrete surface ---
-    bool DeleteConcrete()
+    bool DeleteConcrete() override
     {
         std::string conjugate_key = getSourceModule().toString() + ":" + getSourceTag().toString();
         ETCS_LOG("TarpitNode", "Delete: firing self-DestroyEvent for RID:"
@@ -311,7 +311,7 @@ private:
         // still holds open, rather than releasing them out from under an
         // in-flight send.
         auto send_scope = std::make_shared<ETCS::ScopeTag>(this, "conn_io", ctx);
-        send_sub.callback = [this, conn, ctx, offset, total, send_scope = std::move(send_scope)]
+        send_sub.callback = [this, conn, ctx, offset, send_scope = std::move(send_scope)]
                             (ETCS::IOCompletion comp) mutable
         {
             ConnRef ref = ConnRef::Wrap(conn);

@@ -6093,9 +6093,10 @@ public:
 
     bool ApplyOp(const PaintOp& op)
     {
-        // A box names no layer; neither does a page.
+        // A box names no layer; neither does a page, nor a retraction, which
+        // re-derives the path (AcceptOp) rather than drawing anything.
         if (op.kind == PaintOpKind::Text) { apply_text_state(op.box, op.removed); return true; }
-        if (op.kind == PaintOpKind::Page) return true;
+        if (op.kind == PaintOpKind::Page || op.retraction()) return true;
         PaintLayer* layer = layerFor(op);
         if (!layer)
         {
@@ -6185,8 +6186,10 @@ public:
             return true;
         }
 
-        case PaintOpKind::Page:          // both answered above
+        case PaintOpKind::Page:          // all answered above
         case PaintOpKind::Text:
+        case PaintOpKind::Undo:
+        case PaintOpKind::Redo:
             return true;
 
         case PaintOpKind::Layers:
@@ -17017,7 +17020,7 @@ public:
 
     // Route-level filter, the same one ChessNode has and for the same reason:
     // one server can carry several mounts and only the node knows which is its.
-    bool AcceptsConcrete(ETCS::Buffer& io) const
+    bool AcceptsConcrete(ETCS::Buffer& io) const override
     {
         const std::string desc = io.restAsString();
         size_t i = 0;
@@ -17032,7 +17035,7 @@ public:
     const std::string& MountPath() const { return m_mount; }
     void SetMount(const std::string& m) { if (!m.empty()) m_mount = m; }
 
-    bool DeleteConcrete()
+    bool DeleteConcrete() override
     {
         const std::string key = getSourceModule().toString() + ":" + getSourceTag().toString();
         return ETCS::DestroyEvent{key.c_str(), this}();
