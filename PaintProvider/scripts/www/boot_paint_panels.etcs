@@ -562,6 +562,32 @@ redo_word.SetText(redo)
 redo_word.SetOrder(22)
 palette.AddCall(@redo_word, @input, PaintInput.Redo)
 
+# THE OTHER WAY FORWARD. Draw after an undo and the history forks: redo takes
+# the newer branch, and this takes the older one (PaintDocument::RedoAlt).
+# Shown only while a fork sits under the cursor (PaintInput::BindRedoAlt),
+# which is the only time it means anything; both parts are bound so both hide.
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D redo_alt_btn)
+redo_alt_btn.Create()
+redo_alt_btn.AddPoint(104, 1)
+redo_alt_btn.AddPoint(176, 1)
+redo_alt_btn.AddPoint(176, 25)
+redo_alt_btn.AddPoint(104, 25)
+redo_alt_btn.SetFill(0.85, 0.85, 0.88, 0.30)
+redo_alt_btn.SetOrder(21)
+redo_alt_btn.SetHidden(1)
+palette.AddCall(@redo_alt_btn, @input, PaintInput.RedoAlt)
+zoom_pane.spawn(RenderProvider::TextLabel redo_alt_word)
+redo_alt_word.Create()
+redo_alt_word.SetPosition(112, 9)
+redo_alt_word.SetSize(1)
+redo_alt_word.SetColor(0.80, 0.80, 0.84, 1.0)
+redo_alt_word.SetText(redo alt)
+redo_alt_word.SetOrder(22)
+redo_alt_word.SetHidden(1)
+palette.AddCall(@redo_alt_word, @input, PaintInput.RedoAlt)
+input.BindRedoAlt(@redo_alt_btn)
+input.BindRedoAlt(@redo_alt_word)
+
 zoom_pane.spawn(RenderProvider::PolygonDrawable2D zoom_out)
 zoom_out.Create()
 zoom_out.AddPoint(0, 27)

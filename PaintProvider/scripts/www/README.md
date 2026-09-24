@@ -389,6 +389,19 @@ steps (`boot_paint_panels.etcs`), for a hand on a touch screen: the same step
 ctrl+z and ctrl+y take, through the pane's input so the view repaints with it
 (`PaintInput::Undo`).
 
+**And `redo alt`, when there are two ways forward.** Undo, then draw, and the
+history forks: the stroke you undid and the one you drew are both children of
+where you stood. Redo takes the newer; the older used to be a picture no key
+could reach. `redo alt` (or ctrl+shift+y) takes it (`PaintDocument::RedoAlt`),
+and the button is there only while the place you stand has a second branch.
+The document publishes that on every move of its cursor (`PaintDocument::
+forked`, an atomic), and the control follows it on the frame edge
+(`PaintInput`'s `Animated` step) rather than where the history changed:
+flipped from an input's thread it raced the compose walk and appeared only when
+some later input drove another frame -- and a key reaches the input of the
+pane it lands on, which is not the one holding the button. Not in a shared
+session, whose record does not fork (an undo there is a line).
+
 **Undo.** An edit is a step: from opening a box to letting it go -- the typing,
 the font, the size, the colour, a move, a resize -- is recorded when it ends as
 one `text` entry on the notebook (`PaintOpKind::Text`), carrying the whole box.

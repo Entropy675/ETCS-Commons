@@ -5434,7 +5434,7 @@ public:
         Touch();
         sealOpenOp();
         op.author = m_author;
-        m_cursor = m_book.Append(std::move(op), m_cursor);
+        setCursor(m_book.Append(std::move(op), m_cursor));
     }
 
     // The rectangle (x0..x1, y0..y1 inclusive) of `layer` as it is now, as an
@@ -5470,7 +5470,7 @@ public:
         m_open      = PaintOp{};
         m_open_live = false;
         m_book.Clear();
-        m_cursor    = 0;
+        setCursor(0);
         m_text_fresh.clear();
         /*
      * THE BOXES THAT OUTLIVE THE HISTORY ARE STATED AT ITS START -- a resize
@@ -5483,7 +5483,7 @@ public:
 
     // Who authors entries made on this document from now on. Empty means this
     // page, which is what a document nobody is sharing keeps writing.
-    void SetAuthor(const std::string& who) { m_author = who; }
+    void SetAuthor(const std::string& who) { m_author = who; setCursor(m_cursor); }   // a session does not fork
     const std::string& author() const { return m_author; }
 
     /*
@@ -5806,34 +5806,81 @@ public:
             if ((*it)->marks()) { mark = *it; break; }
 
         if (!mark) { ETCS_LOG("PaintDocument", "nothing to undo"); return false; }
-        m_cursor = mark->parent;
+        setCursor(mark->parent);
         return replayTo(m_cursor, "undo");
     }
 
-    bool Redo()
+    bool Redo()    { return redoAlong(0); }
+    /*
+     * THE OTHER WAY FORWARD. Undo has one direction; redo has as many as
+     * there are branches under the cursor, and one of them is chosen for it
+     * -- the most recent. Drawing after an undo makes a second child, and
+     * from then on the first is a picture nothing can reach: redo takes the
+     * newer, and the older sits in the tree with no key that names it. This
+     * takes the second-newest, which is the one that was the future before
+     * the last stroke was. Shown only when it exists (redoBranches).
+     */
+    bool RedoAlt() { return redoAlong(1); }
+
+    // The first marking entry down each branch under the cursor, newest
+    // branch first: what redo and its alternative step to.
+    void redoTargets(std::vector<uint64_t>& out) const
+    {
+        out.clear();
+        std::vector<const PaintOp*> kids, next;
+        m_book.ChildrenOf(m_cursor, kids);
+        for (const PaintOp* kid : kids)
+        {
+            // Down the most-recent child each time, until something that
+            // marked lands under us. A run of keyframes has one child each,
+            // so this is one step in every ordinary case.
+            const PaintOp* walk = kid;
+            for (size_t guard = 0; walk && guard <= m_book.size(); ++guard)
+            {
+                if (walk->marks()) { out.push_back(walk->seq); break; }
+                m_book.ChildrenOf(walk->seq, next);
+                walk = next.empty() ? nullptr : next.front();
+            }
+        }
+    }
+    /*
+     * WHETHER THE HISTORY FORKS WHERE IT STANDS, published on every move of the
+     * cursor -- and every entry moves it -- so a reader on another thread (the
+     * frame edge, PaintInput's redo-alt control) asks an atomic and never the
+     * notebook the input thread is appending to. Decided here, where the move
+     * happens, rather than by whichever pane's input made it: a key goes to the
+     * input of the pane it landed on, and only one of them holds the control.
+     */
+    void setCursor(uint64_t c)
+    {
+        m_cursor = c;
+        m_forked.store(redoBranches() >= 2 ? 1 : 0, std::memory_order_release);
+    }
+    int forked() const { return m_forked.load(std::memory_order_acquire); }
+
+    size_t redoBranches() const
+    {
+        if (shared()) return 0;     // a session's path does not fork (retract)
+        std::vector<uint64_t> t;
+        redoTargets(t);
+        return t.size();
+    }
+
+    bool redoAlong(size_t branch)
     {
         if (refuse_read_only("redo")) return false;
         if (m_text_sel) SelectTextBox(0);
         sealOpenOp();
-        if (shared()) return retract(PaintOpKind::Redo);
-        // Down the most-recent child each time, until something that marked
-        // lands under us. A run of keyframes has one child each, so this is
-        // one step in every ordinary case.
-        uint64_t walk = m_cursor;
-        std::vector<const PaintOp*> kids;
-        for (size_t guard = 0; guard <= m_book.size(); ++guard)
+        if (shared()) return branch == 0 ? retract(PaintOpKind::Redo) : false;
+        std::vector<uint64_t> targets;
+        redoTargets(targets);
+        if (branch >= targets.size())
         {
-            m_book.ChildrenOf(walk, kids);
-            if (kids.empty()) break;
-            walk = kids.front()->seq;                 // newest first
-            if (kids.front()->marks())
-            {
-                m_cursor = walk;
-                return replayTo(m_cursor, "redo");
-            }
+            ETCS_LOG("PaintDocument", (branch ? "no other way forward from here" : "nothing to redo"));
+            return false;
         }
-        ETCS_LOG("PaintDocument", "nothing to redo");
-        return false;
+        setCursor(targets[branch]);
+        return replayTo(m_cursor, branch ? "redo (other branch)" : "redo");
     }
 
     // Steps available each way, for the layer panel's readout and the two work
@@ -6039,7 +6086,7 @@ public:
          */
         if (op.retraction())
         {
-            m_cursor = m_book.Append(std::move(op), m_cursor);
+            setCursor(m_book.Append(std::move(op), m_cursor));
             return replayTo(m_cursor, "retraction");
         }
         /*
@@ -6057,7 +6104,7 @@ public:
         // the raster half of the entry (a merge's) lands on the result.
         if (op.structural()) reconcileLayers(&op);
         const bool ok = ApplyOp(op);
-        m_cursor = m_book.Append(std::move(op), m_cursor);
+        setCursor(m_book.Append(std::move(op), m_cursor));
         Touch();
         return ok;
     }
@@ -6090,7 +6137,7 @@ public:
         edge.author  = m_author;
         edge.target  = m_author;
         edge.ordinal = k;
-        m_cursor = m_book.Append(std::move(edge), m_cursor);
+        setCursor(m_book.Append(std::move(edge), m_cursor));
         Touch();
         return replayTo(m_cursor, undo ? "undo" : "redo");
     }
@@ -6978,7 +7025,8 @@ private:
     PaintNotebook m_book;
     PaintOp       m_open;
     bool          m_open_live = false;
-    uint64_t      m_cursor    = 0;
+    uint64_t      m_cursor    = 0;      // written only through setCursor
+    std::atomic<int> m_forked{0};      // see forked()
     std::string   m_author;
     // The record's chain as this page has read it (ImportOps): XXH3 of every
     // line taken in, seeded with the chain before it -- the node's own
@@ -7004,7 +7052,7 @@ private:
         if (m_open.pts.empty()) { m_open = PaintOp{}; return; }
         // The cursor is the parent, which is what makes a change after an undo
         // a BRANCH rather than an overwrite.
-        m_cursor = m_book.Append(std::move(m_open), m_cursor);
+        setCursor(m_book.Append(std::move(m_open), m_cursor));
         m_open = PaintOp{};
     }
 
@@ -7059,7 +7107,7 @@ private:
         op.box.id   = 0;               // this document's number, not the room's
         op.removed  = removed;
         op.keyframe = keyframe;
-        m_cursor = m_book.Append(std::move(op), m_cursor);
+        setCursor(m_book.Append(std::move(op), m_cursor));
     }
 
     // The edit on box `id` is over: recorded if anything about it changed,
@@ -7231,7 +7279,7 @@ private:
         }
         for (PaintLayer* l : stack)
             op.roster.push_back(PaintOp::Face{ l->order(), l->opacity(), l->visible(), l->name(), l->key() });
-        m_cursor = m_book.Append(std::move(op), m_cursor);
+        setCursor(m_book.Append(std::move(op), m_cursor));
         Touch();
     }
 
@@ -7299,7 +7347,7 @@ private:
         snap.h      = layer->PixelHeight();
         snap.sent   = true;               // a keyframe is this page's own and never travels
         if (!layer->SnapshotBytes(snap.bytes)) return;
-        m_cursor = m_book.Append(std::move(snap), m_cursor);
+        setCursor(m_book.Append(std::move(snap), m_cursor));
     }
 
     PaintLayer* layerByRID(ETCS::RID rid) const
@@ -13942,7 +13990,8 @@ private:
 
 
 
-class PaintInput : public DeletableBase<PaintInput>
+class PaintInput : public DeletableBase<PaintInput>,
+                   public AnimatedBase<PaintInput>
 {
 public:
     WIRE_TYPE_IDENTITY(PaintInput);
@@ -14083,6 +14132,46 @@ public:
         if (did) { m_sel_carry = false; repaint_view(); }
         return did;
     }
+    bool RedoAlt()
+    {
+        if (!m_document) return false;
+        const bool did = m_document->RedoAlt();
+        if (did) { m_sel_carry = false; repaint_view(); }
+        return did;
+    }
+
+    // The 'redo alt' control, shown only while the cursor has a second way
+    // forward (PaintDocument::RedoAlt): a button for a state the history is
+    // in seldom, and one nothing else on the page can say. Its parts are
+    // bound one by one -- the button, the word -- and hidden together.
+    void BindRedoAlt(ETCS::RID node)
+    {
+        if (node) m_redo_alt.push_back(node);
+        m_redo_alt_shown = -1;           // the next frame places it
+    }
+
+    /*
+     * ON THE FRAME EDGE, NOT WHERE THE HISTORY CHANGED. Shown or hidden from an
+     * input's own thread, the control's change raced the compose walk on the
+     * frame thread and was lost: it appeared only when some later input drove
+     * another frame through the same panes. Made here (Animated) it is a step
+     * of the frame that draws it. What it follows is the document's own
+     * published answer (PaintDocument::forked), an atomic, so the frame thread
+     * reads nothing the input thread is writing.
+     */
+    bool AnimatingConcrete() override
+    {
+        return !m_redo_alt.empty() && m_document && m_document->forked() != m_redo_alt_shown;
+    }
+    void AdvanceConcrete(double) override
+    {
+        if (m_redo_alt.empty() || !m_document) return;
+        const int want = m_document->forked();
+        if (want == m_redo_alt_shown) return;
+        m_redo_alt_shown = want;
+        for (ETCS::RID n : m_redo_alt) paint_node_hidden(n, !want);
+    }
+
     void BindTextBar(ETCS::RID bar)
     {
         ETCS::Entity* raw = paint_resolve_tag("PaintTextBar", bar);
@@ -15185,7 +15274,7 @@ public:
             switch (key)
             {
             case KEY_Z: did = paint_modifiers().shift() ? m_document->Redo() : m_document->Undo(); break;
-            case KEY_Y: did = m_document->Redo(); break;
+            case KEY_Y: did = paint_modifiers().shift() ? m_document->RedoAlt() : m_document->Redo(); break;
             case KEY_C: did = m_document->CopySelection(); break;
             case KEY_X: did = m_document->CutSelection(); break;
             case KEY_V: did = m_document->PasteSelection(); break;
@@ -15938,6 +16027,8 @@ private:
     uint32_t         m_text_resize = 0;         // a box whose corner is being dragged
     PaintAnimation*  m_anim = nullptr;         // see BindAnimation
     uint64_t         m_panel_rev = 0;      // the document revision the panel last showed
+    std::vector<ETCS::RID> m_redo_alt;      // see BindRedoAlt
+    int              m_redo_alt_shown = -1; // what the control shows; the frame thread's alone
     // Whether the document is currently showing its text-box outlines, so the
     // reconcile above is a comparison rather than a call per event.
     bool m_text_affordance = false;
@@ -17384,6 +17475,21 @@ DEFINE_WORK_FUNC(PaintDocument, Redo)
     const bool did = self.Redo();
     ETCS_LOG("PaintDocument", "redo: " << (did ? "stepped" : "nothing") << " ("
              << self.undoDepth() << " back, " << self.redoDepth() << " forward)");
+}
+// RedoAlt -- forward along the second-newest branch under the cursor, when
+// there is one (PaintDocument::RedoAlt). RedoBranches answers how many ways
+// forward there are, which is what a page shows the control on.
+DEFINE_WORK_FUNC(PaintDocument, RedoAlt)
+{
+    (void)ctx; (void)data;
+    const bool did = self.RedoAlt();
+    ETCS_LOG("PaintDocument", "redo alt: " << (did ? "stepped" : "nothing") << " ("
+             << self.undoDepth() << " back, " << self.redoBranches() << " branch(es) forward)");
+}
+DEFINE_WORK_FUNC(PaintDocument, RedoBranches)
+{
+    (void)ctx;
+    data.writeString(std::to_string(self.redoBranches()).c_str());
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintDocument, MoveSelection, (int32_t, dx), (int32_t, dy))
@@ -19104,6 +19210,20 @@ DEFINE_WORK_FUNC(PaintInput, Redo)
 {
     (void)ctx; (void)data;
     self.Redo();
+}
+// RedoAlt -- forward along the older branch (PaintDocument::RedoAlt), and the
+// view repainted, as Redo above.
+DEFINE_WORK_FUNC(PaintInput, RedoAlt)
+{
+    (void)ctx; (void)data;
+    self.RedoAlt();
+}
+// BindRedoAlt <node> -- a part of the control that offers it (once per part),
+// hidden while the history has no second way forward (PaintInput::BindRedoAlt).
+DEFINE_WORK_FUNC_TYPED(PaintInput, BindRedoAlt, (ETCS::RID, node))
+{
+    (void)ctx;
+    self.BindRedoAlt(node);
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintInput, BindTextBar, (ETCS::RID, bar))
