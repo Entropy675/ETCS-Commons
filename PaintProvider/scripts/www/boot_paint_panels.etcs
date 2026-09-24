@@ -666,6 +666,10 @@ pages.BindSurface(@canvas)
 # learns what the work is; a flag is what a state tag is for. This is what
 # the throbber above was kept for.
 main_throbber.Watch(@pages, busy)
+# AND THE DOCUMENT'S, while a shared page reads the record again after it
+# found itself out of step with the room (PaintDocument::Syncing) -- the same
+# wait, told the same way. The throbber shows while either flag is up.
+main_throbber.Watch(@doc, syncing)
 # AND IT SITS OVER THE CANVAS, not over the middle of the sheet it was placed
 # on above: the layout moves and resizes the canvas pane with the window, so
 # the throbber reads the pane's box each frame it shows (Throbber::CenterOn).

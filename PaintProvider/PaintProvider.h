@@ -5575,6 +5575,24 @@ public:
      * made that inference for every member at once -- each then re-sent its
      * whole page, emptying the others again, for as long as the room lasted.
      */
+        /*
+         * A RESTATE STARTS THE ROOM'S HISTORY AGAIN, and this page's with it.
+         * Every other member takes the stated page as a new page (become_page)
+         * whose history begins there, and an undo names a stroke by its
+         * author's count of strokes along the path -- so a count that went on
+         * from before the page here would name, there, a stroke that is not
+         * on the path at all. Not while a stroke is open: it waits a push.
+         */
+        if (m_restate && !m_open_live)
+        {
+            ClearHistory();
+            PaintOp stack = rosterNow();
+            stack.keyframe = true;
+            stack.author   = m_author;
+            setCursor(m_book.Append(std::move(stack), m_cursor));
+            m_page_changed = true;
+            m_restate = false;
+        }
         std::vector<const PaintOp*> chain;
         m_book.ChainTo(m_cursor, chain);
 
@@ -5657,7 +5675,7 @@ public:
  * stops reading shows a frozen one. The first is recoverable by the next
  * snapshot and the second is not recoverable at all.
  */
-    size_t ImportOps(const std::string& path, uint64_t since = 0, bool keep_mine = false)
+    size_t ImportOps(const std::string& path, uint64_t since = 0)
     {
         std::ifstream f(path, std::ios::binary);
         if (!f)
@@ -5669,11 +5687,8 @@ public:
         // held: the chain starts again with it -- and so does the picture (a
         // Page entry replaces the document, become_page), so this page's OWN
         // lines are applied like everybody's: what it drew is in the record,
-        // and nowhere else any more.
-        // -- unless this page is the one that just SENT that record (keep_mine:
-        // the host reading back the baseline it pushed), in which case its own
-        // lines are chained and left alone: the picture here is what they were
-        // made from.
+        // and nowhere else any more -- except a page this one just stated
+        // (write_baseline), whose lines are chained and left alone.
         std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
         const bool restart = (since == 0);
         if (restart) { m_chain = 0; m_chain_seq = 0; }
@@ -5699,9 +5714,19 @@ public:
                 {
                     m_chain_seq = seq;
                     const bool own = !m_author.empty() && author == m_author;
-                    // The host reading back the baseline it just pushed: its
-                    // picture is what those lines were made from.
-                    if (own && keep_mine) { ++mine; continue; }
+                    /*
+                     * THE PAGE THIS ONE STATED, read back: its picture is what
+                     * those lines were made from, so they are chained and not
+                     * applied -- the Page line and the keyframes after it. Own
+                     * lines ahead of it were in flight when it was stated and
+                     * are in it already; applied again they would draw twice.
+                     */
+                    if (own && !m_stated.empty())
+                    {
+                        if (kind == "page" && paint_line_rest(line) == m_stated) m_stated.clear();
+                        else { ++mine; continue; }
+                    }
+                    if (own && m_stated_left) { --m_stated_left; ++mine; continue; }
                     // One of ours coming back: the entry already drawn here is
                     // now the record's, in the place the node gave it. A line of
                     // ours that is not in flight is history (a read from zero, a
@@ -5731,6 +5756,7 @@ public:
             ++taken;
         }
         finish_rewind();
+        m_unreadable = bad;
         ETCS_LOG("PaintDocument", "ImportOps: " << taken << " entr(ies) from '" << path
                  << "'" << (mine ? ", " + std::to_string(mine) + " of this page's own confirmed" : "")
                  << (bad ? ", " + std::to_string(bad) + " unreadable and skipped" : "")
@@ -5740,6 +5766,7 @@ public:
     }
 
     uint64_t recordChain()    const { return m_chain; }
+    size_t   unreadable()     const { return m_unreadable; }   // in the last ImportOps
     uint64_t recordChainSeq() const { return m_chain_seq; }
 
     // Whether everything this page made is in the record: nothing on the
@@ -6220,6 +6247,8 @@ public:
     bool RevertPending()
     {
         std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
+        m_stated.clear();                   // a page not taken is not coming back
+        m_stated_left = 0;
         std::vector<const PaintOp*> chain;
         m_book.ChainTo(m_cursor, chain);
         size_t n = 0;
@@ -6411,6 +6440,39 @@ public:
         ETCS_LOG("PaintDocument", said);
     }
     bool readOnly() const { return const_cast<PaintDocument*>(this)->hasTag(ETCS::Buffer("readonly")); }
+
+    /*
+ * ── OUT OF STEP ──────────────────────────────────────────────────────────
+ *
+ * The page found this picture is not the room's and is reading the record
+ * again from its start. Until that lands the canvas starts no stroke -- ink
+ * put down on a picture about to be replaced is ink drawn against the wrong
+ * one -- and `syncing` is up on the document for whatever shows the wait
+ * (the throbber watches it, boot_paint_panels.etcs). What is already pending
+ * survives the read (rewind), so nothing made before the pause is lost.
+ */
+    void Syncing(bool on)
+    {
+        if (on == syncing()) return;
+        if (on) this->addTag("syncing");
+        else    this->removeTag(ETCS::Buffer("syncing"));
+        ETCS_LOG("PaintDocument", (on ? "out of step with the room -- reading the record again."
+                                      : "in step with the room again."));
+    }
+    bool syncing() const { return const_cast<PaintDocument*>(this)->hasTag(ETCS::Buffer("syncing")); }
+
+    /*
+ * THE WHOLE PAGE AGAIN, with the next push (ExportOps' baseline): what the
+ * owner does when a member says reading the record from its start did not
+ * put it right -- a line it cannot read, or a picture that differs after it.
+ * The record is replayed from a page nobody has to derive.
+ */
+    void Restate()
+    {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
+        m_restate = true;
+        ETCS_LOG("PaintDocument", "a member cannot rebuild this page from the record -- it goes to the room whole.");
+    }
 
     uint64_t notebookHead() const { return m_book.head(); }
 
@@ -7349,6 +7411,10 @@ private:
     // One change at a time: the input's thread draws while a read lands on a
     // pool worker, and a rewind moves the path both of them write to.
     mutable std::recursive_mutex m_doc_mu;
+    std::string   m_stated;             // the Page line of the page last stated -- see write_baseline
+    size_t        m_stated_left = 0;    // its lines not yet read back
+    bool          m_restate = false;    // state the page with the next push -- see Restate
+    size_t        m_unreadable = 0;     // lines the last ImportOps could not read
     // See rewind: this page's pending entries while the room's are taken in,
     // and what was in the air.
     bool                 m_rewound = false;
@@ -7514,7 +7580,7 @@ private:
     }
 
     // The Page entry and the keyframes after it -- see ExportBaseline.
-    size_t write_baseline(std::ostream& o) const
+    size_t write_baseline(std::ostream& o)
     {
         std::vector<PaintLayer*> stack;
         OrderedLayers(stack);
@@ -7525,7 +7591,8 @@ private:
         page.w = m_width; page.h = m_height;
         for (PaintLayer* l : stack)
             page.roster.push_back(PaintOp::Face{ l->order(), l->opacity(), l->visible(), l->name(), l->key() });
-        o << paint_op_encode(page) << "\n";
+        const std::string page_line = paint_op_encode(page);
+        o << page_line << "\n";
         size_t n = 1;
         for (PaintLayer* l : stack)
         {
@@ -7555,6 +7622,16 @@ private:
             o << paint_op_encode(t) << "\n";
             ++n;
         }
+        /*
+         * STATED, AND REMEMBERED AS STATED: the Page line and how many lines
+         * came with it, so this page's read-back passes over exactly those
+         * (ImportOps). Taking our own Page line would replace this document
+         * with a copy of itself and drop its history; passing over EVERY own
+         * line of that read (the `keep` this replaced) also passed over the
+         * strokes pushed after it, which then never confirmed.
+         */
+        m_stated = paint_line_rest(page_line);
+        m_stated_left = n;
         return n;
     }
 
@@ -15180,6 +15257,12 @@ public:
                 ETCS_LOG("PaintInput", "view only -- ask the host for drawing.");
                 return;
             }
+            // Nor while the room puts the picture right (PaintDocument::Syncing).
+            if (m_document && m_document->syncing())
+            {
+                ETCS_LOG("PaintInput", "a moment -- this page is catching up with the room.");
+                return;
+            }
             /*
          * A BUTTON BRINGS ITS OWN POSITION (ontology/InputSource.h), so it
          * does not have to wait for one to have arrived -- and should not,
@@ -17956,6 +18039,21 @@ DEFINE_WORK_FUNC_TYPED(PaintDocument, SetTextColor, (uint32_t, id), (float, r), 
     self.SetTextColor(id, r, g, b, a);
 }
 
+// Syncing <0|1> -- the room is putting this page right (PaintDocument::Syncing).
+DEFINE_WORK_FUNC_TYPED(PaintDocument, Syncing, (int32_t, on))
+{
+    (void)ctx;
+    self.Syncing(on != 0);
+}
+
+// Restate -- send the whole page to the room with the next push.
+DEFINE_WORK_FUNC(PaintDocument, Restate)
+{
+    (void)ctx;
+    self.Restate();
+    data.writeString("1");
+}
+
 // SetReadOnly <0|1> -- view only: every edit refused here (a share never raises it).
 DEFINE_WORK_FUNC_TYPED(PaintDocument, SetReadOnly, (int32_t, on))
 {
@@ -17972,15 +18070,17 @@ DEFINE_WORK_FUNC(PaintDocument, ImportOps)
 {
     (void)ctx;
     std::istringstream in(data.restAsString());
-    std::string path, mine;
+    std::string path;
     uint64_t since = 0;
-    in >> path >> since >> mine;
+    in >> path >> since;
     if (path.empty()) { ETCS_LOG("PaintDocument", "ImportOps needs a path."); data.writeString("0"); return; }
-    const size_t n = self.ImportOps(path, since, mine == "keep");
+    const size_t n = self.ImportOps(path, since);
     char chain[17];
     std::snprintf(chain, sizeof(chain), "%016llx", static_cast<unsigned long long>(self.recordChain()));
+    // taken head chain chain-seq unreadable
     data.writeString((std::to_string(n) + " " + std::to_string(self.notebookHead()) + " " + chain
-                      + " " + std::to_string(self.recordChainSeq())).c_str());
+                      + " " + std::to_string(self.recordChainSeq())
+                      + " " + std::to_string(self.unreadable())).c_str());
 }
 
 // PictureReport -- PictureHash's parts, one per layer, for chasing a divergence.

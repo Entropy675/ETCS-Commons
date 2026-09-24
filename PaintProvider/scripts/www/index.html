@@ -809,7 +809,11 @@
     // ImportOps), and the owner's name and last reported (head, picture) --
     // the two checks below (readTheirs, readViews).
     chain: '', owner: '', owner_head: NaN, owner_picture: '', picture: '', picture_at: 0,
-    last_head: -1, mismatch: 0, resyncs: 0, keep_mine: false
+    last_head: -1, mismatch: 0, resyncs: 0,
+    // Out of step (outOfStep): reading again from the start, how many times
+    // since the picture was last the owner's, whether to ask the owner for the
+    // page whole, the red line said, and when the owner last sent it whole.
+    syncing: false, sync_since: 0, tries: 0, want_page: false, said: '', restated_at: 0
   };
 
   const shareBtnEl  = document.getElementById('sharebtn');
@@ -962,11 +966,11 @@
     /*
      * THE HEAD IS NOT MOVED PAST WHAT WAS PUSHED. It used to be, so a page
      * never read its own lines back -- but the record chain is over every
-     * line, so every line has to come back through a read, own ones included
-     * (the runtime passes over its own author; ImportOps). The baseline is
-     * read back with `keep`, so the host's own page is not replaced by it.
+     * line, so every line has to come back through a read, own ones included.
+     * The runtime passes over the page it stated when it comes back
+     * (PaintDocument::write_baseline), so the host's own page is not replaced
+     * by a copy of itself.
      */
-    share.keep_mine = true;
     return true;
   }
 
@@ -1030,6 +1034,51 @@
   }
 
   /*
+   * ── out of step ───────────────────────────────────────────────────────────
+   *
+   * THIS PICTURE IS NOT THE ROOM'S: read the record again from its start, and
+   * hold the canvas while that lands (PaintDocument::Syncing -- no new stroke,
+   * the throbber up). What this page had pending survives the read (the
+   * runtime's rewind). A second time without the picture having been the
+   * owner's in between means the record will not rebuild it -- a line this
+   * runtime cannot read, say -- so this page asks the owner for the page whole
+   * (want_page, carried by pushMyView and answered in readViews).
+   *
+   * The red line goes once the picture is the owner's again (inStep): a
+   * warning that stays after it stopped being true teaches you to ignore it.
+   */
+  function outOfStep(why) {
+    share.resyncs++;
+    if (++share.tries >= 2) share.want_page = true;
+    share.said = '[etcs] ' + why;
+    log(share.said + '\n', 'err');
+    share.head = 0; share.chain = ''; share.picture = '';
+    share.syncing = true; share.sync_since = Date.now();
+    callVerb('doc', 'Syncing', '1');
+  }
+
+  // The read from the start has landed: the canvas takes strokes again.
+  // Bounded, so a room that stopped answering does not hold the canvas.
+  function caughtUp() {
+    if (!share.syncing) return;
+    share.syncing = false;
+    if (runtimeUp()) callVerb('doc', 'Syncing', '0');
+    if (share.role === 'owner') clearSaid();     // the owner has no picture to compare
+  }
+
+  // The picture is the owner's.
+  function inStep() {
+    share.tries = 0;
+    share.want_page = false;
+    clearSaid();
+  }
+
+  function clearSaid() {
+    if (share.said && statusEl.textContent === share.said) setStatus('', '');
+    share.said = '';
+  }
+
+  /*
    * ── taking in what somebody else drew ─────────────────────────────────────
    *
    * OUR OWN ENTRIES ARE DROPPED ON THE WAY IN. A writer already applied its
@@ -1081,19 +1130,20 @@
       const path = '/share/in.txt';
       try { fs.mkdirTree('/share'); } catch (e) {}
       fs.writeFile(path, new TextEncoder().encode(entries.join('\n') + '\n'));
-      const took = await callResult('doc', 'ImportOps', path + ' ' + since + (share.keep_mine ? ' keep' : ''));
-      share.keep_mine = false;
+      const took = await callResult('doc', 'ImportOps', path + ' ' + since);
       callVerb('canvas', 'Render', '');           // a replayed mark needs showing
       if (took) {
-        const f = took.trim().split(' ');         // taken head chain chain-seq
+        const f = took.trim().split(' ');         // taken head chain chain-seq unreadable
         share.chain = f[2] || '';
         const chainSeq = parseInt(f[3], 10);
+        // A line this runtime cannot read will not read any better from the
+        // start: only the page stated whole gets past it.
+        if (parseInt(f[4], 10) > 0) share.want_page = true;
         if (nodeChain && share.chain && chainSeq === nodeHead && share.chain !== nodeChain) {
-          share.resyncs++;
-          log('[etcs] the record here (' + share.chain + ') is not the room\'s (' + nodeChain
-              + ') at ' + nodeHead + ' -- reading it again from the start\n', 'err');
-          share.head = 0;
-          share.chain = '';
+          outOfStep('the record here (' + share.chain + ') is not the room\'s (' + nodeChain
+                    + ') at ' + nodeHead + ' -- reading it again from the start');
+        } else if (share.syncing && chainSeq === nodeHead && share.chain === nodeChain) {
+          caughtUp();
         }
       }
     } finally { share.busy = false; }
@@ -1160,7 +1210,9 @@
     const pf = picture ? picture.trim().split(' ') : [];
     share.picture = (pf[2] === '1' && pf[0]) ? pf[0] : '-';
     share.picture_at = parseInt(pf[1], 10);
-    const line = rect.trim().replace(/\s+/g, '/') + '/' + hue + '/' + share.picture_at + '/' + share.picture;
+    // And, last, whether this page needs the owner's page whole (outOfStep).
+    const line = rect.trim().replace(/\s+/g, '/') + '/' + hue + '/' + share.picture_at + '/' + share.picture
+               + '/' + (share.want_page ? 'R' : '-');
     if (line === share.sent_view) return;          // nothing moved
     share.sent_view = line;
     await nodeGet(tokenPath('view') + '/' + line);
@@ -1210,16 +1262,26 @@
                    && share.picture !== share.owner_picture;
         share.mismatch = still ? share.mismatch + 1 : 0;
         share.last_head = at;
+        if (share.owner_head === at && at > 0 && share.picture && share.picture !== '-'
+            && share.picture === share.owner_picture) inStep();
         // Three ticks: a settled line can still be a read-back behind the
         // record for a tick or two (pushed, not yet read), and its refresh
         // one more; a difference that outlives that is not in flight.
         if (share.mismatch >= 3) {
           share.mismatch = 0;
-          share.resyncs++;
-          log('[etcs] this picture (' + share.picture + ') is not the owner\'s (' + share.owner_picture
-              + ') at ' + at + ' -- reading the record again from the start\n', 'err');
-          share.head = 0; share.chain = ''; share.picture = '';
+          outOfStep('this picture (' + share.picture + ') is not the owner\'s (' + share.owner_picture
+                    + ') at ' + at + ' -- reading the record again from the start');
         }
+      }
+      /*
+       * A MEMBER THE RECORD WILL NOT REBUILD asks for the page whole; the
+       * owner sends it with the next push (PaintDocument::Restate), at most
+       * every twenty seconds, since every member reads what it sends.
+       */
+      if (share.role === 'owner' && f[8] === 'R' && Date.now() - share.restated_at > 20000) {
+        share.restated_at = Date.now();
+        callVerb('doc', 'Restate', '');
+        log('[etcs] ' + f[0] + ' cannot rebuild this page from the record -- sending it whole\n');
       }
       const hex = f[5].replace('#', '');
       if (hex.length < 6) continue;
@@ -1234,6 +1296,7 @@
   }
 
   async function tickPresence() {
+    if (share.syncing && Date.now() - share.sync_since > 15000) caughtUp();
     await pushMyView();
     await readViews();
   }
@@ -1257,6 +1320,7 @@
     share.token = null; share.id = null;
     share.head = 0;
     share.chain = ''; share.owner = ''; share.picture = ''; share.owner_picture = '';
+    caughtUp(); inStep();
     setRole(null);                      // editable again: the canvas is theirs now
     if (runtimeUp()) {
       callVerb('doc', 'SetAuthor', '');

@@ -73,7 +73,8 @@ throb.SetStep(5.4)
 # it, shown exactly while the tag is up, read once a frame on the edge:
 #
 #     throb.Watch(@pages, busy)
-#     throb.Watch(@pages, )    # unbound: SetHidden is the switch again
+#     throb.Watch(@doc, syncing)   # a second watch: shown while EITHER is up
+#     throb.Watch(@pages, )    # that one unbound; with none, SetHidden is the switch again
 #
 # While a watch is bound SetHidden is overruled a frame later, so a script that
 # wants both binds the watch to the thing that knows.

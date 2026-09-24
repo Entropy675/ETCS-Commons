@@ -109,7 +109,9 @@
  * is. That is the difference from being told by verb: a raise of the flag is
  * a change to that entity's own state, ordered within its module, and the
  * observer reads it on the presenting side. Anything that raises the same
- * flag gets the indicator, including work not written yet.
+ * flag gets the indicator, including work not written yet. Several watches
+ * may be bound, one per entity, and the throbber shows while ANY of them is
+ * raised: a wait is a wait, whichever part of the session is doing it.
  */
 class Throbber : public Drawable2DBase<Throbber>,
                  public PixelsBase<Throbber>,
@@ -273,13 +275,15 @@ public:
  * failure lifetime holds exist to prevent. A bare RID resolves through the
  * loader's lists (etcs_resolve_rid_anywhere), the same walk every subscriber
  * by RID takes; a RID is unique per provider-type, and a watch names one
- * entity, so the first list that answers is the one meant. An empty flag
- * unbinds and leaves the throbber wherever SetHidden last put it.
+ * entity, so the first list that answers is the one meant. Watching an
+ * entity again replaces its flag; an empty flag unbinds that entity, and
+ * with none left the throbber stays wherever SetHidden last put it.
  */
     void Watch(ETCS::RID entity, const std::string& flag)
     {
-        m_watch      = flag.empty() ? 0 : entity;
-        m_watch_flag = flag;
+        for (size_t i = 0; i < m_watches.size(); ++i)
+            if (m_watches[i].entity == entity) { m_watches.erase(m_watches.begin() + static_cast<std::ptrdiff_t>(i)); break; }
+        if (!flag.empty()) m_watches.push_back(Watched{ entity, flag });
     }
 
     /*
@@ -306,13 +310,15 @@ public:
     // right place to read it: no second clock, no verb from the writer.
     bool AnimatingConcrete() override
     {
-        if (m_watch != 0)
+        if (!m_watches.empty())
         {
             bool raised = false;
-            if (ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(ETCS::etcs_loader_event_node(), m_watch))
+            for (const Watched& w : m_watches)
             {
+                ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(ETCS::etcs_loader_event_node(), w.entity);
+                if (!e) continue;
                 ETCS::LifetimeHold hold(e);
-                if (hold) raised = e->hasTag(ETCS::Buffer(m_watch_flag.c_str()));
+                if (hold && e->hasTag(ETCS::Buffer(w.flag.c_str()))) { raised = true; break; }
             }
             if (raised == this->Hidden()) this->SetHidden(!raised);
         }
@@ -545,8 +551,8 @@ private:
     TextLabel* m_label = nullptr;
     std::string m_text = "ETCS";
 
-    ETCS::RID   m_watch = 0;           // see Watch
-    std::string m_watch_flag;
+    struct Watched { ETCS::RID entity; std::string flag; };
+    std::vector<Watched> m_watches;    // see Watch
     ETCS::RID   m_center_on = 0;       // see CenterOn
 
     void follow_center()

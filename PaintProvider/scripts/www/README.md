@@ -762,6 +762,24 @@ still to be pushed. A member at the owner's position whose picture differs for
 three presence ticks running has diverged, whatever it received, and reads the
 record again. The owner never resyncs to anyone.
 
+**Out of step, the canvas waits, and the owner states the page if it has
+to.** A member that finds itself out of step -- either check -- raises
+`syncing` on the document (`PaintDocument::Syncing`) while it reads the record
+again from zero: the throbber shows (it watches that flag as well as the page
+store's `busy`), and the canvas starts no stroke until the read lands, or for
+fifteen seconds at most. What it had pending survives the read. The red line
+that said so goes once the picture is the owner's again. A second time without
+having got back into step in between -- or a line the runtime cannot read,
+which no re-read changes -- means the record will not rebuild this picture, so
+the member asks for the page whole (the last field of its presence); the owner
+states it with its next push (`PaintDocument::Restate`), at most every twenty
+seconds, and every member follows it as a new page. The room's history starts
+again there -- an undo counts its author's strokes from the page, and a count
+that went on from before it would name a stroke other members no longer have
+-- so the owner's does too. A page this runtime states is passed over when it
+comes back (`write_baseline` remembers its Page line), with its own lines
+still in flight ahead of it, which are in it already.
+
 **Draw now; the room decides.** A change you make lands on your canvas at
 once and is held as PENDING (your own entry, not yet read back from the node:
 `PaintOp::confirmed`). The node is the source of truth, so nothing is refused
