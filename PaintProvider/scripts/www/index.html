@@ -786,13 +786,12 @@
    * the link -- not in the title, not in the terminal, not in a status line
    * somebody screenshots.
    *
-   * TWO NUMBERING SPACES, AND KEEPING THEM APART IS THE WHOLE TRICK.
-   * `sent` is where this page stands in ITS OWN document's notebook -- the
-   * `since` of the next ExportOps, counted by the runtime here. `head` is where
-   * it stands in the NODE's -- the `since` of the next read, counted there.
-   * Neither is derivable from the other: a writer's entries are numbered
-   * locally before they are pushed and renumbered when they land. Trying to
-   * carry one counter for both is the bug this paragraph exists to prevent.
+   * ONE COUNTER, THE NODE'S. `head` is where this page stands in the node's
+   * record -- the `since` of the next read, counted there. What this page has
+   * yet to push is not a counter at all: the runtime marks each entry as it
+   * goes out (PaintOp::sent), so nothing here has to know how its own notebook
+   * is numbered, and nothing goes wrong when that notebook is emptied under a
+   * count -- which a Page entry from the room does.
    */
   const SHARE_PUSH_MS = 700;    // how soon after a stroke it leaves this page
   const SHARE_READ_MS = 900;    // how soon somebody else's stroke arrives
@@ -802,7 +801,7 @@
 
   const share = {
     base: null, self: null, id: null, token: null, role: null,
-    head: 0, sent: 0,
+    head: 0,
     push: 0, read: 0, who: 0, role_t: 0, view_t: 0,
     sent_view: '',
     busy: false,
@@ -911,16 +910,13 @@
   /*
    * ── pushing what this page drew ───────────────────────────────────────────
    *
-   * ExportOps writes the canonical path's entries after `sent` into the
-   * runtime's filesystem and the page reads that file back. The file is the
-   * bridge because the call bridge is a 256-byte buffer and one stroke is not
-   * that -- the same reason an imported image crosses as a path, and
-   * deliberately the same mechanism.
-   *
-   * CANONICAL PATH, not everything: if this page undid something, the strokes
-   * it took back must not arrive on anybody else's canvas. ExportOps handles
-   * that, including re-baselining the room with a keyframe when an undo has
-   * wound past what was already sent -- see its own comment.
+   * ExportOps writes what this page made and has not sent into the runtime's
+   * filesystem and the page reads that file back. The file is the bridge
+   * because the call bridge is a 256-byte buffer and one stroke is not that --
+   * the same reason an imported image crosses as a path, and deliberately the
+   * same mechanism. What has been sent is the runtime's to know (PaintOp::
+   * sent), so nothing here counts it; a page-level change made here goes as
+   * the whole page (PaintDocument::ExportOps).
    */
   /*
    * A PUSH OF ANY SIZE. A request to the node is bounded (64 KB, headers
@@ -944,15 +940,6 @@
     return answer;
   }
 
-  function highestSeq(text) {
-    let top = NaN;
-    for (const line of text.trim().split('\n')) {
-      const n = parseInt(line.split(' ')[0], 10);
-      if (!isNaN(n) && (isNaN(top) || n > top)) top = n;
-    }
-    return top;
-  }
-
   /*
    * THE WHOLE PAGE, ONCE, as the session's first entries: its size, its
    * layers and every layer's pixels (PaintDocument::ExportBaseline). Pushing
@@ -972,8 +959,6 @@
     if (!text.trim()) return false;
     const answer = await pushText(text);
     if (answer === null || !/^\d+/.test(answer)) return false;
-    const seq = highestSeq(text);
-    share.sent = isNaN(seq) ? 0 : seq;
     /*
      * THE HEAD IS NOT MOVED PAST WHAT WAS PUSHED. It used to be, so a page
      * never read its own lines back -- but the record chain is over every
@@ -1012,16 +997,11 @@
       const path = '/share/out.txt';
       try { fs.mkdirTree('/share'); } catch (e) {}
       try { fs.unlink(path); } catch (e) {}    // a stale file must not pass for this export
-      callVerb('doc', 'ExportOps', path + ' ' + share.sent);
+      callVerb('doc', 'ExportOps', path);
 
       let text = '';
       try { text = new TextDecoder().decode(fs.readFile(path)); } catch (e) { return; }
       if (!text.trim()) return;
-
-      // The local head we are about to have sent, read off the entries
-      // themselves rather than asked for separately: the highest sequence in
-      // them is where ExportOps stopped (a baseline's lines all carry it).
-      const lastSeq = highestSeq(text);
 
       const answer = await pushText(text);
       if (answer === null) return;
@@ -1033,10 +1013,7 @@
         return;
       }
       if (answer === 'NO SUCH SESSION') { leaveSession(); return; }
-      if (/^\d+/.test(answer)) {
-        if (!isNaN(lastSeq) && lastSeq > 0) share.sent = lastSeq;
-        // The head stays where the last READ put it -- see pushBaseline.
-      }
+      // The head stays where the last READ put it -- see pushBaseline.
     } finally { share.busy = false; }
   }
 
@@ -1167,7 +1144,7 @@
     // "<hash> <record-seq> <settled>": the picture is sent only when it IS the
     // record's -- nothing of this page's still to be pushed -- and '-' otherwise,
     // which no member compares against.
-    const picture = await callResult('doc', 'PictureHash', String(share.sent));
+    const picture = await callResult('doc', 'PictureHash', '');
     const pf = picture ? picture.trim().split(' ') : [];
     share.picture = (pf[2] === '1' && pf[0]) ? pf[0] : '-';
     share.picture_at = parseInt(pf[1], 10);
@@ -1266,7 +1243,7 @@
   function leaveSession() {
     shareTimers(false);
     share.token = null; share.id = null;
-    share.head = 0; share.sent = 0;
+    share.head = 0;
     share.chain = ''; share.owner = ''; share.picture = ''; share.owner_picture = '';
     setRole(null);                      // editable again: the canvas is theirs now
     if (runtimeUp()) {
@@ -1306,7 +1283,6 @@
     share.id    = bits[0];
     share.token = bits[1];
     setRole('owner');
-    share.sent  = 0;
     share.head  = 0;
     callVerb('doc', 'SetAuthor', share.self);
 
@@ -1349,7 +1325,6 @@
     if (bits[2]) share.self = bits[2];
     try { window.sessionStorage.setItem('etcs-paint-token-' + id, share.token); } catch (e) {}
     share.head  = 0;                    // from the beginning: give us the picture
-    share.sent  = 0;
     share.chain = '';
 
     /*

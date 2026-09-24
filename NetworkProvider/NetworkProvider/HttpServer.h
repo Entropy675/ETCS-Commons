@@ -372,9 +372,10 @@ public:
     // TWO ANSWER SHAPES, and `io` is why the caller still owns a buffer. An
     // inline answer lives in `io` and `out.data` points into it, so `io` must
     // outlive the send -- the contract Serve's own `route_body` comment has
-    // always stated. A RouteRef answer (RouteRequest.h) points at bytes the
-    // route itself owns instead, `io` holds only the sixty-four byte frame, and
-    // the 255-byte ceiling stops applying at all. Which one arrived is read off
+    // always stated. A RouteRef answer (RouteRequest.h) points at bytes that
+    // outlive the send some other way -- the request's own `reply`, or a
+    // mounted file -- `io` holds only the sixty-four byte frame, and the
+    // 255-byte ceiling stops applying at all. Which one arrived is read off
     // the frame, not configured: a route may answer either way per request, and
     // a route that never heard of RouteRef is indistinguishable from one that
     // chose inline today.

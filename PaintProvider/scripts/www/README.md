@@ -661,14 +661,44 @@ document the host's -- same size, same layers -- before the keyframes fill it
 (`PaintDocument::AcceptOp`). A change to the layer stack made later travels the
 same way and changes every stack in the room.
 
+**What you push is what you have not sent.** Every entry carries a mark saying
+it is in the record (`PaintOp::sent`): set when it arrives from the session,
+when it goes out, and on a keyframe when it is taken. A push is the entries on
+your path without it, so nothing about it depends on how your notebook happens
+to be numbered. It used to be "everything after my entry N", and a `page` line
+from the room empties the notebook under N; that read as your own history
+having been wound back, and you re-sent your whole page -- which emptied
+everyone else's notebook, and they answered the same way, for as long as the
+room lasted. Nobody could draw. A page-level change you make (New, a resize,
+another page from the list) you now SAY you made (`m_page_changed`), and that
+one push is your whole page.
+
 **What you push is what you made.** Lines that arrived from the session sit in
-your notebook too, so undo and keyframes see the whole picture, but
-`ExportOps` sends only the lines with your name on them -- a joiner promoted to
-writer used to send the host's own history back to the host -- and never your
-keyframes: a keyframe is your own cache of the picture as YOU derived it, and on
-another member it overwrote whatever they had drawn on that layer since. Each
-member takes its own keyframes of arriving strokes instead (`AcceptOp`), so the
-record past the baseline is strokes and nothing else.
+your notebook too, so undo and keyframes see the whole picture, but they are
+the room's already, and your keyframes are your own cache of the picture as
+YOU derived it -- on another member one overwrote whatever they had drawn on
+that layer since. Each member takes its own keyframes of arriving strokes
+(`AcceptOp`), so the record past the baseline is changes and nothing else.
+
+**Every change is a line.** A stroke is its path; everything else that
+changes the picture is recorded as the change it is and pushed like one: a
+layer's eye, opacity, name or place in the stack (`PaintLayer`'s setters, each
+a pair of `layers` entries -- the stack before, the stack after), a new layer,
+a merge, an import (the `layers` line then carries the layer's pixels), a
+carried selection landing, a paste, a cut or a delete (`patch`: the rectangle
+as it now is), a whole layer cleared (`clear`), a smear (`smudge`, its path).
+Each used to be a whole-layer keyframe here and nothing at all to the room, so
+a hidden layer was hidden on one canvas, and the picture check read that as a
+divergence for as long as it stayed hidden. A mark made under a selection
+carries the selection (`PaintOp::Clip`) and lands under it everywhere,
+replay here included. A layer is matched across members by a key it is given
+the first time a roster names it (`PaintLayer::key`), so a restack moves the
+layer rather than renaming the ones at each position. Names travel as typed:
+`layer 3` used to arrive as `layer_3`.
+
+**A reader's eye is refused with every other edit**, since a layer's
+visibility is part of the picture now; the hover peek still shows a hidden
+layer to you alone.
 
 **You are who the node says you are.** A page asks to join under the name it
 keeps in the browser, and the node grants a free one -- suffixed when somebody
@@ -706,9 +736,9 @@ record again. The owner never resyncs to anyone.
 promotes. While you are a reader the document refuses every edit
 (`PaintDocument::SetReadOnly`, raised by the page from your role) and the
 canvas starts no stroke -- a mark made there would never reach the room, and
-your picture and everyone else's would differ from then on. Pan and zoom still
-work; so do the layer eyes, which change only what you see. Promotion lifts it
-within a few seconds (the page asks the node for its role on a timer).
+your picture and everyone else's would differ from then on. Pan, zoom and the
+hover peek still work. Promotion lifts it within a few seconds (the page asks
+the node for its role on a timer).
 
 **Everyone has a sharing window** (`PaintVisitors`, drawn by
 `paint_visitors.etcs`), opened as the host's or a guest's (`OpenAs`). Its top
@@ -740,7 +770,14 @@ keystrokes.
 **Pushes of any size.** A request to the node is bounded (64 KB with its
 headers, `ETCS_NETWORK_MAX_HEADER_SIZE`) and a keyframe is a layer's PNG, so a
 push bigger than one request goes as numbered parts the node joins back
-together before reading a line (`part/<i>/<n>`).
+together before reading a line (`part/<i>/<n>`). The server hands a request on
+only once its whole body has arrived (`PicoHTTPParser::FeedRaw` reads to the
+`Content-Length`); it used to hand it on at the end of the headers, and a
+browser that sent the body as a second segment pushed an empty part -- the
+node then joined a keyframe from its second half, and every member logged it
+as an unreadable `snap` line. The node's answer lives with the request
+(`RouteRequest::reply`) rather than on the node, which is what two members
+polling at once used to overwrite in each other's replies.
 
 ## On a phone
 

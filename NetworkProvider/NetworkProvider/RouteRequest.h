@@ -65,13 +65,20 @@ struct RouteRequest
     // form to ResolvePath 404s every static file on the site.
 
     // The request body, pointing into the connection's own accumulator. Empty
-    // for a GET, and empty for a POST whose body did not arrive with the header
-    // block -- ReadUntilParsed reads until picohttpparser says the REQUEST is
-    // complete, which for a body longer than one read is not the same thing as
-    // "all of the body is here". A route that means to accept large bodies
-    // checks length against its own expectation rather than trusting this.
+    // for a GET; for a POST it is the whole entity the headers declared, since
+    // the parser is not Complete before that much has arrived (PicoHTTPParser::
+    // FeedRaw). Bounded by the accumulator, ETCS_NETWORK_MAX_HEADER_SIZE.
     const char* body     = nullptr;
     size_t      body_len = 0;
+
+    // WHERE A ROUTE'S ANSWER LIVES: with the request, which is a stack object
+    // in HttpServer::Serve and outlives the copy into the send buffer. A route
+    // that answers by reference (RouteRef) points at this. It used to point at
+    // a member of its own, "held until the next request" -- and the next
+    // request came on another connection, on another thread, while this one
+    // was still being copied out, so a read of a session answered with the
+    // first half of one reply and the freed bytes of the next.
+    mutable std::string reply;
 
     size_t count() const { return seg.size(); }
 

@@ -1461,14 +1461,35 @@ public:
  */
     void SetOrder(int32_t order)
     {
+        if (order == m_order) return;
+        if (!face_change_begin()) return;
         m_order = order;
         this->Reorder();
-        touch_document();
+        face_change_end();
     }
 
-    void SetName(const std::string& name) { m_name = name; touch_document(); }
+    void SetName(const std::string& name)
+    {
+        if (name == m_name) return;
+        if (!face_change_begin()) return;
+        m_name = name;
+        face_change_end();
+    }
     const std::string& name() const { return m_name; }
     int32_t order() const { return m_order; }
+
+    /*
+     * THE LAYER'S SHARED NAME: the same number on every member of a session,
+     * where a RID is this runtime's alone and an order is a position that a
+     * reorder changes. Given by the document the first time this layer goes
+     * into a roster (PaintDocument::ensureKeys) and carried on every roster
+     * line, so a member matches an arriving stack to its own layers by key
+     * before it falls back to order -- which is what makes a reorder land as
+     * a reorder there rather than as three layers swapping names over pixels
+     * that stayed put. Zero is "not yet named".
+     */
+    uint64_t key() const { return m_key; }
+    void     SetKey(uint64_t key) { m_key = key; }
 
     /*
  * --- Layer_ ---
@@ -1535,13 +1556,35 @@ public:
  */
     void touch_document();
 
-    void SetVisible(bool visible) { m_visible = visible; touch_document(); }
-    void ToggleVisible()           { m_visible = !m_visible; touch_document(); }
+    /*
+     * EVERY CHANGE TO A LAYER'S FACE -- order, name, visibility, opacity -- IS
+     * AN ENTRY, made by the document around the change (PaintDocument::
+     * faceChangeBegin/End): the roster as it stands, then the roster as it
+     * is after. Undo walks back over the pair, and a session carries it to
+     * every member; before this a hidden layer was hidden here and nowhere
+     * else, and the room's picture check read that as a divergence for as
+     * long as it stayed hidden. Begin can refuse (view only), and then the
+     * change does not happen. A change to what is already so is nothing.
+     */
+    bool face_change_begin();
+    void face_change_end();
+
+    void SetVisible(bool visible)
+    {
+        if (visible == m_visible) return;
+        if (!face_change_begin()) return;
+        m_visible = visible;
+        face_change_end();
+    }
+    void ToggleVisible() { SetVisible(!m_visible); }
 
     void SetOpacity(float opacity)
     {
-        m_opacity = std::clamp(opacity, 0.0f, 1.0f);
-        touch_document();
+        opacity = std::clamp(opacity, 0.0f, 1.0f);
+        if (opacity == m_opacity) return;
+        if (!face_change_begin()) return;
+        m_opacity = opacity;
+        face_change_end();
     }
 
     /*
@@ -1631,6 +1674,7 @@ public:
      * page back.
      */
     void BindClip(const PaintSelection* clip) { m_clip = clip; }
+    const PaintSelection* clip() const { return m_clip; }
 
     bool paintable(int32_t x, int32_t y) const
     {
@@ -2073,6 +2117,47 @@ public:
         }
     }
 
+    // A rectangle's bytes out, and back in over what is there -- what a Patch
+    // entry carries (PaintOpKind::Patch). Clipped to the raster both ways, so
+    // a rectangle that hangs off the edge is the part of it that exists.
+    bool ReadRect(int32_t x, int32_t y, uint32_t w, uint32_t h, std::vector<uint8_t>& out) const
+    {
+        const uint8_t* px = this->PixelData();
+        if (!px || w == 0 || h == 0) return false;
+        const int32_t pw = static_cast<int32_t>(this->PixelWidth()), ph = static_cast<int32_t>(this->PixelHeight());
+        out.assign(static_cast<size_t>(w) * h * 4, 0);
+        for (int32_t yy = 0; yy < static_cast<int32_t>(h); ++yy)
+        {
+            const int32_t sy = y + yy;
+            if (sy < 0 || sy >= ph) continue;
+            for (int32_t xx = 0; xx < static_cast<int32_t>(w); ++xx)
+            {
+                const int32_t sx = x + xx;
+                if (sx < 0 || sx >= pw) continue;
+                ::std::memcpy(&out[(static_cast<size_t>(yy) * w + xx) * 4], px + (static_cast<size_t>(sy) * pw + sx) * 4, 4);
+            }
+        }
+        return true;
+    }
+    bool WriteRect(int32_t x, int32_t y, uint32_t w, uint32_t h, const std::vector<uint8_t>& in)
+    {
+        uint8_t* px = this->PixelData();
+        if (!px || w == 0 || h == 0 || in.size() != static_cast<size_t>(w) * h * 4) return false;
+        const int32_t pw = static_cast<int32_t>(this->PixelWidth()), ph = static_cast<int32_t>(this->PixelHeight());
+        for (int32_t yy = 0; yy < static_cast<int32_t>(h); ++yy)
+        {
+            const int32_t dy = y + yy;
+            if (dy < 0 || dy >= ph) continue;
+            const int32_t x0 = std::max(0, x), x1 = std::min(pw, x + static_cast<int32_t>(w));
+            if (x0 >= x1) continue;
+            ::std::memcpy(px + (static_cast<size_t>(dy) * pw + x0) * 4,
+                          &in[(static_cast<size_t>(yy) * w + (x0 - x)) * 4],
+                          static_cast<size_t>(x1 - x0) * 4);
+        }
+        etcs_mark_observed(this);
+        return true;
+    }
+
     // Whole-layer bytes in and out, for the history store. Size-checked rather
     // than trusted: a snapshot taken before a resize must not be written over a
     // buffer of another size.
@@ -2257,6 +2342,7 @@ private:
     float m_opacity = 1.0f;
     bool m_visible = true;
     std::string m_name = "Layer";
+    uint64_t    m_key  = 0;      // see key()
     // View state, not document state -- see SetDim. 1.0 is "not dimmed", which
     // is what every layer is until a row is hovered.
     float m_dim = 1.0f;
@@ -3196,6 +3282,11 @@ struct PaintTextBox
  * change nobody taught the notebook about is recorded correctly rather than
  * silently missed -- the failure mode of the alternative.
  */
+// How much a smudge step carries. Fixed rather than a tool setting, and one
+// number for the pointer and for replay (PaintOpKind::Smudge), or the two would
+// carry different pictures.
+static constexpr float PaintInput_SMUDGE_STRENGTH = 0.6f;
+
 enum class PaintOpKind : uint8_t
 {
     Snapshot,   // whole-layer bytes; the only entry that restores without replay
@@ -3203,6 +3294,18 @@ enum class PaintOpKind : uint8_t
     Line, Rect, Ellipse,
     Poly,       // a shape mode's vertex ring, stroked closed
     Fill,
+    Smudge,     // carried pixels: the path, replayed pair by pair (PaintLayer::SmudgeDab)
+    Clear,      // the whole layer to the brush colour (ClearLayer)
+    /*
+     * A RECTANGLE OF PIXELS, STATED: what a region looks like after a change
+     * that no brush describes -- a carried selection landing (and the hole it
+     * left), a paste, a cut, the animation window's put. Replaces what is
+     * there, like a snapshot of one rectangle rather than the layer, and
+     * unlike a snapshot it IS a step: undo walks over it and a session
+     * carries it. Before this those changes were a whole-layer keyframe
+     * locally and nothing at all to the room.
+     */
+    Patch,
     /*
      * THE LAYER SET ITSELF, and adding it is what makes a merge undoable.
      *
@@ -3268,6 +3371,9 @@ static inline const char* paint_op_name(PaintOpKind k)
     case PaintOpKind::Ellipse:  return "ellipse";
     case PaintOpKind::Poly:     return "poly";
     case PaintOpKind::Fill:     return "fill";
+    case PaintOpKind::Smudge:   return "smudge";
+    case PaintOpKind::Clear:    return "clear";
+    case PaintOpKind::Patch:    return "patch";
     case PaintOpKind::Layers:   return "layers";
     case PaintOpKind::Page:     return "page";
     case PaintOpKind::Text:     return "text";
@@ -3285,6 +3391,9 @@ static inline PaintOpKind paint_op_from(const std::string& s)
     if (s == "ellipse") return PaintOpKind::Ellipse;
     if (s == "poly")    return PaintOpKind::Poly;
     if (s == "fill")    return PaintOpKind::Fill;
+    if (s == "smudge")  return PaintOpKind::Smudge;
+    if (s == "clear")   return PaintOpKind::Clear;
+    if (s == "patch")   return PaintOpKind::Patch;
     if (s == "layers")  return PaintOpKind::Layers;
     if (s == "page")    return PaintOpKind::Page;
     if (s == "text")    return PaintOpKind::Text;
@@ -3430,6 +3539,23 @@ struct PaintOp
     std::vector<uint8_t> bytes;
     uint32_t w = 0, h = 0;
 
+    /*
+     * WHERE THE MARK WAS ALLOWED TO LAND: the selection that clipped it, as a
+     * mask over its bounding box (PaintLayer::BindClip), carried by every
+     * marking entry made under one. A selection is the page's own -- each
+     * member has its own, and none of them is in the record -- so a replayed
+     * stroke used to land unclipped everywhere but where it was made: on the
+     * other members, and here under undo. Empty is "anywhere".
+     */
+    struct Clip
+    {
+        int32_t  x0 = 0, y0 = 0;
+        uint32_t w = 0, h = 0;
+        std::vector<uint8_t> mask;   // w*h, one byte each, nonzero inside
+        bool empty() const { return mask.empty(); }
+    };
+    Clip clip;
+
     // Layers only: what the stack looks like after this entry. ORDER IS THE
     // IDENTITY here, not the RID -- a layer brought back by an undo is a new
     // entity at the same position, and position is what a script names and what
@@ -3440,6 +3566,7 @@ struct PaintOp
         float       opacity = 1.0f;
         bool        visible = true;
         std::string name;
+        uint64_t    key     = 0;    // PaintLayer::key; zero on a line that predates it
     };
     std::vector<Face> roster;
 
@@ -3462,6 +3589,18 @@ struct PaintOp
     // Undo/Redo only: whose entry, and which of theirs (PaintOpKind::Undo).
     std::string target;
     uint32_t    ordinal = 0;
+
+    /*
+     * IN THE RECORD. Set when the entry arrived from the session (AcceptOp)
+     * or went out to it (ExportOps, ExportBaseline); a keyframe this page
+     * took for itself is born with it, since keyframes never travel. What a
+     * push sends is every entry on the path without it -- a MARK, not a
+     * number: "everything after sequence N" broke the moment a Page entry
+     * emptied the notebook under N, and the answer to that was to push the
+     * whole page again, which emptied everybody else's, which they answered
+     * the same way. Local, never on the wire.
+     */
+    bool sent = false;
 
     // "Did this change the picture." A structural entry that changed the stack
     // did -- undoing it puts a layer back -- so it steps like a mark. A
@@ -3515,32 +3654,14 @@ public:
     }
 
     /*
-     * KEEP THE NUMBER IT ARRIVED WITH. An entry made here is numbered here;
-     * an entry that came from a node was numbered THERE, and renumbering it
-     * would quietly break the one thing a viewer depends on -- that "I have
-     * read up to N" means the same N on both ends. The node is the ordering
-     * domain for a shared session, so on a viewer this notebook is a copy of
-     * the node's numbering rather than a numbering of its own.
-     *
-     * Out of order or repeated is not an error worth refusing over: a
-     * duplicate arrives when a poll overlaps a push, and dropping the picture
-     * on the floor over it would be a worse answer than drawing the stroke
-     * twice. It is logged, applied, and the sequence carries on from the
-     * highest seen.
+     * ONE NUMBERING, THIS PAGE'S. An entry that arrives from a session is
+     * numbered here like one made here; the node's own sequence for it is
+     * read off the line by ImportOps for the record chain and goes no
+     * further. Keeping the node's number in the notebook was the bug it
+     * looked like: a host with thirteen entries of its own took in the
+     * room's entry 4, at(4) then found the host's OLD entry 4, and the tree
+     * -- which links by sequence -- walked a path that was never made.
      */
-    uint64_t AppendAt(PaintOp op, uint64_t parent)
-    {
-        if (op.seq == 0) op.seq = m_next;
-        if (op.seq < m_next)
-            ETCS_LOG("PaintNotebook", "entry " << op.seq << " arrived at or behind "
-                     << m_next << " -- kept, in arrival order.");
-        m_next = std::max(m_next, op.seq + 1);
-        // An arriving entry is a LINE, not a branch: what a session replays is
-        // one canonical path, so a viewer's copy of it is linear by
-        // construction. Its parent is simply whatever this notebook last held.
-        op.parent = parent;
-        return push(std::move(op));
-    }
 
     // Is this layer due for a keyframe? Asked by the document before it opens a
     // marking entry, so the snapshot lands BEFORE the mark it protects rather
@@ -3559,13 +3680,6 @@ public:
     }
 
     const std::vector<PaintOp>& ops() const { return m_ops; }
-
-    // Everything after `since`, in order. The viewer's whole read.
-    void Since(uint64_t since, std::vector<const PaintOp*>& out) const
-    {
-        out.clear();
-        for (const PaintOp& o : m_ops) if (o.seq > since) out.push_back(&o);
-    }
 
     /*
      * ── the tree ────────────────────────────────────────────────────────
@@ -3788,7 +3902,11 @@ public:
         return before - m_ops.size();
     }
 
-    void Clear() { m_ops.clear(); m_since_snap.clear(); m_next = 1; }
+    // The entries go; the numbering does not. A sequence names an entry for
+    // as long as anything might still hold it (a parent link, a page's idea
+    // of what it last sent), and starting again at one is how a stale name
+    // comes to fit a new entry.
+    void Clear() { m_ops.clear(); m_since_snap.clear(); }
 
     // Drop the tail from `seq` on. Undo does not use this -- an undo that
     // erased its own future could not be redone -- but a document reloaded from
@@ -3796,7 +3914,6 @@ public:
     void Truncate(uint64_t seq)
     {
         while (!m_ops.empty() && m_ops.back().seq >= seq) m_ops.pop_back();
-        m_next = head() + 1;
         m_since_snap.clear();
         for (const PaintOp& o : m_ops)
         {
@@ -3824,9 +3941,14 @@ private:
  *
  * ONE ENTRY PER LINE, fields separated by single spaces, numbers in decimal:
  *
- *   <seq> <kind> <author> <layer> <r> <g> <b> <a> <size> <hard> <tip> <blend>
- *         <tol> <npts> <x,y> <x,y> ...
- *   <seq> snap <author> <layer> <w> <h> <base64 png>
+ *   <seq> <kind> <author> <layer> <order> <r> <g> <b> <a> <size> <hard> <tip>
+ *         <blend> <tol> <npts> <x,y> <x,y> ... [clip <x0> <y0> <w> <h> <b64 png>]
+ *   <seq> snap <author> <layer> <order> <w> <h> <base64 png>
+ *   <seq> patch <author> <layer> <order> <x> <y> <w> <h> <base64 png>
+ *   <seq> layers <author> 0 0 <keyframe> <n> <order,opacity,visible,name,key>...
+ *         [<w> <h> <base64 png>]          -- the raster half, when it has one
+ *   <seq> page <author> 0 0 <w> <h> <n> <faces as above>
+ *   <seq> text <author> ... ; <seq> undo|redo <author> 0 0 <target> <ordinal>
  *
  * LINES, not a binary frame, for a reason that outlives the convenience: the
  * thing carrying these is an HTTP body and the thing relaying them is a node
@@ -3845,6 +3967,87 @@ private:
  * export already uses -- because a 1024x768 layer is 3 MB raw, and the base64
  * of that is 4 MB, which is most of an HttpServer send buffer for one entry.
  */
+// A name inside a space- and comma-delimited line: the two delimiters and
+// '%' itself as %XX, nothing else touched, so a plain name is itself on the
+// wire and a decoder that never heard of this reads it unchanged.
+static inline std::string paint_wire_escape(const std::string& s)
+{
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s)
+    {
+        if (c == ' ' || c == ',' || c == '%')
+        {
+            out += '%'; out += hex[c >> 4]; out += hex[c & 15];
+        }
+        else out += static_cast<char>(c);
+    }
+    return out;
+}
+
+static inline std::string paint_wire_unescape(const std::string& s)
+{
+    auto nib = [](char c) -> int
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+    };
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        if (s[i] == '%' && i + 2 < s.size() && nib(s[i + 1]) >= 0 && nib(s[i + 2]) >= 0)
+        {
+            out += static_cast<char>((nib(s[i + 1]) << 4) | nib(s[i + 2]));
+            i += 2;
+        }
+        else out += s[i];
+    }
+    return out;
+}
+
+// An entry's raster as a PNG in base64, "-" when it has none. Straight from
+// the entry's bytes: they are RGBA at (w,h), packed, which is the layout the
+// encoder wants and the layout SnapshotBytes produced.
+static inline std::string paint_raster_b64(const PaintOp& op)
+{
+    std::vector<uint8_t> png;
+    if (op.w && op.h && op.bytes.size() == size_t(op.w) * op.h * 4)
+    {
+        stbi_write_png_to_func(
+            [](void* ctx, void* data, int len)
+            {
+                auto* v = static_cast<std::vector<uint8_t>*>(ctx);
+                const uint8_t* b = static_cast<const uint8_t*>(data);
+                v->insert(v->end(), b, b + len);
+            },
+            &png, static_cast<int>(op.w), static_cast<int>(op.h), 4,
+            op.bytes.data(), static_cast<int>(op.w) * 4);
+    }
+    return png.empty() ? std::string("-") : paint_b64_encode(png.data(), png.size());
+}
+
+// The reverse: the PNG's pixels into the entry, four channels forced exactly
+// as an import does, since a layer is RGBA and a PNG that was greyscale on
+// the way out would otherwise come back a different width in bytes.
+static inline bool paint_raster_decode(const std::string& b64, PaintOp& out)
+{
+    if (b64 == "-") return false;
+    std::vector<uint8_t> png;
+    if (!paint_b64_decode(b64, png)) return false;
+    int w = 0, h = 0, comp = 0;
+    uint8_t* px = stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &w, &h, &comp, 4);
+    if (!px) return false;
+    out.bytes.assign(px, px + size_t(w) * size_t(h) * 4);
+    out.w = static_cast<uint32_t>(w);
+    out.h = static_cast<uint32_t>(h);
+    stbi_image_free(px);
+    return true;
+}
+
 static inline std::string paint_op_encode(const PaintOp& op)
 {
     std::string out;
@@ -3892,21 +4095,30 @@ static inline std::string paint_op_encode(const PaintOp& op)
     {
         if (op.kind == PaintOpKind::Page)
             out += ' ' + std::to_string(op.w) + ' ' + std::to_string(op.h);
+        // WHETHER IT STATES OR CHANGES, on the wire as it is in the notebook:
+        // a keyframe roster is what an undo lands on and is not a step, so a
+        // member that read one as a step counted every retraction after it
+        // one off -- and undid the wrong entry, in the wrong direction.
+        else out += op.keyframe ? " 1" : " 0";
         out += ' ';
         out += std::to_string(op.roster.size());
         for (const PaintOp::Face& f : op.roster)
         {
             // comma-separated within a layer, space between layers, so the
-            // NAME is the one field that must carry neither -- both become '_'
-            // on the wire. A collaborator who typed a space sees an underscore,
-            // which is honest and costs a line to say; the alternative is a
-            // quoting rule in a format whose whole virtue is that a node can
-            // copy it through without understanding it.
-            std::string nm = f.name.empty() ? std::string("-") : f.name;
-            for (char& c : nm) if (c == ' ' || c == ',') c = '_';
+            // NAME is the one field that must carry neither: those two and
+            // '%' go as %XX (paint_wire_escape). Turning them into '_' was
+            // simpler and showed every other member a different name from
+            // the one typed -- 'layer 3' here, 'layer_3' there -- which is a
+            // divergence in the one field a person reads.
             out += ' ' + std::to_string(f.order) + ',' + std::to_string(f.opacity)
-                 + ',' + (f.visible ? "1" : "0") + ',' + nm;
+                 + ',' + (f.visible ? "1" : "0") + ','
+                 + (f.name.empty() ? std::string("-") : paint_wire_escape(f.name))
+                 + ',' + std::to_string(f.key);
         }
+        // The raster half, when the entry carries one (a merge's survivor, an
+        // import): the same PNG a snapshot line ends with, after the faces.
+        if (op.kind == PaintOpKind::Layers && !op.bytes.empty())
+            out += ' ' + std::to_string(op.w) + ' ' + std::to_string(op.h) + ' ' + paint_raster_b64(op);
         return out;
     }
 
@@ -3915,23 +4127,16 @@ static inline std::string paint_op_encode(const PaintOp& op)
         out += ' '; out += std::to_string(op.w);
         out += ' '; out += std::to_string(op.h);
         out += ' ';
-        // Straight from the entry's bytes: they are RGBA at (w,h), packed,
-        // which is the layout the encoder wants and the layout SnapshotBytes
-        // produced.
-        std::vector<uint8_t> png;
-        if (op.w && op.h && op.bytes.size() == size_t(op.w) * op.h * 4)
-        {
-            stbi_write_png_to_func(
-                [](void* ctx, void* data, int len)
-                {
-                    auto* v = static_cast<std::vector<uint8_t>*>(ctx);
-                    const uint8_t* b = static_cast<const uint8_t*>(data);
-                    v->insert(v->end(), b, b + len);
-                },
-                &png, static_cast<int>(op.w), static_cast<int>(op.h), 4,
-                op.bytes.data(), static_cast<int>(op.w) * 4);
-        }
-        out += png.empty() ? std::string("-") : paint_b64_encode(png.data(), png.size());
+        out += paint_raster_b64(op);
+        return out;
+    }
+
+    // A patch: where, then the rectangle as a snapshot line ends.
+    if (op.kind == PaintOpKind::Patch)
+    {
+        const int32_t x = op.pts.size() >= 2 ? op.pts[0] : 0, y = op.pts.size() >= 2 ? op.pts[1] : 0;
+        out += ' ' + std::to_string(x) + ' ' + std::to_string(y)
+             + ' ' + std::to_string(op.w) + ' ' + std::to_string(op.h) + ' ' + paint_raster_b64(op);
         return out;
     }
 
@@ -3945,6 +4150,26 @@ static inline std::string paint_op_encode(const PaintOp& op)
     out += ' ' + std::to_string(op.points());
     for (size_t i = 0; i + 1 < op.pts.size(); i += 2)
         out += ' ' + std::to_string(op.pts[i]) + ',' + std::to_string(op.pts[i + 1]);
+    // The clip, when there was one: its box, then the mask as a one-channel
+    // PNG -- a rectangle costs a few hundred bytes, a wand's edge a few
+    // thousand, and the decoder is the one a snapshot already has.
+    if (!op.clip.empty())
+    {
+        std::vector<uint8_t> png;
+        stbi_write_png_to_func(
+            [](void* ctx, void* data, int len)
+            {
+                auto* v = static_cast<std::vector<uint8_t>*>(ctx);
+                const uint8_t* b = static_cast<const uint8_t*>(data);
+                v->insert(v->end(), b, b + len);
+            },
+            &png, static_cast<int>(op.clip.w), static_cast<int>(op.clip.h), 1,
+            op.clip.mask.data(), static_cast<int>(op.clip.w));
+        if (!png.empty())
+            out += " clip " + std::to_string(op.clip.x0) + ' ' + std::to_string(op.clip.y0)
+                 + ' ' + std::to_string(op.clip.w) + ' ' + std::to_string(op.clip.h)
+                 + ' ' + paint_b64_encode(png.data(), png.size());
+    }
     return out;
 }
 
@@ -3986,6 +4211,9 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
     if (out.kind == PaintOpKind::Layers || out.kind == PaintOpKind::Page)
     {
         if (out.kind == PaintOpKind::Page && !(in >> out.w >> out.h)) return false;
+        int keyframe = 0;
+        if (out.kind == PaintOpKind::Layers && !(in >> keyframe)) return false;
+        out.keyframe = (keyframe != 0);
         size_t n = 0;
         if (!(in >> n)) return false;
         for (size_t i = 0; i < n; ++i)
@@ -3995,13 +4223,21 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
             PaintOp::Face f;
             size_t a = field.find(','), b = field.find(',', a + 1), c = field.find(',', b + 1);
             if (a == std::string::npos || b == std::string::npos || c == std::string::npos) return false;
+            const size_t d = field.find(',', c + 1);          // the key, on lines that carry one
             f.order   = std::atoi(field.substr(0, a).c_str());
             f.opacity = static_cast<float>(std::atof(field.substr(a + 1, b - a - 1).c_str()));
             f.visible = (field.substr(b + 1, c - b - 1) != "0");
-            f.name    = field.substr(c + 1);
+            f.name    = paint_wire_unescape(field.substr(c + 1, d == std::string::npos ? std::string::npos : d - c - 1));
             if (f.name == "-") f.name.clear();
+            if (d != std::string::npos) f.key = std::strtoull(field.c_str() + d + 1, nullptr, 10);
             out.roster.push_back(std::move(f));
         }
+        // The raster tail, if the line has one. Unreadable pixels make the
+        // entry a roster without them rather than no entry: the stack change
+        // is the half every member must agree on.
+        std::string b64;
+        if (out.kind == PaintOpKind::Layers && (in >> out.w >> out.h >> b64))
+            if (!paint_raster_decode(b64, out)) { out.bytes.clear(); out.w = out.h = 0; }
         return true;
     }
 
@@ -4009,21 +4245,16 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
     {
         std::string b64;
         if (!(in >> out.w >> out.h >> b64)) return false;
-        if (b64 == "-") return false;
-        std::vector<uint8_t> png;
-        if (!paint_b64_decode(b64, png)) return false;
-        int w = 0, h = 0, comp = 0;
-        // Four channels forced, exactly as an import does: a layer is RGBA and
-        // a PNG that was greyscale on the way out would otherwise come back a
-        // different width in bytes.
-        uint8_t* px = stbi_load_from_memory(png.data(), static_cast<int>(png.size()),
-                                            &w, &h, &comp, 4);
-        if (!px) return false;
-        out.bytes.assign(px, px + size_t(w) * size_t(h) * 4);
-        out.w = static_cast<uint32_t>(w);
-        out.h = static_cast<uint32_t>(h);
-        stbi_image_free(px);
-        return true;
+        return paint_raster_decode(b64, out);
+    }
+
+    if (out.kind == PaintOpKind::Patch)
+    {
+        int32_t x = 0, y = 0;
+        std::string b64;
+        if (!(in >> x >> y >> out.w >> out.h >> b64)) return false;
+        out.addPoint(x, y);
+        return paint_raster_decode(b64, out);
     }
 
     int tip = 0, blend = 0;
@@ -4042,6 +4273,21 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
         if (c == std::string::npos) return false;
         out.pts.push_back(std::atoi(pair.substr(0, c).c_str()));
         out.pts.push_back(std::atoi(pair.substr(c + 1).c_str()));
+    }
+    std::string word;
+    if (in >> word && word == "clip")
+    {
+        std::string b64;
+        if (!(in >> out.clip.x0 >> out.clip.y0 >> out.clip.w >> out.clip.h >> b64)) return false;
+        std::vector<uint8_t> png;
+        if (!paint_b64_decode(b64, png)) return false;
+        int w = 0, h = 0, comp = 0;
+        uint8_t* px = stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &w, &h, &comp, 1);
+        if (!px) return false;
+        out.clip.w = static_cast<uint32_t>(w);
+        out.clip.h = static_cast<uint32_t>(h);
+        out.clip.mask.assign(px, px + size_t(w) * size_t(h));
+        stbi_image_free(px);
     }
     return true;
 }
@@ -4114,22 +4360,33 @@ public:
     void MoveLayerTo(ETCS::RID layer_rid, int32_t depth)
     {
         if (refuse_read_only("restack")) return;
+        // ONE ENTRY FOR THE WHOLE RESTACK, not one per renumbered layer: the
+        // roster before, the moves in quiet, the roster after.
+        sealOpenOp();
+        appendRoster(true);
+        { Quiet q(*this); if (!moveLayerQuiet(layer_rid, depth)) return; }
+        appendRoster();
+    }
+
+    bool moveLayerQuiet(ETCS::RID layer_rid, int32_t depth)
+    {
         Touch();
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
-        if (!raw) return;
+        if (!raw) return false;
         auto* moved = static_cast<PaintLayer*>(raw->getTrueType());
-        if (!moved) return;
+        if (!moved) return false;
 
         std::vector<PaintLayer*> stack;
         OrderedLayers(stack);
         auto it = std::find(stack.begin(), stack.end(), moved);
-        if (it == stack.end()) return;
+        if (it == stack.end()) return false;
         stack.erase(it);
 
         const int32_t slot = std::clamp(depth, 0, static_cast<int32_t>(stack.size()));
         stack.insert(stack.begin() + slot, moved);
         for (size_t i = 0; i < stack.size(); ++i)
             stack[i]->SetOrder(static_cast<int32_t>(i));
+        return true;
     }
 
     /*
@@ -4202,6 +4459,7 @@ public:
         // recordStructure keyframes every layer and appendRoster (below, after
         // the removal) writes down the stack the undo has to walk back over.
         recordStructure("merge");
+        Quiet quiet(*this);          // the survivor's renumbering is inside this one entry
         m_active_layer = keep;
 
         if (keep == lower)
@@ -4263,10 +4521,10 @@ public:
     void Touch() { ++m_revision; }
     uint64_t revision() const { return m_revision; }
 
+    // The layer's own setter records the change (PaintLayer::SetName) and
+    // refuses it on a view-only page.
     void RenameLayer(ETCS::RID layer_rid, const std::string& name)
     {
-        if (refuse_read_only("rename")) return;
-        Touch();
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
         if (auto* l = static_cast<PaintLayer*>(raw->getTrueType())) l->SetName(name);
@@ -4441,7 +4699,16 @@ public:
         ETCS::Entity* raw = paint_resolve_tag("PaintLayer", layer_rid);
         if (!raw) return;
         auto* layer = static_cast<PaintLayer*>(raw->getTrueType());
-        if (layer) layer->Clear(r, g, b, a);
+        if (!layer) return;
+        keyframeIfDue(layer);
+        layer->Clear(r, g, b, a);
+        // As an entry (Clear): the colour is the whole of what it did.
+        PaintOp op;
+        op.kind  = PaintOpKind::Clear;
+        op.layer = layer->getRID();
+        op.order = layer->order();
+        op.brush.color = PaintColor{ r, g, b, a };
+        recordMark(std::move(op));
     }
 
     /*
@@ -4886,8 +5153,16 @@ public:
     {
         if (!m_sel.lifted()) return false;
         if (m_active_layer)
+        {
+            keyframeIfDue(m_active_layer);       // a paste's landing has had no keyframe yet; a carry's lift took one
             m_active_layer->DropPixels(m_sel.lift.data(), m_sel.width(), m_sel.height(),
                                        m_sel.x0 + m_sel.dx, m_sel.y0 + m_sel.dy);
+            // THE WHOLE CARRY AS ONE ENTRY: the hole the lift left and the
+            // place the pixels landed, which is one rectangle spanning both.
+            recordPatch(m_active_layer,
+                        std::min(m_sel.x0, m_sel.x0 + m_sel.dx), std::min(m_sel.y0, m_sel.y0 + m_sel.dy),
+                        std::max(m_sel.x1, m_sel.x1 + m_sel.dx), std::max(m_sel.y1, m_sel.y1 + m_sel.dy));
+        }
         else
             ETCS_LOG("PaintDocument", "no active layer to drop the selection onto -- "
                      "the lifted pixels are lost.");
@@ -4900,22 +5175,22 @@ public:
     }
 
     // Pixels from outside the document onto the active layer at a place, as
-    // one undoable step: a snapshot of the layer lands first, then the bytes
-    // go over what is there (PaintLayer::DropPixels). The animation window's
-    // "put" is this.
+    // one step: the bytes go over what is there (PaintLayer::DropPixels) and
+    // the rectangle is recorded (Patch). The animation window's "put" is this.
     bool PastePixels(const uint8_t* rgba, uint32_t w, uint32_t h, int32_t x, int32_t y)
     {
         if (refuse_read_only("paste")) return false;
         if (!m_active_layer || !rgba || w == 0 || h == 0) return false;
-        appendSnapshot(m_active_layer);
+        keyframeIfDue(m_active_layer);
         m_active_layer->DropPixels(rgba, w, h, x, y);
-        Touch();
+        recordPatch(m_active_layer, x, y, x + static_cast<int32_t>(w) - 1, y + static_cast<int32_t>(h) - 1);
         return true;
     }
 
     // The scripted carry: what a drag does, in one call.
     bool MoveSelection(int32_t dx, int32_t dy)
     {
+        keyframeIfDue(m_active_layer);
         if (!LiftSelection()) return false;
         SetSelectionOffset(dx, dy);
         return DropSelection();
@@ -4992,7 +5267,6 @@ public:
     {
         if (refuse_read_only("paste")) return false;
         if (m_clip.lift.empty() || !m_active_layer) return false;
-        Remember();
         if (m_sel.lifted()) DropSelection();      // a carry in flight lands first
         // The clip's mask, restated in the current document's space.
         m_sel.Reset(width(), height());
@@ -5022,10 +5296,16 @@ public:
     {
         if (refuse_read_only("delete")) return false;
         if (m_sel.empty() || !m_active_layer) return false;
-        Remember();
-        if (m_sel.lifted()) { m_sel.lift.clear(); m_sel.dx = m_sel.dy = 0; return true; }
-        if (!LiftSelection()) return false;
-        m_sel.lift.clear();
+        if (m_sel.lifted()) { m_sel.lift.clear(); m_sel.dx = m_sel.dy = 0; }
+        else
+        {
+            keyframeIfDue(m_active_layer);
+            if (!LiftSelection()) return false;
+            m_sel.lift.clear();
+        }
+        // The lift cleared the region; a carry that was in flight cleared it
+        // when it was lifted. Either way the region is what changed.
+        recordPatch(m_active_layer, m_sel.x0, m_sel.y0, m_sel.x1, m_sel.y1);
         return true;
     }
 
@@ -5034,9 +5314,14 @@ public:
     {
         if (refuse_read_only("cut")) return false;
         if (!CopySelection()) return false;
-        Remember();
-        if (!LiftSelection()) return false;
+        if (!m_sel.lifted())
+        {
+            keyframeIfDue(m_active_layer);
+            if (!LiftSelection()) return false;
+        }
         m_sel.lift.clear();
+        m_sel.dx = m_sel.dy = 0;
+        recordPatch(m_active_layer, m_sel.x0, m_sel.y0, m_sel.x1, m_sel.y1);
         return true;
     }
 
@@ -5051,23 +5336,32 @@ public:
  * rather than one of three whole-layer snapshots, so the depth cap is gone,
  * undo is a replay, and the same object answers a viewer.
  *
- * Remember() ALONE STILL MEANS SNAPSHOT. A caller that did not describe its
- * change gets the bytes, which is what makes this safe to land before every
- * mutation has a descriptor: an operation nobody has taught the notebook
- * about is recorded correctly and expensively rather than missed.
+ * Remember() IS THE KEYFRAME BEFORE A CHANGE, taken when the active layer is
+ * due one (keyframeIfDue). Every change is described now -- a stroke by its
+ * path (RememberOp), the rest by the rectangle it left (recordPatch) or the
+ * colour it laid (ClearLayer) -- so nothing is recorded as bytes alone any
+ * more, and the whole-layer keyframe is only ever the bound on a replay.
  *
- * WHAT IT COSTS NOW: one snapshot per SNAPSHOT_EVERY described marks per
- * layer, plus one per undescribed change. At 1024x768 that is 3 MB every
- * sixteen strokes instead of 3 MB every stroke -- and Compact() can throw
- * the prefix away, which the old store could not do at all because three
- * snapshots deep has no prefix to throw.
+ * WHAT IT COSTS: one snapshot per SNAPSHOT_EVERY marks per layer. At 1024x768
+ * that is 3 MB every sixteen changes -- and Compact() can throw the prefix
+ * away, which the old store could not do at all because three snapshots deep
+ * has no prefix to throw.
  */
     void Remember()
     {
         Touch();
+        keyframeIfDue(m_active_layer);
+    }
+
+    // The keyframe a mark is preceded by when its layer is due one, BEFORE the
+    // change -- one taken after cannot undo it. RememberOp asks this for a
+    // stroke; a change stated after the fact (recordMark) asks it itself,
+    // first, because only the caller knows when "before" is.
+    void keyframeIfDue(PaintLayer* layer)
+    {
         sealOpenOp();
-        if (!m_active_layer) return;
-        appendSnapshot(m_active_layer);
+        if (!layer) return;
+        if (m_book.snapshotDue(layer->getRID())) appendSnapshot(layer);
     }
 
     /*
@@ -5095,7 +5389,23 @@ public:
         m_open.author    = m_author;
         m_open.brush     = brush;
         m_open.tolerance = tolerance;
+        m_open.clip      = clipOf(m_sel);
         m_open_live      = true;
+    }
+
+    // The selection as an entry carries it (PaintOp::Clip): its bounding box
+    // and the mask inside it. Nothing when nothing is selected.
+    static PaintOp::Clip clipOf(const PaintSelection& sel)
+    {
+        PaintOp::Clip c;
+        if (sel.empty()) return c;
+        c.x0 = sel.x0; c.y0 = sel.y0;
+        c.w = sel.width(); c.h = sel.height();
+        c.mask.assign(static_cast<size_t>(c.w) * c.h, 0);
+        for (int32_t y = sel.y0; y <= sel.y1; ++y)
+            for (int32_t x = sel.x0; x <= sel.x1; ++x)
+                if (sel.at(x, y)) c.mask[(static_cast<size_t>(y - sel.y0) * c.w) + (x - sel.x0)] = 1;
+        return c;
     }
 
     // A point on the open entry. Called by ApplyBrush for a Dab, and by the
@@ -5109,6 +5419,43 @@ public:
     // Seal the open entry. Called at every stroke release, and again by the
     // next seam, which is what closes one a lost release left in the air.
     void SealOp() { sealOpenOp(); }
+
+    /*
+     * A CHANGE STATED AFTER THE FACT, for the inputs that are not a brush
+     * along a path: a rectangle of pixels as it now is (Patch), or a whole
+     * layer cleared (Clear). Same seam as RememberOp -- seal, keyframe when
+     * the layer is due one, then the entry -- with the entry built by the
+     * caller, since only it knows the rectangle. No keyframe here: the change
+     * has happened by now, and a keyframe of it could not undo it -- the
+     * caller asked keyframeIfDue before it changed anything.
+     */
+    void recordMark(PaintOp op)
+    {
+        Touch();
+        sealOpenOp();
+        op.author = m_author;
+        m_cursor = m_book.Append(std::move(op), m_cursor);
+    }
+
+    // The rectangle (x0..x1, y0..y1 inclusive) of `layer` as it is now, as an
+    // entry. Clipped to the layer; nothing to say when nothing of it is on it.
+    void recordPatch(PaintLayer* layer, int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+    {
+        if (!layer) return;
+        const int32_t pw = static_cast<int32_t>(layer->PixelWidth()), ph = static_cast<int32_t>(layer->PixelHeight());
+        x0 = std::max(x0, 0); y0 = std::max(y0, 0);
+        x1 = std::min(x1, pw - 1); y1 = std::min(y1, ph - 1);
+        if (x1 < x0 || y1 < y0) return;
+        PaintOp op;
+        op.kind  = PaintOpKind::Patch;
+        op.layer = layer->getRID();
+        op.order = layer->order();
+        op.w = static_cast<uint32_t>(x1 - x0 + 1);
+        op.h = static_cast<uint32_t>(y1 - y0 + 1);
+        op.addPoint(x0, y0);
+        if (!layer->ReadRect(x0, y0, op.w, op.h, op.bytes)) return;
+        recordMark(std::move(op));
+    }
 
     const PaintNotebook& notebook() const { return m_book; }
     PaintNotebook&       notebook()       { return m_book; }
@@ -5153,10 +5500,10 @@ public:
  * reusing it means a shared session needs no new bridge, no new buffer size
  * and no second way for bulk data to reach the runtime.
  *
- * ExportOps writes what happened AFTER `since`, which is the only thing a
- * host has to push and the only thing a caught-up viewer has to read.
+ * ExportOps writes what this page made and has not yet sent, which is the
+ * only thing a writer has to push.
  */
-    size_t ExportOps(const std::string& path, uint64_t since) const
+    size_t ExportOps(const std::string& path)
     {
         std::ofstream o(path, std::ios::binary | std::ios::trunc);
         if (!o)
@@ -5168,54 +5515,57 @@ public:
      * ALONG THE CANONICAL PATH, which is the only thing a session replays.
      * Sequence order would hand a viewer entries from a branch this document
      * abandoned -- strokes that were undone here would appear there, which is
-     * the exact opposite of what an undo means.
+     * the exact opposite of what an undo means. (In a session an undo is an
+     * entry on the path, retract, so the path does not fork there.)
      *
-     * A PATH THAT NO LONGER CONTAINS `since` IS A DIVERGENCE: this document
-     * has wound back past what it already sent, so the room is holding
-     * strokes that are no longer part of the picture. Re-baselining is the
-     * honest answer -- a keyframe of every layer on the path, then the tail --
-     * and it costs one snapshot per divergence rather than per stroke. An
-     * undo no longer gets here (in a session it is an entry on the path,
-     * retract); what does is a page-level change -- New, a resize -- which
-     * IS a new page for everyone.
+     * A PAGE-LEVEL CHANGE MADE HERE -- New, a resize, another page opened --
+     * is a new page for everyone, and goes out as one: a baseline, which is
+     * the whole page stated (write_baseline), after which everything on the
+     * path counts as sent. This page SAYS when that happened (m_page_changed);
+     * it used to be inferred from a `since` that no longer sat on the path,
+     * and a Page entry that arrived from the room emptied the notebook and
+     * made that inference for every member at once -- each then re-sent its
+     * whole page, emptying the others again, for as long as the room lasted.
      */
         std::vector<const PaintOp*> chain;
         m_book.ChainTo(m_cursor, chain);
 
-        bool on_path = (since == 0);
-        for (const PaintOp* op : chain) if (op->seq == since) { on_path = true; break; }
-
         size_t n = 0;
-        if (!on_path)
+        if (m_page_changed)
         {
-            ETCS_LOG("PaintDocument", "ExportOps: " << since << " is not on this path "
-                     "any more -- re-baselining the room with this whole page.");
+            ETCS_LOG("PaintDocument", "ExportOps: this page changed -- the room gets it whole.");
+            ensureKeys();
             n = write_baseline(o);
+            for (const PaintOp* op : chain) const_cast<PaintOp*>(op)->sent = true;
+            m_page_changed = false;
         }
         else
         {
             for (const PaintOp* op : chain)
             {
-                if (op->seq <= since) continue;
+                if (op->sent) continue;
                 /*
-             * ONLY WHAT THIS PAGE MADE. Entries that arrived from the session
-             * are on this path too -- AcceptOp keeps them, so undo and a late
-             * keyframe have the whole picture -- but they are the room's
-             * already, and sending them back is how a joiner promoted to
-             * writer used to push the host's own history at the host.
+             * ONLY WHAT THIS PAGE MADE. Anything else on the path came from
+             * the room and is marked on arrival (AcceptOp); a keyframe is
+             * marked when it is taken (appendSnapshot), since it is this
+             * page's own cache of its derived picture and on another member
+             * would overwrite what that member derived. So an unmarked entry
+             * is this page's, and this is the belt to those braces.
              */
-                if (!m_author.empty() && op->author != m_author) continue;
-                // Not keyframes: they are this page's own cache of its derived
-                // picture, and on another member they overwrite what that
-                // member derived (AcceptOp keeps its own).
-                if (op->kind == PaintOpKind::Snapshot) continue;
+                if (op->kind == PaintOpKind::Snapshot || (!m_author.empty() && op->author != m_author))
+                {
+                    const_cast<PaintOp*>(op)->sent = true;
+                    continue;
+                }
                 o << paint_op_encode(*op) << "\n";
+                const_cast<PaintOp*>(op)->sent = true;
                 ++n;
             }
         }
         if (!o) { ETCS_LOG("PaintDocument", "ExportOps: write to '" << path << "' failed."); return 0; }
-        ETCS_LOG("PaintDocument", "ExportOps: " << n << " entr(ies) after " << since
-                 << " along a " << chain.size() << "-entry path -> '" << path << "'.");
+        if (n)
+            ETCS_LOG("PaintDocument", "ExportOps: " << n << " entr(ies) along a " << chain.size()
+                     << "-entry path -> '" << path << "'.");
         return n;
     }
 
@@ -5229,15 +5579,21 @@ public:
  * pushed from zero sent none of them -- the joiner got the strokes and not the
  * picture under them.
  *
- * Each line carries the cursor as its sequence, so the page that pushed it
- * reads back where the next ExportOps should start from.
+ * Everything on the path is marked sent after it (PaintOp::sent): the whole
+ * page went, so every entry that made it is in the record.
  */
-    size_t ExportBaseline(const std::string& path) const
+    size_t ExportBaseline(const std::string& path)
     {
         std::ofstream o(path, std::ios::binary | std::ios::trunc);
         if (!o) { ETCS_LOG("PaintDocument", "ExportBaseline: cannot open '" << path << "'."); return 0; }
+        ensureKeys();
         const size_t n = write_baseline(o);
         if (!o) { ETCS_LOG("PaintDocument", "ExportBaseline: write to '" << path << "' failed."); return 0; }
+        // The whole page went, so everything that made it is in the record.
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+        for (const PaintOp* op : chain) const_cast<PaintOp*>(op)->sent = true;
+        m_page_changed = false;
         ETCS_LOG("PaintDocument", "ExportBaseline: " << m_width << "x" << m_height << ", "
                  << (n ? n - 1 : 0) << " layer keyframe(s) at " << m_cursor << " -> '" << path << "'.");
         return n;
@@ -5316,18 +5672,19 @@ public:
     uint64_t recordChain()    const { return m_chain; }
     uint64_t recordChainSeq() const { return m_chain_seq; }
 
-    // Whether everything this page made is in the record: no entry of its own
-    // past `sent` (the page's last export) still waiting to go. Its picture is
-    // only the record's picture when this answers yes -- a stroke is in its
-    // maker's picture before it is anywhere else.
-    bool settled(uint64_t sent) const
+    // Whether everything this page made is in the record: nothing on the
+    // path still waiting to go (PaintOp::sent), no stroke open, no page-level
+    // change the room has not been told of. Its picture is only the record's
+    // picture when this answers yes -- a stroke is in its maker's picture
+    // before it is anywhere else.
+    bool settled() const
     {
         if (m_author.empty()) return true;
+        if (m_open_live || m_page_changed) return false;
         std::vector<const PaintOp*> chain;
         m_book.ChainTo(m_cursor, chain);
-        for (const PaintOp* o : chain)
-            if (o->seq > sent && o->author == m_author && o->kind != PaintOpKind::Snapshot) return false;
-        return !m_open_live;
+        for (const PaintOp* o : chain) if (!o->sent) return false;
+        return true;
     }
 
     /*
@@ -5540,6 +5897,27 @@ public:
             return false;
         }
 
+        // UNDER THE ENTRY'S OWN CLIP, not this page's selection: the mark
+        // lands where it was allowed to when it was made (PaintOp::Clip),
+        // and anywhere when it carried none. The layer's binding is put back
+        // after, since the active layer's is this page's live selection.
+        struct Clipped
+        {
+            PaintLayer* layer; const PaintSelection* was; PaintSelection sel; bool on = false;
+            Clipped(PaintLayer* l, const PaintOp& o, uint32_t w, uint32_t h) : layer(l), was(l->clip())
+            {
+                sel.Reset(w, h);
+                if (!o.clip.empty())
+                    for (uint32_t y = 0; y < o.clip.h; ++y)
+                        for (uint32_t x = 0; x < o.clip.w; ++x)
+                            if (o.clip.mask[static_cast<size_t>(y) * o.clip.w + x])
+                                sel.Set(o.clip.x0 + static_cast<int32_t>(x), o.clip.y0 + static_cast<int32_t>(y));
+                on = !sel.empty();
+                layer->BindClip(on ? &sel : nullptr);
+            }
+            ~Clipped() { layer->BindClip(was); }
+        } clipped(layer, op, m_width, m_height);
+
         switch (op.kind)
         {
         case PaintOpKind::Snapshot:
@@ -5555,6 +5933,28 @@ public:
         case PaintOpKind::Dab:
             for (size_t i = 0; i + 1 < op.pts.size(); i += 2)
                 layer->DrawBrush(op.pts[i], op.pts[i + 1], op.brush);
+            return true;
+
+        case PaintOpKind::Smudge:
+            // Pair by pair along the path, as the pointer made it: each step
+            // carries from where the last one ended (PaintInput::apply_smudge).
+            for (size_t i = 2; i + 1 < op.pts.size(); i += 2)
+                layer->SmudgeDab(op.pts[i - 2], op.pts[i - 1], op.pts[i], op.pts[i + 1],
+                                 op.brush, PaintInput_SMUDGE_STRENGTH);
+            return true;
+
+        case PaintOpKind::Clear:
+            layer->Clear(op.brush.color.r, op.brush.color.g, op.brush.color.b, op.brush.color.a);
+            return true;
+
+        case PaintOpKind::Patch:
+            if (op.points() < 1) return false;
+            if (!layer->WriteRect(op.pts[0], op.pts[1], op.w, op.h, op.bytes))
+            {
+                ETCS_LOG("PaintDocument", "replay: entry " << op.seq << " patches "
+                         << op.w << "x" << op.h << " with " << op.bytes.size() << " bytes -- dropped.");
+                return false;
+            }
             return true;
 
         case PaintOpKind::Line:
@@ -5619,6 +6019,7 @@ public:
     // history, so a viewer and a reload are the same code path.
     bool AcceptOp(PaintOp op)
     {
+        op.sent = true;                   // it came from the record; it is the record's
         /*
      * A PAGE ENTRY REPLACES THE DOCUMENT rather than adding to it: the size,
      * the stack and nothing on it, history and text boxes gone. The keyframes
@@ -5638,7 +6039,7 @@ public:
          */
         if (op.retraction())
         {
-            m_cursor = m_book.AppendAt(std::move(op), m_cursor);
+            m_cursor = m_book.Append(std::move(op), m_cursor);
             return replayTo(m_cursor, "retraction");
         }
         /*
@@ -5656,7 +6057,7 @@ public:
         // the raster half of the entry (a merge's) lands on the result.
         if (op.structural()) reconcileLayers(&op);
         const bool ok = ApplyOp(op);
-        m_cursor = m_book.AppendAt(std::move(op), m_cursor);
+        m_cursor = m_book.Append(std::move(op), m_cursor);
         Touch();
         return ok;
     }
@@ -5689,7 +6090,7 @@ public:
         edge.author  = m_author;
         edge.target  = m_author;
         edge.ordinal = k;
-        m_cursor = m_book.AppendAt(std::move(edge), m_cursor);
+        m_cursor = m_book.Append(std::move(edge), m_cursor);
         Touch();
         return replayTo(m_cursor, undo ? "undo" : "redo");
     }
@@ -5715,8 +6116,6 @@ public:
     }
     bool readOnly() const { return const_cast<PaintDocument*>(this)->hasTag(ETCS::Buffer("readonly")); }
 
-    // Where this document stands in the record, which on a viewer is where it
-    // stands in the NODE's record -- the `since` of its next read.
     uint64_t notebookHead() const { return m_book.head(); }
 
     void RenderToSurface(ETCS::RID target, int32_t x, int32_t y, float zoom = 1.0f)
@@ -5769,9 +6168,8 @@ public:
  * throw away pixels the user may yet pan into view. On top and active, because
  * what was just brought in is what is about to be worked on.
  *
- * NOT REMEMBERED. The history is whole-layer snapshots of the active layer
- * (Remember), and a new layer has no earlier bytes to return to; undoing an
- * import is RemoveLayer, which is what a row's delete already does.
+ * RECORDED (import_layer): undo takes the layer away again, and a session
+ * gets the picture on it.
  */
     bool ImportImage(const std::string& path)
     {
@@ -5813,6 +6211,11 @@ private:
     bool import_layer(const PaintImage& img, const std::string& path)
     {
         Touch();
+        // RECORDED, the way a merge is: the stack before, then one entry that
+        // carries the new layer's pixels with the roster it joins (appendRoster's
+        // `carries`). Undo takes the layer away; a session gets the picture.
+        recordStructure("import");
+        Quiet quiet(*this);
         PaintLayer* layer = this->addTag<PaintLayer>();
         if (!layer)
         {
@@ -5864,6 +6267,7 @@ private:
                  << " raster"
                  << ((img.w > m_width || img.h > m_height)
                      ? " (clipped to the page -- 'new canvas' keeps all of it)" : ""));
+        appendRoster(false, layer);
         return true;
     }
 public:
@@ -6061,6 +6465,7 @@ public:
         for (PaintTextBox& b : m_text) { b.x += dx; b.y += dy; }
 
         ClearHistory();
+        m_page_changed = true;
         ETCS_LOG("PaintDocument", "'" << m_name << "' " << m_width << "x" << m_height
                  << " -> " << w << "x" << h << " anchored at " << anchor
                  << " (pixels moved by " << dx << "," << dy << "), " << stack.size()
@@ -6082,7 +6487,9 @@ public:
     bool New(uint32_t w, uint32_t h)
     {
         if (refuse_read_only("new")) return false;
-        return renew(w, h);
+        if (!renew(w, h)) return false;
+        m_page_changed = true;
+        return true;
     }
 
     // New without the view-only guard: what a session's Page entry does to a
@@ -6145,6 +6552,7 @@ public:
         m_sel.Reset(m_width, m_height);              // the carry's layer is about to go, lift and all
         m_active_layer = nullptr;
         ClearHistory();
+        m_page_changed = true;                       // another page is about to stand here
         m_text.clear();
         m_text_sel = 0;
 
@@ -6184,6 +6592,7 @@ public:
     {
         if (refuse_read_only("add a layer")) return 0;
         recordStructure("new layer");
+        Quiet quiet(*this);          // one entry for the layer, below, not one per setter
         PaintLayer* layer = this->addTag<PaintLayer>();
         if (!layer)
         {
@@ -6211,7 +6620,7 @@ public:
         for (size_t i = 0; i < stack.size(); ++i)
             if (stack[i] == m_active_layer) depth = static_cast<int32_t>(i) + 1;
         layer->SetOrder(static_cast<int32_t>(stack.size()));
-        MoveLayerTo(layer->getRID(), depth);
+        moveLayerQuiet(layer->getRID(), depth);
 
         if (m_sel.lifted()) DropSelection();
         m_active_layer = layer;
@@ -6225,6 +6634,7 @@ public:
     PaintLayer* SpawnLayer(const PaintImage& img, const std::string& name, int32_t order,
                            bool visible, float opacity, bool active)
     {
+        Quiet quiet(*this);          // a stored page's stack, not an edit to one
         PaintLayer* layer = this->addTag<PaintLayer>();
         if (!layer)
         {
@@ -6576,6 +6986,12 @@ private:
     // chains means a line this page never took in. Reset by a read from zero.
     uint64_t      m_chain     = 0;
     uint64_t      m_chain_seq = 0;
+    // A page-level change made HERE that the room has not seen: the next
+    // ExportOps sends the whole page (see it). Not raised by become_page --
+    // that is the room's change arriving, and answering it with this page's
+    // own was the ping-pong.
+    bool          m_page_changed = false;
+    int           m_quiet = 0;   // see Quiet
 
     void sealOpenOp()
     {
@@ -6741,7 +7157,7 @@ private:
         page.author = m_author;
         page.w = m_width; page.h = m_height;
         for (PaintLayer* l : stack)
-            page.roster.push_back(PaintOp::Face{ l->order(), l->opacity(), l->visible(), l->name() });
+            page.roster.push_back(PaintOp::Face{ l->order(), l->opacity(), l->visible(), l->name(), l->key() });
         o << paint_op_encode(page) << "\n";
         size_t n = 1;
         for (PaintLayer* l : stack)
@@ -6798,6 +7214,7 @@ private:
      */
     void appendRoster(bool keyframe = false, PaintLayer* carries = nullptr)
     {
+        ensureKeys();
         std::vector<PaintLayer*> stack;
         OrderedLayers(stack);
         PaintOp op;
@@ -6813,10 +7230,62 @@ private:
             carries->SnapshotBytes(op.bytes);
         }
         for (PaintLayer* l : stack)
-            op.roster.push_back(PaintOp::Face{ l->order(), l->opacity(), l->visible(), l->name() });
+            op.roster.push_back(PaintOp::Face{ l->order(), l->opacity(), l->visible(), l->name(), l->key() });
         m_cursor = m_book.Append(std::move(op), m_cursor);
         Touch();
     }
+
+    /*
+     * A KEY FOR EVERY LAYER THAT HAS NONE, before a roster names them
+     * (PaintLayer::key). Hashed from this page's author and the layer's RID
+     * rather than drawn: the same layer keyed twice gets the same key, and
+     * two members cannot key different layers alike short of sharing a name
+     * and a RID. A layer made from a roster takes the roster's key instead
+     * (reconcileLayers), which is how one layer is one layer everywhere.
+     */
+    void ensureKeys()
+    {
+        std::vector<PaintLayer*> stack;
+        OrderedLayers(stack);
+        for (PaintLayer* l : stack)
+        {
+            if (l->key()) continue;
+            const std::string seed = m_author + ':' + std::to_string(l->getRID());
+            uint64_t k = XXH3_64bits(seed.data(), seed.size());
+            if (!k) k = 1;
+            l->SetKey(k);
+        }
+    }
+
+    /*
+     * THE SEAM A LAYER'S FACE CHANGES THROUGH (PaintLayer::face_change_begin/
+     * end): the roster before as a keyframe, the roster after as the entry.
+     * Quiet while a structural verb is already writing its own pair -- a
+     * restack renumbers every layer and is one change, not five -- and
+     * while a roster from the record is being applied, which is the room's
+     * change and not an edit here.
+     */
+    struct Quiet
+    {
+        PaintDocument& d;
+        explicit Quiet(PaintDocument& doc) : d(doc) { ++d.m_quiet; }
+        ~Quiet() { --d.m_quiet; }
+    };
+public:
+    bool faceChangeBegin()
+    {
+        if (m_quiet) return true;
+        if (refuse_read_only("change a layer")) return false;
+        sealOpenOp();
+        appendRoster(true);
+        return true;
+    }
+    void faceChangeEnd()
+    {
+        Touch();
+        if (!m_quiet) appendRoster();
+    }
+private:
 
     void appendSnapshot(PaintLayer* layer)
     {
@@ -6828,6 +7297,7 @@ private:
         snap.author = m_author;
         snap.w      = layer->PixelWidth();
         snap.h      = layer->PixelHeight();
+        snap.sent   = true;               // a keyframe is this page's own and never travels
         if (!layer->SnapshotBytes(snap.bytes)) return;
         m_cursor = m_book.Append(std::move(snap), m_cursor);
     }
@@ -6897,39 +7367,64 @@ private:
     void reconcileLayers(const PaintOp* roster)
     {
         if (!roster) return;
+        Quiet quiet(*this);          // the room's stack arriving, not an edit here
 
         std::vector<PaintLayer*> stack;
         OrderedLayers(stack);
+        const std::vector<PaintOp::Face>& faces = roster->roster;
 
-        // Anything at a position the roster does not mention is not in this
-        // picture. Detached rather than deleted, exactly as RemoveLayer does.
-        for (PaintLayer* l : stack)
+        /*
+         * BY KEY FIRST, THEN BY ORDER. A key is the layer's name across the
+         * whole session (PaintLayer::key), so a roster that moved a layer
+         * finds that layer here and moves it, pixels and all; order alone
+         * found whatever sat at the position and renamed it, and a restack
+         * arrived as every layer changing its face over pixels that stayed.
+         * Order is what a roster from before keys, or a layer that never
+         * had one, is matched by.
+         */
+        std::vector<PaintLayer*> at(faces.size(), nullptr);
+        std::vector<bool> used(stack.size(), false);
+        for (size_t i = 0; i < faces.size(); ++i)
         {
-            bool wanted = false;
-            for (const PaintOp::Face& f : roster->roster) if (f.order == l->order()) { wanted = true; break; }
-            if (wanted) continue;
-            if (m_active_layer == l) m_active_layer = nullptr;
-            l->detachFromParent();
+            if (!faces[i].key) continue;
+            for (size_t j = 0; j < stack.size(); ++j)
+                if (!used[j] && stack[j]->key() == faces[i].key) { at[i] = stack[j]; used[j] = true; break; }
+        }
+        for (size_t i = 0; i < faces.size(); ++i)
+        {
+            if (at[i]) continue;
+            for (size_t j = 0; j < stack.size(); ++j)
+                if (!used[j] && (stack[j]->key() == 0 || faces[i].key == 0) && stack[j]->order() == faces[i].order)
+                { at[i] = stack[j]; used[j] = true; break; }
+        }
+
+        // Anything the roster does not mention is not in this picture.
+        // Detached rather than deleted, exactly as RemoveLayer does.
+        for (size_t j = 0; j < stack.size(); ++j)
+        {
+            if (used[j]) continue;
+            if (m_active_layer == stack[j]) m_active_layer = nullptr;
+            stack[j]->detachFromParent();
         }
 
         // And anything the roster names that is not here comes back -- empty,
         // because the keyframe that fills it is the next phase's job.
-        for (const PaintOp::Face& f : roster->roster)
+        for (size_t i = 0; i < faces.size(); ++i)
         {
-            OrderedLayers(stack);
-            PaintLayer* at = nullptr;
-            for (PaintLayer* l : stack) if (l->order() == f.order) { at = l; break; }
-            if (!at)
+            const PaintOp::Face& f = faces[i];
+            PaintLayer* l = at[i];
+            if (!l)
             {
-                at = this->addTag<PaintLayer>();
-                if (!at) continue;
-                at->Create(m_width, m_height);
-                at->Clear(0.0f, 0.0f, 0.0f, 0.0f);
+                l = this->addTag<PaintLayer>();
+                if (!l) continue;
+                l->Create(m_width, m_height);
+                l->Clear(0.0f, 0.0f, 0.0f, 0.0f);
             }
-            at->SetOrder(f.order);
-            at->SetName(f.name);
-            at->SetOpacity(f.opacity);
-            at->SetVisible(f.visible);
+            if (f.key) l->SetKey(f.key);
+            l->SetOrder(f.order);
+            l->SetName(f.name);
+            l->SetOpacity(f.opacity);
+            l->SetVisible(f.visible);
         }
 
         OrderedLayers(stack);
@@ -7088,6 +7583,20 @@ inline void PaintLayer::touch_document()
     // sit under something that is not a document in a test.
     if (!parent || !parent->hasTag(ETCS::Buffer("PaintDocument"))) return;
     static_cast<PaintDocument*>(parent->getTrueType())->Touch();
+}
+
+inline bool PaintLayer::face_change_begin()
+{
+    ETCS::Entity* parent = this->getParent();
+    if (!parent || !parent->hasTag(ETCS::Buffer("PaintDocument"))) return true;   // nobody's yet: nothing to record
+    return static_cast<PaintDocument*>(parent->getTrueType())->faceChangeBegin();
+}
+
+inline void PaintLayer::face_change_end()
+{
+    ETCS::Entity* parent = this->getParent();
+    if (!parent || !parent->hasTag(ETCS::Buffer("PaintDocument"))) return;
+    static_cast<PaintDocument*>(parent->getTrueType())->faceChangeEnd();
 }
 
 
@@ -13574,7 +14083,6 @@ public:
         if (did) { m_sel_carry = false; repaint_view(); }
         return did;
     }
-
     void BindTextBar(ETCS::RID bar)
     {
         ETCS::Entity* raw = paint_resolve_tag("PaintTextBar", bar);
@@ -13881,18 +14389,18 @@ public:
             }
         }
 
+        // The list follows the document, not the other way round: an import,
+        // a page switch or a resize changes the stack with no press on a
+        // row, so the next event that reaches here re-reads it. A revision
+        // compare rather than a refresh per event -- Refresh rewrites six
+        // fills and three labels, and a pointer sends events by the hundred.
+        if (m_document && m_document->revision() != m_panel_rev)
+        {
+            m_panel_rev = m_document->revision();
+            if (m_panel) m_panel->Refresh();
+        }
         if (m_panel)
         {
-            // The list follows the document, not the other way round: an import,
-            // a page switch or a resize changes the stack with no press on a
-            // row, so the next event that reaches here re-reads it. A revision
-            // compare rather than a refresh per event -- Refresh rewrites six
-            // fills and three labels, and a pointer sends events by the hundred.
-            if (m_document && m_document->revision() != m_panel_rev)
-            {
-                m_panel_rev = m_document->revision();
-                m_panel->Refresh();
-            }
             // A window being dragged by its title takes every motion until the
             // release, ahead of the hover: the pointer is over whatever the
             // window is passing, not choosing a row. The move alone is the
@@ -14371,7 +14879,13 @@ public:
                 // that did not move and marked nothing -- is dropped at the seal
                 // rather than recorded as an empty stroke.
                 if (m_document && !paint_kind_is_anchored(m_tool->kind()) && !paint_kind_is_placed(m_tool->kind()))
-                    m_document->RememberOp(PaintOpKind::Dab, m_tool->brush());
+                {
+                    const bool smudge = (m_tool->kind() == PaintToolKind::Smudge);
+                    m_document->RememberOp(smudge ? PaintOpKind::Smudge : PaintOpKind::Dab, m_tool->brush());
+                    // A smudge's first point marks nothing but starts the path
+                    // every later step carries from; it goes in the entry now.
+                    if (smudge) m_document->NoteOpPoint(m_cursor_x, m_cursor_y);
+                }
                 m_tool->BeginStroke(m_cursor_x, m_cursor_y);
                 m_last_x = m_cursor_x;
                 m_last_y = m_cursor_y;
@@ -15282,7 +15796,8 @@ private:
         if (!m_document || !m_tool) return;
         PaintLayer* layer = m_document->activeLayer();
         if (!layer) return;
-        layer->SmudgeDab(x0, y0, x1, y1, m_tool->brush(), 0.6f);
+        layer->SmudgeDab(x0, y0, x1, y1, m_tool->brush(), PaintInput_SMUDGE_STRENGTH);
+        m_document->NoteOpPoint(x1, y1);         // the step's end; its start is the point before
         repaint_view();
     }
 
@@ -15922,8 +16437,6 @@ public:
     // answers by reference is promising the bytes outlive the send -- the same
     // promise FileHtmlPage makes about a mounted file. One buffer per node and
     // one answer at a time, which the lock above already guarantees.
-    const std::string& lastAnswer() const { return m_answer; }
-    void setAnswer(std::string s) { m_answer = std::move(s); }
 
 private:
     struct Member
@@ -16484,7 +16997,6 @@ private:
     mutable std::mutex m_mu;
     std::string m_mount = "art";
     std::unordered_map<std::string, Session> m_sessions;
-    std::string m_answer;
 };
 
 
@@ -16940,20 +17452,17 @@ DEFINE_WORK_FUNC(PaintDocument, ExportImage)
     self.ExportImage(path);
 }
 
-// ExportOps <path> [since] -- the notebook's entries after `since`, as lines.
-// The path is first because every other file verb here puts it first; `since`
-// is optional and zero means everything, which is what a first push sends.
+// ExportOps <path> -- what this page made and has not sent, as lines; a whole
+// baseline instead when the page itself changed (PaintDocument::ExportOps).
+// Answers the count and the notebook head.
 DEFINE_WORK_FUNC(PaintDocument, ExportOps)
 {
     (void)ctx;
     std::istringstream in(data.restAsString());
     std::string path;
-    uint64_t since = 0;
-    in >> path >> since;
+    in >> path;
     if (path.empty()) { ETCS_LOG("PaintDocument", "ExportOps needs a path."); data.writeString("0"); return; }
-    const size_t n = self.ExportOps(path, since);
-    // The COUNT and the HEAD, because the page needs both: one to know whether
-    // there was anything to send, the other to know what to ask for next time.
+    const size_t n = self.ExportOps(path);
     data.writeString((std::to_string(n) + " " + std::to_string(self.notebookHead())).c_str());
 }
 
@@ -17040,22 +17549,18 @@ DEFINE_WORK_FUNC(PaintDocument, PictureReport)
 // picture OF (the last line this page chained, ImportOps), taken together --
 // a picture paired with a position read at another moment is what made two
 // members at one head disagree about a picture they shared.
-// PictureHash [sent] -- and whether the picture is the record's yet (settled:
-// nothing of this page's past `sent` is still to be pushed).
+// -- and whether the picture is the record's yet (settled: nothing of this
+// page's is still to be pushed).
 DEFINE_WORK_FUNC(PaintDocument, PictureHash)
 {
     (void)ctx;
-    std::istringstream in(data.restAsString());
-    uint64_t sent = 0;
-    in >> sent;
     char hex[17];
     std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(self.PictureHash()));
     data.writeString((std::string(hex) + " " + std::to_string(self.recordChainSeq())
-                      + (self.settled(sent) ? " 1" : " 0")).c_str());
+                      + (self.settled() ? " 1" : " 0")).c_str());
 }
 
-// Where this document stands in the record -- the `since` of its next read or
-// push. Its own numbering locally; the node's once it is following a session.
+// The notebook's newest sequence, in this page's own numbering.
 DEFINE_WORK_FUNC(PaintDocument, NotebookHead)
 {
     (void)ctx;
@@ -19153,9 +19658,10 @@ DEFINE_WORK_FUNC(PaintNode, Mount)
  *
  * It answers by REFERENCE (RouteRef), which is the other half of the same
  * change: a read of a session's entries is routinely tens of kilobytes and the
- * work-function buffer is 256 bytes. The bytes it points at are this node's own
- * `m_answer`, held until the next request, which is the lifetime contract
- * DispatchRoute states and the same one a mounted file already lives under.
+ * work-function buffer is 256 bytes. The bytes it points at are the REQUEST's
+ * own (RouteRequest::reply), alive until the server has copied them out --
+ * the one lifetime that is per request rather than per node, which matters
+ * the moment two members poll at once.
  */
 DEFINE_WORK_FUNC(PaintNode, Request)
 {
@@ -19171,9 +19677,8 @@ DEFINE_WORK_FUNC(PaintNode, Request)
         data.writeString("FAILED");
         return;
     }
-    self.setAnswer(self.Request(*req));
-    const std::string& body = self.lastAnswer();
-    RouteRef::Emit(data, body.data(), body.size(), "text/plain");
+    req->reply = self.Request(*req);
+    RouteRef::Emit(data, req->reply.data(), req->reply.size(), "text/plain");
 }
 
 DEFINE_WORK_FUNC(PaintNode, Filter)
