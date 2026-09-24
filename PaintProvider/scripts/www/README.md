@@ -742,6 +742,38 @@ headers, `ETCS_NETWORK_MAX_HEADER_SIZE`) and a keyframe is a layer's PNG, so a
 push bigger than one request goes as numbered parts the node joins back
 together before reading a line (`part/<i>/<n>`).
 
+## On a phone
+
+**Bigger under a finger.** On a touch screen the page tells the window a
+framebuffer smaller than its box and lets the canvas stretch back over it
+(`UI_SCALE`, `stageResize` in `index.html`), so every pane, row and button the
+boot script lays out in its own pixels is that much bigger on the glass, with no
+script knowing; GLFW maps a touch through the same ratio, and the picture keeps
+its own pixels through the zoom. The scale is the width's to give -- one at
+512 CSS pixels and under, two at 1024 and over -- because the toolbar is laid
+out 640 wide and scaled down to fit anything narrower: below that width it is
+already as small as the width makes it, and halving the framebuffer would only
+halve the picture. `?ui=<n>` overrides. A phone held upright therefore gets no
+bigger toolbar; that wants the reflow noted under "What is not solved".
+
+**The keyboard comes up when something takes keys.** A phone raises its
+keyboard for a focused field, and the canvas has none. So the page keeps one,
+invisible (`#keys`), and while the runtime says a box or a name field is taking
+keys (`PaintRouter::Editing`, polled, and asked right after every tap) that
+field is focused and the keyboard is up; when the edit ends the field lets go.
+What the keyboard delivers is characters, not keys -- its key events carry no
+code -- so the page hands them to the router as presses (`PaintRouter::Type`,
+through the same US-layout table the key path reads). Enter and backspace do
+arrive as keys, and GLFW's window listener takes those as it always did. A
+focus made from a timer with no tap behind it is refused on iOS, so a keyboard
+button sits in the corner while something is taking keys, for when the tap that
+opened the box was not enough. Desktop pages leave all of this off (`?kbd=1`
+turns it on for a look).
+
+**A short screen is the canvas's.** Under 30rem of height -- a phone on its
+side -- the terminal keeps a 4rem strip and the stage takes the rest, where the
+terminal's 15rem floor used to leave the picture a sliver.
+
 ## Deploying
 
 `ace make loader etcs` and `ace make loaders` both produce the INTERACTIVE

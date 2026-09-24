@@ -146,7 +146,7 @@ ETCS_TAG_BLOCK_BASIC(PaintCanvasMenu,
 // control-thread ends of the window's producers, not one-shot calls.
 ETCS_TAG_BLOCK_HYBRID(PaintRouter,
     (Create, AddPane, RemovePane, SetPassBudget,
-     Pointer, Press, Release, PressButton, ReleaseButton, Key, Report, Delete),
+     Pointer, Press, Release, PressButton, ReleaseButton, Key, Type, Editing, Report, Delete),
     (ConsumePointer, ConsumeInput))
 
 // PaintNode -- a shared session's roster and its entries, and nothing else. It

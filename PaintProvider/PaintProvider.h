@@ -13596,6 +13596,22 @@ public:
     bool wantsCapture() const { return m_visitors && m_visitors->moving(); }
 
     /*
+     * IS THE KEYBOARD WANTED HERE: a text box open, or a name field -- a
+     * layer's, a page's, the sharing window's -- taking keys. What a page on
+     * a phone asks (PaintRouter::Editing) to know when to bring the soft
+     * keyboard up, since nothing on the canvas is a field the browser could
+     * raise it for.
+     */
+    bool editingText() const
+    {
+        if (m_document && m_document->selectedTextBox() != 0) return true;
+        if (m_panel && m_panel->editing()) return true;
+        if (m_page_panel && m_page_panel->editing()) return true;
+        if (m_visitors && m_visitors->editing()) return true;
+        return false;
+    }
+
+    /*
  * A PRESS LANDED ON ANOTHER PANE. Said by the router to every input it did not
  * give the press to, because a name field open here otherwise hears nothing:
  * the press was never this pane's, the field keeps the keyboard, and typing on
@@ -15754,6 +15770,50 @@ public:
             if (!raw) continue;
             auto* in = static_cast<PaintInput*>(raw->getTrueType());
             if (in && in->KeyDown(key)) return;
+        }
+    }
+
+    // Any pane wanting keys (PaintInput::editingText).
+    bool Editing() const
+    {
+        for (const Pane& p : m_panes)
+        {
+            ETCS::Entity* raw = paint_resolve_tag("PaintInput", p.input);
+            if (!raw) continue;
+            auto* in = static_cast<PaintInput*>(raw->getTrueType());
+            if (in && in->editingText()) return true;
+        }
+        return false;
+    }
+
+    /*
+     * TYPE A STRING, as key presses. A soft keyboard hands the page characters,
+     * not keys (its key events carry no code), so the page hands them here and
+     * this turns each one back into the key that would have typed it -- the
+     * US layout's, the same table the key path reads
+     * (paint_key_to_char_shifted) -- with shift held around the ones that
+     * need it. Enter and backspace are keys already (Key 257, Key 259).
+     */
+    void Type(const std::string& text)
+    {
+        static const char* from = "!@#$%^&*()_+{}|:\"<>?~";
+        static const char* to   = "1234567890-=[]\\;',./`";
+        for (char c : text)
+        {
+            uint16_t key = 0;
+            bool shift = false;
+            if (c >= 'a' && c <= 'z')      key = static_cast<uint16_t>(c - 'a' + 'A');
+            else if (c >= 'A' && c <= 'Z') { key = static_cast<uint16_t>(c); shift = true; }
+            else if (c >= 32 && c <= 126)
+            {
+                key = static_cast<uint16_t>(c);
+                for (size_t i = 0; from[i]; ++i)
+                    if (from[i] == c) { key = static_cast<uint16_t>(to[i]); shift = true; break; }
+            }
+            if (!key) continue;
+            if (shift) paint_modifiers().Note(PaintModifierKeys::KEY_LEFT_SHIFT, true);
+            RouteKey(key, true);
+            if (shift) paint_modifiers().Note(PaintModifierKeys::KEY_LEFT_SHIFT, false);
         }
     }
 
@@ -18377,6 +18437,22 @@ DEFINE_WORK_FUNC_TYPED(PaintRouter, Key, (int32_t, key))
 {
     (void)ctx;
     self.RouteKey(static_cast<uint16_t>(key), true);
+}
+
+// Editing -- "1" while any pane wants keys (a box open, a name field), else
+// "0". What a page polls to raise the soft keyboard (PaintInput::editingText).
+DEFINE_WORK_FUNC(PaintRouter, Editing)
+{
+    (void)ctx;
+    data.writeString(self.Editing() ? "1" : "0");
+}
+
+// Type <text> -- the text as key presses, for a keyboard that sends characters
+// (PaintRouter::Type). The payload is the rest of the line, spaces included.
+DEFINE_WORK_FUNC(PaintRouter, Type)
+{
+    (void)ctx;
+    self.Type(data.restAsString());
 }
 
 DEFINE_WORK_FUNC_TYPED(PaintRouter, Pointer, (int32_t, x), (int32_t, y))

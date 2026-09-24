@@ -103,6 +103,20 @@
       display: flex; align-items: center; justify-content: center;
       position: relative;                 /* the boot throbber anchors to this */
     }
+    /* Off the page's picture but on it: 1px, transparent, at the corner, so a
+       focus lands and the keyboard comes up without a caret anybody sees. */
+    #keys {
+      position: absolute; left: 0; bottom: 0; width: 1px; height: 1px;
+      opacity: 0; border: 0; padding: 0; resize: none; overflow: hidden;
+      font-size: 16px;                    /* under 16px iOS zooms the page on focus */
+    }
+    #keysbtn {
+      display: none; position: absolute; right: 12px; bottom: 12px; z-index: 6;
+      width: 56px; height: 56px; border-radius: 28px; font-size: 26px;
+      color: var(--fg); background: var(--panel); border: 1px solid var(--border);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    #keysbtn.visible { display: block; }
     /* THE BOX THE RUNTIME IS TOLD ABOUT. The canvas fills this, and
        stageResize() below reads THIS element rather than the canvas -- reading
        the thing you are about to resize is a feedback loop, and the grid area
@@ -175,6 +189,14 @@
       border: 1px solid var(--border); border-radius: 6px;
       background: var(--panel);
     }
+    /* A SHORT SCREEN IS THE CANVAS'S. A phone on its side is under 30rem tall,
+       and the terminal's 15rem floor left the stage a 19px strip; there the
+       terminal keeps a 4rem strip (its input line and a line of output) and
+       the canvas takes the rest. It scrolls, and it is still there. */
+    @media (max-height: 30rem) {
+      #layout { grid-template-rows: auto minmax(0, 1fr) 4rem; }
+      #shell { min-height: 4rem; }
+    }
 
     /*
      * ── the link ───────────────────────────────────────────────────────────
@@ -235,6 +257,14 @@
            during the window this covers, because the runtime is not
            running yet. -->
       <canvas id="bootthrob" width="96" height="96"></canvas>
+      <!-- THE SOFT KEYBOARD'S FIELD. A phone raises its keyboard for a focused
+           field and nothing else, and nothing on the canvas is a field: so
+           this one, invisible, is focused while the runtime says a box or a
+           name is taking keys (PaintRouter::Editing), and what it receives is
+           handed on as key presses (PaintRouter::Type). See keyboardBridge(). -->
+      <textarea id="keys" autocomplete="off" autocapitalize="off" autocorrect="off"
+                spellcheck="false" aria-label="text entry"></textarea>
+      <button id="keysbtn" type="button" title="keyboard" aria-label="keyboard">&#9000;</button>
     </div>
     <!-- The ShellProvider page, as the terminal VIEW only. It detects being
          framed and boots no runtime of its own; lines cross by postMessage.
@@ -428,6 +458,80 @@
   // plainly live behind it.
   let runtimeIsUp = false;
   function runtimeUp() { return runtimeIsUp && !!(window.Module && window.Module.ccall); }
+
+  /*
+   * ── the soft keyboard ──────────────────────────────────────────────────────
+   *
+   * A phone shows its keyboard for a focused field, and the canvas has none:
+   * a layer being renamed, a page in the list, a text box -- all of them take
+   * keys from the window, which on a phone has no keys. So while the runtime
+   * says something is taking keys (PaintRouter::Editing, polled), the hidden
+   * field is focused and the keyboard is up; when it stops, the field lets
+   * go and the keyboard goes.
+   *
+   * CHARACTERS, NOT KEYS. A soft keyboard's key events carry no code (229,
+   * "Unidentified"), so GLFW's window listener -- the path every desktop key
+   * takes -- sees nothing to type. What it does deliver is `beforeinput` with
+   * the text, and that is handed to the router as presses (PaintRouter::Type).
+   * Enter and backspace DO arrive as keys from a soft keyboard, and GLFW takes
+   * those, so they are not forwarded here; nor is a character whose keydown
+   * carried a real code (a phone with a keyboard attached), or it would type
+   * twice. Only on a touch screen (or `?kbd=1`): on a desktop the window's
+   * keys are enough and a focused field would be a second listener.
+   *
+   * FOCUS NEEDS A TOUCH BEHIND IT. A browser raises the keyboard for a focus
+   * made during, or shortly after, a tap; a focus made from a timer with no
+   * tap behind it is refused on iOS and honoured on Android. The poll runs
+   * right after every tap, which covers the tap that opened the box; the
+   * button in the corner is for when it did not, and is only shown while
+   * something is taking keys.
+   */
+  const keysEl = document.getElementById('keys');
+  const keysBtn = document.getElementById('keysbtn');
+  const KEYBOARD_BRIDGE = (function () {
+    try { return window.matchMedia('(pointer: coarse)').matches
+              || new URLSearchParams(window.location.search).get('kbd') === '1'; }
+    catch (e) { return false; }
+  })();
+  let keysWanted = false, keysPollTimer = 0, glfwTyped = false;
+  function focusKeys() {
+    try { keysEl.focus({ preventScroll: true }); } catch (e) { try { keysEl.focus(); } catch (_) {} }
+  }
+  async function pollKeys() {
+    if (!runtimeUp() || !nameLive('router')) return;
+    const a = await callResult('router', 'Editing', '');
+    const wanted = !!a && a.trim() === '1';
+    if (wanted === keysWanted) return;
+    keysWanted = wanted;
+    keysBtn.classList.toggle('visible', wanted);
+    if (wanted) focusKeys();
+    else if (document.activeElement === keysEl) keysEl.blur();
+  }
+  function keyboardBridge() {
+    if (!KEYBOARD_BRIDGE) return;
+    keysPollTimer = setInterval(pollKeys, 250);
+    // Right after a tap, too: the tap that opened a box is the gesture the
+    // focus needs behind it, and 250ms is too long to wait for it.
+    stageEl.addEventListener('pointerup', function () { setTimeout(pollKeys, 60); });
+    keysBtn.addEventListener('click', function () { focusKeys(); });
+    keysEl.addEventListener('keydown', function (ev) {
+      // GLFW has seen this already (window, capture). A real code for a
+      // printable is a key it typed; remember, so beforeinput does not too.
+      glfwTyped = !!(ev.key && ev.key.length === 1 && ev.keyCode && ev.keyCode !== 229);
+    });
+    keysEl.addEventListener('beforeinput', function (ev) {
+      const type = ev.inputType || '';
+      if (type === 'insertText' || type === 'insertCompositionText' || type === 'insertFromPaste') {
+        const text = ev.data || '';
+        if (text && !glfwTyped && runtimeUp()) callVerb('router', 'Type', text);
+      }
+      glfwTyped = false;
+      // The field never keeps anything: each event is a delta, and a caret
+      // nobody sees has nothing to keep.
+      ev.preventDefault();
+    });
+    keysEl.addEventListener('input', function () { keysEl.value = ''; });
+  }
   function callVerb(name, work, args) {
     return window.Module.ccall('etcs_web_call', 'number',
                                ['string', 'string', 'string'], [name, work, args]);
@@ -505,6 +609,27 @@
    */
   const STAGE_RESIZE_MS = 120;
   let stageObserver = null, stageTimer = 0, stageW = 0, stageH = 0;
+  const COARSE = (function () {
+    try { return window.matchMedia('(pointer: coarse)').matches; } catch (e) { return false; }
+  })();
+  /*
+   * HOW MUCH BIGGER, and why not simply twice. The toolbar is laid out 640
+   * wide and scaled down to fit a narrower framebuffer (README, "What is not
+   * solved"), so under 640 it is already as small as the width makes it, and
+   * halving the framebuffer would halve it again inside a canvas twice the
+   * size -- the same on the screen, with the picture at a quarter of its
+   * pixels. So the scale is the width's to give: one at 512 CSS pixels and
+   * under (a phone held upright, where only a reflow would help), two at
+   * 1024 and over (a tablet), in between in between. A phone on its side
+   * lands near 1.7.
+   */
+  const UI_SCALE = (function () {
+    const asked = parseFloat(new URLSearchParams(window.location.search).get('ui'));
+    if (asked >= 1 && asked <= 4) return asked;
+    if (!COARSE) return 1;
+    const w = Math.max(1, window.innerWidth || 1);
+    return Math.max(1, Math.min(2, w / 512));
+  })();
 
   /*
    * ONE SIZE STATED, AND WHETHER IT LANDED IS THE RETURN VALUE. etcs_web_call
@@ -521,8 +646,17 @@
     // reached its first line. Asking first is what keeps the wait quiet.
     if (!nameLive('main')) return false;
     const box = stageEl.getBoundingClientRect();
-    const w = Math.max(64, Math.round(box.width));
-    const h = Math.max(64, Math.round(box.height));
+    /*
+     * THE UI SCALE: on a touch screen the framebuffer is the box at HALF size
+     * and the canvas is stretched back over it, so every pane, row and button
+     * the boot script lays out in its own pixels is twice as big under a
+     * finger, with no script knowing. The pointer path scales with it (GLFW
+     * maps a page point through canvas.width / clientWidth), and the picture
+     * keeps its own pixels through the zoom. `?ui=<n>` overrides; 1 is the
+     * desktop's.
+     */
+    const w = Math.max(64, Math.round(box.width / UI_SCALE));
+    const h = Math.max(64, Math.round(box.height / UI_SCALE));
     if (w === stageW && h === stageH) return true;
     try {
       if (!callVerb('main', 'ResizeTo', w + ', ' + h)) return false;
@@ -1805,6 +1939,7 @@
         runtimeIsUp = true;
         startShellDrain();
         startStageResize();
+        keyboardBridge();
         log('[etcs] runtime initialized; boot script: '
             + (man.boot || '(none)') + '\n', 'ok');
         if (shellReady) toShell({ etcs: 'enable', enabled: true });
