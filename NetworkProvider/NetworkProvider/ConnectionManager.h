@@ -15,6 +15,7 @@
 #include <mutex>
 #include <memory>
 #include <thread>
+#include <algorithm>
 #include <cstring>
 
 // ConnectionManager — the Gate_ for an inbound TCP listener. Owns the
@@ -153,6 +154,18 @@ public:
         if (maintain_running_.exchange(false, std::memory_order_acq_rel)
             && maintain_thread_.joinable())
             maintain_thread_.join();
+
+        // Held connections (upgraded WebSockets) end with the gate: Reset
+        // makes IsConnectionOpen false, each holder's pump sees that within a
+        // poll slice and lets go, and nothing below starts until the last one
+        // has -- a holder touches this manager as its final act (Unhold).
+        {
+            std::vector<SocketConnectionState*> held;
+            { std::lock_guard<std::mutex> lock(held_mutex_); held = held_; }
+            for (SocketConnectionState* c : held) c->Reset();
+            while (held_count_.load(std::memory_order_acquire) > 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
 
         // THE FD NUMBER IS RETIRED HERE, BUT THE DESCRIPTOR IS CLOSED AFTER
         // THE DRAIN -- see the close below. Taking it out of listen_fd_ now
@@ -406,6 +419,31 @@ public:
     // subscriber's own source tag at dispatch time -- the subscriber knows its
     // own tag, and requiring a caller to spell "HttpServer.Serve" would mean
     // two places to keep in agreement.
+    /*
+     * A connection leaving the request/response cycle for good -- an
+     * upgraded WebSocket (LinkHub.h) -- is HELD: the reaper leaves it alone
+     * and Close waits for its holder instead of for a request. Refused once
+     * the gate is closing. Unhold is the holder's LAST touch of this manager,
+     * after it has reset and released the connection.
+     */
+    bool Hold(SocketConnectionState* c)
+    {
+        if (!c || stopping_.load(std::memory_order_acquire)) return false;
+        held_count_.fetch_add(1, std::memory_order_acq_rel);
+        c->SetHeld(true);
+        std::lock_guard<std::mutex> lock(held_mutex_);
+        held_.push_back(c);
+        return true;
+    }
+    void Unhold(SocketConnectionState* c)
+    {
+        {
+            std::lock_guard<std::mutex> lock(held_mutex_);
+            held_.erase(std::remove(held_.begin(), held_.end(), c), held_.end());
+        }
+        held_count_.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
     void RegisterConsumer(ETCS::RID rid, const std::string& action,
                           ETCS::RID filter_rid = 0, const std::string& filter_action = "")
     {
@@ -664,6 +702,12 @@ private:
     int                 port_      = 0;
     std::atomic<int>    inflight_{0};
     std::atomic<bool>   stopping_{false};
+
+    // Connections a holder took over (SocketConnectionState::SetHeld). See
+    // Hold/Unhold and CloseConcrete.
+    std::mutex                          held_mutex_;
+    std::vector<SocketConnectionState*> held_;
+    std::atomic<int>                    held_count_{0};
 
     // TLS termination. Non-null means this gate terminates TLS: onConnection
     // below takes a copy per accepted connection and, if there is one, runs

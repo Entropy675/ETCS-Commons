@@ -1,0 +1,51 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── A ROOM ON THIS SERVER: what other runtimes can reach ─────────────────────
+#
+# A LinkHub under the server takes WebSocket links at /link/<room>; a Room is
+# the host end, and the only way in is what it publishes. Each guest runtime
+# gets ONE link, and everything it does here -- binds, verbs, streams -- is
+# multiplexed on it.
+#
+#   db         open to any guest whose surface is the same build of the type
+#   vault      guarded: a guest's surface must carry a Seal keyed the same, or
+#              it cannot be bound, or nothing it sends passes
+#   book       a Ledger -- lines appended by guests, in this runtime's order,
+#              authored by the link they came over
+#   directory  a Lobby -- hosts elsewhere advertise here, and their entries
+#              last as long as their links do
+#
+# A host that cannot listen (a browser tab, a machine behind NAT) hosts the
+# same way through a server instead, and its guests dial the same address:
+#
+#     room.HostVia(wss://example.org/link/studio)
+
+ensure NetworkProvider::HttpServer web
+web.SetPort(8443)
+web.EnableTLS(/tmp/etcs-cert.pem /tmp/etcs-key.pem)
+web.spawn(NetworkProvider::LinkHub links)
+web.Start()
+
+spawn DatabaseProvider::LocalDatabase db
+db.Connect(:memory:)
+db.ExecuteRaw(CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT);)
+db.ExecuteRaw(INSERT INTO users (name) VALUES ('host');)
+
+spawn DatabaseProvider::LocalDatabase vault
+vault.Connect(:memory:)
+vault.ExecuteRaw(CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT);)
+vault.spawn(NetworkProvider::Seal seal)
+seal.Key(s3cret)
+
+spawn NetworkProvider::Ledger book
+spawn NetworkProvider::Lobby directory
+
+spawn NetworkProvider::Room room
+room.SetName(studio)
+room.Publish(db @db)
+room.Publish(vault @vault)
+room.Publish(book @book)
+room.Publish(directory @directory)
+room.Host(@links studio)
+room.Info()

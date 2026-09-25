@@ -5,6 +5,7 @@
 #include "StaticHtmlPage.h"
 #include "FileHtmlPage.h"
 #include "RouteRequest.h"
+#include "LinkHub.h"
 #include <string>
 #include <vector>
 
@@ -486,6 +487,22 @@ public:
             }
         }
         return false;
+    }
+
+    // The LinkHub child whose prefix this request is under, if any -- found
+    // the way pages are, among this server's typed children (LinkHub.h).
+    LinkHub* FindLinkHub(const RouteRequest& req) const
+    {
+        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> children;
+        getTypedChildren(children);
+        for (auto& [tag, rid] : children)
+        {
+            if (tag.toString() != "LinkHub") continue;
+            ETCS::Entity* child = getTypedChild(tag, rid);
+            LinkHub* hub = child ? static_cast<LinkHub*>(child->getTrueType()) : nullptr;
+            if (hub && hub->Claims(req)) return hub;
+        }
+        return nullptr;
     }
 
     // Resolve a request path against this server's own pages, attach order, first match wins.

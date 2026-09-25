@@ -1,0 +1,47 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── A GUEST OF link_host.etcs ────────────────────────────────────────────────
+#
+# Each surface here is a local instance of the host node's type -- same
+# families, same verbs -- and its Remote child makes it the host's node as
+# far as this runtime is concerned: verbs run there, and a stream naming it
+# runs its half there while this runtime runs the other. All of it on the
+# Peer's one link.
+#
+# `insecure` accepts the self-signed development certificate. A browser build
+# ignores it: there, the certificate is the browser's business.
+
+spawn NetworkProvider::Peer peer
+peer.SetName(guest)
+peer.Connect(wss://127.0.0.1:8443/link/studio insecure)
+
+spawn DatabaseProvider::LocalDatabase db
+db.spawn(NetworkProvider::Remote remote)
+remote.Bind(db @peer)
+db.ExecuteRaw(INSERT INTO users (name) VALUES ('guest');)
+db.Query(SELECT count(*) FROM users;)
+
+# Host produces, this side consumes -- and the other way round.
+spawn DatabaseProvider::LocalDatabase copy
+copy.Connect(:memory:)
+db.QueryProduce(SELECT * FROM users) -> copy.RowConsume()
+copy.ExecuteRaw(INSERT INTO users (name) VALUES ('from-the-copy');)
+copy.QueryProduce(SELECT * FROM users WHERE name='from-the-copy') -> db.RowConsume()
+
+# The vault is behind a Seal: this surface carries one keyed the same, or the
+# host would not bind it -- and with the wrong key, nothing would pass.
+spawn DatabaseProvider::LocalDatabase vault
+vault.spawn(NetworkProvider::Seal seal)
+seal.Key(s3cret)
+vault.spawn(NetworkProvider::Remote vremote)
+vremote.Bind(vault @peer)
+vault.ExecuteRaw(INSERT INTO notes (body) VALUES ('sealed');)
+
+# The host's record: appended here, ordered there, authored as this link.
+spawn NetworkProvider::Ledger book
+book.spawn(NetworkProvider::Remote bremote)
+bremote.Bind(book @peer)
+book.Append(the guest was here)
+book.Head()
+peer.Info()

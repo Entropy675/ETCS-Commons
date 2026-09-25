@@ -106,6 +106,7 @@ private:
     // ConnectionManager is.
     std::atomic<int>*  pool_counter_ = nullptr;
     std::chrono::steady_clock::time_point last_activity_ = std::chrono::steady_clock::now();
+    std::atomic<bool> held_{false};
 public:
     // Public so Serve can advertise it in the Keep-Alive header -- a client
     // told the idle window can close on its own schedule instead of being
@@ -210,6 +211,17 @@ public:
     }
     void markActive() { last_activity_ = std::chrono::steady_clock::now(); }
 
+    /*
+     * HELD: taken over after its request by something that keeps it open --
+     * an upgraded WebSocket (LinkHub.h). The holder owns one io reference for
+     * as long as it runs, so the fd and the TLS session stay this
+     * connection's until it lets go; ConnectionManager::Hold counts it so
+     * Close can wait for every holder to finish. Cleared when the slot is
+     * freed.
+     */
+    void SetHeld(bool h) { held_.store(h, std::memory_order_release); }
+    bool IsHeld() const  { return held_.load(std::memory_order_acquire); }
+
     // How many io references are still outstanding. Diagnostic only -- the
     // ONE number that distinguishes "this connection is taking a while to
     // drain" from "this connection can never drain because a reference was
@@ -234,6 +246,10 @@ public:
         // recycled. That turns the one signal that would name a stuck
         // connection into the noise that hides it.
         if (phase_.load(std::memory_order_acquire) != Phase::Serving) return false;
+        // A held connection's idleness is its holder's to judge -- a WebSocket
+        // pings and gives up on its own clock (WebSocket.h), and an idle link
+        // is not a stalled request.
+        if (held_.load(std::memory_order_acquire)) return false;
 
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - last_activity_).count() > TIMEOUT_SECONDS)
@@ -461,6 +477,7 @@ private:
         io_inflight_.store(1, std::memory_order_release);
 
         // LAST. Nothing may touch this object after this store.
+        held_.store(false, std::memory_order_release);
         phase_.store(Phase::Free, std::memory_order_release);
     }
 

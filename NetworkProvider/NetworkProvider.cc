@@ -1,6 +1,7 @@
 #include "NetworkProvider.h"
 ETCS_MODULE_EXPORT_MAIN(NetworkProvider,
-    "HttpServer ConnectionManager HTTPParser TLSContext SocketConnectionState StaticHtmlPage FileHtmlPage TarpitNode")
+    "HttpServer ConnectionManager HTTPParser TLSContext SocketConnectionState StaticHtmlPage FileHtmlPage TarpitNode "
+    "LinkHub Room Peer Remote Seal Lobby Ledger")
 
 // HttpServer — root-level. A bag of config with Start/Stop; owns its gate and
 // its pages as typed children.
@@ -56,3 +57,14 @@ ETCS_TAG_BLOCK_BASIC(TarpitNode,
     Filter, Request, AddTarpitPattern, ClearTarpitPatterns,
     LoadDefaultTarpitPatterns, SetTarpitDelayMs, Delete
 )
+
+// Links between runtimes (NetworkProvider.h, and each type's own header).
+// LinkHub is spawned under an HttpServer; Remote and Seal under the entity
+// they belong to -- the surface, the node they guard.
+ETCS_TAG_BLOCK_BASIC(LinkHub, SetPrefix, Info, Delete)
+ETCS_TAG_BLOCK_BASIC(Room,    Publish, Unpublish, SetName, Host, HostVia, Info, Delete)
+ETCS_TAG_BLOCK_BASIC(Peer,    Connect, SetName, Publish, Unpublish, Close, Info, Delete)
+ETCS_TAG_BLOCK_BASIC(Remote,  Bind, Unbind, Info, Delete)
+ETCS_TAG_BLOCK_BASIC(Seal,    Key, Delete)
+ETCS_TAG_BLOCK_HYBRID(Lobby,  (Advertise, Withdraw, List, Delete), (Entries))
+ETCS_TAG_BLOCK_HYBRID(Ledger, (Append, Head, Since, Delete), (Follow, Mirror))

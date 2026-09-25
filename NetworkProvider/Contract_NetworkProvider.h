@@ -18,11 +18,23 @@
     #include "NetworkProvider/ConnectionManager.h"
     #include "NetworkProvider/HttpServer.h"
     #include "NetworkProvider/TarpitNode.h"
+    // Links between runtimes: WebSocket.h is the wire, Edge.h the one
+    // multiplexed MirrorBuffer on it, Room the host end, Peer the dialling
+    // end, Remote the child that makes a local entity the surface of a far
+    // one, LinkHub where they meet on a server. Seal is a Wrapper -- the
+    // authority layer a published node can demand -- and Lobby and Ledger
+    // are the Directory and Record the lobbies are made of.
+    #include "NetworkProvider/Room.h"
+    #include "NetworkProvider/Peer.h"
+    #include "NetworkProvider/Remote.h"
+    #include "NetworkProvider/Seal.h"
+    #include "NetworkProvider/Lobby.h"
+    #include "NetworkProvider/Ledger.h"
 
     typedef MbedTLSContext TLSContext;
     typedef PicoHTTPParser HTTPParser;
     // StaticHtmlPage, FileHtmlPage, SocketConnectionState, ConnectionManager,
-    // HttpServer and TarpitNode are too simple to be typedef'd -- no
+    // HttpServer, TarpitNode and the link types are too simple to be typedef'd -- no
     // cross-platform alias indirection applies, so the concrete type name IS
     // the contract tag.
     //
