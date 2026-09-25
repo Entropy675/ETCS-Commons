@@ -337,8 +337,40 @@ static inline bool paint_node_verb(ETCS::RID node, const char* verb,
 // not as the mechanism. Hidden is neither drawn nor picked (Drawable2D_::
 // PickAt), which is what "this row has no delete" has to mean -- a transparent
 // button still takes the press.
+//
+// ORDER IS PARKED WHILE HIDDEN. SetHidden alone is enough for PickAt and for
+// paint_pane_contains, but the router still RANKS every pane by Order() before
+// containment -- and a scroll uses the last cursor point against that ranking.
+// An animation / menu pane left at its live order (e.g. 14) after SetHidden(1)
+// remains a high-rank ghost over the sheet: the dead zone under the invisible
+// window. Lower order while hidden; restore the stashed value on show (the
+// same raise path that already runs when the window opens).
+static inline int32_t paint_node_order_get(ETCS::RID node)
+{
+    ETCS::Held<Drawable_> h = ETCS::resolve_held<Drawable_>("Drawable", node);
+    return h ? h->Order() : 0;
+}
+
 static inline bool paint_node_hidden(ETCS::RID node, bool hidden)
 {
+    if (node == 0) return false;
+    static std::unordered_map<ETCS::RID, int32_t> parked;
+    constexpr int32_t kHiddenOrder = -1000000;
+    if (hidden)
+    {
+        if (parked.find(node) == parked.end())
+            parked[node] = paint_node_order_get(node);
+        (void)paint_node_verb(node, "SetOrder", std::to_string(kHiddenOrder).c_str());
+    }
+    else
+    {
+        auto it = parked.find(node);
+        if (it != parked.end())
+        {
+            (void)paint_node_verb(node, "SetOrder", std::to_string(it->second).c_str());
+            parked.erase(it);
+        }
+    }
     return paint_node_verb(node, "SetHidden", hidden ? "1" : "0");
 }
 
