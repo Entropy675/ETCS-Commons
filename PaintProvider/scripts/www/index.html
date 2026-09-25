@@ -551,6 +551,66 @@
   canvas.addEventListener('pointerup', blockMiddleDefault, { capture: true });
 
   /*
+   * PINCH ZOOM -- same verb the wheel uses (PaintSurface::ZoomBy), about the
+   * midpoint of the two touches in framebuffer space. GLFW already turns a
+   * mouse wheel into INPUT_SCROLL -> ZoomBy; mobile browsers do not synthesise
+   * that for a pinch, so the page maps the gesture onto the work function and
+   * leaves the surface to solve pan/zoom. preventDefault keeps the browser
+   * from page-zooming over the sheet.
+   */
+  (function () {
+    let pinch = null; // { dist, vx, vy }
+    function fbPoint(clientX, clientY) {
+      const r = canvas.getBoundingClientRect();
+      const w = Math.max(1, r.width), h = Math.max(1, r.height);
+      return {
+        x: Math.round((clientX - r.left) * (canvas.width / w)),
+        y: Math.round((clientY - r.top) * (canvas.height / h))
+      };
+    }
+    function touchDist(a, b) {
+      const dx = a.clientX - b.clientX, dy = a.clientY - b.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+    function onTouchStart(ev) {
+      if (ev.touches.length !== 2) { pinch = null; return; }
+      const d = touchDist(ev.touches[0], ev.touches[1]);
+      if (!(d > 0)) { pinch = null; return; }
+      const mx = (ev.touches[0].clientX + ev.touches[1].clientX) * 0.5;
+      const my = (ev.touches[0].clientY + ev.touches[1].clientY) * 0.5;
+      const p = fbPoint(mx, my);
+      pinch = { dist: d, vx: p.x, vy: p.y };
+    }
+    function onTouchMove(ev) {
+      if (!pinch || ev.touches.length !== 2) return;
+      if (!runtimeUp()) return;
+      const d = touchDist(ev.touches[0], ev.touches[1]);
+      if (!(d > 0) || !(pinch.dist > 0)) return;
+      const factor = d / pinch.dist;
+      // Ignore micro jitter; still preventDefault so the page does not zoom.
+      if (factor > 0.98 && factor < 1.02) {
+        try { ev.preventDefault(); } catch (e) {}
+        return;
+      }
+      pinch.dist = d;
+      const mx = (ev.touches[0].clientX + ev.touches[1].clientX) * 0.5;
+      const my = (ev.touches[0].clientY + ev.touches[1].clientY) * 0.5;
+      const p = fbPoint(mx, my);
+      pinch.vx = p.x; pinch.vy = p.y;
+      try { ev.preventDefault(); } catch (e) {}
+      // Same signature as the scroll path / toolbar: ZoomBy <factor> <vx> <vy>
+      callVerb('canvas', 'ZoomBy', factor + ', ' + p.x + ', ' + p.y);
+    }
+    function onTouchEnd(ev) {
+      if (ev.touches.length < 2) pinch = null;
+    }
+    canvas.addEventListener('touchstart', onTouchStart, { passive: true });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+    canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+    canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+  })();
+
+  /*
    * ── raw images in and out ──────────────────────────────────────────────
    *
    * THE PAGE IS A FILE PROXY HERE, and nothing more. The verbs take a PATH
