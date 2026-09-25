@@ -211,6 +211,21 @@
       #layout { grid-template-rows: auto minmax(0, 1fr) 4rem; }
       #shell { min-height: 4rem; }
     }
+    /* Host-side of ShellProvider's output collapse: one transcript line + input. */
+    #layout.shell-collapsed {
+      grid-template-rows: auto minmax(0, 1fr) 4.5rem;
+    }
+    #layout.shell-collapsed #shell {
+      min-height: 4.5rem; height: 4.5rem; max-height: 4.5rem;
+    }
+    @media (min-width: 62rem) {
+      #layout.shell-collapsed {
+        grid-template-rows: auto auto minmax(0, 1fr);
+      }
+      #layout.shell-collapsed #shell {
+        min-height: 0; height: auto; max-height: none;
+      }
+    }
 
     /*
      * ── the link ───────────────────────────────────────────────────────────
@@ -1731,6 +1746,10 @@
     if (ev.source !== shellFrame.contentWindow) return;
     const m = ev.data;
     if (!m || typeof m !== 'object') return;
+    if (m.etcs === 'term-collapse') {
+      document.getElementById('layout').classList.toggle('shell-collapsed', !!m.collapsed);
+      return;
+    }
     if (m.etcs === 'view-ready') {
       shellReady = true;
       // Replay what the runtime said while the view was still loading, so a
