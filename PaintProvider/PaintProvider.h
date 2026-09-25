@@ -361,6 +361,87 @@ static inline bool paint_node_fill(ETCS::RID node, float r, float g, float b, fl
                            "SetBackground");
 }
 
+static inline bool paint_node_ordered(ETCS::RID node, int32_t order)
+{
+    return paint_node_verb(node, "SetOrder", std::to_string(order));
+}
+
+// What a node says it is stacked at. Asked rather than remembered, for the
+// reason PaintRouter reads Order() fresh per event: a script may restack a pane
+// mid-session, and a cached copy would be a second authority on the same fact.
+static inline int32_t paint_node_order(ETCS::RID node)
+{
+    ETCS::Held<Drawable_> h = ETCS::resolve_held<Drawable_>("Drawable", node);
+    return h ? h->Order() : 0;
+}
+
+// Where a node is and how big, in its parent's space. False when it cannot be
+// resolved, so a caller never reads a zeroed rect as a real one.
+static inline bool paint_node_bounds(ETCS::RID node, Rect2D& out)
+{
+    ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+    if (!h) return false;
+    out = h->Bounds();
+    return true;
+}
+
+/*
+ * A FLOATING WINDOW STAYS WHERE IT CAN BE REACHED.
+ *
+ * The windows over the canvas are placed absolutely (SetPosition in the boot
+ * script) rather than being layout boxes -- which is what lets them be dragged,
+ * and what means nothing puts them back when the pane they float in gets
+ * SMALLER. Shrink the window and a panel at x=740 is no longer on the canvas at
+ * all: alive, ordered, still consuming the events nobody can aim at it, and
+ * unreachable short of a reload.
+ *
+ * CLAMPED AGAINST ITS OWN PARENT rather than against a stage this has to be
+ * told about. The parent IS the pane it floats in, by construction, so there is
+ * no second binding to keep in step and no way for the two to disagree.
+ *
+ * KEEP is how much must stay REACHABLE, not how much must be visible. A window
+ * pushed flush to an edge keeps its whole title bar -- the part you drag it
+ * back out by. Clamping to zero would leave a window you can see and cannot
+ * move, which is the same bug one pixel further on.
+ *
+ * Moves only when it must, so a window the user put somewhere legal is never
+ * quietly tidied.
+ */
+static inline bool paint_clamp_into_parent(ETCS::RID node, int32_t keep)
+{
+    ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+    if (!h) return false;
+    ETCS::Entity* e = static_cast<ETCS::Entity*>(h.get());
+    ETCS::Entity* parent = e ? e->getParent() : nullptr;
+    if (!parent) return false;
+    void* pd = parent->getInterfacePointer(ETCS::Buffer("Drawable2D"));
+    if (!pd) return false;
+
+    const Rect2D in  = static_cast<Drawable2D_*>(pd)->Bounds();
+    const Rect2D own = h->Bounds();
+    if (in.w == 0 || in.h == 0) return false;   // not laid out yet; nothing to clamp into
+
+    /*
+     * WHOLLY INSIDE WHERE IT FITS, and a grabbable strip where it does not.
+     * Clamping only to `keep` would leave a window hanging off the edge with
+     * most of itself unreachable and look like the bug rather than the fix;
+     * clamping only to "fits" has nowhere to put a window bigger than the pane,
+     * which a narrow phone viewport makes ordinary rather than exotic.
+     */
+    int32_t x = own.x, y = own.y;
+    const int32_t max_x = (own.w <= in.w) ? static_cast<int32_t>(in.w - own.w)
+                                          : static_cast<int32_t>(in.w) - keep;
+    const int32_t max_y = (own.h <= in.h) ? static_cast<int32_t>(in.h - own.h)
+                                          : static_cast<int32_t>(in.h) - keep;
+    if (x > max_x) x = max_x;
+    if (y > max_y) y = max_y;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x == own.x && y == own.y) return false;
+    paint_node_moved(node, x, y);
+    return true;
+}
+
 /*
  * A WINDOW FOLDED TO ITS BAR IS ONLY ITS BAR. A compositor is its whole
  * rectangle to a pick (Drawable2D_::PickAt answers the pane itself where no
@@ -10080,6 +10161,10 @@ public:
     // The window (shown when a region exists), the preview raster, and the
     // readout label ("12 fps  3/8").
     void BindWindow(ETCS::RID pane)   { m_window = pane; paint_node_hidden(pane, !m_has_region); }
+    // The pane this window IS -- what PaintInput raises on a press and keeps
+    // on the canvas across a resize. Asked rather than re-bound, so the one
+    // BindWindow above stays the only place that says which pane this is.
+    ETCS::RID window() const { return m_window; }
     void BindPreview(ETCS::RID node)  { m_preview = node; }
     void BindReadout(ETCS::RID node)  { m_readout = node; }
 
@@ -12144,6 +12229,7 @@ public:
         if (handle) m_regions[handle] = Hit{ SIZE_MAX, Region::Title };
     }
     void BindWindow(ETCS::RID pane) { m_window = pane; }
+    ETCS::RID window() const { return m_window; }   // see PaintAnimation::window
 
     /*
  * THE VIEW TO PUT BACK, because half of what this window does changes the
@@ -12633,6 +12719,7 @@ public:
  * is what the colour wheel's pane moves by (PaintColorWheel::move_pane) and
  * takes effect on the next compose of the parent.
  */
+    bool moving() const { return m_moving; }
     bool DragWindow(Point2D at)
     {
         if (!m_moving) return false;
@@ -14350,6 +14437,7 @@ public:
     }
 
     void BindWindow(ETCS::RID pane) { m_window = pane; }
+    ETCS::RID window() const { return m_window; }   // see PaintAnimation::window
 
     /*
  * ── THE WINDOW'S OWN PARTS ───────────────────────────────────────────────
@@ -14897,6 +14985,16 @@ public:
         m_text_bar = static_cast<PaintTextBar*>(raw->getTrueType());
     }
 
+    // The pane is not the size it was when the windows were last placed in it.
+    // Zero on either side is "not laid out yet", which is not a resize.
+    bool paneResized() const
+    {
+        if (m_root == 0) return false;
+        Rect2D b{ 0, 0, 0, 0 };
+        if (!paint_node_bounds(m_root, b) || b.w == 0 || b.h == 0) return false;
+        return b.w != m_pane_w || b.h != m_pane_h;
+    }
+
     // The sharing window, for the pane it is: its title drags it and the keys
     // go to it while a name is open (PaintVisitors).
     void BindVisitors(ETCS::RID visitors)
@@ -14906,9 +15004,89 @@ public:
         m_visitors = static_cast<PaintVisitors*>(raw->getTrueType());
     }
 
-    // True while this input is carrying a window by its title, which is what
-    // the router holds the pointer on this pane for (PaintRouter::Route).
-    bool wantsCapture() const { return m_visitors && m_visitors->moving(); }
+    /*
+ * ── THE WINDOW YOU TOUCHED LAST IS THE ONE ON TOP ───────────────────────────
+ *
+ * These windows are siblings in one pane, stacked by Order(), and that order
+ * was whatever the boot script typed: layers 15, animation 14, the sharing
+ * window 30. So a window could be permanently behind another with no way to
+ * bring it forward, and dragging a low one under a high one handed the pointer
+ * to the high one mid-drag -- the window was dropped wherever it had got to.
+ *
+ * A BUMP, NOT A RENUMBER. The focused window is its own authored order plus a
+ * constant that clears every order in the pane; everything else keeps exactly
+ * the number the script gave it. The relative stacking the page was designed
+ * with survives, only one node is ever written, and taking focus away is a
+ * subtraction rather than a second pass over a list. Renumbering the set would
+ * have made the script's numbers advisory after the first press.
+ *
+ * The base is read back off the node rather than remembered at bind time, for
+ * the reason paint_node_order exists: a script may restack a pane whenever it
+ * likes, and a cached base would be a second authority on the same fact.
+ */
+    static constexpr int32_t FOCUS_BUMP  = 64;  // clears every authored order in the pane
+    static constexpr int32_t WINDOW_KEEP = 28;  // title bar left reachable at an edge
+
+    void FocusWindow(ETCS::RID hit)
+    {
+        if (hit == 0) return;
+        ETCS::RID want = 0;
+        for (ETCS::RID pane : windows())
+            if (pane != 0 && PaintPalette::node_within(hit, pane)) { want = pane; break; }
+        if (want == 0 || want == m_focus_pane) return;      // the canvas, or already top
+
+        // The last one goes down FIRST: two windows bumped at once is two
+        // windows claiming the top, which is the state this exists to prevent.
+        if (m_focus_pane != 0) paint_node_ordered(m_focus_pane, m_focus_base);
+        m_focus_pane = want;
+        m_focus_base = paint_node_order(want);
+        paint_node_ordered(want, m_focus_base + FOCUS_BUMP);
+    }
+
+    // Every floating window this input arbitrates. One list, because this is
+    // the only object holding all of them -- FocusWindow and ClampWindows are
+    // the same question asked about order and about position.
+    std::vector<ETCS::RID> windows() const
+    {
+        std::vector<ETCS::RID> out;
+        if (m_panel    && m_panel->window())    out.push_back(m_panel->window());
+        if (m_anim     && m_anim->window())     out.push_back(m_anim->window());
+        if (m_visitors && m_visitors->window()) out.push_back(m_visitors->window());
+        return out;
+    }
+
+    /*
+ * THE PANE GOT SMALLER AND THE WINDOWS DID NOT MOVE.
+ *
+ * Read from the pane and compared to the last size seen, which is PaintSurface's
+ * own "the pane is not the size I last drew for" shape. Being TOLD by whoever
+ * resized would be a rule with an exception in it: the page is not the only
+ * thing that can resize this pane.
+ */
+    void ClampWindows()
+    {
+        for (ETCS::RID pane : windows()) paint_clamp_into_parent(pane, WINDOW_KEEP);
+    }
+
+    /*
+ * True while this input is carrying a window by its title, which is what the
+ * router holds the pointer on this pane for (PaintRouter::Route).
+ *
+ * EVERY WINDOW, not just the sharing one. This asked only about the visitors
+ * window, so a layer or animation window dragged UNDER another router pane --
+ * the sharing window sits at order 30, the sheet at 0 -- lost the pointer the
+ * moment it crossed: the router ranked the panes, handed the motion to the one
+ * on top, and the drag ended wherever the window happened to be. Raising the
+ * focused window (FocusWindow) fixes the case where both windows are children
+ * of the same pane; this one fixes the case where they are not, and neither
+ * covers the other's.
+ */
+    bool wantsCapture() const
+    {
+        return (m_visitors && m_visitors->moving())
+            || (m_panel    && m_panel->moving())
+            || (m_anim     && m_anim->moving());
+    }
 
     /*
      * IS THE KEYBOARD WANTED HERE: a text box open, or a name field -- a
@@ -14986,6 +15164,29 @@ public:
 
     void RouteEvent(const InputEvent& ev)
     {
+        /*
+     * THE PANE MAY HAVE CHANGED SIZE SINCE THE LAST EVENT, and if it shrank,
+     * a window is now off the end of it (paint_clamp_into_parent).
+     *
+     * ASKED HERE RATHER THAN ON A TICK. This type claims Animated and its
+     * AdvanceConcrete is never called -- verified in the browser: a probe in
+     * AnimatingConcrete printed nothing across a boot and two resizes, while
+     * the surface's own tick logged both. So a tick is not a mechanism this
+     * type has, whatever its bases say, and hanging the windows' reachability
+     * on one would have been a fix that never ran. An event is what this type
+     * is certain to get.
+     *
+     * A compare, not a poll: the size is read once per event and the windows
+     * are only touched when it differs from the size they were last placed in.
+     */
+        if (paneResized())
+        {
+            Rect2D b{ 0, 0, 0, 0 };
+            if (paint_node_bounds(m_root, b)) { m_pane_w = b.w; m_pane_h = b.h; }
+            ClampWindows();
+        }
+
+
         /*
      * BEFORE THE PICK, because a scroll has no point to pick with -- its x/y
      * are the delta. The router already decided this pane is the one under the
@@ -15083,6 +15284,11 @@ public:
      */
         const bool is_press   = (ev.action == INPUT_DOWN || ev.action == INPUT_BUTTON_DOWN);
         const bool is_release  = (ev.action == INPUT_UP   || ev.action == INPUT_BUTTON_UP);
+
+        // The window last pressed is the window on top. Decided before anything
+        // acts on the press, so the raise is already in place for the drag that
+        // usually follows it.
+        if (is_press) FocusWindow(hit_rid);
 
         /*
      * A BUTTON ANYWHERE BUT THE PANEL CLOSES THE NAME FIELD.
@@ -16795,6 +17001,13 @@ private:
     // module's entity (see place_glyphs).
     ETCS::RID m_glyphs = 0;
     PaintColorWheel* m_wheel = nullptr;
+    // The window currently on top and the order it will go back to -- see
+    // FocusWindow. Base is meaningless while m_focus_pane is 0.
+    ETCS::RID m_focus_pane = 0;
+    int32_t   m_focus_base = 0;
+    // The pane extent the windows were last clamped into -- see paneResized.
+    uint32_t  m_pane_w = 0;
+    uint32_t  m_pane_h = 0;
     bool    m_is_wheel_pane = false;
     bool    m_on_panel = false;
     // The right-button pan. Tracked in VIEW pixels because that is the frame a

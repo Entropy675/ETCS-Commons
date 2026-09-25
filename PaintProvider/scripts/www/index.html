@@ -307,14 +307,51 @@
    * use and only that use.
    */
   const ANSI_STRIP = /\x1b\[[0-9;?]*[A-Za-z]/g;
+  /*
+   * A LINE FROM THE RUNTIME IS A NOTICE, AND A NOTICE EXPIRES.
+   *
+   * The status bar shows the last thing worth glancing at; the TERMINAL is what
+   * keeps the text. So anything mirrored here out of the log gets a life span,
+   * because the alternative is what it used to do: "the room has you as a
+   * reader" stayed on the bar after the host had made the page a writer, saying
+   * something that had stopped being true and that nothing was ever going to
+   * come along and replace -- only an `err` line could write the bar, so the
+   * promotion could not clear it even deliberately.
+   *
+   * Both halves of that are fixed here. `ok` writes the bar too, so a state
+   * change can say so; and a mirrored line clears itself.
+   *
+   * A DIRECT setStatus STILL STICKS. "boot failed", "aborted", "runtime ready"
+   * are terminal states of the page rather than notices about the session, and
+   * a page that quietly forgets it failed to boot is worse than one that nags.
+   */
+  const STATUS_TTL_MS = 6000;
   function log(text, cls) {
     termWrite(text);
-    if (cls === 'err')
-      setStatus(String(text).replace(ANSI_STRIP, '').trim().split('\n')[0], 'err');
+    if (cls === 'err' || cls === 'ok')
+      setStatus(String(text).replace(ANSI_STRIP, '').trim().split('\n')[0],
+                cls, STATUS_TTL_MS);
   }
-  function setStatus(s, cls) {
+  /*
+   * `ttl` clears only what it wrote. Anything that arrived in the meantime is a
+   * newer answer to the same question, and expiring somebody else's message is
+   * how a bar ends up blank while something is still wrong -- the same "is it
+   * still mine" test clearSaid already makes.
+   */
+  let statusTimer = 0;
+  function setStatus(s, cls, ttl) {
     statusEl.textContent = s;
     statusEl.className = cls || '';
+    if (statusTimer) { clearTimeout(statusTimer); statusTimer = 0; }
+    if (ttl && s) statusTimer = setTimeout(function () {
+      statusTimer = 0;
+      if (statusEl.textContent === s) setStatus('', '');
+    }, ttl);
+  }
+  // What the bar is showing, if it is showing this. Lets a state change retire
+  // the notice that state made stale without clobbering an unrelated one.
+  function clearStatusIf(match) {
+    if (statusEl.textContent.indexOf(match) !== -1) setStatus('', '');
   }
 
   // ── the bridge ─────────────────────────────────────────────────────────
@@ -990,6 +1027,20 @@
    */
   function setRole(r) {
     share.role = r;
+    /*
+     * THE ROLE CHANGED, SO WHAT THE ROLE SAID IS NO LONGER TRUE. told_reader is
+     * a say-it-once latch (pushMine), and leaving it set after a promotion meant
+     * a later demotion went unannounced; leaving the notice on the bar meant the
+     * page went on claiming to be a reader while it was drawing. Both are the
+     * same mistake -- a statement about a state, kept past the state.
+     *
+     * Dropped rather than replaced: the promotion has its own line through
+     * refreshRole, and two notices about one event is one too many.
+     */
+    if (r === 'writer' || r === 'owner') {
+      share.told_reader = false;
+      clearStatusIf('as a reader');
+    }
     if (!runtimeUp()) return;
     callVerb('doc', 'SetReadOnly', '0');
     // The sharing window is the role's too: the host's half or a guest's.
