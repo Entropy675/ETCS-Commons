@@ -197,6 +197,20 @@
       #layout { grid-template-rows: auto minmax(0, 1fr) 4rem; }
       #shell { min-height: 4rem; }
     }
+    /* STACKED (phone / narrow): the default terminal floor is clamp(15rem, 30%,
+       22rem), which on a portrait phone is often nearly as tall as the stage.
+       Prefer the canvas; keep a usable shell strip without a second column. */
+    @media (max-width: 61.99rem) {
+      #layout {
+        grid-template-rows: auto minmax(0, 1fr) clamp(5.5rem, 16%, 9rem);
+      }
+      #shell { min-height: 5.5rem; }
+    }
+    /* Short AND stacked still wins with the 4rem rule above when height is tiny. */
+    @media (max-width: 61.99rem) and (max-height: 30rem) {
+      #layout { grid-template-rows: auto minmax(0, 1fr) 4rem; }
+      #shell { min-height: 4rem; }
+    }
 
     /*
      * ── the link ───────────────────────────────────────────────────────────
@@ -668,7 +682,16 @@
     if (asked >= 1 && asked <= 4) return asked;
     if (!COARSE) return 1;
     const w = Math.max(1, window.innerWidth || 1);
-    return Math.max(1, Math.min(2, w / 512));
+    const h = Math.max(1, window.innerHeight || 1);
+    // Width-driven scale for finger-sized chrome, but stacked / short viewports
+    // already give the stage little height -- dividing that height by 1.5–2
+    // leaves the paper a strip under the toolbar. Stay at 1 unless there is
+    // both width and height to spend (tablet-class coarse pointers).
+    let s = Math.max(1, Math.min(2, w / 512));
+    let stacked = false;
+    try { stacked = window.matchMedia('(max-width: 61.99rem)').matches; } catch (e) {}
+    if (stacked || h < 640) s = 1;
+    return s;
   })();
 
   /*
