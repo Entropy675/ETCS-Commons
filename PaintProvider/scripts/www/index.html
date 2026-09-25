@@ -87,6 +87,19 @@
     }
     header .btn:hover { border-color: var(--accent); color: var(--accent); }
 
+    /* Canvas fullscreen: the stage (sheet + on-canvas chrome) owns the display;
+       header and shell leave with the page layout. ResizeObserver still fires. */
+    #stage:fullscreen, #stage:-webkit-full-screen {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #stage:fullscreen canvas#canvas,
+    #stage:-webkit-full-screen canvas#canvas {
+      width: 100% !important; height: 100% !important;
+      border: 0; border-radius: 0; box-shadow: none;
+    }
+
     /* min-height:0 is what lets this box actually shrink -- a grid item
        defaults to min-content, which with a canvas in it means it never
        yields. */
@@ -211,20 +224,17 @@
       #layout { grid-template-rows: auto minmax(0, 1fr) 4rem; }
       #shell { min-height: 4rem; }
     }
-    /* Host-side of ShellProvider's output collapse: one transcript line + input. */
+    /* Host-side of ShellProvider's output collapse: always STACK the shell under
+       the canvas (even on wide desktops) so the stage actually gains the freed
+       height. Side-by-side would leave a short terminal column and no extra
+       canvas space. */
     #layout.shell-collapsed {
+      grid-template-columns: 1fr;
       grid-template-rows: auto minmax(0, 1fr) 4.5rem;
+      grid-template-areas: "head" "stage" "term";
     }
     #layout.shell-collapsed #shell {
       min-height: 4.5rem; height: 4.5rem; max-height: 4.5rem;
-    }
-    @media (min-width: 62rem) {
-      #layout.shell-collapsed {
-        grid-template-rows: auto auto minmax(0, 1fr);
-      }
-      #layout.shell-collapsed #shell {
-        min-height: 0; height: auto; max-height: none;
-      }
     }
 
     /*
@@ -271,6 +281,7 @@
              copies. The visitor list opens on the canvas at the same moment,
              and closing that list is what ends the session. -->
         <button id="sharebtn" class="btn" type="button" title="share this canvas -- anyone with the link can watch">share</button>
+        <button id="fsbtn" class="btn" type="button" title="fullscreen the canvas (Esc to leave)">fullscreen</button>
         <span id="sharelink" hidden title="click to copy"></span>
         <!-- THE COLOUR YOU ARE SEEN IN. Picked here because it belongs to the
              CLIENT: it is submitted with your viewport in the same call, so
@@ -311,6 +322,43 @@
   const statusEl = document.getElementById('status');
   const canvas = document.getElementById('canvas');
   const stageEl = document.getElementById('stage');
+
+  /*
+   * FULLSCREEN THE STAGE. Header and shell stay in the document but leave the
+   * display; the sheet gets the whole screen and stageResize follows the box.
+   * Esc or the same button exits (browser chrome may hide while active).
+   */
+  (function () {
+    const fsBtn = document.getElementById('fsbtn');
+    if (!fsBtn || !stageEl) return;
+    function fsEl() {
+      return document.fullscreenElement || document.webkitFullscreenElement || null;
+    }
+    function syncFs() {
+      const on = fsEl() === stageEl;
+      fsBtn.textContent = on ? 'exit full' : 'fullscreen';
+      fsBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    fsBtn.addEventListener('click', function () {
+      if (fsEl() === stageEl) {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exit) exit.call(document);
+        return;
+      }
+      const req = stageEl.requestFullscreen || stageEl.webkitRequestFullscreen;
+      if (!req) {
+        log('[etcs] fullscreen is not available in this browser\n', 'err');
+        return;
+      }
+      Promise.resolve(req.call(stageEl)).catch(function (e) {
+        log('[etcs] fullscreen: ' + e + '\n', 'err');
+      });
+    });
+    document.addEventListener('fullscreenchange', syncFs);
+    document.addEventListener('webkitfullscreenchange', syncFs);
+    syncFs();
+  })();
+
   const shellFrame = document.getElementById('shell');
 
   const ORIGIN = window.location.origin;
@@ -1748,6 +1796,7 @@
     if (!m || typeof m !== 'object') return;
     if (m.etcs === 'term-collapse') {
       document.getElementById('layout').classList.toggle('shell-collapsed', !!m.collapsed);
+      try { if (typeof stageResize === 'function') stageResize(); } catch (e) {}
       return;
     }
     if (m.etcs === 'view-ready') {
