@@ -25,8 +25,14 @@
  * channel on the edge like any other.
  *
  * A line is one frame: at most kLine bytes of text, no newline.
+ *
+ * ENVIRONMENTAL (ontology/Environmental.h). Its lines are not on its tag
+ * surface -- who appended what came from outside the script -- so they are
+ * the state it captures: kept by a Persistence child and put back after a
+ * replay (RebuildLocal), and handed to a surface of it when one binds
+ * (ReflectRemote), so a guest's surface starts out knowing the host's lines.
  */
-class Ledger : public RecordBase<Ledger>, public DeletableBase<Ledger>
+class Ledger : public RecordBase<Ledger>, public EnvironmentalBase<Ledger>, public DeletableBase<Ledger>
 {
 public:
     WIRE_TYPE_IDENTITY(Ledger);
@@ -94,6 +100,17 @@ public:
         return ETCS::DestroyEvent{ key.c_str(), this }();
     }
 
+    // ── Environmental ──────────────────────────────────────────────────────
+    void CaptureStateConcrete(ETCS::EnvironmentState& out) const
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::string all;
+        for (auto& l : lines_) all += l + "\n";
+        out.set("lines", std::move(all));
+    }
+    bool RebuildLocalConcrete(const ETCS::EnvironmentState& st) override { return adopt(st); }
+    bool ReflectRemoteConcrete(const ETCS::EnvironmentState& st) override { return adopt(st); }
+
     static std::string hex(uint64_t v) { char b[17]; std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(v)); return b; }
 
 private:
@@ -105,6 +122,23 @@ private:
         cv_.notify_all();
     }
     void close() { std::lock_guard<std::mutex> lock(mu_); closed_ = true; cv_.notify_all(); }
+    // Lines as captured, re-chained here: the chain is derived, never taken.
+    bool adopt(const ETCS::EnvironmentState& st)
+    {
+        const std::string* all = st.get("lines");
+        if (!all) return true;
+        std::lock_guard<std::mutex> lock(mu_);
+        lines_.clear(); chains_.clear();
+        size_t at = 0;
+        while (at < all->size())
+        {
+            const size_t nl = all->find('\n', at);
+            if (nl == std::string::npos) break;
+            push(all->substr(at, nl - at));
+            at = nl + 1;
+        }
+        return true;
+    }
 
     mutable std::mutex       mu_;
     std::condition_variable  cv_;

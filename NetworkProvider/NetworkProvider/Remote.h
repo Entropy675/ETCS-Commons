@@ -50,15 +50,17 @@ public:
         if (!edge || !edge->isOpen())
         { ETCS_LOG("Remote", "Bind: no linked Peer (RID:" << peer_rid << ")."); return false; }
 
+        if (ETCS::MirrorBuffer::localFrame(surface))
+        { ETCS_LOG("Remote", "Bind: a " << surface->getSourceTag().toString() << " is of the local frame and does not cross."); return false; }
         Unbind();
         const std::string module = surface->getSourceModule().toString();
         const std::string tag    = surface->getSourceTag().toString();
         const uint64_t    hash   = surface->tagHash(ETCS::Buffer(tag.c_str()));
         // The surface's authority layer, which must be the far node's own.
         const std::string guard  = ETCS::MirrorBuffer::manifestOf(surface, ETCS::WireScope::Socket);
-        std::string why;
+        std::string why, state;
         ETCS::RID far = 0;
-        if (!edge->bind(name, module, tag, hash, guard, far, why))
+        if (!edge->bind(name, module, tag, hash, guard, far, state, why))
         {
             ETCS_LOG("Remote", "Bind '" << name << "' refused: " << why);
             return false;
@@ -68,6 +70,7 @@ public:
         far_rid_  = far;
         surface_  = surface;
         surface->setRemoteWire(static_cast<ETCS::IWireRemote*>(this));
+        reflect(surface, state);
         ETCS_LOG("Remote", module << "::" << tag << " RID:" << surface->getRID()
                  << " is now the surface of '" << name << "' (far RID:" << far << ").");
         return true;
@@ -120,6 +123,19 @@ public:
     }
 
 private:
+    // The far frame's half of Environmental: the surface starts from what
+    // the far node says a reflection of it should show.
+    static void reflect(ETCS::Entity* surface, const std::string& packed)
+    {
+        void* env = surface->getInterfacePointer(ETCS::Buffer("Environmental"));
+        ETCS::EnvironmentState st;
+        if (!env || packed.empty() || !st.unpack(packed)) return;
+        auto* e = static_cast<Environmental_*>(env);
+        st.migrate(e->MigrateTo());
+        if (!e->ReflectRemote(st)) ETCS_LOG("Remote", "the surface refused the far node's state.");
+        else ETCS_LOG("Remote", "the surface reflects the far node's state (" << st.kv.size() << " value(s)).");
+    }
+
     static bool isPeer(ETCS::Entity* e)
     {
         return e && e->getSourceModule().toString() == "NetworkProvider"

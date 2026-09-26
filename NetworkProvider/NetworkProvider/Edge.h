@@ -22,7 +22,7 @@
  * pair on it. Everything is a frame on that pair:
  *
  *   'B' id name module tag hash manifest     bind a surface to an export
- *   'b' id ok far-rid | reason
+ *   'b' id ok far-rid state | reason         state: the node's EnvironmentState
  *   'C' id rid hash verb wrapped-payload      run a verb on a bound export
  *   'c' id ok wrapped-answer | reason
  *   'O' id ch name verb config dir hash manifest   open a stream channel
@@ -315,15 +315,19 @@ public:
 
     // ── Asking the far side ─────────────────────────────────────────────────
 
+    // `state`: what the far node says a reflection of it should show
+    // (ontology/Environmental.h), packed; empty when it claims no such thing.
     bool bind(const std::string& name, const std::string& module, const std::string& tag,
-              uint64_t tag_hash, const std::string& manifest, ETCS::RID& far, std::string& why)
+              uint64_t tag_hash, const std::string& manifest, ETCS::RID& far, std::string& state,
+              std::string& why)
     {
         std::string body;
         if (!ask('B', Writer().str(name).str(module).str(tag).u64(tag_hash).str(manifest).s, body))
         { why = "no answer from " + far_name_; return false; }
         Reader r(body);
         if (r.num<uint8_t>() != 1) { why = r.str(); return false; }
-        far = r.num<uint64_t>();
+        far   = r.num<uint64_t>();
+        state = r.str();
         return r.ok;
     }
 
@@ -492,6 +496,8 @@ private:
         ETCS::RID rid = 0;
         ETCS::Entity* node = r.ok ? exported(name, &rid) : nullptr;
         if (!node) return w.u8(0).str("no export named '" + name + "'").s;
+        if (ETCS::MirrorBuffer::localFrame(node))
+            return w.u8(0).str("'" + name + "' is of this runtime's local frame and does not cross").s;
         const std::string have_mod = node->getSourceModule().toString(), have_tag = node->getSourceTag().toString();
         if (have_mod != module || have_tag != tag)
             return w.u8(0).str("'" + name + "' is a " + have_mod + "::" + have_tag + ", not a " + module + "::" + tag).s;
@@ -502,8 +508,20 @@ private:
         if (guard != manifest)
             return w.u8(0).str("'" + name + "' is guarded by [" + guard + "], the surface carries ["
                                + manifest + "]").s;
+        // The far frame's half of Environmental: the named values a reflection
+        // starts from. Its tags are the surface's own already -- the same type.
+        ETCS::EnvironmentState st;
+        if (void* env = node->getInterfacePointer(ETCS::Buffer("Environmental")))
+            static_cast<Environmental_*>(env)->CaptureState(st);
+        std::string packed = st.pack();
+        if (packed.size() > ETCS::MirrorBuffer::MAX_FRAME_PAYLOAD - 64)
+        {
+            ETCS_LOG("Edge", "'" << name << "': its state (" << packed.size()
+                     << " bytes) is more than one frame; the surface starts without it.");
+            packed.clear();
+        }
         ETCS_LOG("Edge", "'" << far_name_ << "' bound a surface to '" << name << "' (RID:" << rid << ")");
-        return w.u8(1).u64(rid).s;
+        return w.u8(1).u64(rid).str(packed).s;
     }
 
     std::string answerCall(Reader& r)
@@ -546,6 +564,7 @@ private:
         Writer w;
         ETCS::Entity* node = r.ok ? exported(name) : nullptr;
         if (!node) return w.u8(0).raw("no such export", 14).s;
+        if (ETCS::MirrorBuffer::localFrame(node)) return w.u8(0).raw("of the local frame", 18).s;
         const std::string conj = node->getSourceTag().toString() + "." + verb;
         if (node->actionHash(ETCS::Buffer(conj.c_str())) != hash)
             return w.u8(0).raw("different build of this stream", 30).s;
