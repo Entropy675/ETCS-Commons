@@ -1,6 +1,7 @@
 #ifndef ETCS_RENDERPROVIDER_THROBBER_H__
 #define ETCS_RENDERPROVIDER_THROBBER_H__
 
+#include <atomic>
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
 #include "TextLabel.h"
@@ -310,6 +311,7 @@ public:
     // right place to read it: no second clock, no verb from the writer.
     bool AnimatingConcrete() override
     {
+        int8_t want = WATCH_NONE;
         if (!m_watches.empty())
         {
             bool raised = false;
@@ -320,10 +322,32 @@ public:
                 ETCS::LifetimeHold hold(e);
                 if (hold && e->hasTag(ETCS::Buffer(w.flag.c_str()))) { raised = true; break; }
             }
-            if (raised == this->Hidden()) this->SetHidden(!raised);
+            want = raised ? WATCH_SHOWN : WATCH_HIDDEN;
         }
+        // Appearing and disappearing are changes like any other: whoever holds
+        // a merged copy of this node has to rebuild with or without it.
+        if (m_watch.exchange(want, ::std::memory_order_acq_rel) != want)
+            etcs_mark_observed(this);
         if (!this->Hidden()) follow_center();
         return !this->Hidden();
+    }
+
+    /*
+     * WATCHED, IT IS NOT ITS OWN FACT. While a watch is bound the ring shows
+     * exactly while the watched flag is up -- and that flag is already recorded
+     * state on the entity that owns it. Writing a `hidden` flag here to mirror
+     * it would be the same fact twice, one of them a copy that can lag the
+     * other; and the write would have to happen from inside the compose walk
+     * (this is asked from CompositeDrawable2D::anyChildNeedsFrame), where an
+     * ordered, blocking flag change has no business being. So the answer is
+     * derived where it is read. Unwatched, the ring's own flag governs, as it
+     * does for every drawable.
+     */
+    bool Hidden() const override
+    {
+        const int8_t w = m_watch.load(::std::memory_order_acquire);
+        if (w == WATCH_NONE) return Drawable2DBase<Throbber>::Hidden();
+        return w == WATCH_HIDDEN;
     }
 
     /*
@@ -551,6 +575,10 @@ private:
 
     struct Watched { ETCS::RID entity; std::string flag; };
     std::vector<Watched> m_watches;    // see Watch
+    // What the watches last said, for Hidden() -- written by the frame edge,
+    // read by the compose and the pick, so one atomic and no vector.
+    static constexpr int8_t WATCH_NONE = -1, WATCH_SHOWN = 0, WATCH_HIDDEN = 1;
+    ::std::atomic<int8_t> m_watch{WATCH_NONE};
     ETCS::RID   m_center_on = 0;       // see CenterOn
 
     void follow_center()

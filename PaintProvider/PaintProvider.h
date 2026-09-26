@@ -315,11 +315,23 @@ static inline bool paint_node_verb(ETCS::RID node, const char* verb,
                                    const char* surface_verb = nullptr)
 {
     if (node == 0 || verb == nullptr) return false;
-    ETCS::Held<Drawable2D_> held = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
-    if (!held) return false;
-    ETCS::Entity* e = static_cast<ETCS::Entity*>(held.get());
-    if (!e) return false;
-    const std::string tag = e->getSourceTag().toString();
+    /*
+     * READ THROUGH THE HOLD, DROP IT, THEN ACT -- the order
+     * ETCS_ASSERT_NO_LIFETIME_HOLD asks for. The verb may raise a flag
+     * (SetHidden does), and a flag change is ordered and blocks; emitted from
+     * inside a hold it could wait on a Delete that is waiting on the hold. So
+     * the hold covers only what is read here, the type, and the call goes to
+     * the entity found AGAIN by that type and RID: a resolution is the liveness
+     * check, which is all the hold was for.
+     */
+    std::string tag;
+    {
+        ETCS::Held<Drawable2D_> held = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+        if (!held) return false;
+        ETCS::Entity* e = static_cast<ETCS::Entity*>(held.get());
+        if (!e) return false;
+        tag = e->getSourceTag().toString();
+    }
     const char* which = verb;
     if (surface_verb && tag.find("PolygonDrawable2D") == std::string::npos)
         which = surface_verb;
@@ -327,51 +339,53 @@ static inline bool paint_node_verb(ETCS::RID node, const char* verb,
     action.write((tag + "." + which).c_str());
     ETCS::Buffer payload;
     payload.write(args.c_str());
-    try { e->call(action, payload); } catch (...) { return false; }
-    for (ETCS::Entity* n = e; n; n = n->getParent())
-        etcs_mark_observed(n);
+    const ETCS::Buffer key(tag.c_str());
+    {
+        ETCS::Entity* e = ETCS::etcs_resolve_by_key(key, node);
+        if (!e) return false;
+        try { e->call(action, payload); } catch (...) { return false; }
+    }
+    // And again for the mark: the call may have been the one that retired it.
+    if (ETCS::Entity* e = ETCS::etcs_resolve_by_key(key, node))
+        for (ETCS::Entity* n = e; n; n = n->getParent())
+            etcs_mark_observed(n);
     return true;
 }
 
 // The four the module actually asks for, so a call site reads as the intent and
 // not as the mechanism. Hidden is neither drawn nor picked (Drawable2D_::
 // PickAt), which is what "this row has no delete" has to mean -- a transparent
-// button still takes the press.
-//
-// ORDER IS PARKED WHILE HIDDEN. SetHidden alone is enough for PickAt and for
-// paint_pane_contains, but the router still RANKS every pane by Order() before
-// containment -- and a scroll uses the last cursor point against that ranking.
-// An animation / menu pane left at its live order (e.g. 14) after SetHidden(1)
-// remains a high-rank ghost over the sheet: the dead zone under the invisible
-// window. Lower order while hidden; restore the stashed value on show (the
-// same raise path that already runs when the window opens).
-static inline int32_t paint_node_order_get(ETCS::RID node)
-{
-    ETCS::Held<Drawable_> h = ETCS::resolve_held<Drawable_>("Drawable", node);
-    return h ? h->Order() : 0;
-}
-
+// button still takes the press. It is the `hidden` flag, so this is a recorded
+// state change, not a paint property (ontology/DrawableBase.h).
 static inline bool paint_node_hidden(ETCS::RID node, bool hidden)
 {
-    if (node == 0) return false;
-    static std::unordered_map<ETCS::RID, int32_t> parked;
-    constexpr int32_t kHiddenOrder = -1000000;
-    if (hidden)
-    {
-        if (parked.find(node) == parked.end())
-            parked[node] = paint_node_order_get(node);
-        (void)paint_node_verb(node, "SetOrder", std::to_string(kHiddenOrder).c_str());
-    }
-    else
-    {
-        auto it = parked.find(node);
-        if (it != parked.end())
-        {
-            (void)paint_node_verb(node, "SetOrder", std::to_string(it->second).c_str());
-            parked.erase(it);
-        }
-    }
     return paint_node_verb(node, "SetHidden", hidden ? "1" : "0");
+}
+
+/*
+ * IS A POINT OVER THIS WINDOW -- and a hidden window is over nothing.
+ *
+ * For the wheel, which carries a delta instead of a position and so is never
+ * PICKED: PaintInput::RouteEvent hands the notch to the first window whose
+ * rectangle holds the last routed point. That path consults neither PickAt nor
+ * the router's ranking, so nothing about the order can reach it -- the three
+ * copies of this test read Bounds() alone, and a hidden pane keeps its bounds.
+ * The closed animation window went on taking every notch over the patch of
+ * canvas it used to cover.
+ *
+ * `at` is in the window's PARENT's space, as Bounds() is.
+ */
+static inline bool paint_window_contains(ETCS::RID window, Point2D at)
+{
+    {
+        ETCS::Held<Drawable_> d = ETCS::resolve_held<Drawable_>("Drawable", window);
+        if (!d || d->Hidden()) return false;
+    }
+    ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", window);
+    if (!w) return false;
+    const Rect2D b = w->Bounds();
+    return at.x >= b.x && at.y >= b.y
+        && at.x < b.x + static_cast<int32_t>(b.w) && at.y < b.y + static_cast<int32_t>(b.h);
 }
 
 static inline bool paint_node_text(ETCS::RID node, const std::string& text)
@@ -9906,14 +9920,7 @@ public:
 
     bool owns(ETCS::RID node) const { return node != 0 && m_regions.find(node) != m_regions.end(); }
 
-    bool Contains(Point2D at) const
-    {
-        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
-        if (!w) return false;
-        const Rect2D b = w->Bounds();
-        return at.x >= b.x && at.y >= b.y
-            && at.x < b.x + static_cast<int32_t>(b.w) && at.y < b.y + static_cast<int32_t>(b.h);
-    }
+    bool Contains(Point2D at) const { return paint_window_contains(m_window, at); }
 
     // Rows, top first; negative toward the newest page. Clamped, as the layer
     // window's is: a list that wraps is one you cannot find anything in.
@@ -10481,14 +10488,7 @@ public:
 
     bool owns(ETCS::RID node) const { return node != 0 && m_regions.find(node) != m_regions.end(); }
 
-    bool Contains(Point2D at) const
-    {
-        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
-        if (!w) return false;
-        const Rect2D b = w->Bounds();
-        return at.x >= b.x && at.y >= b.y
-            && at.x < b.x + static_cast<int32_t>(b.w) && at.y < b.y + static_cast<int32_t>(b.h);
-    }
+    bool Contains(Point2D at) const { return paint_window_contains(m_window, at); }
 
     void Scroll(int32_t delta)
     {
@@ -12773,15 +12773,7 @@ public:
     // for a wheel notch, which carries no point of its own and so cannot be
     // picked (PaintInput::RouteEvent) -- the last routed position stands in
     // for it, and the window's bounds are the only thing that has to hold.
-    bool Contains(Point2D at) const
-    {
-        ETCS::Held<Drawable2D_> w = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_window);
-        if (!w) return false;
-        const Rect2D b = w->Bounds();
-        return at.x >= b.x && at.y >= b.y
-            && at.x < b.x + static_cast<int32_t>(b.w)
-            && at.y < b.y + static_cast<int32_t>(b.h);
-    }
+    bool Contains(Point2D at) const { return paint_window_contains(m_window, at); }
 
     /*
  * HOVER: the layer whose EYE is under the pointer at full strength, every other
