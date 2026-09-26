@@ -41,8 +41,8 @@
  * someone else's state.
  *
  * WHEN. As it goes: a watcher recaptures twice a second and writes only
- * when the scene changed; and once more as the loader closes (Provenance.h's
- * closing hook), after which nothing is written this run. A capture that
+ * when the scene changed; and once more as the loader closes (Closing, the
+ * family's wire), after which nothing is written this run. A capture that
  * cannot name something (a change made outside any action, an action on
  * something the scene does not rebuild) keeps what it can and says what it
  * could not; the hash check at the end of a resume says whether it mattered.
@@ -165,6 +165,8 @@ public:
 
     // ── Environmental: nothing off its surface ──────────────────────────────
     bool RebuildLocalConcrete(const ETCS::EnvironmentState&) override  { return true; }
+    // The loader is leaving (IWireEnvironmental): the last save, then none.
+    void Closing() override { Keeper::onClosing(); }
     bool ReflectRemoteConcrete(const ETCS::EnvironmentState&) override { return true; }
 
 private:
@@ -181,6 +183,12 @@ private:
     { return e->getSourceModule().toString() + "::" + e->getSourceTag().toString(); }
     static std::string hex64(uint64_t v)
     { char b[17]; std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(v)); return b; }
+    // The name a script gave a root (IWireEnvironmental::NoteName).
+    static std::string nameOf(ETCS::Entity* e)
+    {
+        ETCS::IWireEnvironmental* w = e ? e->environmentalWire() : nullptr;
+        return w ? w->ScriptName() : std::string();
+    }
     static Environmental_* iface(ETCS::Entity* e)
     { return static_cast<Environmental_*>(e->getInterfacePointer(ETCS::Buffer("Environmental"))); }
 
@@ -213,7 +221,6 @@ private:
             if (!started_)
             {
                 started_ = true;
-                ETCS::set_closing_hook(&Keeper::onClosing);
                 watcher_ = std::thread([this]() { watch(); });
             }
         }
@@ -241,7 +248,7 @@ private:
                 (void)prid;
                 ETCS::Entity* r = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
                 if (!r) continue;
-                const std::string name = ETCS::script_name(rid);
+                const std::string name = nameOf(r);
                 auto it = want.find(name);
                 if (it == want.end()) continue;
                 const std::string now = hex64(r->getHash());
@@ -294,7 +301,7 @@ private:
                 ETCS::Entity* r = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
                 ETCS::LifetimeHold hold(r);
                 if (!hold) continue;
-                std::string name = ETCS::script_name(rid);
+                std::string name = nameOf(r);
                 if (name.empty() || used.count(name)) name = "n" + std::to_string(held.size());
                 used.insert(name);
                 names[rid] = name;
@@ -404,21 +411,22 @@ private:
             if (watcher_.joinable()) watcher_.join();
         }
 
-    private:
         static void onClosing()
         {
             Keeper& k = get();
+            if (k.closing_.exchange(true)) return;   // said to every Persistence; once is the save
             k.save(false);
             std::lock_guard<std::mutex> lock(k.save_mu_);
             k.closed_ = true;
         }
+    private:
         void watch()
         {
             while (!stop_.load())
             {
                 for (int i = 0; i < 5 && !stop_.load(); ++i)
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                if (stop_.load() || ETCS::runtime_closing()) continue;
+                if (stop_.load()) continue;
                 save(false);
             }
         }
@@ -433,7 +441,8 @@ private:
 
         std::mutex               save_mu_;           // one save at a time; guards below
         std::atomic<bool>        restoring_{ false };
-        bool                     closed_    = false;
+        bool                     closed_    = false;   // the last save is written
+        std::atomic<bool>        closing_{ false };
         bool                     saved_any_ = false;
         uint64_t                 last_print_ = 0;
         std::string              last_warn_;
@@ -441,7 +450,7 @@ private:
     };
 
     friend struct PersistenceModuleGuard;
-    static void stopKeeper() { Keeper::get().stop(); ETCS::set_closing_hook(nullptr); }
+    static void stopKeeper() { Keeper::get().stop(); }
 };
 
 // Joins the watcher before this module's code can be unmapped.
