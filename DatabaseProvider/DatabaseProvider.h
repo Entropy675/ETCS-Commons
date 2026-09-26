@@ -453,4 +453,21 @@ DEFINE_STREAM_FUNC_CONSUME(LocalDatabase, RowConsume)
     ETCS_LOG("RowConsume", "Consumption stream closed. Statements executed: " << executed);
 }
 
+
+// --- Persistence (Persistence/Persistence.h) ---
+
+DEFINE_WORK_FUNC(Persistence, Save)    { (void)ctx; (void)data; self.Save(); }
+DEFINE_WORK_FUNC(Persistence, Restore) { (void)ctx; (void)data; self.Restore(); }
+DEFINE_WORK_FUNC(Persistence, Resume)
+{
+    (void)ctx;
+    const bool ok = self.Resume();
+    data.reset();
+    data.write(ok ? "1" : "0");
+}
+DEFINE_WORK_FUNC(Persistence, Finish)  { (void)ctx; (void)data; self.Finish(); }
+DEFINE_WORK_FUNC(Persistence, Forget)  { (void)ctx; (void)data; self.Forget(); }
+DEFINE_WORK_FUNC(Persistence, Info)    { (void)ctx; (void)data; self.Info(); }
+DEFINE_WORK_FUNC(Persistence, Delete)  { (void)ctx; (void)data; self.DeleteConcrete(); }
+
 #endif

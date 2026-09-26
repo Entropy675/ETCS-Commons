@@ -1,7 +1,7 @@
 #include "DatabaseProvider.h"
 
 
-ETCS_MODULE_EXPORT_MAIN(DatabaseProvider, "LocalDatabase") // "LocalDatabase RemoteDatabase" once the postgres leaf lands
+ETCS_MODULE_EXPORT_MAIN(DatabaseProvider, "LocalDatabase Persistence") // "LocalDatabase RemoteDatabase" once the postgres leaf lands
 // Make sure to create your tag types exported functions in the DatabaseProvider.h included above, with one of: 
 //  - DEFINE_WORK_FUNC_TYPED(Type, FuncName, (Type, VarName),(Type, VarName), ...)
 //  - DEFINE_WORK_FUNC(Type, FuncName)
@@ -30,6 +30,10 @@ ETCS_TAG_BLOCK_HYBRID(
     (Delete, Connect, Disconnect, ExecuteRaw, Query, InitializeSchema, BeginTransaction, ExecuteTransaction, Commit, Rollback), 
     (QueryProduce, RowProduce, RowConsume)
 )
+
+// Persistence (Persistence/Persistence.h). Save/Restore/Info/Forget on a
+// child that keeps its parent; Resume/Finish on the loader's handle.
+ETCS_TAG_BLOCK_BASIC(Persistence, Save, Restore, Resume, Finish, Forget, Info, Delete)
 
 /*
  * The postgres tag, when its leaf exists (Contract_DatabaseProvider.h).

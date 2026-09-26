@@ -1,0 +1,16 @@
+#!/usr/bin/env etcs
+# Keep a scene across runs (Persistence/Persistence.h).
+#
+#   etcs persistence.etcs       builds it; `exit`, then start `etcs` with no
+#                               script and answer y -- or `etcs --resume`
+#
+# book claims Environmental (a Ledger does), so everything that makes it what
+# it is -- its children, and its lines as named state -- comes back.
+spawn NetworkProvider::Ledger book
+book.spawn(DatabaseProvider::Persistence keep)
+book.Append(first line)
+book.spawn(NetworkProvider::Ledger margin)
+margin.Append(a note beside it)
+book.spawn(NetworkProvider::Ledger scratch)
+scratch.Delete()
+keep.Info()

@@ -709,6 +709,25 @@
     });
   }
 
+  /*
+   * WRITING /persist BACK. IDBFS does not write through; the C++ side says when
+   * (window.etcsPersist, after the store writes), coalesced, and a closing tab
+   * flushes once more.
+   */
+  let persistTimer = 0;
+  function persistNow(why) {
+    const fs = (typeof FS !== 'undefined') ? FS : (window.Module && window.Module.FS);
+    if (!fs || !fs.syncfs) return;
+    fs.syncfs(false, function (err) {
+      if (err) append('[etcs] /persist: write to IndexedDB failed (' + why + '): ' + err + '\n', 'err');
+    });
+  }
+  window.etcsPersist = function (why) {
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(function () { persistNow(why || 'requested'); }, 250);
+  };
+  window.addEventListener('pagehide', function () { persistNow('pagehide'); });
+
   async function boot() {
     setStatus('fetching modules…');
     const names = await resolveWasmNames();
@@ -744,6 +763,24 @@
           append('[etcs] MEMFS preload complete\n', 'sys');
         } catch (e) {
           append('[etcs] preRun FS error: ' + e + '\n', 'err');
+        }
+        /*
+         * /persist OUTLIVES THE TAB: IDBFS, pulled from IndexedDB before main()
+         * runs -- the loader's store (Persistence, DatabaseProvider) lives there,
+         * so a reload is offered the scene it left ("Continue where you left
+         * off?"). Held on a run dependency: a store opened before its file
+         * arrives would be a fresh one written over it.
+         */
+        try {
+          FS.mkdir('/persist');
+          FS.mount(IDBFS, {}, '/persist');
+          Module.addRunDependency('etcs-persist');
+          FS.syncfs(true, function (err) {
+            if (err) append('[etcs] /persist: could not read IndexedDB: ' + err + '\n', 'err');
+            Module.removeRunDependency('etcs-persist');
+          });
+        } catch (e) {
+          append('[etcs] /persist: IDBFS unavailable (' + e + ') -- nothing outlives this tab\n', 'err');
         }
       }],
       onRuntimeInitialized: function () {
