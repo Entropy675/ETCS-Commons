@@ -95,8 +95,15 @@
     }
     body.term-collapsed #menu { display: none !important; }
     body.term-collapsed #layout { gap: 0.35rem; padding: 0.35rem; }
+    /*
+     * Collapsed, the one line comes first and the header becomes its footer:
+     * embedded under a canvas, the output sits right against it. The input row
+     * stays after the header, below what the host's short strip shows.
+     */
+    body.term-collapsed #term { order: -1; }
     body.term-collapsed header {
-      padding: 4px 10px; margin: -0.35rem -0.35rem 0;
+      padding: 4px 10px; margin: 0 -0.35rem;
+      border-bottom: 0; border-top: 1px solid var(--line);
     }
     #input-row {
       display: flex; gap: 0.5rem; align-items: center;
