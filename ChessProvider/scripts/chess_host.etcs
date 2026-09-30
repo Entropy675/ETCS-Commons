@@ -1,0 +1,42 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── HOST A GAME ──────────────────────────────────────────────────────────────
+#
+# A TEMPLATE: the page fills in {{n}} (a number that keeps this game's names
+# its own), {{name}} (this runtime's name in the game), {{id}} (the game's id,
+# what the link carries) and {{hub}} (the site's LinkHub, ws[s]://<site>/link),
+# and runs it with `game`, `share` and `hall` handed in -- the hall being the
+# site's name server as this runtime sees it (chess_hall.etcs), where the game
+# is advertised as `chess {{id}}` with its seats, for as long as this link
+# lasts. Read as a script, this is what a game IS on the host's side -- and
+# the site hosts its ranked tables with the same lines (chess_service.etcs),
+# its board holding no seat (ChessGame's header note).
+#
+# THE RECORD IS HERE, and this board judges it: a guest's line lands in
+# `proposals` (authored by the link it came over), the judge follows that and
+# appends to `record` what the board took, and every board follows the record.
+
+spawn NetworkProvider::Ledger record{{n}}
+record{{n}}.Author({{name}})
+
+spawn NetworkProvider::Ledger proposals{{n}}
+
+spawn NetworkProvider::Lobby presence{{n}}
+
+spawn NetworkProvider::Room room{{n}}
+room{{n}}.SetName({{name}})
+room{{n}}.Publish(record @record{{n}} Head Since Follow)
+room{{n}}.Publish(proposals @proposals{{n}} Take)
+room{{n}}.Publish(presence @presence{{n}} Advertise Withdraw Watch)
+
+requires hall [Lobby]
+share.Host(@record{{n}} @proposals{{n}} @presence{{n}} {{name}} @hall chess {{id}})
+
+# The judge, and the roster. Each a detached script, since a stream line
+# runs until the stream ends. The judge stream goes through the share, which
+# judges on the game and keeps the hall entry current behind each line.
+detach ChessProvider/scripts/chess_judge.etcs src=proposals{{n}} dst=share
+detach ChessProvider/scripts/chess_watch.etcs src=presence{{n}} dst=share
+
+room{{n}}.HostVia({{hub}}/{{id}})

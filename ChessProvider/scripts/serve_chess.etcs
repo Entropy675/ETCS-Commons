@@ -1,7 +1,8 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# SERVE THE LOCAL CHESS PAGE -- one board, both seats, a terminal -- over TLS.
+# SERVE THE CHESS PAGE -- a board in the visitor's own runtime, the hall and
+# two ranked tables in this one -- over TLS.
 #
 #     etcs modules/ChessProvider/scripts/serve_chess.etcs
 #     then open https://localhost:8444/
@@ -32,6 +33,9 @@ web.AddHeader(Cross-Origin-Opener-Policy same-origin)
 web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
 
 web.spawn(NetworkProvider::FileHtmlPage tree)
+# The hub every link goes through: /link/hall, /link/table1, and /link/<id>
+# for a game a visitor hosts through here (Room.HostVia).
+web.spawn(NetworkProvider::LinkHub links)
 tree.LoadFromDisk(ACE_ROOT/modules/ChessProvider/scripts/www)
 tree.SetDefaultExtension(.html)
 
@@ -43,25 +47,17 @@ tree.MountTree(wasm ACE_ROOT/bin/wasm)
 # from anticurrententropy.com.
 tree.MountTree(favicon ACE_ROOT/scripts/www/favicon)
 
-# The boot script, at the path it is staged under (www/modules.json) -- the
-# same path the OS side would read it from, so it needs no second spelling.
-tree.MountFile(boot_chess.etcs ACE_ROOT/modules/ChessProvider/scripts/www/boot_chess.etcs)
-
-# The terminal view, from ShellProvider's own page rather than a copy of it.
-tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)
+# The scripts the page stages (www/modules.json), each at the path the OS
+# side reads it from -- one list, in chess_mounts.etcs, for every server.
+run chess_mounts.etcs tree=tree
 
 # The whole served surface: a name the page asks for and this does not list is
 # a 404 waiting to happen.
 tree.ListPaths()
 
-# AND A NAME SERVER BESIDE IT, at /game -- where the page looks by default
-# (defaultNode in www/index.html). Two pages served from here find each other
-# through it: it lists them, pairs them and relays their lines; each page's
-# own runtime holds its board. The same node chess_web.etcs mounts on the
-# hosted site.
-spawn ChessProvider::ChessNode lobby
-lobby.Mount(game)
-web.AddRoute(@lobby Request @lobby Filter)
-
 web.Start()
 web.IsStarted()
+
+# THE HALL AND THE TABLES, on the hub above (chess_service.etcs): the name
+# server every casual game uses, and the two games this runtime judges.
+run chess_service.etcs links=links

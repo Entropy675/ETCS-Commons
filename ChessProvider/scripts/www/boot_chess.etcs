@@ -1,41 +1,104 @@
 #!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
 
-# ONE NODE, BOTH SEATS LOCAL. This is the whole boot: a ChessNode is the
-# ordering domain a ChessGame needs (ChessGame::streamOf() answers null, and
-# every verb refuses, with none in front of it -- see ChessNode.h), so the
-# node exists here for that reason alone. Nothing about rendering lives in
-# this script because nothing about the board is drawn by ETCS: the page is
-# the same DOM grid of squares the server-authoritative chess.html already
-# used, just fed from this runtime instead of from fetch(). See this folder's
-# README, "Why no canvas", for the rest of that reasoning -- and for why
-# there is no `detach` here, no window, no frame pump: a ChessGame is text
-# state, not pixels, so nothing here needs one. The runtime's own REPL
-# worker (ETCS_REPL_SHELL, on for every web loader build) is what keeps this
-# session alive regardless, exactly as it does for ShellProvider's own
-# terminal-only page.
+# THE SEAT: a board in a window, and a table in front of it.
+#
+# This is the whole boot, and it is the SAME FILE on both substrates: the
+# browser page runs it (www/index.html, modules.json's "boot"), and the OS
+# runtime runs it from scripts/chess_table.etcs, which adds what a window has
+# no DOM for (the chat and the command line, as bars) and then comes here.
+# There is no copy of it, so the two cannot drift.
+#
+#   gpu, main, view   the device, the window, its surface -- paint's shape
+#   stage             the drawable root the frame edge presents
+#   board             a ChessBoard: the game as pixels, redrawn when it changed
+#   game, share       the board's game and this runtime's part in a session
+#                     (ChessGame.h, ChessShare.h); hosting and joining are
+#                     the templates chess_host.etcs / chess_join.etcs, run by
+#                     the page with `game=game share=share` when a table is
+#                     opened or joined -- the same on either substrate
+#   table             a ChessTable: presses in, Act out (ChessTable.h)
+#   turn, seats, note the column to the right of the board
+#
+# ENSURE, NOT SPAWN, for `stage`, `table`, `game` and `share`: the OS root
+# script makes them BEFORE running this, so it can hang its bars under the
+# stage and bind them to the table, and so their names are its globals (a
+# sub-script's spawns are not) -- and then this script takes the ones that
+# exist and fills them in. Run alone, as the page runs it, ensure makes them,
+# and nothing differs. (Create on a compositor is idempotent for an unchanged
+# size; on the table it is a tag.)
+#
+# NO ROUTER AND NO PICK: one thing on the stage takes a press, the board,
+# and it says which square (ChessTable::Click). The window's two streams,
+# the pointer and the keyboard, each go to the table on a thread of their
+# own (chess_pointer.etcs, chess_keys.etcs), so this script RETURNS: the
+# page goes on to its own work, and the OS runtime's prompt stays usable
+# beside the window, which is how the session test drives it.
 
-spawn ChessProvider::ChessNode game
-game.Mount(game)
+spawn RenderProvider::Instance gpu
+gpu.Create()
 
-# Warms the match into existence so the page's FIRST call is a move, not a
-# race with lazy match creation (ChessNode::createGameLocked runs on the
-# first Request that names a match). Spent here instead of on the first
-# click, which is also what tells the terminal the board is actually up
-# before anyone has touched it.
-game.Request(game/white/local/fen)
+spawn WindowProvider::Window main
+main.Create(1024, 768, 'ETCS Chess')
 
-# THE SAME NODE THE HOSTED ONE IS. What follows is chess_web.etcs
-# (NetworkProvider/scripts) minus its static pages: the same HttpServer,
-# the same route (every /game/... path answered by this node's Request, the
-# listing verbs rooms and players included), the same CORS header. Every
-# line of it takes in a browser except the last: Start() asks the OS for a
-# listening socket and a browser has none to give, so ConnectionManager
-# logs `listen() failed`, HttpServer logs `not started`, and the page goes
-# on -- which is the honest outcome, and the point. This node is a name
-# server in kind; what it lacks is an address anyone else can dial, and
-# that is the peer link's job (README, "Name servers, all the way down").
-ensure NetworkProvider::HttpServer web
-web.SetPort(8080)
-web.AddRoute(@game Request @game Filter)
-web.AddHeader(Access-Control-Allow-Origin *)
-web.Start()
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+view.Clear(0.11, 0.11, 0.13, 1.0)
+
+ensure RenderProvider::CompositeDrawable2D stage
+stage.Create(1024, 768)
+stage.SetPosition(0, 0)
+stage.SetOrder(0)
+stage.SetBackground(0.11, 0.11, 0.13, 1.0)
+
+# ── the game, and this runtime's part in it ──────────────────────────────────
+ensure ChessProvider::ChessGame game
+ensure ChessProvider::ChessShare share
+share.Attach(@game)
+
+# ── the board: 704px, 88 a square, a 32px margin ─────────────────────────────
+stage.spawn(ChessProvider::ChessBoard board)
+board.Create(704)
+board.SetPosition(32, 32)
+board.SetOrder(1)
+board.Bind(@game)
+
+# ── the column beside it ─────────────────────────────────────────────────────
+stage.spawn(RenderProvider::TextLabel turn)
+turn.Create()
+turn.SetPosition(768, 40)
+turn.SetSize(16)
+turn.SetColor(0.94, 0.89, 0.78, 1.0)
+turn.SetOrder(2)
+turn.SetText(white to move)
+
+stage.spawn(RenderProvider::TextLabel seats)
+seats.Create()
+seats.SetPosition(768, 76)
+seats.SetSize(8)
+seats.SetColor(0.80, 0.80, 0.84, 1.0)
+seats.SetOrder(2)
+seats.SetText(white: -   black: -)
+
+stage.spawn(RenderProvider::TextLabel note)
+note.Create()
+note.SetPosition(768, 104)
+note.SetSize(8)
+note.SetColor(0.85, 0.65, 0.40, 1.0)
+note.SetOrder(2)
+note.SetText()
+
+# ── the table ────────────────────────────────────────────────────────────────
+ensure ChessProvider::ChessTable table
+table.Create()
+table.BindGame(@game)
+table.BindShare(@share)
+table.BindBoard(@board)
+table.BindStatus(@turn @seats @note)
+
+view.Compose(@stage)
+
+# ── the edge and the pumps ───────────────────────────────────────────────────
+detach RenderProvider/scripts/render_frames.etcs view=view
+detach ChessProvider/scripts/chess_pointer.etcs window=main table=table
+detach ChessProvider/scripts/chess_keys.etcs window=main table=table

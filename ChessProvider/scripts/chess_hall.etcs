@@ -1,0 +1,22 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── THE HALL: where games are found ──────────────────────────────────────────
+#
+# A TEMPLATE: {{n}}, {{name}} and {{hub}} are the page's to fill. The site's
+# runtime publishes a Lobby in a Room called `hall` (scripts/run_website.etcs);
+# this links to it and keeps a local copy of its listing (hall{{n}}.List, the
+# page reads it), and a host advertises its game in it (chess_advertise.etcs).
+# An entry lasts as long as its advertiser's link -- a host that closed the
+# tab is off the list the moment it closes.
+
+spawn NetworkProvider::Peer hallpeer{{n}}
+hallpeer{{n}}.SetName({{name}})
+hallpeer{{n}}.Connect({{hub}}/hall)
+
+spawn NetworkProvider::Lobby halllist{{n}}
+halllist{{n}}.spawn(NetworkProvider::Remote rhall{{n}})
+rhall{{n}}.Bind(hall @hallpeer{{n}})
+
+spawn NetworkProvider::Lobby hall{{n}}
+detach ChessProvider/scripts/chess_mirror.etcs src=halllist{{n}} dst=hall{{n}}

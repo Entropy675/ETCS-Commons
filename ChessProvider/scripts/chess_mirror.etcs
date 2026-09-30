@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A far listing kept here: `detach chess_mirror.etcs src=<Lobby surface> dst=<Lobby>`
+requires dst [Lobby]
+src.Watch() -> dst.Mirror()

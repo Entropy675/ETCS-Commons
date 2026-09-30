@@ -1,0 +1,32 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── JOIN A GAME ──────────────────────────────────────────────────────────────
+#
+# A TEMPLATE, like chess_host.etcs: {{n}}, {{name}}, {{id}}, {{hub}} and
+# {{owner}} (the host's name) are the page's to fill, `game` and `share` are
+# handed in. One link to the host (Peer), and a surface of each thing the host
+# published (ontology/Remote.h). This board FOLLOWS: what it proposes goes to
+# the host's proposals ledger, and it changes when the record comes back.
+
+spawn NetworkProvider::Peer peer{{n}}
+peer{{n}}.SetName({{name}})
+peer{{n}}.Connect({{hub}}/{{id}})
+
+spawn NetworkProvider::Ledger record{{n}}
+record{{n}}.spawn(NetworkProvider::Remote rrecord{{n}})
+rrecord{{n}}.Bind(record @peer{{n}})
+
+spawn NetworkProvider::Ledger proposals{{n}}
+proposals{{n}}.spawn(NetworkProvider::Remote rproposals{{n}})
+rproposals{{n}}.Bind(proposals @peer{{n}})
+
+spawn NetworkProvider::Lobby presence{{n}}
+presence{{n}}.spawn(NetworkProvider::Remote rpresence{{n}})
+rpresence{{n}}.Bind(presence @peer{{n}})
+
+share.Join(@presence{{n}} {{name}} {{owner}})
+
+detach ChessProvider/scripts/chess_follow.etcs src=record{{n}} dst=game
+detach ChessProvider/scripts/chess_emit.etcs src=game dst=proposals{{n}}
+detach ChessProvider/scripts/chess_watch.etcs src=presence{{n}} dst=share

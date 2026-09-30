@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A follower's proposals to the host: `detach chess_emit.etcs src=<ChessGame> dst=<Ledger>`
+requires src [ChessGame]
+src.Emit() -> dst.Take()

@@ -12,8 +12,9 @@
 
 // because this code is OS invariant, we don't need to do the whole typedef shenanigans to have a concrete type...
 #include "ChessProvider/ChessGame.h"
-#include "ChessProvider/ChessNode.h"
-#include "ChessProvider/ChessLobby.h"
+#include "ChessProvider/ChessShare.h"
+#include "ChessProvider/ChessBoard.h"
+#include "ChessProvider/ChessTable.h"
 
 #define CHESSPROVIDER_CONTRACT__
 

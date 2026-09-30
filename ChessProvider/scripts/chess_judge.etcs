@@ -1,0 +1,6 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# The proposals into the judge: `detach chess_judge.etcs src=<Ledger> dst=<ChessShare>`
+# (the share judges on its game and keeps the hall entry current -- ChessShare::judge)
+requires dst [ChessShare]
+src.Follow(0) -> dst.Judge()

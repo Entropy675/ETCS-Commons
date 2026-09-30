@@ -7,320 +7,265 @@
 // types, and no platform split (the ncurses/Windows fork lived entirely in the
 // View, which the runtime replaces).
 #include "CChess/src/Board.h"
-#include <vector>
+#include <cstdio>
+#include <deque>
+#include <mutex>
 #include <string>
-#include <atomic>
-#include <chrono>
-#include <unordered_map>
+#include <vector>
 
-class ChessGame;
-class ChessLobby;
-class ChessNode;
-
-// ── Serialization ─────────────────────────────────────────────────────────────
-// Work functions dispatch on ThreadPool threads and a route can be driven by ANY
-// connection, so unlike a type reached only through its own IO chain, two
-// requests genuinely execute here at once. Two concurrent Requests both entered
-// ResetConcrete and raced inside setStartingBoard: one deleted the Piece objects
-// while the other was still walking them (a reproduced SIGSEGV in ~Piece,
-// surfacing as a glibc double-free).
-//
-// An EventStream rather than a mutex, because here the ORDER is the semantics,
-// not merely a safety property. Two connections submitting moves need a globally
-// agreed sequence regardless of memory safety; a lock would give arbitrary
-// non-corrupting interleaving, while the stream gives the actual causal chain --
-// the same sequence a peer would replay to verify the game. It also keeps pool
-// threads free: work queues instead of stalling every other connection behind a
-// held lock.
-//
-// The mechanism is simply that the ordering thread is a SINGLE thread. Nothing
-// reached from on_event needs a lock, which is why every *Locked body below has
-// no synchronisation of its own -- and it is also what lets a game call straight
-// into its lobby to report an outcome without any handshake.
-
-// ── The wire event ────────────────────────────────────────────────────────────
-// The struct that actually crosses the ring, mirroring DLInEvent: a flat POD of
-// inputs plus POINTERS to the caller's own completion slots. Nothing here owns
-// anything -- arg/tok point into the caller's strings and result_out/done point
-// at members of the ChessOpEvent below, all of which the blocking wait in
-// operator() keeps alive for the whole dispatch.
-struct ChessInEvent
-{
-    enum class Kind : uint8_t { Request, Move, LoadFen, Fen, Status, Chat, Say,
-                                Key, Reset, IsActive, History, Leave,
-                                LobbyRequest, LobbyList, LobbyJoin, LobbyPlayers };
-
-    Kind        kind;
-    void*       target = nullptr;   // ChessGame* or ChessLobby*, per kind
-
-    const char* arg = nullptr;      // path / uci / fen / chat text / key
-    const char* tok = nullptr;      // who, when the caller knows
-
-    std::string*       result_out = nullptr;
-    std::atomic<bool>* done       = nullptr;
-};
-
-// Only the POINTER rides the ring. LBuffer is 32 bytes and the LMAX adapter is a
-// fast hand-off, so the event itself stays on the caller's stack -- putting the
-// payload type in the stream directly instead made enqueue memcpy the whole
-// struct through that 32-byte slot and silently overrun it.
-struct ChessInEventPtr
-{
-    ChessInEvent* ptr;
-};
-
-// Nothing is shared between events -- all state lives on the entity each event
-// points at -- so the stream's own State is empty.
-struct ChessState {};
-
-struct ChessStream : ETCS::EventStream<ChessStream, ChessState, ChessInEventPtr>
-{
-    // Defined at the bottom of ChessNode.h, not here: it dispatches to BOTH
-    // types and so needs both complete.
-    ETCS::DispatchResult on_event(ChessState&, const ChessInEventPtr& evt, uint64_t seq);
-
-    // Never reached: every event is handled synchronously inside on_event and
-    // returns Drop, so no gap slot is acquired and no completion is posted.
-    void on_completion(ChessState&, ETCS::WorkResult*, uint64_t) {}
-    void on_emit(ChessState&, ETCS::GapSlot&)                   {}
-
-    // NO getInstance() ANYMORE. A stream is owned by a ChessNode -- see
-    // ChessNode's own comment for why the node is the ordering domain rather
-    // than the module or the board.
-    //
-    // What this type deliberately no longer does is name a particular stream. A
-    // state machine now REQUIRES an output target rather than reaching for a
-    // module-global, so the identical type code serves per-node, per-board, or
-    // N-boards-hashed-to-k wiring with no source change. Granularity became a
-    // deployment decision instead of a release decision.
-    //
-    // The old comment justified one stream for every game in the module as
-    // "ordering across unrelated games is harmless (a chess move is not
-    // latency-critical) and a thread per game would be absurd". Both halves
-    // were answering the wrong question:
-    //
-    //   - Harmless is true of a peer running one game and false of a server
-    //     running many. Two boards share no causal relation, so a shared
-    //     sequence asserts one that does not exist, and charges for the
-    //     assertion in head-of-line blocking proportional to MODULE-WIDE
-    //     traffic rather than to any one game's. Every ChessOpEvent waiter is
-    //     a parked ThreadPool thread, so that queue depth converts directly
-    //     into pool starvation.
-    //
-    //   - "A thread per game would be absurd" answers a proposal nobody had to
-    //     make. An ordering domain needs a serialization point, not a thread;
-    //     the two were only ever collapsed by getInstance() pairing them. Per
-    //     NODE is one thread in the deployment that actually exists, since
-    //     nodes are few and games are many.
-};
-
-// ── The caller-facing event ───────────────────────────────────────────────────
-// Constructed on the caller's stack, invoked, and read: the object IS the
-// completion slot, exactly as AddTagEvent's own result/ready members are.
-//
-// One event type with a Kind rather than one struct per verb (LoadEvent,
-// ResolveEvent, ...): the loader's events are separate structs because their
-// payloads and return types genuinely differ, while every chess operation is
-// (target, arg, tok) -> string. Fourteen identical structs would be ceremony.
-struct ChessOpEvent
-{
-    // The target ordering domain, handed in rather than looked up. Null is a
-    // real state -- a board with no node in front of it -- and it is REFUSED
-    // rather than falling back to a direct call. A fallback would make the
-    // unsynchronised path the quiet one, and that path is precisely the
-    // reproduced SIGSEGV in ~Piece this stream was introduced to close.
-    ChessStream*       stream;
-    ChessInEvent::Kind kind;
-    void*              target;
-    std::string        arg;
-    std::string        tok;
-
-    std::string        result;
-    std::atomic<bool>  done{false};
-
-    ChessOpEvent(ChessStream* st, ChessInEvent::Kind k, void* t,
-                 std::string a = "", std::string s = "")
-        : stream(st), kind(k), target(t), arg(std::move(a)), tok(std::move(s)) {}
-
-    std::string operator()();
-};
-
-inline std::string ChessOpEvent::operator()()
-{
-    // Guards the one genuinely dangerous case: being called from an ordering
-    // thread, where waiting on a stream that may be ordered behind you is the
-    // deadlock already hit once with the ack round-trip. It cannot catch re-entry
-    // from THIS stream's own thread, but on_event only ever calls the *Locked
-    // bodies, never back through here.
-    // NOTE, and a genuine loosening: with one stream per node this asks whether
-    // the caller is on AN ordering thread, not whether it is on THIS one. So a
-    // future node-to-node call trips it spuriously, AND the A->B-while-B->A
-    // deadlock that a single global stream made structurally impossible is no
-    // longer impossible. Cross-node calls have to be non-blocking; enforcing
-    // that here needs the assert to carry a stream identity.
-    ETCS_ASSERT_NOT_ORDERING_THREAD("ChessOpEvent");
-
-    // A board with no node cannot be driven safely, so it is not driven at all.
-    // This is a BEHAVIOUR CHANGE for any script that spawns a bare ChessGame:
-    // every verb on it now answers "NO NODE" instead of running. Mint a node.
-    if (!stream) return "NO NODE";
-
-    ChessInEvent in;
-    in.kind       = kind;
-    in.target     = target;
-    in.arg        = arg.c_str();
-    in.tok        = tok.c_str();
-    in.result_out = &result;
-    in.done       = &done;
-
-    // false means the stream is tearing down -- nothing will ever service this,
-    // so return rather than spin on a flag that cannot flip.
-    if (!stream->enqueue(ChessInEventPtr{&in}))
-        return "BUSY";
-
-    // progressiveYield, NOT a bare spin. This wait runs on a ThreadPool thread
-    // and now fires on every HTTP request, so a hot spin here burns a whole core
-    // per in-flight request: with four hardware threads, four concurrent
-    // requests starve the very ordering thread they are waiting on, AND leave
-    // nobody draining io_uring -- which presents as the listener accepting
-    // connections only intermittently, nowhere near the actual cause.
-    //
-    // The loader's own events spin bare and get away with it because they are
-    // rare. Chess events are continuous, so this one has to yield.
-    int retry = 0;
-    while (!done.load(std::memory_order_acquire))
-        ETCS::LMAXSequentialSharedPage::progressiveYield(retry);
-    return result;
-}
-
-// ── ChessGame ─────────────────────────────────────────────────────────────────
-// Renamed from ChessBoard because it stopped being one. A board is a position;
-// this owns seats, turn ownership, spectators, liveness and abandonment policy,
-// and only DELEGATES the position to CChess.
-//
-// Bases: EphemeralBase (resettable, with a real notion of being finished),
-// DeletableBase (destroyed on demand), FilterBase (decides which request paths
-// are its own). Still NOT Gate_/Switchable_: no open/closed axis of its own --
-// that belongs to the server in front of it.
-//
-// Identity is a client-generated TOKEN carried in the path, not a connection:
-// this server answers Connection: close, so a SocketConnectionState is minted
-// per REQUEST and deleted when the response is sent. Nothing on the wire
-// outlives a single fetch, so there is nothing stable to bind a side to. The
-// token is also the shape the P2P version needs, and the slot an ACE identity
-// key later drops into.
-//
-// Seats are claimed by MOVING, not arriving. Arriving is free and unlimited
-// (that is what a spectator is), so a claim must cost something only a player
-// would spend, and the first legal move for a side is exactly that.
+/*
+ * ── ChessGame ─────────────────────────────────────────────────────────────
+ *
+ * A board is a position; this owns seats, turn ownership, the outcome and the
+ * conversation, and DELEGATES the position to CChess.
+ *
+ * THE RECORD IS THE GAME. In a session every line that changes a board -- a
+ * move, a seat, a resignation, a draw, a word -- is a line of ONE record
+ * (a NetworkProvider::Ledger on the host's runtime, ontology/Record.h), and
+ * every board is what that record says, replayed in its order. There is no
+ * agreement protocol, because there is nothing to agree: two boards fed the
+ * same lines by the same engine are the same board.
+ *
+ * ONE BOARD JUDGES. The host's board is the one in front of the record. A
+ * guest's line goes to the host's PROPOSALS ledger (`game.Emit() ->
+ * proposals.Take()`, authored there by the link it came over), the judge
+ * follows that ledger (`proposals.Follow(0) -> game.Judge()`), applies each
+ * line as its author, and appends to the record only what the board took.
+ * So the record holds what happened and nothing else -- a refused move never
+ * becomes a line anybody replays -- and the proposals ledger is checkpointed
+ * behind the judge, so it holds nothing for long. Every other board FOLLOWS:
+ * its verbs propose (Emit), and it changes only when the record comes back
+ * through `Absorb`. Your own move therefore lands after one round trip
+ * through the host, and two boards cannot disagree even for a moment.
+ *
+ * WHO THE JUDGE IS decides the arrangement and nothing else: in a game
+ * between two people, one of them hosts and their board judges; in a ranked
+ * game the ACE server hosts -- an ETCS runtime like theirs, with a board that
+ * holds no seat, judges every line and keeps the outcome. Same type, same
+ * streams, same scripts. A spectator is a follower with no seat; a player is
+ * a follower with one; the ranking server is the judge with none.
+ *
+ * WHO A LINE IS BY is the link it came over: the proposals ledger authors it
+ * with the link's name, never with anything the line says, and the judge
+ * writes that name into the record. Seats are held by name. Alone, with no session, the two
+ * seats are the two colours and a click moves as whichever is to move: the
+ * hotseat, where the board is its own judge.
+ */
 class ChessGame :
     public EphemeralBase<ChessGame>,
-    public DeletableBase<ChessGame>,
-    public FilterBase<ChessGame>
+    public DeletableBase<ChessGame>
 {
-    friend struct ChessStream;  // the only caller of the *Locked bodies
-    friend class  ChessLobby;   // holds an edge to this match
-    friend class  ChessNode;    // owns the board; same ordering thread
-
 public:
     WIRE_TYPE_IDENTITY(ChessGame);
-
-    using Clock = std::chrono::steady_clock;
-    using Kind  = ChessInEvent::Kind;
 
     ChessGame()  { board.setStartingBoard(true); refreshTerminal(); recordHistoryLocked(""); }
     virtual ~ChessGame() = default;
 
-    // ── Public surface: every one of these serializes ─────────────────────
-    std::string Request(const std::string& path)      { return op(Kind::Request, path); }
-    std::string ApplyMove(const std::string& mv,
-                          const std::string& tok = "") { return op(Kind::Move, mv, tok); }
-    std::string LoadFenStr(const std::string& fen)    { return op(Kind::LoadFen, fen); }
-    std::string Fen() const                            { return op(Kind::Fen); }
-    std::string StatusLine(const std::string& t = "") const { return op(Kind::Status, "", t); }
-    std::string ChatLog() const                        { return op(Kind::Chat); }
-    std::string History(const std::string& from = "0") { return op(Kind::History, from); }
-    std::string Leave(const std::string& tok)          { return op(Kind::Leave, "", tok); }
-    std::string KeyVerb(const std::string& k = "")     { return op(Kind::Key, k); }
+    // ── the session ───────────────────────────────────────────────────────
+    // This board's name in a session. Empty: the hotseat, its own judge.
+    void Session(const std::string& me) { std::lock_guard<std::mutex> hold(mu_); me_ = me; }
+    /*
+     * ENTER A SESSION FROM A KNOWN POSITION. A follower is its record replayed
+     * from the base, and the base is the standard start (the first line is a
+     * move from it) -- so a board that carried a previous game's position into
+     * a new session would apply the record's moves to the wrong board and
+     * diverge from it. Called by ChessShare::Host and ::Join: the seq is put
+     * back to 0 so the first Absorb aligns, the outbox is emptied so nothing
+     * from before is proposed, and the chat is kept (the people may be the
+     * same). The host's board is the record's authority and starts here too.
+     */
+    void Restart()
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        resetLocked();
+        seq_ = 0;
+        outbox_.clear();
+        recorded_ = false;
+    }
+    // This board judges: what it takes goes into `record`, and `proposals`
+    // (both Records) is what it judges from -- checkpointed behind it.
+    void Judge(ETCS::RID record, ETCS::RID proposals)
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        record_    = record;
+        proposals_ = proposals;
+        judge_     = record != 0;
+    }
+    bool judge() const { return judge_; }
+    const std::string& me() const { return me_; }
+
+    /*
+     * A VERB FROM HERE. The hotseat and the judge apply it and answer as the
+     * board does (a FEN, a status line, OK, or a refusal in capitals); a
+     * follower proposes it -- queued for Emit -- and answers SENT, since the
+     * answer is the record's to give. `as` is the hotseat's colour; in a
+     * session it is this board's own name.
+     */
+    std::string Act(const std::string& as, const std::string& verb, const std::string& arg)
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        if (me_.empty()) return verbLocked(as, verb, arg);
+        if (judge_)      return judgeLocked(me_, verb, arg);
+        outbox_.push_back(verb + (arg.empty() ? "" : " " + arg));
+        return "SENT";
+    }
+
+    /*
+     * A PROPOSAL (the Judge stream): "<seq> <author> <verb> [<arg>]" from the
+     * proposals ledger, applied as its author and appended to the record if
+     * the board took it. A refusal is the proposer's to see through their own
+     * board not changing. The proposals ledger is checkpointed past it.
+     */
+    void JudgeLine(const std::string& msg)
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        if (!judge_ || msg.compare(0, 2, "~ ") == 0) return;
+        uint64_t seq = 0; std::string author, verb, arg;
+        if (!parseLine(msg, seq, author, verb, arg) || author.empty()) return;
+        judgeLocked(author, verb, arg);
+        if (Record_* p = recordOf(proposals_)) p->Checkpoint(seq + 1);
+    }
+
+    /*
+     * A LINE OF THE RECORD, followed (the Absorb stream): "<seq> <author>
+     * <verb> [<arg>]", applied as its author. A restart ("~ <seq> <chain>",
+     * the record starting later than asked) moves the seq. A line the board
+     * refuses here was taken by the judge from a board that had it -- so a
+     * refusal is logged as a disagreement, which the presence hashes will
+     * also show; it is not repaired, because there is nothing to repair it
+     * from but the record itself.
+     */
+    void Absorb(const std::string& msg)
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        if (msg.compare(0, 2, "~ ") == 0)
+        {
+            seq_ = std::strtoull(msg.c_str() + 2, nullptr, 10);
+            return;
+        }
+        uint64_t seq = 0; std::string author, verb, arg;
+        if (!parseLine(msg, seq, author, verb, arg)) return;
+        const std::string r = verbLocked(author, verb, arg);
+        seq_ = seq + 1;
+        if (refusal(r) && verb != "leave")
+            ETCS_LOG("ChessGame", "line " << seq << " (" << author << " " << verb << " " << arg
+                     << ") refused here: " << r << " -- this board is not the record's.");
+    }
+
+    // Emit's queue: the next proposed line, or false.
+    bool nextEmit(std::string& out)
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        if (outbox_.empty()) return false;
+        out = std::move(outbox_.front());
+        outbox_.pop_front();
+        return true;
+    }
+
+    // ── reads ─────────────────────────────────────────────────────────────
+    std::string Fen() const                          { std::lock_guard<std::mutex> hold(mu_); return board.toFENString(); }
+    std::string StatusLine(const std::string& as) const { std::lock_guard<std::mutex> hold(mu_); return statusLineLocked(as); }
+    std::string ChatPage(const std::string& from) const
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        return from.empty() ? chatLogLocked() : pageLocked(chat_, chat_base_, parseIndex(from));
+    }
+    std::string HistoryPage(const std::string& from) const
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        return pageLocked(history_, history_base_, parseIndex(from));
+    }
+    std::string Seats() const
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        return std::string("white:") + (white_.empty() ? "open" : "taken")
+             + " black:" + (black_.empty() ? "open" : "taken");
+    }
+    /*
+     * WHAT THE BOARD IS, as one number: the position, the seats, the offer
+     * and the outcome -- what two boards fed the same record must agree on
+     * -- and the record seq it is the board of. Sent with presence, so the
+     * members compare boards without a verb for it (ChessShare::roster).
+     */
+    std::string Hash() const
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        const std::string s = board.toFENString() + "|" + white_ + "|" + black_ + "|" + draw_offer_ + "|" + over_;
+        return hex64(XXH3_64bits(s.data(), s.size())) + " " + std::to_string(seq_);
+    }
+    std::string LoadFenStr(const std::string& fen)
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        if (!board.loadFEN(fen)) return "INVALID";
+        refreshTerminal();
+        // A loaded position is a new root, not a continuation: the plies before
+        // it never happened on this board and stepping back into them would
+        // show a line that does not lead here.
+        history_.clear();
+        history_base_ = 0;
+        recordHistoryLocked("");
+        return board.toFENString();
+    }
+    // Narration from outside the record: who arrived, who left (ChessShare).
+    void Note(const std::string& text) { std::lock_guard<std::mutex> hold(mu_); logLocked(text); }
+
+    // For the board that draws this and the table that clicks on it.
+    std::string LastMove() const
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        if (history_.empty()) return "";
+        const std::string& h = history_.back();
+        const size_t sp = h.find(' ');
+        const std::string uci = sp == std::string::npos ? h : h.substr(0, sp);
+        return uci == "-" ? "" : uci;
+    }
+    std::string Me() const     { std::lock_guard<std::mutex> hold(mu_); return me_; }
+    // The last `n` lines of the conversation, one per line, for a pane that
+    // shows a fixed number of rows.
+    std::string ChatTail(size_t n) const
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        std::string out;
+        for (size_t i = chat_.size() > n ? chat_.size() - n : 0; i < chat_.size(); ++i) { out += chat_[i]; out += "\n"; }
+        return out;
+    }
+    bool WhiteToMove() const   { std::lock_guard<std::mutex> hold(mu_); return board.isWhiteTurn(); }
+    bool Over() const          { std::lock_guard<std::mutex> hold(mu_); return !over_.empty() || checkmate_ || stalemate_; }
+    // The piece on a square as its FEN letter, ' ' for none, 0 off the board.
+    char PieceAt(const std::string& sq) const
+    {
+        if (sq.size() < 2 || sq[0] < 'a' || sq[0] > 'h' || sq[1] < '1' || sq[1] > '8') return 0;
+        const std::string fen = Fen();
+        int row = 0, file = 0;
+        const int want_row = '8' - sq[1], want_file = sq[0] - 'a';
+        for (char c : fen)
+        {
+            if (c == ' ') break;
+            if (c == '/') { ++row; file = 0; continue; }
+            if (c >= '1' && c <= '8') { if (row == want_row && want_file >= file && want_file < file + (c - '0')) return ' '; file += c - '0'; continue; }
+            if (row == want_row && file == want_file) return c;
+            ++file;
+        }
+        return ' ';
+    }
+
+    const std::string& White() const { return white_; }
+    const std::string& Black() const { return black_; }
 
     // ── EphemeralBase / DeletableBase ─────────────────────────────────────
-    bool ResetConcrete() override { return op(Kind::Reset) != "BUSY"; }
-
-    // Reads the CACHED terminal flag rather than recomputing. Two reasons, the
-    // second load-bearing: isCheckmate()/isStalemate() are non-const in CChess
-    // and cannot honestly be made const (they simulate a move by mutating the
-    // board and restoring it), so recomputing here would force a mutable Board.
-    // Caching at the one moment the answer can change is cheaper and
-    // const-honest. A plain bool read races benignly with a move landing --
-    // worst case a caller sees the previous answer one request early.
+    bool ResetConcrete() override { return Act(me_.empty() ? "white" : me_, "reset", "") != "GAME OVER"; }
     bool IsActiveConcrete() const override { return active_; }
 
     bool DeleteConcrete() override
     {
         std::string conjugate_key = this->getSourceModule().toString() + ":"
                                    + this->getSourceTag().toString();
-        ETCS_LOG("ChessGame", "Delete: firing self-DestroyEvent for RID:"
-                 << getRID() << " (" << conjugate_key << ")");
         ETCS::DestroyEvent{conjugate_key.c_str(), this, true}();
         return true;
     }
 
-    // ── FilterBase ────────────────────────────────────────────────────────
-    // Deliberately NOT routed through the stream. It reads only match_key_, and
-    // is called from route dispatch on a pool thread for EVERY request -- a
-    // round trip here would serialize path matching behind game logic for paths
-    // that turn out not to be ours at all.
-    //
-    // The tradeoff: match_key_ must be treated as set-once (Key at setup, not
-    // mid-game). If it ever needs to change at runtime, this becomes an event.
-    //
-    // Filter_'s contract is "empty io means declined", so a decline MUST clear
-    // the buffer -- returning false while leaving the descriptor in place reads
-    // to the caller as an acceptance whose key happens to be the descriptor,
-    // which silently accepts every crossing.
-    //
-    // No seat check: fullness is a question about MOVING, answered in
-    // applyMoveLocked. Declining here once full silently made spectating
-    // impossible -- a third viewer's path stopped matching and 404'd.
-    bool AcceptsConcrete(ETCS::Buffer& io) const override
-    {
-        if (match_key_.empty()) { io.reset(); return false; }
-
-        const std::string desc = io.restAsString();
-        bool found = false;
-        for (size_t i = 0; !found && i < desc.size(); )
-        {
-            size_t j = desc.find('/', i);
-            if (j == std::string::npos) j = desc.size();
-            if (desc.compare(i, j - i, match_key_) == 0) found = true;
-            i = j + 1;
-        }
-        if (!found) { io.reset(); return false; }
-        io.writeString(match_key_.c_str());
-        return true;
-    }
-
-    const std::string& MatchKey() const    { return match_key_; }
-    void SetMatchKey(const std::string& k) { match_key_ = k; }   // setup only
-
-    const std::string& White() const { return white_; }
-    const std::string& Black() const { return black_; }
-    int  Seats() const { return (white_.empty() ? 0 : 1) + (black_.empty() ? 0 : 1); }
-
-    // Shared with ChessLobby, which splits the same paths.
-    static void splitPath(const std::string& path, std::vector<std::string>& out)
-    {
-        for (size_t i = 0; i < path.size(); )
-        {
-            size_t j = path.find('/', i);
-            if (j == std::string::npos) j = path.size();
-            if (j > i) out.emplace_back(path, i, j - i);
-            i = j + 1;
-        }
-    }
-
-    // Decode one path segment after splitPath. Browsers encode content-bearing
-    // args with encodeURIComponent; without this, spaces arrive as literal %20.
+    // Decode one path segment. Browsers encode content-bearing args with
+    // encodeURIComponent; without this, spaces arrive as literal %20.
     static std::string percentDecode(const std::string& in)
     {
         std::string out;
@@ -349,153 +294,46 @@ public:
     }
 
 private:
-    // Raised from 40 because the log now carries narration as well as speech:
-    // arrivals, seat claims, every move, and the outcome. A 40-line ring was
-    // scrolled clean by roughly twenty plies, which threw away the conversation
-    // to make room for the move list -- the opposite of what either is for.
-    static constexpr size_t kChatLines    = 200;
+    // Raised from 40 because the log carries narration as well as speech:
+    // arrivals, seat claims, every move, and the outcome.
+    static constexpr size_t kChatLines = 200;
 
-    // ── The frame budget ──────────────────────────────────────────────────
-    // A route's ENTIRE reply is one ETCS::Buffer: HttpServer::DispatchRoute
-    // declares `ETCS::Buffer payload`, calls the work function with it, and
-    // assigns it straight to io. So a reply has MAX_TAG_BUFFER_SIZE to live in,
-    // and what happens on overflow is worse than truncation:
-    //
-    //     bool writeString(const char* str)
-    //     {
-    //         reset();                                   // <-- clears FIRST
-    //         if (strlen(str) + 1 > bufsize) return false;  // <-- leaves it EMPTY
-    //
-    // The buffer is reset before the capacity check, so an oversized reply does
-    // not arrive clipped -- it arrives as nothing at all. That is the whole bug
-    // report: the chat worked until the pane filled and then every line
-    // vanished at once, because the pane filling and the log crossing bufsize
-    // are the same event, and the crossing blanks the response rather than
-    // shortening it. (It is logged, so the server's own log names it.)
-    //
-    // Fixed-size verbs were never at risk -- a FEN is 56 bytes, a status line
-    // 40 -- which is why this only surfaced once chat started carrying
-    // narration and grew several times faster.
-    //
-    // Widening the buffer is possible (TBuffer<N> takes any N, and NBuffer is
-    // already 8K) but it is not the fix, for two reasons: the work function is
-    // handed an ETCS::Buffer& by HttpServer, so this module cannot choose the
-    // width on its own; and a log with no upper bound reaches any width
-    // eventually, so a wider buffer only moves the cliff. Paging removes it.
-    //
-    // The growing verbs therefore answer in PAGES: a "<base> <next>" header and
-    // then as many whole lines as fit. 200 rather than a number derived from
-    // bufsize because this module should not encode a constant it does not own
-    // -- a build with a bigger Buffer simply gets the same correct answer in
-    // the same number of requests, and one with a smaller Buffer is the only
-    // case that would need this lowered.
+    // A verb's answer is one ETCS::Buffer (writeString clears it first and
+    // leaves it EMPTY if the text does not fit), so the growing verbs answer in
+    // PAGES: a "<base> <next>" header and then as many whole lines as fit.
+    // 200 rather than a number derived from bufsize because this module
+    // should not encode a constant it does not own.
     static constexpr size_t kFrameBudget = 200;
 
-    // Lines dropped off the front of each ring. A page is addressed by ABSOLUTE
-    // index, so a client that was reading at 40 can tell the difference between
-    // "nothing new" and "the 40 you had are gone" -- without which a full ring
-    // silently renumbers under the reader and it re-appends lines it already
-    // has.
-    size_t chat_base_ = 0, history_base_ = 0;
+    // 600 plies is past the longest recorded tournament game.
+    static constexpr size_t kHistoryPlies = 600;
 
-    // The record chain of a pair's lines replayed onto this board
-    // (ChessNode::replayLocked): XXH3 of each line seeded with the one
-    // before, the relay's own chain, so the two can be compared. Not
-    // cleared by reset -- a reset is a line of the record like any other.
-    uint64_t chain_ = 0;
-    size_t   chain_seq_ = 0;
-
-    /*
-     * ── AGREEMENT: a pair's two boards on what the next step is ─────────────
-     *
-     * A step is proposed FROM a state and lands on a state; the line carries
-     * both hashes (ChessNode::proposeLocked), and each board takes it only
-     * from the same state to the same result (ChessNode::replayLocked). A
-     * line proposed from a state that is gone -- a line ordered ahead of it
-     * changed the board -- is void on both boards alike, no word needed.
-     * Taken from the same state to a DIFFERENT result is a disagreement: the
-     * board that saw it says so with a `void` line, and both take that one
-     * step back. Past one step there is nothing to agree back to: the game is
-     * drawn, "desync".
-     *
-     * The state is what the two players must agree on -- position, seats,
-     * the offer, the outcome -- not chat, presence or history, which each
-     * board narrates at its own moments. A desynced game hashes as "desync"
-     * alone: the boards disagree about the rest by definition, and a New game
-     * proposed from there has to be takeable by both.
-     */
-    uint64_t stateHashLocked() const
+    // A record's line: "<seq> <author> <verb> [<arg...>]"
+    static bool parseLine(const std::string& msg, uint64_t& seq, std::string& author,
+                          std::string& verb, std::string& arg)
     {
-        const std::string s = (over_ == "desync") ? over_
-            : board.toFENString() + "|" + white_ + "|" + black_ + "|" + draw_offer_ + "|" + over_;
-        return XXH3_64bits(s.data(), s.size());
+        const size_t a = msg.find(' ');
+        const size_t b = a == std::string::npos ? a : msg.find(' ', a + 1);
+        if (b == std::string::npos) return false;
+        seq    = std::strtoull(msg.c_str(), nullptr, 10);
+        author = msg.substr(a + 1, b - a - 1);
+        const std::string line = msg.substr(b + 1);
+        const size_t sp = line.find(' ');
+        verb = line.substr(0, sp);
+        arg  = sp == std::string::npos ? std::string() : line.substr(sp + 1);
+        while (!arg.empty() && arg.back() == '\r') arg.pop_back();
+        return !verb.empty();
+    }
+    static Record_* recordOf(ETCS::RID rid)
+    {
+        ETCS::Entity* e = rid ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid) : nullptr;
+        void* rec = e ? e->getInterfacePointer(ETCS::Buffer("Record")) : nullptr;
+        return static_cast<Record_*>(rec);
     }
 
-    // Everything a step can change and stateHashLocked covers, plus what
-    // follows from it (history, started_, recorded_), so a step is undone
-    // whole. recorded_ goes back too: a player record an undone ending
-    // already counted is not uncounted -- the node keeps no ledger to take
-    // it back from.
-    struct Snapshot
-    {
-        std::string fen, white, black, offer, over;
-        bool        started = false, recorded = false;
-        size_t      plies = 0, plies_base = 0;
-        ChessStatus last = ChessStatus::SUCCESS;
-    };
-    Snapshot snapshotLocked() const
-    {
-        return Snapshot{ board.toFENString(), white_, black_, draw_offer_, over_,
-                         started_, recorded_, history_.size(), history_base_, last };
-    }
-    void restoreLocked(const Snapshot& s)
-    {
-        board.loadFEN(s.fen);
-        white_ = s.white; black_ = s.black; draw_offer_ = s.offer; over_ = s.over;
-        started_ = s.started; recorded_ = s.recorded; last = s.last;
-        if (s.plies_base == history_base_ && s.plies <= history_.size())
-            history_.resize(s.plies);
-        refreshTerminal();
-    }
-
-    // A pair's board. Its liveness is the name server's (a quiet partner
-    // ends the pair there), so it reaps nothing by its own clock: two boards
-    // releasing a seat thirty seconds apart would disagree about the seat.
-    bool replayed_ = false;
-    // The last line of the record that changed this board, and the state
-    // before it: the one step a `void` can take back.
-    struct Step { bool on = false; size_t seq = 0; Snapshot before; };
-    Step last_step_;
-    // This page's own step, drawn before its place in the order is known.
-    // One at a time: a second waits for the first to come back in order.
-    // `undone` once a line ordered ahead of it took it back; it is then
-    // judged in its turn like anyone's.
-    struct Pending { bool on = false, undone = false; std::string self, tag; Snapshot before; };
-    Pending pending_;
-    // The seq of the last line of the record, other than talk, replayed
-    // here: a `void` must name exactly that line to be one step deep.
-    bool   has_line_ = false;
-    size_t last_line_ = 0;
-    // The last `void` taken: which line it disputed, and its own seq.
-    struct Voided { bool on = false; size_t seq = 0, at = 0; };
-    Voided voided_;
-
-    // Ends the game drawn on a disagreement past one step. Every board that
-    // takes the `void` does this, whatever it holds, so both end alike.
-    std::string desyncLocked()
-    {
-        over_ = "desync";
-        draw_offer_.clear();
-        pending_ = Pending{}; last_step_ = Step{}; voided_ = Voided{};
-        logLocked("the boards disagree past one step -- drawn (desync)");
-        refreshTerminal();
-        reportOutcomeLocked();
-        return "DESYNC";
-    }
-
-    // An answer that refuses: every refusal here is upper case ("ILLEGAL",
-    // "NOT YOUR TURN", "GAME OVER", "TAKEN" ...); what a verb takes answers
-    // with a FEN, a status line or "OK".
+    // Every refusal here is upper case ("ILLEGAL", "NOT YOUR TURN", "GAME
+    // OVER", "TAKEN" ...); what a verb takes answers with a FEN, a status
+    // line or "OK".
     static bool refusal(const std::string& a)
     {
         if (a.empty() || a == "OK") return false;
@@ -503,10 +341,28 @@ private:
         return true;
     }
 
+    // The judge: applied here, and into the record if taken. A read verb
+    // answers and is not a line.
+    std::string judgeLocked(const std::string& author, const std::string& verb, const std::string& arg)
+    {
+        const std::string r = verbLocked(author, verb, arg);
+        if (refusal(r) || !changes(verb)) return r;
+        Record_* rec = recordOf(record_);
+        if (!rec) { ETCS_LOG("ChessGame", "the record is gone -- " << verb << " taken here only."); return r; }
+        const uint64_t seq = rec->Append(author, verb + (arg.empty() ? "" : " " + arg));
+        if (seq != UINT64_MAX) seq_ = seq + 1;
+        return r;
+    }
+    // The verbs that are lines of the record; the rest read.
+    static bool changes(const std::string& v)
+    {
+        return v == "move" || v == "sit" || v == "say" || v == "resign" || v == "draw"
+            || v == "decline" || v == "leave" || v == "reset";
+    }
+
     // "<base> <next>\n" then src[from - base ...], stopping before the budget.
     // Whole lines only: half a line is not a thing any reader here can use.
-    std::string pageLocked(const std::vector<std::string>& src,
-                           size_t base, size_t from) const
+    std::string pageLocked(const std::vector<std::string>& src, size_t base, size_t from) const
     {
         if (from < base) from = base;               // caller fell behind the ring
         size_t i = (from - base < src.size()) ? (from - base) : src.size();
@@ -518,9 +374,7 @@ private:
             ++i;
         }
         // A single line longer than the whole budget would otherwise never be
-        // sent and the reader would stall on it forever, re-requesting the same
-        // index. Ship it clipped: losing the tail of one over-long line beats
-        // losing every line after it.
+        // sent and the reader would stall on it forever. Ship it clipped.
         if (body.empty() && i < src.size())
         {
             body = src[i].substr(0, kFrameBudget);
@@ -530,68 +384,12 @@ private:
         return std::to_string(base) + " " + std::to_string(base + i) + "\n" + body;
     }
 
-    // A FEN per ply. Bounded for the same reason chat is: a game is presence,
-    // not an archive, and anything durable belongs in a database provider. The
-    // cap drops the OLDEST plies, so a very long game loses its opening rather
-    // than its recent moves -- which is the half a review pane is actually
-    // used for. 600 plies is past the longest recorded tournament game.
-    static constexpr size_t kHistoryPlies = 600;
-
-    // Defined at the bottom of ChessNode.h -- it needs ChessNode complete.
-    // A board's ordering domain is its node's, so a board with no node has
-    // none and every verb on it refuses.
-    ChessStream* streamOf() const;
-
-    // const w.r.t. the caller only: the ordering thread mutates through target.
-    std::string op(Kind k, const std::string& arg = "",
-                   const std::string& tok = "") const
-    {
-        return ChessOpEvent{streamOf(), k, const_cast<ChessGame*>(this), arg, tok}();
-    }
-
-    // ── Everything below runs ONLY on the ordering thread ─────────────────
-    // Single thread, therefore no synchronisation. Nothing here may call op():
-    // that would enqueue behind itself and never complete.
-
-    std::string fenLocked() const { return board.toFENString(); }
-
-    // ── History ───────────────────────────────────────────────────────────
     // One line per ply: "<uci> <fen>", oldest first, index 0 being the position
-    // the game STARTED from and carrying "-" for its move. Keeping the root in
-    // the same list rather than beside it means a client walking backwards
-    // never needs to know what a starting position looks like -- which matters
-    // because a game may have been seeded with loadFen and not start from one.
-    //
-    // Recorded server-side rather than left to the client because a spectator
-    // who arrives at move thirty has no snapshots of their own, and neither
-    // does a player who reloaded. The client still keeps its own snapshots as
-    // a fast path; this is what makes them recoverable.
+    // the game STARTED from and carrying "-" for its move.
     void recordHistoryLocked(const std::string& uci)
     {
         history_.emplace_back((uci.empty() ? "-" : uci) + " " + board.toFENString());
-        // Dropping the front discards the root line with it, so past the cap the
-        // first entry is an ordinary mid-game ply. Harmless: the client renders
-        // positions, it does not reconstruct them from the root.
         if (history_.size() > kHistoryPlies) { history_.erase(history_.begin()); ++history_base_; }
-    }
-
-    // Paged. A ply line is a uci plus a FEN, about 75 bytes, so a whole game
-    // has never fitted in one reply and never will -- this verb was born
-    // needing the paging that chat only grew into.
-    std::string historyPageLocked(size_t from) const
-    { return pageLocked(history_, history_base_, from); }
-
-    // Distinct tokens with recent traffic. This, not Seats(), is what "is this
-    // room full" means: seats are claimed by MOVING, so two people staring at
-    // the opening position occupy a room while holding zero seats.
-    int liveTokensLocked(int grace_seconds) const
-    {
-        const auto now = Clock::now();
-        int n = 0;
-        for (const auto& [t, when] : seen_)
-            if (std::chrono::duration_cast<std::chrono::seconds>(now - when).count()
-                    < grace_seconds) ++n;
-        return n;
     }
 
     bool resetLocked()
@@ -599,16 +397,11 @@ private:
         board.setStartingBoard(true);
         last = ChessStatus::SUCCESS;
         white_.clear(); black_.clear();
-        seen_.clear();
         over_.clear(); draw_offer_.clear();
-        recorded_ = false;
-        started_  = false;
+        started_ = false;
         refreshTerminal();
-        // The chat SURVIVES a reset while the history does not, and the
-        // difference is deliberate: the position is a new game, so replaying the
-        // old one under it would be a lie, but the people are the same people
-        // and their conversation did not end. The log line below is what joins
-        // the two halves.
+        // The chat SURVIVES a reset while the history does not: the position
+        // is a new game, but the people are the same people.
         history_.clear();
         history_base_ = 0;
         recordHistoryLocked("");
@@ -616,83 +409,22 @@ private:
         return true;
     }
 
-    std::string loadFenLocked(const std::string& fen)
+    // Claim by moving: the seat for the side to move is free, and this name
+    // does not already hold the OTHER seat -- so one person cannot quietly
+    // become both players. The hotseat's names are the colours themselves.
+    std::string applyMoveLocked(const std::string& mv, const std::string& who)
     {
-        if (!board.loadFEN(fen)) return "INVALID";
-        refreshTerminal();
-        // A loaded position is a new root, not a continuation: the plies before
-        // it never happened on this board and stepping back into them would
-        // show a line that does not lead here.
-        history_.clear();
-        history_base_ = 0;
-        recordHistoryLocked("");
-        return board.toFENString();
-    }
-
-    std::string keyLocked(const std::string& k)
-    {
-        if (!k.empty()) match_key_ = k;
-        return match_key_;
-    }
-
-    bool isActiveLocked() const { return active_; }
-
-    // Report the finished game to the lobby's player records. Defined at the
-    // bottom of ChessLobby.h -- it needs the lobby complete, and this call is a
-    // plain function call rather than an event precisely because both types live
-    // on the same ordering thread.
-    //
-    // Guarded by recorded_ so an outcome counts exactly once no matter how many
-    // times a finished game is polled afterwards.
-    void reportOutcomeLocked();
-
-    // tok empty == the trusted local caller (script, REPL). It bypasses seat
-    // ownership deliberately: that path is already inside the trust boundary,
-    // and an operator unable to move a piece on their own server would be a
-    // strange kind of security.
-    std::string applyMoveLocked(const std::string& mv, const std::string& tok)
-    {
-        // A resignation or agreed draw leaves a legal position behind, so
-        // nothing about the board itself would refuse this. Checked before the
-        // move, not after, so a finished game cannot be quietly continued.
         if (!over_.empty()) return "GAME OVER";
         if (mv.size() < 4)  return "ILLEGAL";
 
-        // Hoisted out of the token branch below: the narration after the move
-        // lands needs to know which SIDE moved, and by then the board has
-        // already flipped the turn. Reading it back from the board afterwards
-        // would report the opponent.
         const bool white_moved = board.isWhiteTurn();
-
-        if (!tok.empty())
+        std::string& seat        = white_moved ? white_ : black_;
+        const std::string& other = white_moved ? black_ : white_;
+        if (seat.empty())
         {
-            const bool white_to_move = white_moved;
-            std::string& seat        = white_to_move ? white_ : black_;
-            const std::string& other = white_to_move ? black_ : white_;
-
-            // Claim by moving: the seat for the side to move is free, and this
-            // token does not already hold the OTHER seat -- so one browser
-            // cannot quietly become both players.
-            if (seat.empty())
-            {
-                if (tok == other) return "NOT YOUR TURN";
-                seat = tok;
-                ETCS_LOG("ChessGame", "seat claimed: "
-                         << (white_to_move ? "white" : "black") << " -> " << tok);
-                // Announced HERE, before the move is validated, because the
-                // claim has already happened -- seat is assigned on the line
-                // above and is not rolled back if movePiece refuses. Deferring
-                // the line until the move is known legal would leave a seat
-                // held by someone the log never named.
-                logLocked(tok + " sits as " + (white_to_move ? "white" : "black"));
-            }
-            else if (seat != tok)
-            {
-                // Distinguish the two reasons: a spectator should be told they
-                // have no seat, a player should be told to wait.
-                return (tok == other) ? "NOT YOUR TURN" : "NOT YOUR SEAT";
-            }
+            if (who == other) return "NOT YOUR TURN";
         }
+        else if (seat != who) return (who == other) ? "NOT YOUR TURN" : "NOT YOUR SEAT";
 
         Pos from(mv[0] - 'a', 8 - (mv[1] - '0'));
         Pos to  (mv[2] - 'a', 8 - (mv[3] - '0'));
@@ -706,26 +438,26 @@ private:
         }
         if (st == ChessStatus::FAIL) return "ILLEGAL";
 
+        // The seat is claimed by a LEGAL move: a refused one claims nothing,
+        // so a line the judge refuses leaves the record and the seats as
+        // they were.
+        if (seat.empty()) { seat = who; logLocked(who + " sits as " + (white_moved ? "white" : "black")); }
+
         const bool first_move = !started_;
         started_ = true;
-        // Moving answers a pending offer: playing on IS declining, the ordinary
-        // convention, and it saves the offerer waiting for a reply already given.
+        // Moving answers a pending offer: playing on IS declining.
         draw_offer_.clear();
         refreshTerminal();
         recordHistoryLocked(mv);
 
         if (first_move) logLocked("game started");
-        // Side, not self: a move is made by white, and which self holds white is
-        // already in the seat line above. Suffixed the way a scoresheet is, so
-        // the log reads as a game rather than as a request trace.
         logLocked(std::string(white_moved ? "white" : "black") + " plays " + mv
                   + (checkmate_ ? "#" : (board.sideToMoveInCheck() ? "+" : "")));
-
         if (!active_)
         {
             if      (checkmate_) logLocked(std::string(white_moved ? "white" : "black") + " wins by checkmate");
             else if (stalemate_) logLocked("stalemate -- drawn");
-            reportOutcomeLocked();
+            outcomeLocked();
         }
         return board.toFENString();
     }
@@ -733,168 +465,113 @@ private:
     // Resigning and offering a draw are seated privileges: a spectator has
     // nothing to give up. Both refuse a finished game rather than overwriting
     // its outcome.
-    std::string resignLocked(const std::string& tok)
+    std::string resignLocked(const std::string& who)
     {
-        const std::string role = roleOfLocked(tok);
+        const std::string role = roleOfLocked(who);
         if (role == "viewer") return "NOT YOUR SEAT";
         if (!over_.empty())   return "GAME OVER";
         over_ = "resign-" + role;
         draw_offer_.clear();
-        ETCS_LOG("ChessGame", "resignation: " << role << " (" << tok << ")");
         logLocked(role + " resigns -- " + (role == "white" ? "black" : "white") + " wins");
         refreshTerminal();
-        reportOutcomeLocked();
-        return statusLineLocked(tok);
+        outcomeLocked();
+        return statusLineLocked(who);
     }
 
     // One verb for offer AND accept: an offer standing from the OTHER player
-    // makes this an acceptance, otherwise it records yours. Re-offering your own
-    // is a no-op rather than an error -- a double click should not be a
-    // self-agreed draw, which is why the offerer's own token is excluded.
-    std::string drawLocked(const std::string& tok)
+    // makes this an acceptance, otherwise it records yours.
+    std::string drawLocked(const std::string& who)
     {
-        const std::string role = roleOfLocked(tok);
+        const std::string role = roleOfLocked(who);
         if (role == "viewer") return "NOT YOUR SEAT";
         if (!over_.empty())   return "GAME OVER";
-
-        if (!draw_offer_.empty() && draw_offer_ != tok)
+        if (!draw_offer_.empty() && draw_offer_ != who)
         {
             over_ = "draw";
             draw_offer_.clear();
-            ETCS_LOG("ChessGame", "draw agreed");
             logLocked(role + " accepts -- drawn by agreement");
             refreshTerminal();
-            reportOutcomeLocked();
-            return statusLineLocked(tok);
+            outcomeLocked();
+            return statusLineLocked(who);
         }
-        // Re-offering your own standing offer is a no-op above the log too:
-        // without this the log gains a line every time an impatient player
-        // clicks the button again.
-        if (draw_offer_ != tok) logLocked(role + " offers a draw");
-        draw_offer_ = tok;
-        ETCS_LOG("ChessGame", "draw offered by " << role);
-        return statusLineLocked(tok);
+        if (draw_offer_ != who) logLocked(role + " offers a draw");
+        draw_offer_ = who;
+        return statusLineLocked(who);
     }
 
-    std::string declineLocked(const std::string& tok)
+    std::string declineLocked(const std::string& who)
     {
-        if (roleOfLocked(tok) == "viewer") return "NOT YOUR SEAT";
-        if (!draw_offer_.empty() && draw_offer_ != tok)
+        if (roleOfLocked(who) == "viewer") return "NOT YOUR SEAT";
+        if (!draw_offer_.empty() && draw_offer_ != who)
         {
             draw_offer_.clear();
-            logLocked(roleOfLocked(tok) + " declines the draw");
+            logLocked(roleOfLocked(who) + " declines the draw");
         }
-        return statusLineLocked(tok);
+        return statusLineLocked(who);
     }
 
-    // ── Explicit departure ────────────────────────────────────────────────
-    // HTTP gives no disconnect signal, which is why presence is inferred from
-    // traffic at all -- but "no signal" is not the same as "no statement". A
-    // client that KNOWS it is leaving can say so, and this is the verb it says
-    // it with: the seat is released now instead of in thirty seconds.
-    //
-    // The reaper is not replaced by this, it is demoted to the fallback it
-    // should always have been. A crashed tab, a closed laptop and a dropped
-    // network still say nothing, and those cases are exactly what the grace
-    // period exists for. This one closes the case that was ALWAYS reportable
-    // and was being handled as though it were not: the sole occupant of a
-    // two-player game clicking back to the lobby, after which the room sat
-    // half-claimed for half a minute and the next arrival was told the seat was
-    // taken by someone who had already gone.
-    //
-    // Idempotent and unauthenticated in the same sense every other verb here
-    // is: the token IS the identity, so a leave can only release the seat that
-    // token holds. There is nothing to spoof that moving as that token could
-    // not already do.
-    std::string leaveLocked(const std::string& tok)
+    // A seat given up: one's own, or -- from the owner, who saw the link
+    // close -- somebody else's ("leave <name>").
+    std::string leaveLocked(const std::string& who, const std::string& arg)
     {
-        if (tok.empty()) return "OK";
-
-        // Erase the heartbeat FIRST, so liveTokensLocked stops counting this
-        // token immediately -- the room list is what the next arrival reads to
-        // decide whether to join or watch, and it must not report a ghost.
-        const bool was_here = (seen_.erase(tok) > 0);
-        if (draw_offer_ == tok) draw_offer_.clear();
-
-        // Mutually exclusive by the claim rule in applyMoveLocked: one token
-        // can never hold both seats.
-        if (white_ == tok)
+        std::string gone = who;
+        if (!arg.empty() && arg != who)
         {
-            white_.clear();
-            ETCS_LOG("ChessGame", "white seat released (left): " << tok);
-            logLocked(tok + " left -- white seat is open");
+            if (who != owner_) return "NOT YOUR SEAT";
+            gone = arg;
         }
-        else if (black_ == tok)
-        {
-            black_.clear();
-            ETCS_LOG("ChessGame", "black seat released (left): " << tok);
-            logLocked(tok + " left -- black seat is open");
-        }
-        else if (was_here) logLocked(tok + " left");
-
+        if (gone.empty()) return "OK";
+        if (draw_offer_ == gone) draw_offer_.clear();
+        if (white_ == gone)      { white_.clear(); logLocked(gone + " left -- white seat is open"); }
+        else if (black_ == gone) { black_.clear(); logLocked(gone + " left -- black seat is open"); }
         return "OK";
     }
 
-    std::string roleOfLocked(const std::string& tok) const
+    std::string roleOfLocked(const std::string& who) const
     {
-        if (!tok.empty() && tok == white_) return "white";
-        if (!tok.empty() && tok == black_) return "black";
+        if (!who.empty() && who == white_) return "white";
+        if (!who.empty() && who == black_) return "black";
         return "viewer";
     }
 
-    // side, state, this token's role, each seat, then the draw offer -- one
-    // request tells a client everything it needs to render its own controls,
-    // rather than inferring role from a separate call that could disagree.
-    std::string statusLineLocked(const std::string& tok) const
+    // side, state, this name's role, each seat, the draw offer relative to
+    // the asker, then WHO holds each seat ('-' for nobody).
+    std::string statusLineLocked(const std::string& who) const
     {
         std::string s = board.isWhiteTurn() ? "w" : "b";
-        // An agreed outcome outranks the position: after a resignation the board
-        // may still read "check", which is true and irrelevant.
         if      (!over_.empty())            s += " " + over_;
         else if (checkmate_)                s += " checkmate";
         else if (stalemate_)                s += " stalemate";
         else if (board.sideToMoveInCheck()) s += " check";
         else                                s += " ok";
-        s += " " + roleOfLocked(tok);
+        s += " " + roleOfLocked(who);
         s += white_.empty() ? " open" : " taken";
         s += black_.empty() ? " open" : " taken";
-        // Sixth field: the draw offer RELATIVE to whoever is asking, so the
-        // client needs no token comparison of its own.
         if      (draw_offer_.empty())  s += " none";
-        else if (draw_offer_ == tok)   s += " mine";
+        else if (draw_offer_ == who)   s += " mine";
         else                           s += " theirs";
-        // Seventh and eighth: WHO holds each seat ('-' for nobody). Selves are
-        // public -- the players listing names them -- and a page whose partner
-        // plays the other side has to be able to say so on the seat.
         s += " " + (white_.empty() ? std::string("-") : white_);
         s += " " + (black_.empty() ? std::string("-") : black_);
         return s;
     }
 
-    /*
-     * TAKING A SEAT WITHOUT MOVING. Moving is still the ordinary way in
-     * (applyMoveLocked, claim by moving); this is the button beside it, so a
-     * player can sit down before it is their turn. Same rule as the move's
-     * claim: a seat somebody holds is theirs, and one token never holds both.
-     */
-    std::string sitLocked(const std::string& tok, const std::string& side)
+    // Taking a seat without moving. Same rule as the move's claim: a seat
+    // somebody holds is theirs, and one name never holds both.
+    std::string sitLocked(const std::string& who, const std::string& side)
     {
-        if (tok.empty())                         return "NOT YOUR SEAT";
+        if (who.empty())                         return "NOT YOUR SEAT";
         if (side != "white" && side != "black")  return "NOT FOUND";
         if (!over_.empty())                      return "GAME OVER";
         std::string& seat        = (side == "white") ? white_ : black_;
         const std::string& other = (side == "white") ? black_ : white_;
-        if (seat == tok)   return "OK";
+        if (seat == who)   return "OK";
         if (!seat.empty()) return "TAKEN";
-        if (other == tok)  return "NOT YOUR SEAT";
-        seat = tok;
-        logLocked(tok + " sits as " + side);
+        if (other == who)  return "NOT YOUR SEAT";
+        seat = who;
+        logLocked(who + " sits as " + side);
         return "OK";
     }
 
-    // No exceptions on a bad cursor: the argument comes off a URL, so garbage
-    // is an ordinary input and "start from the beginning" is a safe reading of
-    // it. stoul would throw straight through the ordering thread.
     static std::string hex64(uint64_t v)
     {
         char b[17];
@@ -909,65 +586,37 @@ private:
         {
             if (c < '0' || c > '9') return 0;
             n = n * 10 + static_cast<size_t>(c - '0');
-            if (n > 100000000u) return 0;      // nonsense, not a cursor
+            if (n > 100000000u) return 0;
         }
         return n;
     }
 
-    // A bounded ring, deliberately trivial: chat is presence, not history, and
-    // anything durable belongs in a database provider rather than in the game's
-    // own arena footprint.
-    void sayLocked(const std::string& tok, const std::string& text)
+    void sayLocked(const std::string& who, const std::string& text)
     {
         const std::string msg = percentDecode(text);
         if (msg.empty()) return;
-        // Author is the self that spoke, not the seat colour. Role belongs in
-        // /status; chat is who said what.
-        const std::string who = tok.empty() ? "viewer" : tok;
-        chat_.push_back(who + ": " + msg);
-        if (chat_.size() > kChatLines) chat_.erase(chat_.begin());
+        chat_.push_back((who.empty() ? std::string("viewer") : who) + ": " + msg);
+        if (chat_.size() > kChatLines) { chat_.erase(chat_.begin()); ++chat_base_; }
     }
 
-    // ── Narration ─────────────────────────────────────────────────────────
-    // Events go into the SAME ring as speech rather than into a second channel.
-    // One channel because the two are read together -- "bob sits as black" is
-    // only useful next to what bob then said -- and because a second endpoint
-    // would be a second poll, a second merge, and a second thing that can be
-    // one request out of date with the first.
-    //
-    // Marked with a leading "* " so a client can tell narration from speech
-    // with no protocol change: a human's line is always "<self>: <text>", and
-    // "* " is not a prefix any "<self>:" can produce, since the space cannot be
-    // where the colon is. Worth stating because the alternative -- trusting an
-    // unforgeable author field -- does not exist here: the self IS client
-    // supplied.
+    // Narration goes into the SAME ring as speech, marked "* " -- a prefix
+    // no "<name>:" line can produce.
     void logLocked(const std::string& text)
     {
         chat_.push_back("* " + text);
         if (chat_.size() > kChatLines) { chat_.erase(chat_.begin()); ++chat_base_; }
     }
 
-    std::string chatPageLocked(size_t from) const
-    { return pageLocked(chat_, chat_base_, from); }
-
-    // What a caller with no cursor gets: the TAIL, not the whole log. Used by
-    // the shell's Chat verb and by any client that has not been taught to page.
-    // The tail rather than the head because the last thing said is the thing
-    // worth seeing, and because "the whole log" is the answer that blanks the
-    // buffer -- there is no size of chat for which returning all of it is
-    // correct, so the no-argument form does not offer it.
+    // What a caller with no cursor gets: the TAIL, not the whole log.
     std::string chatLogLocked() const
     {
         size_t from = chat_base_;
         std::string out = pageLocked(chat_, chat_base_, from);
-        // Walk forward until the page reaching the end is the one returned.
         while (true)
         {
             size_t next = from + 1;
             if (next >= chat_base_ + chat_.size()) break;
             std::string cand = pageLocked(chat_, chat_base_, next);
-            // Stop as soon as advancing no longer reaches further: the last
-            // page that still ends at the end of the ring is the tail.
             if (cand.size() < out.size() && next + 1 >= chat_base_ + chat_.size()) { out = cand; break; }
             out = cand;
             from = next;
@@ -975,120 +624,37 @@ private:
         return out;
     }
 
-    // HTTP gives no disconnect signal, so presence is inferred from traffic:
-    // the page polls, and every poll is a heartbeat.
-    void touchLocked(const std::string& tok)
+    // The outcome, once: where a ranking server counts it (ETCS_LOG for now;
+    // a Persistence child later).
+    void outcomeLocked()
     {
-        if (tok.empty()) return;
-        // First heartbeat from this token is an arrival. Detected here rather
-        // than at the edge join in ChessNode because the edge is added by
-        // VISITING a match, including from the lobby's own listing, and
-        // announcing an arrival for someone who merely has the game in their
-        // list would be narration of something that did not happen.
-        if (seen_.find(tok) == seen_.end()) logLocked(tok + " is here");
-        seen_[tok] = Clock::now();
+        if (recorded_) return;
+        recorded_ = true;
+        ETCS_LOG("ChessGame", "outcome: " << (over_.empty() ? (checkmate_ ? "checkmate" : "stalemate") : over_)
+                 << " white=" << white_ << " black=" << black_);
     }
 
-    // Runs per request rather than on a timer -- a game nobody is polling has
-    // nobody to notice it, so there is nothing to do until someone shows up.
-    void reapLocked(int grace_seconds)
+    // The verb surface, one entry point: the hotseat, the judge and Absorb
+    // all come through here, so a line means the same on every board.
+    std::string verbLocked(const std::string& who, const std::string& verb, const std::string& arg)
     {
-        if (replayed_) return;
-        const auto now = Clock::now();
-        auto gone = [&](const std::string& tok)
-        {
-            if (tok.empty()) return false;
-            auto it = seen_.find(tok);
-            if (it == seen_.end()) return true;
-            return std::chrono::duration_cast<std::chrono::seconds>(
-                       now - it->second).count() >= grace_seconds;
-        };
-
-        if (gone(white_)) { ETCS_LOG("ChessGame", "white seat released (idle): " << white_);
-                            logLocked(white_ + " timed out -- white seat is open"); white_.clear(); }
-        if (gone(black_)) { ETCS_LOG("ChessGame", "black seat released (idle): " << black_);
-                            logLocked(black_ + " timed out -- black seat is open"); black_.clear(); }
-
-        // Every observer must be STALE, not merely present. The earlier
-        // condition asked only whether anyone had EVER been seen -- true the
-        // instant the current request calls touchLocked, so a fresh game with a
-        // live poller reset itself on every single request (visible in the log
-        // as "abandoned before first move" once per connection).
-        const bool any_live = (liveTokensLocked(grace_seconds) > 0);
-
-        // A game WITH moves is kept: the position is worth more than the seat,
-        // and whoever returns with the same token reclaims their side through
-        // the ordinary empty-seat path above.
-        if (!started_ && white_.empty() && black_.empty() && !seen_.empty() && !any_live)
-        {
-            ETCS_LOG("ChessGame", "abandoned before first move -- resetting.");
-            resetLocked();
-        }
-    }
-
-    // The verb surface. The NODE parses paths and calls this; the game itself
-    // no longer knows what a URL looks like, which is the separation that lets
-    // the same board be driven by an HTTP route today and by a replayed move
-    // stream from a peer later. One entry point, so both can never diverge.
-    std::string verbLocked(const std::string& tok, const std::string& verb,
-                           const std::string& arg)
-    {
-        // leave is handled BEFORE the heartbeat, and has to be: touchLocked
-        // would re-register the very presence this verb exists to withdraw, so
-        // a leave arriving through the ordinary path would announce a departure
-        // and then immediately contradict it. reapLocked still runs after, so a
-        // departure that empties the room can trip the abandoned-before-first-
-        // move reset in the same request rather than on the next visitor's.
-        if (verb == "leave")   { const std::string r = leaveLocked(tok); reapLocked(30); return r; }
-
-        touchLocked(tok);
-        reapLocked(30);
-
-        if (verb == "move")    return applyMoveLocked(arg, tok);
-        if (verb == "fen" || verb.empty()) return fenLocked();
-        if (verb == "status")  return statusLineLocked(tok);
-        // say answers OK, not the log: the reply used to be the whole chat,
-        // which is the single largest thing this server ever tried to return
-        // and the most likely to blank. The speaker's own next poll shows them
-        // their line a beat later, which is what every other client already
-        // sees anyway.
-        if (verb == "say")     { sayLocked(tok, arg); return "OK"; }
-        if (verb == "chat")    return arg.empty() ? chatLogLocked()
-                                                  : chatPageLocked(parseIndex(arg));
-        if (verb == "history") return historyPageLocked(parseIndex(arg));
-        if (verb == "sit")     return sitLocked(tok, arg);
-        // "<chain> <seq>": the record chain of the lines replayed onto this
-        // board (ChessNode::replayLocked), and the seq after the last.
-        if (verb == "chain")   return hex64(chain_) + " " + std::to_string(chain_seq_);
-        if (verb == "resign")  return resignLocked(tok);
-        if (verb == "draw")    return drawLocked(tok);
-        if (verb == "decline") return declineLocked(tok);
-        if (verb == "reset")   { resetLocked(); return fenLocked(); }
+        if (verb == "move")    return applyMoveLocked(arg, who);
+        if (verb == "fen" || verb.empty()) return board.toFENString();
+        if (verb == "status")  return statusLineLocked(who);
+        if (verb == "say")     { sayLocked(who, arg); return "OK"; }
+        if (verb == "chat")    return arg.empty() ? chatLogLocked() : pageLocked(chat_, chat_base_, parseIndex(arg));
+        if (verb == "history") return pageLocked(history_, history_base_, parseIndex(arg));
+        if (verb == "sit")     return sitLocked(who, arg);
+        if (verb == "resign")  return resignLocked(who);
+        if (verb == "draw")    return drawLocked(who);
+        if (verb == "decline") return declineLocked(who);
+        if (verb == "leave")   return leaveLocked(who, arg);
+        if (verb == "reset")   { resetLocked(); recorded_ = false; return board.toFENString(); }
         return "NOT FOUND";
     }
 
-    // Standalone routing, for a board spawned with no node in front of it
-    // (chess_server.etcs). Path shape is the older key-first one, since without
-    // a node there is no self segment to lead with.
-    std::string requestLocked(const std::string& path)
-    {
-        std::vector<std::string> seg;
-        splitPath(path, seg);
-
-        size_t k = seg.size();
-        for (size_t i = 0; i < seg.size(); ++i)
-            if (seg[i] == match_key_) { k = i; break; }
-        if (k == seg.size()) return "NOT FOUND";
-
-        return verbLocked((k + 1 < seg.size()) ? seg[k + 1] : "",
-                          (k + 2 < seg.size()) ? seg[k + 2] : "",
-                          (k + 3 < seg.size()) ? seg[k + 3] : "");
-    }
-
-    // Recompute the terminal flags. Called ONLY where the answer can change --
-    // construction, reset, a move landing, a resignation, a draw, a FEN load --
-    // which is what keeps IsActiveConcrete const without making the Board
-    // mutable.
+    // Recompute the terminal flags where the answer can change, which is
+    // what keeps IsActiveConcrete const without making the Board mutable.
     void refreshTerminal()
     {
         checkmate_ = board.isCheckmate();
@@ -1096,38 +662,35 @@ private:
         active_    = over_.empty() && !(checkmate_ || stalemate_);
     }
 
-    ::Board     board;                       // the engine, by value, private
-    std::string match_key_;                  // equivalence class ("" = unclaimed)
-    ChessStatus last = ChessStatus::SUCCESS; // last move result (PROMOTE follow-up)
+public:
+    // The session's owner, whose `leave <name>` releases another's seat.
+    void Owner(const std::string& owner) { std::lock_guard<std::mutex> hold(mu_); owner_ = owner; }
 
-    std::string white_, black_;              // seat holders, by token ("" = open)
+private:
+    mutable std::mutex mu_;
+    ::Board     board;
+    ChessStatus last = ChessStatus::SUCCESS;
 
-    // Agreed outcomes, which the BOARD cannot express: "" | resign-white |
-    // resign-black | draw | desync (a pair's boards that stopped agreeing;
-    // counted as a draw). Kept separate from checkmate_/stalemate_ because
-    // those are facts about the position and these are facts about the players.
-    std::string over_;
-    std::string draw_offer_;                 // token of the offerer ("" = none)
+    std::string me_;                         // this board's name in a session
+    std::string owner_;                      // the session's host
+    bool        judge_  = false;             // in front of the record
+    ETCS::RID   record_ = 0, proposals_ = 0;
+    uint64_t    seq_    = 0;                 // the record seq this board is at
+    std::deque<std::string> outbox_;         // a follower's proposals, for Emit
 
-    bool        started_   = false;          // has any legal move landed
-    bool        recorded_  = false;          // outcome already counted
+    std::string white_, black_;              // seat holders, by name ("" = open)
+    std::string over_;                       // "" | resign-white | resign-black | draw
+    std::string draw_offer_;                 // who offered ("" = none)
+
+    bool        started_   = false;
+    bool        recorded_  = false;
     bool        checkmate_ = false;
     bool        stalemate_ = false;
     bool        active_    = true;
 
-    // Set by ChessNode::createGameLocked. Null for a standalone board (the
-    // single fixed game chess_server.etcs spawns), which simply keeps no
-    // records -- there is no self to keep them on.
-    ChessNode* node_ = nullptr;
-
-    std::unordered_map<std::string, Clock::time_point> seen_;  // token -> heartbeat
     std::vector<std::string> chat_;
-
-    // "<uci> <fen>" per ply, oldest first, root at index 0 with "-" for its
-    // move. A vector rather than the deque the ring behaviour suggests: the cap
-    // is hit by roughly no games at all, so the one erase(begin()) it would
-    // save is not worth a second container shape in this file.
-    std::vector<std::string> history_;
+    std::vector<std::string> history_;       // "<uci> <fen>" per ply, root first
+    size_t chat_base_ = 0, history_base_ = 0;
 };
 
 #endif // CHESSGAME_H__

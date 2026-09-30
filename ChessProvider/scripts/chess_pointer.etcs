@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# The pointer channel, on its own thread: a press on the window is a press
+# on the table, which asks the board which square (ChessTable::Click).
+#
+#     detach ChessProvider/scripts/chess_pointer.etcs window=<Window> table=<ChessTable>
+
+requires window [Window]
+requires table [ChessTable]
+
+window.ProducePointer() -> table.ConsumePointer()
