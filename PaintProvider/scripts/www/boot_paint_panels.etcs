@@ -1,4 +1,5 @@
 #!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
 
 # ONE CANVAS: the sheet, with the toolbar drawn on top at the bottom edge.
 #
@@ -921,6 +922,6 @@ layout.FollowResize(@main)
 #
 # The frame edge is not here: it is detached at the top of this file, and there
 # is one per surface.
-detach paint_routed_pointer.etcs window=main router=router
+detach PaintProvider/scripts/paint_routed_pointer.etcs window=main router=router
 
 main.ProduceEvents() -> router.ConsumeInput()

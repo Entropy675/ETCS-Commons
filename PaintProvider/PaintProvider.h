@@ -17530,6 +17530,11 @@ public:
         for (size_t i = 0; i < m_panes.size(); ++i)
         {
             ETCS::Held<Drawable_> root = ETCS::resolve_held<Drawable_>("Drawable", m_panes[i].root);
+            // A hidden pane is not offered the key, as paint_pane_contains keeps
+            // it from the pointer. Its order still ranks it (the parking that
+            // used to sink it is gone), so without this a closed window at order
+            // 30 answers ctrl+PageDown ahead of the canvas and swallows it.
+            if (root && root->Hidden()) continue;
             ranked.emplace_back(root ? root->Order() : 0, i);
         }
         std::stable_sort(ranked.begin(), ranked.end(),

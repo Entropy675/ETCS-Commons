@@ -1,0 +1,21 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE PAINT PAGE, IN A WINDOW.
+#
+#     etcs modules/PaintProvider/scripts/run_paint.etcs
+#
+# Runs the boot script the browser page runs (www/boot_paint_panels.etcs) on the
+# OS runtime: one window, the same scene, the same panes. There is no copy of it
+# here, so the two cannot drift. Closing the window returns to the prompt.
+#
+# TWO PATHS IN THAT SCRIPT ARE STILL THE BROWSER'S, and both degrade rather
+# than stop the boot:
+#   fonts   PaintFonts.Load reads PaintProvider/fonts/... from the working
+#           directory, so text boxes get their fonts only when this is run from
+#           modules/. From anywhere else they draw in the pixel font.
+#   pages   the store is /persist/pages.db, which the page mounts on IndexedDB.
+#           Natively /persist has to exist and be writable, or the pages
+#           (ctrl+PageUp/PageDown, the menu's list, save) have nowhere to go.
+
+run www/boot_paint_panels.etcs

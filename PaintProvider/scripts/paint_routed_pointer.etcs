@@ -3,7 +3,7 @@
 
 # The pointer channel for a session with MORE THAN ONE PANE, on its own thread.
 #
-#     detach paint_routed_pointer.etcs window=<Window> router=<PaintRouter>
+#     detach PaintProvider/scripts/paint_routed_pointer.etcs window=<Window> router=<PaintRouter>
 #
 # Identical in shape to paint_pointer.etcs -- same producer, same channel, one
 # `->` statement -- and differing only in what is on the far end. There the
