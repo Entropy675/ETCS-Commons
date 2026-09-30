@@ -1,0 +1,46 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── HOST A SHARED CANVAS ─────────────────────────────────────────────────────
+#
+# A TEMPLATE: the page fills in {{n}} (a number that makes every name of this
+# session's its own, so a canvas shared twice in one tab does not reuse the
+# first session's record), {{name}} (this page's name in the room), {{id}}
+# (the session's id, the secret in the link) and {{hub}} (the site's LinkHub,
+# ws[s]://<site>/link), writes the result beside the boot script and runs it
+# with `share` and `doc` bound to the page's own (the boot script's globals
+# are not a later script's to name; an injection argument is how one is
+# handed in). Read as a script, this is what a session IS on the host's side.
+#
+# THE RECORD IS HERE, in this page's runtime, and so is the room: the hub
+# only splices bytes (Room::HostVia). What guests may reach is what is
+# published -- the record to READ (those three verbs), the sealed way in to
+# WRITE (a key holder's lines pass its seal, Ledger::Feed), and the presence
+# lobby to see and be seen (PaintShare's header note).
+
+spawn NetworkProvider::Ledger record{{n}}
+record{{n}}.Author({{name}})
+
+spawn NetworkProvider::Ledger intake{{n}}
+intake{{n}}.spawn(NetworkProvider::Seal seal{{n}})
+intake{{n}}.Feed(@record{{n}})
+
+spawn NetworkProvider::Lobby presence{{n}}
+
+spawn NetworkProvider::Room room{{n}}
+room{{n}}.SetName({{name}})
+room{{n}}.Publish(record @record{{n}} Head Since Follow)
+room{{n}}.Publish(intake @intake{{n}})
+room{{n}}.Publish(presence @presence{{n}} Advertise Withdraw Watch)
+
+# The share keys the seal and announces the page as it stands (PaintShare::Host).
+share.Host(@record{{n}} @intake{{n}} @seal{{n}} @presence{{n}} @room{{n}} {{name}})
+
+# The host's own streams: what it draws into the record directly (it holds
+# the key), the record back, and the roster. Each is a detached script,
+# since a stream line runs until the stream ends.
+detach PaintProvider/scripts/paint_emit.etcs src=doc dst=record{{n}}
+detach PaintProvider/scripts/paint_follow.etcs src=record{{n}} dst=doc
+detach PaintProvider/scripts/paint_watch.etcs src=presence{{n}} dst=share
+
+room{{n}}.HostVia({{hub}}/{{id}})

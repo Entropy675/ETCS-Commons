@@ -1,0 +1,3 @@
+doc.AddTextBox(50, 50, 200, 40)
+doc.SetTextBoxText(1 hello there)
+doc.SelectTextBox(1)

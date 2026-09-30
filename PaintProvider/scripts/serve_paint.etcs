@@ -34,6 +34,12 @@ web.AddHeader(Cross-Origin-Opener-Policy same-origin)
 web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
 
 web.spawn(NetworkProvider::FileHtmlPage tree)
+# THE LINK HUB, for a shared canvas. The page's share button hosts a Room
+# in its own runtime through this hub (PaintShare, paint_host.etcs), and the
+# people it invites link to it here at /link/<session>: the hub splices bytes
+# between them and holds nothing of the session. Without it, "share" has
+# nowhere to host through.
+web.spawn(NetworkProvider::LinkHub links)
 tree.LoadFromDisk(ACE_ROOT/modules/PaintProvider/scripts/www)
 tree.SetDefaultExtension(.html)
 
@@ -64,8 +70,3 @@ tree.ListPaths()
 
 web.Start()
 web.IsStarted()
-
-# The session host for the share button, on this same server: the page asks
-# /art on its own origin (defaultNode in www/index.html). paint_lobby.etcs
-# ensures `web` and adds the route; after Start, so it joins the running one.
-detach paint_lobby.etcs

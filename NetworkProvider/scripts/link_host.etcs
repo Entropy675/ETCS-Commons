@@ -13,6 +13,9 @@
 #              out holding the lines already here (ReflectRemote)
 #   notes      guarded: a guest's surface must carry a Seal keyed the same, or
 #              it cannot be bound, or nothing it sends passes
+#   minutes    published to be READ (the verbs listed): the way in is `door`,
+#              a sealed Ledger fed into it -- a key holder writes the minutes
+#              through the door and everyone follows them
 #   directory  a Lobby -- hosts elsewhere advertise here, and their entries
 #              last as long as their links do
 #
@@ -38,12 +41,22 @@ spawn NetworkProvider::Ledger notes
 notes.spawn(NetworkProvider::Seal seal)
 seal.Key(s3cret)
 
+spawn NetworkProvider::Ledger minutes
+spawn NetworkProvider::Ledger door
+door.spawn(NetworkProvider::Seal doorseal)
+doorseal.Key(s3cret)
+door.Feed(@minutes)
+
 spawn NetworkProvider::Lobby directory
 
+# ONE GUEST PER NAME: a second link saying it is a name already here is
+# refused at the hello (Room.h).
 spawn NetworkProvider::Room room
 room.SetName(studio)
 room.Publish(book @book)
 room.Publish(notes @notes)
+room.Publish(minutes @minutes Head Since Follow)
+room.Publish(door @door)
 room.Publish(directory @directory)
 room.Host(@links studio)
 room.Info()

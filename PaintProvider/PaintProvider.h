@@ -25,13 +25,6 @@
 #include <unordered_map>
 #include <vector>
 
-// PaintNode's route surface. Header-only POD (a parsed request, and a frame
-// that names borrowed bytes) with no NetworkProvider type in it, so including
-// it here does not make PaintProvider depend on NetworkProvider being loaded --
-// the same property ChessProvider's own "takes only Buffer data, never a
-// NetworkProvider type" note protects, reached the same way.
-#include "../NetworkProvider/NetworkProvider/RouteRequest.h"
-
 /*
  * THE CODECS. stb_image reads PNG, JPEG, BMP, GIF and TGA; stb_image_write
  * writes PNG. Two public-domain single headers, pinned as a vendor entry in
@@ -3538,6 +3531,18 @@ enum class PaintOpKind : uint8_t
      */
     Undo,
     Redo,
+    /*
+     * ONE HAND ON A TEXT BOX, as record lines: a member's claim on a box's
+     * key, and its release. Never in a notebook and never applied to a
+     * picture -- every member derives who holds what from the same order
+     * (PaintDocument::absorb_hold): the first claim in the record holds, a
+     * later one from somebody else is void, and its maker sees its own come
+     * back void (TextDenied). A release by the holder, or by the owner for a
+     * member who left, frees the key. The record decides, and nothing else
+     * keeps a table of claims.
+     */
+    Hold,
+    Free,
 };
 
 static inline const char* paint_op_name(PaintOpKind k)
@@ -3559,6 +3564,8 @@ static inline const char* paint_op_name(PaintOpKind k)
     case PaintOpKind::Text:     return "text";
     case PaintOpKind::Undo:     return "undo";
     case PaintOpKind::Redo:     return "redo";
+    case PaintOpKind::Hold:     return "hold";
+    case PaintOpKind::Free:     return "free";
     }
     return "snap";
 }
@@ -3579,6 +3586,8 @@ static inline PaintOpKind paint_op_from(const std::string& s)
     if (s == "text")    return PaintOpKind::Text;
     if (s == "undo")    return PaintOpKind::Undo;
     if (s == "redo")    return PaintOpKind::Redo;
+    if (s == "hold")    return PaintOpKind::Hold;
+    if (s == "free")    return PaintOpKind::Free;
     return PaintOpKind::Snapshot;
 }
 
@@ -4306,6 +4315,13 @@ static inline std::string paint_op_encode(const PaintOp& op)
         out += ' ' + std::to_string(op.ordinal);
         return out;
     }
+    // A hold or a release: the box's key, and whose hold a release ends.
+    if (op.kind == PaintOpKind::Hold || op.kind == PaintOpKind::Free)
+    {
+        out += ' ' + (op.box.key.empty() ? std::string("-") : op.box.key);
+        out += ' ' + (op.target.empty() ? std::string("-") : op.target);
+        return out;
+    }
 
     if (op.kind == PaintOpKind::Layers || op.kind == PaintOpKind::Page)
     {
@@ -4392,7 +4408,7 @@ static inline std::string paint_op_encode(const PaintOp& op)
 /*
  * AN ENTRY BY REFERENCE, through a work function's 256-byte data channel: a
  * magic word containing a NUL and the entry's address, the shape RouteRef
- * gives a request (RouteRequest.h) and for the same reason. The channel is a
+ * gives a request (NetworkProvider/RouteRequest.h) and for the same reason. The channel is a
  * reference carrier; the entry is the input. A text answer can never produce
  * these bytes (writeString stops at the first NUL), so nothing a script sends
  * reads as one.
@@ -4449,6 +4465,12 @@ static inline bool paint_op_decode(const std::string& line, PaintOp& out)
     if (out.retraction())
     {
         if (!(in >> out.target >> out.ordinal)) return false;
+        if (out.target == "-") out.target.clear();
+        return true;
+    }
+    if (out.kind == PaintOpKind::Hold || out.kind == PaintOpKind::Free)
+    {
+        if (!(in >> out.box.key >> out.target)) return false;
         if (out.target == "-") out.target.clear();
         return true;
     }
@@ -5018,7 +5040,7 @@ public:
                 m_text.erase(it);
                 if (gone.key == m_text_fresh) m_text_fresh.clear();
                 else record_text(gone, true);
-                if (was_open && sharing()) text_event("release:" + gone.key);
+                if (was_open && sharing()) hold_line(PaintOpKind::Free, gone.key, m_author);
                 Touch();
                 return true;
             }
@@ -5112,16 +5134,24 @@ public:
         if (!b) return;
         m_text_sel = id;
         m_text_before = *b;
-        if (sharing()) text_event("claim:" + b->key);
+        m_text_touched = std::chrono::steady_clock::now();
+        if (sharing())
+        {
+            // Held by somebody else already, as far as this page knows: no
+            // claim goes out, and the box is not opened.
+            auto it = m_holders.find(b->key);
+            if (it != m_holders.end() && it->second != m_author) { m_text_sel = 0; TextDenied(b->key, it->second); return; }
+            hold_line(PaintOpKind::Hold, b->key, m_author);
+        }
     }
     uint32_t selectedTextBox() const { return m_text_sel; }
 
-    // A key went into the open box: the page keeps the claim alive while
-    // someone is typing (and lets it lapse when they stop).
+    // A key went into the open box: the hold stays while someone is typing
+    // (and is let go when they stop -- PaintShare::Tick).
     void TextEdited(uint32_t id)
     {
-        if (!sharing()) return;
-        if (const PaintTextBox* b = FindTextBox(id)) text_event("touch:" + b->key);
+        (void)id;
+        m_text_touched = std::chrono::steady_clock::now();
     }
 
     /*
@@ -5706,9 +5736,16 @@ public:
         for (const PaintTextBox& b : m_text) record_text(b, false, true);
     }
 
+    // The picture as it stands goes to the room whole with the next Emit: what
+    // a session opens with (write_baseline).
+    void Announce() { std::lock_guard<std::recursive_mutex> hold(m_doc_mu); m_page_changed = true; }
     // Who authors entries made on this document from now on. Empty means this
     // page, which is what a document nobody is sharing keeps writing.
-    void SetAuthor(const std::string& who) { m_author = who; setCursor(m_cursor); }   // a session does not fork
+    void SetAuthor(const std::string& who)
+    {
+        m_author = who; setCursor(m_cursor);   // a session does not fork
+        if (who.empty()) { m_holders.clear(); m_outbox.clear(); m_record = 0; m_owner.clear(); }
+    }
     const std::string& author() const { return m_author; }
 
     /*
@@ -5737,6 +5774,13 @@ public:
             ETCS_LOG("PaintDocument", "ExportOps: cannot open '" << path << "'.");
             return 0;
         }
+        const size_t n = export_ops(o);
+        if (!o) { ETCS_LOG("PaintDocument", "ExportOps: write to '" << path << "' failed."); return 0; }
+        return n;
+    }
+    // What this page made and has not sent, one line each -- see ExportOps.
+    size_t export_ops(std::ostream& o)
+    {
         /*
      * ALONG THE CANONICAL PATH, which is the only thing a session replays.
      * Sequence order would hand a viewer entries from a branch this document
@@ -5809,11 +5853,23 @@ public:
                 ++n;
             }
         }
-        if (!o) { ETCS_LOG("PaintDocument", "ExportOps: write to '" << path << "' failed."); return 0; }
+        // Holds and releases, after the edits they follow.
+        for (const std::string& line : m_outbox) { o << line << "\n"; ++n; }
+        m_outbox.clear();
         if (n)
-            ETCS_LOG("PaintDocument", "ExportOps: " << n << " entr(ies) along a " << chain.size()
-                     << "-entry path -> '" << path << "'.");
+            ETCS_LOG("PaintDocument", "ExportOps: " << n << " entr(ies) along a " << chain.size() << "-entry path.");
         return n;
+    }
+    // Whether Emit has anything to send (under m_doc_mu).
+    bool emit_due() const
+    {
+        if (m_page_changed || !m_outbox.empty() || (m_restate && !m_open_live)) return true;
+        if (m_author.empty()) return false;
+        std::vector<const PaintOp*> chain;
+        m_book.ChainTo(m_cursor, chain);
+        for (const PaintOp* op : chain)
+            if (!op->sent && op->kind != PaintOpKind::Snapshot && op->author == m_author) return true;
+        return false;
     }
 
     /*
@@ -5853,7 +5909,7 @@ public:
  * stops reading shows a frozen one. The first is recoverable by the next
  * snapshot and the second is not recoverable at all.
  */
-    size_t ImportOps(const std::string& path, uint64_t since = 0)
+    size_t ImportOps(const std::string& path, uint64_t since = 0, const uint64_t* seed = nullptr)
     {
         std::ifstream f(path, std::ios::binary);
         if (!f)
@@ -5867,9 +5923,13 @@ public:
         // lines are applied like everybody's: what it drew is in the record,
         // and nowhere else any more -- except a page this one just stated
         // (write_baseline), whose lines are chained and left alone.
+        //
+        // A read that starts where the record now starts (`seed`: its chain
+        // there -- a record keeps itself from its last checkpoint on,
+        // ontology/Record.h) is the same restart, from that point.
         std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
-        const bool restart = (since == 0);
-        if (restart) { m_chain = 0; m_chain_seq = 0; }
+        const bool restart = (since == 0) || seed;
+        if (restart) { m_chain = seed ? *seed : 0; m_chain_seq = since; }
         std::string line;
         size_t taken = 0, bad = 0, mine = 0;
         while (std::getline(f, line))
@@ -5946,6 +6006,151 @@ public:
     uint64_t recordChain()    const { return m_chain; }
     size_t   unreadable()     const { return m_unreadable; }   // in the last ImportOps
     uint64_t recordChainSeq() const { return m_chain_seq; }
+
+    /*
+     * ── the record as streams ────────────────────────────────────────────
+     *
+     * `doc.Emit() -> record.Take()` sends what this page makes as it makes it,
+     * one entry per message, and `record.Follow(0) -> doc.Absorb()` takes the
+     * record back in, every member's lines in the one order the record put
+     * them. The file-and-fetch pair above (ExportOps, ImportOps) is what this
+     * replaces for a session: a stream is ordered and whole or it has ended,
+     * so nothing here reads a chain to find a missed line. What is still
+     * compared is the PICTURE, through presence (PaintShare) -- a member whose
+     * picture is not the owner's at the same head asks for the page whole.
+     *
+     * THE RECORD'S LINE IS THE LINK'S: "<seq> <author> <entry>". The author
+     * is the name the line came in under (the link's hello), which is what
+     * this page passes over as its own and what everyone else counts undo
+     * ordinals by; the entry's own author field is the same name written by
+     * the same page, and the record's is the one believed.
+     *
+     * The host's own Page line, coming back, is where the record starts over
+     * (Record::Checkpoint): everything before it is history nobody replays.
+     */
+    // Emit's wait: 1 when there is something to send, 0 when there is not
+    // yet, -1 when this page has stopped sharing.
+    int emitState() const
+    {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
+        if (!sharing()) return -1;
+        return emit_due() ? 1 : 0;
+    }
+    // The lines due, marked sent -- a line that then does not go is pending
+    // and comes off with RevertPending.
+    std::vector<std::string> takeEmit()
+    {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
+        std::ostringstream o;
+        export_ops(o);
+        std::vector<std::string> lines;
+        std::istringstream in(o.str());
+        std::string line;
+        while (std::getline(in, line)) if (!line.empty()) lines.push_back(line);
+        return lines;
+    }
+    // One of the record's lines, as Follow sends them; a restart line first
+    // when the record now starts later than this page asked for.
+    void absorb(const std::string& msg)
+    {
+        uint64_t checkpoint_at = 0;
+        absorb_locked(msg, checkpoint_at);
+        // Another module's verb, so not under this document's lock: a verb
+        // waits on the runtime's ordering, and a thread that wants this lock
+        // meanwhile would be the one to run it.
+        if (checkpoint_at) checkpoint(checkpoint_at);
+    }
+    void absorb_locked(const std::string& msg, uint64_t& checkpoint_at)
+    {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
+        if (msg.compare(0, 2, "~ ") == 0)
+        {
+            unsigned long long b = 0;
+            if (std::sscanf(msg.c_str() + 2, "%llu", &b) == 1) m_chain_seq = b;
+            ETCS_LOG("PaintDocument", "the record starts at " << m_chain_seq << " now.");
+            return;
+        }
+        // "<seq> <author> <entry...>"
+        const size_t a = msg.find(' ');
+        const size_t b = a == std::string::npos ? a : msg.find(' ', a + 1);
+        if (b == std::string::npos) return;
+        const uint64_t    seq    = std::strtoull(msg.c_str(), nullptr, 10);
+        const std::string author = msg.substr(a + 1, b - a - 1);
+        std::string line = msg.substr(b + 1);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) return;
+        m_chain_seq = seq;
+        std::string kind;
+        { std::istringstream head(line); uint64_t s0 = 0; std::string a0; head >> s0 >> kind >> a0; }
+        const bool own = !m_author.empty() && author == m_author;
+        if (kind == "hold" || kind == "free") { absorb_hold(line, author); return; }
+        if (own && !m_stated.empty())
+        {
+            if (kind == "page" && paint_line_rest(line) == m_stated) { m_stated.clear(); checkpoint_at = seq; }
+            else return;
+        }
+        if (own && m_stated_left) { --m_stated_left; return; }
+        if (own && confirm_own(paint_line_rest(line))) { finish_rewind(); return; }
+        PaintOp op;
+        if (!paint_op_decode(line, op))
+        {
+            ++m_unreadable;
+            ETCS_LOG("PaintDocument", "Absorb: unreadable entry: '" << line.substr(0, 80) << (line.size() > 80 ? "..." : "") << "'");
+            return;
+        }
+        op.author = author;                       // the record's word, not the entry's
+        ETCS::Buffer ref;
+        PaintOpRef::Emit(ref, &op);
+        this->call(ETCS::Buffer("PaintDocument.Accept"), ref);
+        finish_rewind();
+    }
+    // Who holds which box, from the record's order -- see PaintOpKind::Hold.
+    void absorb_hold(const std::string& line, const std::string& author)
+    {
+        PaintOp op;
+        if (!paint_op_decode(line, op) || op.box.key.empty()) return;
+        auto it = m_holders.find(op.box.key);
+        if (op.kind == PaintOpKind::Hold)
+        {
+            if (it == m_holders.end() || it->second == author) { m_holders[op.box.key] = author; return; }
+            if (author == m_author) TextDenied(op.box.key, it->second);
+            return;
+        }
+        // A release: by the holder, or by the owner on a member's behalf.
+        if (it == m_holders.end()) return;
+        if (it->second == author || (author == m_owner && it->second == op.target)) m_holders.erase(it);
+    }
+    // Where the record starts over: the host's own Page line, back from it.
+    void checkpoint(uint64_t seq)
+    {
+        if (!m_record || m_author != m_owner || !seq) return;
+        ETCS::Entity* rec = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), m_record);
+        if (!rec) return;
+        ETCS::Buffer arg;
+        arg.writeString(std::to_string(seq).c_str());
+        rec->call(ETCS::Buffer("Ledger.Checkpoint"), arg);
+        ETCS_LOG("PaintDocument", "the record is checkpointed at this page (" << seq << ").");
+    }
+    // The session's record and its owner, for checkpoints and releases.
+    void SetRecord(ETCS::RID record, const std::string& owner) { m_record = record; m_owner = owner; }
+    // The PaintShare this page is in a session through, told when a stream ends.
+    void SetShare(ETCS::RID share) { m_share = share; }
+    ETCS::Entity* share() const { return m_share ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), m_share) : nullptr; }
+    // The owner's release of every box a member who left was holding.
+    void ReleaseHeld(const std::string& member)
+    {
+        std::lock_guard<std::recursive_mutex> hold(m_doc_mu);
+        if (m_author != m_owner) return;
+        for (auto& [key, who] : m_holders)
+            if (who == member) hold_line(PaintOpKind::Free, key, member);
+    }
+    // The box this page is typing into has been quiet this long (ms), or 0.
+    long textIdleMs() const
+    {
+        if (!m_text_sel) return 0;
+        return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - m_text_touched).count());
+    }
 
     // Whether everything this page made is in the record: nothing on the
     // path still waiting to go (PaintOp::sent), no stroke open, no page-level
@@ -7578,9 +7783,10 @@ private:
     std::atomic<int> m_forked{0};      // see forked()
     std::string   m_author;
     // The record's chain as this page has read it (ImportOps): XXH3 of every
-    // line taken in, seeded with the chain before it -- the node's own
-    // arithmetic (PaintNode::Session::chain), so equal heads with different
-    // chains means a line this page never took in. Reset by a read from zero.
+    // line taken in, seeded with the chain before it -- a Record's own
+    // arithmetic, so equal heads with different chains means a line this page
+    // never took in. A stream (Absorb) keeps only the head, m_chain_seq: it is
+    // ordered and whole or it has ended.
     uint64_t      m_chain     = 0;
     uint64_t      m_chain_seq = 0;
     // A page-level change made HERE that the room has not seen: the next
@@ -7594,6 +7800,12 @@ private:
     mutable std::recursive_mutex m_doc_mu;
     std::string   m_stated;             // the Page line of the page last stated -- see write_baseline
     size_t        m_stated_left = 0;    // its lines not yet read back
+    std::vector<std::string>           m_outbox;    // holds and releases to send (hold_line)
+    std::map<std::string, std::string> m_holders;   // box key -> who holds it (absorb_hold)
+    ETCS::RID     m_record = 0;          // the session's record, for the host's checkpoints
+    ETCS::RID     m_share  = 0;          // see SetShare
+    std::string   m_owner;               // the session's owner, whose releases count for anyone
+    std::chrono::steady_clock::time_point m_text_touched = std::chrono::steady_clock::now();
     bool          m_restate = false;    // state the page with the next push -- see Restate
     size_t        m_unreadable = 0;     // lines the last ImportOps could not read
     // See rewind: this page's pending entries while the room's are taken in,
@@ -7651,17 +7863,6 @@ private:
     // And the roster AFTER it, which is the entry undo actually walks over.
     bool sharing() const { return !m_author.empty(); }
 
-    // Up to the page, which holds the node: claim, touch, release.
-    void text_event(const std::string& what) const
-    {
-#if defined(__EMSCRIPTEN__)
-        MAIN_THREAD_EM_ASM({
-            window.dispatchEvent(new CustomEvent('etcs-text', { detail: UTF8ToString($0) }));
-        }, what.c_str());
-#endif
-        ETCS_LOG("PaintDocument", "text " << what);
-    }
-
     // One Text entry on the path -- see PaintOpKind::Text.
     void record_text(const PaintTextBox& b, bool removed, bool keyframe = false)
     {
@@ -7696,7 +7897,18 @@ private:
             record_text(*b, false);
             ETCS_LOG("PaintDocument", "text box " << id << " edited: \"" << b->text << "\"");
         }
-        if (sharing()) text_event("release:" + key);
+        if (sharing()) hold_line(PaintOpKind::Free, key, m_author);
+    }
+    // A hold or release of a box, into the outbox for Emit.
+    void hold_line(PaintOpKind kind, const std::string& key, const std::string& whose)
+    {
+        PaintOp op;
+        op.kind    = kind;
+        op.seq     = m_cursor;
+        op.author  = m_author;
+        op.box.key = key;
+        op.target  = whose;
+        m_outbox.push_back(paint_op_encode(op));
     }
 
     // A box as an entry says it is, by key: made, changed or gone.
@@ -14275,82 +14487,54 @@ private:
 
 
 /*
- * ── PaintNode: a shared session, and who may do what to it ───────────────────
+ * ── PaintShare: this page's part in a shared session ─────────────────────────
  *
- * THE SAME CENTRALIZATION ARTIFACT ChessNode names itself as, for the same
- * structural reason and with the same consequence: a browser has no listening
- * socket, so a page cannot be a server. A host PUSHES its notebook here and
- * viewers PULL it, and the asymmetry is not a design preference -- it is the
- * only arrangement available until there is a peer link. A node hosting many
- * sessions is a server; a node hosting one is a peer.
+ * A SESSION IS A RECORD AND A ROOM, and both are the host page's own. The
+ * host's runtime holds the record (a NetworkProvider::Ledger) and hosts a Room
+ * through the site's hub (Room::HostVia: the hub splices bytes and knows
+ * nothing about paint); every guest's runtime links to it and binds surfaces
+ * of what the host published. The session ends with the host, which is what a
+ * shared canvas is: somebody's canvas, shared. Nothing about the session lives
+ * on a server -- the HTTP relay this replaced (PaintNode) was the arrangement
+ * available before a browser could hold a link, and its sessions were the
+ * server's to keep and to lose.
  *
- * IT HOLDS LINES, NOT A DOCUMENT. This type never decodes an entry, never owns
- * a PaintDocument and never draws anything. It assigns sequence numbers, checks
- * a token against a role, rewrites one field and stores the rest verbatim --
- * which is precisely what lets a node built today relay an entry kind added to
- * PaintProvider tomorrow. A relay that understood its payload would have to be
- * rebuilt every time the payload grew.
+ * WHAT IS PUBLISHED, and to whom (paint_host.etcs):
  *
- * IT IS THE ORDERING DOMAIN. Sequence numbers are assigned here and nowhere
- * else, so the host and every viewer agree on what happened in what order by
- * construction rather than by reconciliation. The host draws its own stroke
- * locally the instant it is made -- the input arriving is what drives the
- * picture -- and pushes afterwards, so two writers marking the same pixels can
- * see them settle in different orders on their own screens until the next
- * snapshot. That is the honest cost of local echo and it is stated rather than
- * hidden; the alternative is a round trip before your own ink appears.
+ *   record     the Ledger, to be READ: Head, Since, Follow. Every member
+ *              follows it (record.Follow -> doc.Absorb) and every member's
+ *              picture is what the record says.
+ *   intake     the way in: a Ledger behind a Seal, fed into the record
+ *              (Ledger::Feed). Writing is holding the key -- a writer's
+ *              doc.Emit -> intake.Take passes the seal, a reader's cannot.
+ *   presence   a Lobby: each member advertises where it is looking and what
+ *              its picture is; watched by everyone (Lobby::Watch -> Roster).
+ *              An entry goes when its link does, so the roster is the list of
+ *              who is here, not of who once was.
  *
- * ── the link IS the right to view ───────────────────────────────────────────
+ * THE KEY GOES BY POST. A guest publishes a mailbox on its own link (a Ledger
+ * on its Peer), and the host, promoting them, binds it through the Room by the
+ * guest's name and appends the key there -- the one channel that is that
+ * guest's alone. Demoting anyone turns the key (Seal::Key) and posts the new
+ * one to those who still write; the demoted member's next line fails the seal,
+ * their Emit ends, and what they had drawn since comes off (RevertPending).
+ * The role table is the host's, advertised in the presence listing so every
+ * window shows it, and kept by the same name the link was made under -- which
+ * is the name a record line is authored as, so the two cannot disagree.
  *
- * There is no knocking and nothing to admit. Holding the session's id is what
- * makes you a reader, because that is what a link means to everyone who has
- * ever been sent one -- and a door that has to be answered is a door somebody
- * has to be sitting at.
+ * WHO IS TYPING WHERE is in the record too (PaintOpKind::Hold): a claim is a
+ * line, the first in the record holds, and every member derives the same
+ * answer. The host releases what a departed member held.
  *
- * WHICH MAKES THE SESSION ID A SECRET, and that is not a side effect to be
- * tolerated, it is the whole security model. So it is minted here exactly as a
- * token is -- sixteen characters from random_device, never a name anybody
- * types -- and THERE IS NO LISTING VERB. A node that could enumerate its
- * sessions would be handing out every capability it holds; the one that used to
- * be here was written for chess, where being findable is the point, and it is
- * precisely wrong here.
+ * WHAT THIS TYPE DOES: keeps the role, the roster and the presence beat, and
+ * says when a picture is not the owner's. The streams are the script's
+ * (paint_host.etcs, paint_join.etcs), the surfaces are NetworkProvider's, and
+ * the page does only what needs the page -- writes and runs those scripts, and
+ * relays the visitor window's presses to verbs here.
  *
- * A TOKEN IS STILL A ROLE, and that is the part the host does decide. Arriving
- * by link makes you a reader; writing takes an elevation the host performs by
- * hand in the visitor menu. So the roster is name -> token -> role, the check at
- * each verb is a role check rather than a membership check, and the host's own
- * page holds a token too (role owner) -- one code path in, and no "am I the
- * host" special case anywhere in it.
- *
- * Elevation does not open a second channel -- it lets that name's entries into
- * the one that already exists. Revocation is dropping the token: the next read
- * answers FORBIDDEN and that page falls back to its own local document, which
- * it has had all along.
- *
- * ── the path surface ─────────────────────────────────────────────────────────
- *
- *   /<mount>/<self>/open                              start one; "<session> <token>"
- *   /<mount>/<self>/join/<session>                    the link; answers a token
- *   /<mount>/<self>/<token>/<session>/read/<since>    entries after <since>
- *   /<mount>/<self>/<token>/<session>/head            the newest sequence
- *   /<mount>/<self>/<token>/<session>/push            POST body: entries
- *   /<mount>/<self>/<token>/<session>/who             the roster (owner)
- *   /<mount>/<self>/<token>/<session>/role/<name>/<r> reader|writer|out (owner)
- *   /<mount>/<self>/<token>/<session>/close           end it, and everyone in it
- *
- * `open` and `join` are the only verbs reachable without a token, and both are
- * reserved words in the segment a token would occupy. Tokens and session ids are
- * hex, so the two spaces cannot collide -- the same shape ChessNode's reserved
- * selves and reserved matches already have.
- *
- * NOTE THAT `open` DOES NOT TAKE A NAME. The host cannot choose the id, because
- * an id anybody could choose is an id anybody could guess, and guessing it is
- * the whole of getting in.
- *
- * THIS IS A STRUCTURED ROUTE (HttpServer::AddRequestRoute): it needs the METHOD
- * to tell a push from a read and the BODY to receive one, and it answers `read`
- * by REFERENCE because a batch of entries is not going to fit in 255 bytes.
- * Neither was possible before the NetworkProvider change that went in with it.
+ * NOTHING HERE GROWS WITH USE. The record keeps itself from the host's last
+ * Page line (Record::Checkpoint, PaintDocument::checkpoint), a link that
+ * closes takes its presence with it, and a session ends with its host.
  */
 /*
  * ── PaintVisitors: who is in the session, drawn on the sheet ─────────────────
@@ -17448,628 +17632,402 @@ private:
     ETCS::RID m_capture = 0;   // the pane holding the pointer -- see Route
 };
 
-class PaintNode : public DeletableBase<PaintNode>, public FilterBase<PaintNode>
+class PaintShare : public DeletableBase<PaintShare>
 {
 public:
-    WIRE_TYPE_IDENTITY(PaintNode);
+    WIRE_TYPE_IDENTITY(PaintShare);
 
-    PaintNode()          = default;
-    virtual ~PaintNode() = default;
+    PaintShare() = default;
+    bool DeleteConcrete() override { Leave(); return true; }
 
-    enum class Role : uint8_t { None, Reader, Writer, Owner };
-
-    static const char* role_name(Role r)
+    // This page's document, canvas pane and visitor window.
+    void Attach(ETCS::RID doc, ETCS::RID canvas, ETCS::RID visitors)
     {
-        switch (r)
-        {
-        case Role::Reader:  return "reader";
-        case Role::Writer:  return "writer";
-        case Role::Owner:   return "owner";
-        default:            return "out";
-        }
+        m_doc = doc; m_canvas = canvas; m_visitors = visitors;
+        if (PaintDocument* d = document()) d->SetShare(getRID());
     }
 
-    // Route-level filter, the same one ChessNode has and for the same reason:
-    // one server can carry several mounts and only the node knows which is its.
-    bool AcceptsConcrete(ETCS::Buffer& io) const override
+    // Hosting: the record, the sealed way in and its seal, the presence lobby
+    // and the room -- all this runtime's own -- and this page's name.
+    bool Host(ETCS::RID record, ETCS::RID intake, ETCS::RID seal, ETCS::RID presence, ETCS::RID room,
+              const std::string& name)
     {
-        const std::string desc = io.restAsString();
-        size_t i = 0;
-        while (i < desc.size() && desc[i] == '/') ++i;
-        size_t j = desc.find('/', i);
-        if (j == std::string::npos) j = desc.size();
-        if (desc.compare(i, j - i, m_mount) != 0) { io.reset(); return false; }
-        io.writeString(m_mount.c_str());
+        return begin(record, intake, seal, presence, room, name, "owner");
+    }
+    // Joining: the same surfaces, bound through the Peer, and this page's name
+    // -- a reader until the key arrives (Mail).
+    bool Join(ETCS::RID record, ETCS::RID intake, ETCS::RID seal, ETCS::RID presence, ETCS::RID peer,
+              const std::string& name)
+    {
+        return begin(record, intake, seal, presence, peer, name, "reader");
+    }
+
+    // The key the intake takes (the host's, for posting); a fresh one when
+    // it is turned.
+    std::string Key() const { return m_key; }
+    std::string role() const { return m_role; }
+    const std::string& name() const { return m_name; }
+    bool inSession() const { return !m_name.empty(); }
+
+    /*
+     * THE HOST SETS A ROLE. A writer is told so here and given the key by the
+     * page (Key, then a grant script -- the mailbox is another module's type,
+     * which this one cannot spawn). A reader, or one put out, is what turns
+     * the key: the seal takes a new one, the remaining writers are re-posted
+     * it (the page, told "rekey"), and the old key opens nothing.
+     */
+    bool Role(const std::string& who, const std::string& role)
+    {
+        if (m_role != "owner" || who.empty() || who == m_name) return false;
+        if (role != "writer" && role != "reader" && role != "out") return false;
+        const std::string was = m_roles.count(who) ? m_roles[who] : "reader";
+        if (role == "out") m_roles.erase(who); else m_roles[who] = role;
+        if (was == "writer" && role != "writer") turnKey();
+        ETCS_LOG("PaintShare", who << " is now " << (role == "out" ? "out of the session" : "a " + role));
+        advertiseRoles();
+        m_sent_view.clear();
         return true;
     }
-
-    const std::string& MountPath() const { return m_mount; }
-    void SetMount(const std::string& m) { if (!m.empty()) m_mount = m; }
-
-    bool DeleteConcrete() override
-    {
-        const std::string key = getSourceModule().toString() + ":" + getSourceTag().toString();
-        return ETCS::DestroyEvent{key.c_str(), this}();
-    }
-
-    /*
- * ONE LOCK, NOT ONE PER SESSION. Every listing verb walks every session, the
- * reaper walks every session and every roster, and a push touches one session
- * while `sessions` is reading all of them. Cutting the lock finer would make
- * each of those an unsynchronised cross-domain read for no gain a relay can
- * spend -- there is no per-session work here long enough to be worth
- * overlapping, because this type does no drawing at all.
- */
-    std::string Request(const RouteRequest& req)
-    {
-        std::lock_guard<std::mutex> lock(m_mu);
-        return requestLocked(req);
-    }
-
-    // The answer is held HERE, as this node's own storage, because a route that
-    // answers by reference is promising the bytes outlive the send -- the same
-    // promise FileHtmlPage makes about a mounted file. One buffer per node and
-    // one answer at a time, which the lock above already guarantees.
-
-private:
-    struct Member
-    {
-        std::string token;
-        /*
-         * WHERE THIS MEMBER IS LOOKING, and the colour they chose to be seen
-         * in -- "x y w h rrggbb", opaque to this node exactly as an entry's
-         * body is.
-         *
-         * PRESENCE, NOT HISTORY. It is overwritten in place and never appended
-         * to anything: a camera position changes on every pan and is worthless
-         * a second later, so putting it in the session's entries would fill the
-         * one structure whose value is that everything in it caused something.
-         * It costs one string per member and nothing per pan.
-         */
-        std::string view;
-        // A push arriving in parts (the `part` verb), held until the last one.
-        std::string pending;
-        Role        role = Role::Reader;
-        // Last time this member was heard from, so a roster does not fill with
-        // names that walked away. Refreshed by every verb they reach.
-        std::chrono::steady_clock::time_point seen = std::chrono::steady_clock::now();
-    };
-
-    /*
-     * WHO HAS THEIR HAND ON A TEXT BOX. First to ask gets it; it is theirs until
-     * they let go (release) or stop touching it for kClaimSeconds, which is what
-     * keeps a person who walked away from locking a box for everyone.
-     */
-    struct Claim
-    {
-        std::string who;
-        std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
-    };
-    static constexpr long kClaimSeconds = 20;
-
-    struct Session
-    {
-        std::string host;
-        std::vector<std::string> lines;   // verbatim, one entry each
-        uint64_t seq = 0;
-        /*
-         * THE RECORD'S OWN HASH: XXH3 of each stored line seeded with the
-         * hash before it, so it names the whole sequence up to `seq` and moves
-         * with every line. Answered beside the head (`head`, `push`, `read`),
-         * and a page keeps the same chain over what it has taken in: equal
-         * heads with different chains is a page that missed or misordered a
-         * line, and it resyncs itself from zero (index.html, readTheirs). The
-         * page cannot tell that from silence any other way -- a stroke it never
-         * received looks exactly like a stroke nobody made.
-         */
-        uint64_t chain = 0;
-        std::unordered_map<std::string, Member> roster;   // by name
-        std::unordered_map<std::string, Claim>  claims;   // text box key -> holder
-        std::chrono::steady_clock::time_point opened = std::chrono::steady_clock::now();
-    };
-
-    // Long enough that a tab left on another desktop is not evicted mid-session,
-    // short enough that a roster is a list of people rather than a guest book.
-    static constexpr long kIdleSeconds = 900;
-
-    /*
-     * A TOKEN IS A SECRET AND HAS TO LOOK LIKE ONE. Sixteen hex characters
-     * from the platform's random device, not from the clock and not from a
-     * counter: a token a viewer can guess is an admission control that admits
-     * everyone, and the two obvious cheap sources are both guessable by
-     * someone who knows roughly when the session opened.
-     */
-    static std::string mint()
-    {
-        static std::mutex mu;
-        std::lock_guard<std::mutex> g(mu);
-        static std::random_device rd;
-        static std::mt19937_64 gen(rd());
-        static const char* hex = "0123456789abcdef";
-        std::uniform_int_distribution<int> d(0, 15);
-        std::string out;
-        out.reserve(16);
-        for (int i = 0; i < 16; ++i) out += hex[d(gen)];
-        return out;
-    }
-
-    // A name is a path segment and an author field, so it may hold neither a
-    // slash nor a space. Sanitised once, here, rather than checked at each of
-    // the places it is about to be interpolated into one or the other.
-    static std::string clean(const std::string& s, size_t cap = 24)
+    // Every writer's name, for re-posting a turned key.
+    std::string Writers() const
     {
         std::string out;
-        for (char c : s)
-        {
-            if (c == '/' || c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
-            out += c;
-            if (out.size() >= cap) break;
-        }
+        for (auto& [n, r] : m_roles) if (r == "writer") out += (out.empty() ? "" : " ") + n;
         return out;
     }
+    void Hue(const std::string& hex) { m_hue = hex; m_sent_view.clear(); tellWindow(); }
 
-    Session* find(const std::string& name)
+    /*
+     * ONCE A SECOND, FROM THE PAGE: this page's presence, when it changed --
+     * where it is looking, its colour, the record head it has taken in and the
+     * hash of what it made of it (PaintDocument::PictureHash), and whether it
+     * needs the page whole -- and the housekeeping a clock does: a box typed
+     * into and then left alone is let go, and a wait for the page whole ends.
+     */
+    void Tick()
     {
-        auto it = m_sessions.find(name);
-        return (it == m_sessions.end()) ? nullptr : &it->second;
-    }
-
-    // Whose token this is, within this session. Linear because a roster is
-    // people: a session with enough members for this to matter has a bigger
-    // problem than the scan.
-    Member* member(Session& s, const std::string& self, const std::string& token)
-    {
-        auto it = s.roster.find(self);
-        if (it == s.roster.end()) return nullptr;
-        if (it->second.token.empty() || it->second.token != token) return nullptr;
-        it->second.seen = std::chrono::steady_clock::now();
-        return &it->second;
-    }
-
-    void reapLocked()
-    {
-        const auto now = std::chrono::steady_clock::now();
-        for (auto sit = m_sessions.begin(); sit != m_sessions.end(); )
+        PaintDocument* doc = document();
+        if (!doc || !inSession()) return;
+        if (doc->textIdleMs() > kTextIdleMs)
         {
-            Session& s = sit->second;
-            for (auto mit = s.roster.begin(); mit != s.roster.end(); )
-            {
-                const long idle = std::chrono::duration_cast<std::chrono::seconds>(
-                    now - mit->second.seen).count();
-                // The owner is not reaped out of their own session: a host who
-                // steps away should come back to their session, not to its
-                // absence. It goes when they close it or when it empties.
-                if (mit->second.role != Role::Owner && idle >= kIdleSeconds)
-                {
-                    ETCS_LOG("PaintNode", "'" << mit->first << "' idle " << idle
-                             << "s -- dropped from session '" << sit->first << "'.");
-                    mit = s.roster.erase(mit);
-                    continue;
-                }
-                ++mit;
-            }
-            if (s.roster.empty())
-            {
-                ETCS_LOG("PaintNode", "session '" << sit->first << "' has nobody left -- closing ("
-                         << s.lines.size() << " entr(ies) discarded).");
-                sit = m_sessions.erase(sit);
-                continue;
-            }
-            ++sit;
+            ETCS_LOG("PaintShare", "text box let go after a while with no typing -- sent as it stands");
+            doc->SelectTextBox(0);
         }
+        if (m_syncing && now_ms() - m_sync_since > kSyncMaxMs) caughtUp();
+        int32_t x = 0, y = 0, w = 0, h = 0;
+        if (PaintSurface* c = canvas()) c->ViewRect(x, y, w, h);
+        char hex[17];
+        std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(doc->PictureHash()));
+        m_picture    = doc->settled() ? hex : "-";
+        m_picture_at = doc->recordChainSeq();
+        const std::string line = std::to_string(x) + "/" + std::to_string(y) + "/" + std::to_string(w) + "/"
+                               + std::to_string(h) + "/" + (m_hue.empty() ? "888888" : m_hue) + "/"
+                               + std::to_string(m_picture_at) + "/" + m_picture + "/" + (m_want_page ? "R" : "-");
+        if (line == m_sent_view) return;
+        m_sent_view = line;
+        advertise(m_name, "view", line);
+        if (m_role == "owner") advertiseRoles();
     }
 
     /*
-     * THERE IS NO LISTING, AND ITS ABSENCE IS THE FEATURE. A verb that
-     * enumerated sessions would publish every id on this node, and an id is
-     * the right to view -- so the listing chess has, which exists there
-     * because being found is the point, is exactly the wrong verb here. If an
-     * operator needs to know what a node is carrying, that is a log line on
-     * the machine, not a route anyone can call.
+     * THE ROSTER ARRIVES (presence.Watch -> Roster), the whole listing on
+     * every change: who is here and what their role is, into the window; where
+     * each is looking, onto the canvas; and the owner's picture against this
+     * one. A member at the owner's record head whose picture differs from
+     * the owner's, for three beats running, has diverged -- whatever it took
+     * in, what it made of it is not what the owner made -- and asks for the
+     * page whole; the owner answers (PaintDocument::Restate) at most every
+     * twenty seconds, since every member takes what it sends.
      */
-
-    // "name role colour" per member; the colour is the last field of their
-    // presence line, "-" until they have sent one.
-    std::string whoLocked(const Session& s) const
+    void roster(const std::string& listing)
     {
-        std::string out;
-        for (const auto& [name, m] : s.roster)
-        {
-            out += name;
-            out += " ";
-            out += role_name(m.role);
-            // A view is "x y w h hue [head chain picture]" -- the hue is the
-            // fifth field, whatever a page appends after it (index.html,
-            // pushMyView), not the last.
-            std::istringstream v(m.view);
-            std::string x, y, w, h, hue;
-            v >> x >> y >> w >> h >> hue;
-            out += " ";
-            out += hue.empty() ? std::string("-") : hue;
-            out += "\n";
-        }
-        return out;
-    }
-
-    /*
-     * THE PUSH. Every line is renumbered and re-attributed before it is
-     * stored, and that is the whole of what a node does to a payload it
-     * otherwise does not read.
-     *
-     * A line is "<seq> <kind> <author> <rest...>": the first two fields are
-     * replaced, the third is replaced, the rest is copied. Anything that does
-     * not have three fields is refused rather than stored, because a stored
-     * line that nobody can parse is an entry every viewer will skip forever.
-     */
-    size_t pushLocked(Session& s, const std::string& author, const std::string& body)
-    {
-        size_t taken = 0, bad = 0, held = 0;
-        std::istringstream in(body);
+        PaintDocument* doc = document();
+        std::map<std::string, std::string> views, roles;
+        std::istringstream in(listing);
         std::string line;
         while (std::getline(in, line))
         {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.empty()) continue;
-
             std::istringstream ls(line);
-            std::string was_seq, kind, was_author;
-            if (!(ls >> was_seq >> kind >> was_author)) { ++bad; continue; }
-            std::string rest;
-            std::getline(ls, rest);            // everything after the author, space included
-
-            // A TEXT BOX HELD BY SOMEBODY ELSE is not theirs to submit: the one
-            // line the node reads past the author, and only for this.
-            if ((kind == "text" || kind == "untext") && !claimFree(s, key_of(rest), author))
+            std::string who, kind, info;
+            if (!(ls >> who >> kind)) continue;
+            std::getline(ls, info);
+            if (!info.empty() && info[0] == ' ') info.erase(0, 1);
+            if (kind == "view") views[who] = info;
+            else if (kind == "roles")
             {
-                ++held;
-                continue;
+                std::istringstream rs(info);
+                std::string pair;
+                while (rs >> pair)
+                {
+                    const size_t eq = pair.find('=');
+                    if (eq != std::string::npos) roles[pair.substr(0, eq)] = pair.substr(eq + 1);
+                }
             }
-
-            std::string stored = std::to_string(++s.seq);
-            stored += " " + kind;
-            stored += " " + (author.empty() ? std::string("-") : author);
-            stored += rest;
-            s.chain = XXH3_64bits_withSeed(stored.data(), stored.size(), s.chain);
-            s.lines.push_back(std::move(stored));
-            ++taken;
         }
-        if (bad)
-            ETCS_LOG("PaintNode", "push from '" << author << "': " << bad
-                     << " malformed line(s) refused.");
-        if (held)
-            ETCS_LOG("PaintNode", "push from '" << author << "': " << held
-                     << " text box(es) held by somebody else -- refused.");
-        return taken;
+        // Departures: the owner releases what they held.
+        if (m_role == "owner" && doc)
+            for (auto& [who, v] : m_views)
+                if (!views.count(who)) { doc->ReleaseHeld(who); m_roles.erase(who); }
+        m_views = views;
+        // The window: name, role, colour; the owner first.
+        std::string who_text;
+        bool want_page = false;
+        for (auto& [who, info] : views)
+        {
+            std::vector<std::string> f = split(info, '/');
+            const std::string role = who == m_owner ? "owner" : roles.count(who) ? roles[who] : "reader";
+            who_text += who + " " + role + " " + (f.size() > 4 ? f[4] : "888888") + "\n";
+            if (f.size() > 7 && f[7] == "R" && who != m_name) want_page = true;
+        }
+        // Everyone else's frame, in document space, through this pane's own
+        // projection (PaintSurface::SetPeer).
+        if (PaintSurface* c = canvas()) c->ClearPeers();
+        for (auto& [who, info] : views)
+        {
+            if (who == m_name) continue;
+            std::vector<std::string> f = split(info, '/');
+            Rgb rgb;
+            if (f.size() > 4 && canvas() && paint_hex_rgb(f[4], rgb))
+                canvas()->SetPeer(who, std::atoi(f[0].c_str()), std::atoi(f[1].c_str()),
+                                  std::atoi(f[2].c_str()), std::atoi(f[3].c_str()), rgb.r, rgb.g, rgb.b);
+        }
+        if (PaintVisitors* v = visitors()) v->SetRoster(who_text);
+        // A guest learns its role from the table; the key follows by post.
+        if (m_role != "owner")
+        {
+            const std::string mine = roles.count(m_name) ? roles[m_name] : "reader";
+            if (mine != m_role) { m_role = mine; tellWindow(); ETCS_LOG("PaintShare", "you are now a " << mine << " in this session"); }
+        }
+        // The owner's picture is the room's.
+        if (m_role != "owner" && doc && views.count(m_owner))
+        {
+            std::vector<std::string> f = split(views[m_owner], '/');
+            if (f.size() > 6)
+            {
+                const uint64_t owner_at = std::strtoull(f[5].c_str(), nullptr, 10);
+                const std::string& owner_picture = f[6];
+                const uint64_t at = m_picture_at;
+                const bool still = owner_at == at && at > 0 && at == m_last_head
+                                && m_picture != "-" && owner_picture != "-" && m_picture != owner_picture;
+                m_mismatch = still ? m_mismatch + 1 : 0;
+                m_last_head = at;
+                if (owner_at == at && at > 0 && m_picture != "-" && m_picture == owner_picture) inStep();
+                if (m_mismatch >= 3)
+                {
+                    m_mismatch = 0;
+                    outOfStep("this picture (" + m_picture + ") is not the owner's (" + owner_picture + ") at "
+                              + std::to_string(at) + " -- asking for the page whole");
+                }
+            }
+        }
+        if (m_role == "owner" && want_page && doc && now_ms() - m_restated_at > kRestateEveryMs)
+        {
+            m_restated_at = now_ms();
+            doc->Restate();
+            ETCS_LOG("PaintShare", "a member cannot rebuild this page from the record -- sending it whole");
+        }
+        if (PaintSurface* c = canvas()) c->Render();
     }
 
-    // The key of a text line, from what follows its author: "<layer> <order> <key> ...".
-    static std::string key_of(const std::string& rest)
+    /*
+     * THE POST ARRIVES (mail.Follow -> Mail): "key <key>" turns this page's
+     * seal, and the page is told to open the way in (doc.Emit -> intake.Take)
+     * -- a stream is the script's to open, not this type's.
+     */
+    void mail(const std::string& line)
     {
-        std::istringstream r(rest);
-        std::string layer, order, key;
-        r >> layer >> order >> key;
-        return key;
+        std::istringstream in(line);
+        uint64_t seq = 0; std::string from, what, key;
+        if (!(in >> seq >> from >> what >> key) || what != "key") return;
+        if (ETCS::Entity* seal = resolve(m_seal))
+        {
+            ETCS::Buffer arg;
+            arg.writeString(key.c_str());
+            seal->call(ETCS::Buffer("Seal.Key"), arg);
+        }
+        m_key = key;
+        ETCS_LOG("PaintShare", "the host has given this page drawing.");
+        page_event("writer");
     }
 
-    // Free for `who`: nobody holds it, they do, or the holder's hand went idle.
-    bool claimFree(Session& s, const std::string& key, const std::string& who) const
+    // The way in has closed on this page (its Emit ended): a turned key, or
+    // the link. What was drawn and not taken comes off.
+    void emitEnded()
     {
-        auto it = s.claims.find(key);
-        if (it == s.claims.end() || it->second.who == who) return true;
-        const long idle = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now() - it->second.last).count();
-        return idle >= kClaimSeconds || !s.roster.count(it->second.who);
+        if (!inSession()) return;
+        if (PaintDocument* doc = document()) { doc->RevertPending(); if (PaintSurface* c = canvas()) c->Render(); }
+        if (m_role != "owner") ETCS_LOG("PaintShare", "the room has you as a reader -- what you draw here comes back off");
+    }
+    // The record has ended for this page (its Absorb ended): the session is
+    // over, or this page was put out. The canvas stays: it is a copy of the
+    // one that was shared.
+    void absorbEnded()
+    {
+        if (!inSession()) return;
+        ETCS_LOG("PaintShare", "the shared session has ended -- this canvas is yours to keep");
+        Leave();
+        page_event("ended");
     }
 
-    static std::string hex64(uint64_t v)
+    // Out of the session, whichever way: the window shut, the author cleared,
+    // the peers off the canvas. What ends the link is the script's (the
+    // room, the peer).
+    void Leave()
     {
+        if (!inSession()) return;
+        if (PaintDocument* doc = document())
+        {
+            doc->SetAuthor("");
+            doc->SetReadOnly(false);
+            if (m_syncing) doc->Syncing(false);
+        }
+        if (PaintVisitors* v = visitors()) v->Hide();
+        if (PaintSurface* c = canvas()) { c->ClearPeers(); c->Render(); }
+        m_name.clear(); m_role.clear(); m_owner.clear(); m_key.clear();
+        m_roles.clear(); m_views.clear(); m_sent_view.clear();
+        m_syncing = false; m_want_page = false; m_mismatch = 0; m_last_head = 0;
+        m_record = m_intake = m_seal = m_presence = m_link = 0;
+    }
+
+    static constexpr long kTextIdleMs     = 20000;
+    static constexpr long kSyncMaxMs      = 15000;
+    static constexpr long kRestateEveryMs = 20000;
+
+private:
+    bool begin(ETCS::RID record, ETCS::RID intake, ETCS::RID seal, ETCS::RID presence, ETCS::RID link,
+               const std::string& name, const std::string& role)
+    {
+        PaintDocument* doc = document();
+        if (!doc || name.empty()) { ETCS_LOG("PaintShare", "not attached, or no name."); return false; }
+        Leave();
+        m_record = record; m_intake = intake; m_seal = seal; m_presence = presence; m_link = link;
+        m_name = name; m_role = role;
+        if (role == "owner")
+        {
+            m_owner = name;
+            m_key   = mint();
+            if (ETCS::Entity* s = resolve(m_seal)) { ETCS::Buffer arg; arg.writeString(m_key.c_str()); s->call(ETCS::Buffer("Seal.Key"), arg); }
+            // The picture as it stands is the session's first entries.
+            doc->Announce();
+        }
+        doc->SetAuthor(name);
+        doc->SetRecord(record, m_owner);
+        doc->SetReadOnly(false);
+        tellWindow();
+        ETCS_LOG("PaintShare", (role == "owner" ? "sharing this canvas as " : "joined a shared canvas as ") << name);
+        return true;
+    }
+    // The owner's name is what the roles entry is filed under; a guest
+    // learns it from the listing (roster).
+    void advertiseRoles()
+    {
+        std::string table;
+        for (auto& [n, r] : m_roles) table += (table.empty() ? "" : " ") + n + "=" + r;
+        advertise(m_name + ".roles", "roles", table.empty() ? "-" : table);
+        m_owner = m_name;
+    }
+    void advertise(const std::string& name, const std::string& kind, const std::string& info)
+    {
+        ETCS::Entity* lobby = resolve(m_presence);
+        if (!lobby) return;
+        ETCS::Buffer arg;
+        arg.writeString((name + " " + kind + " " + info).c_str());
+        lobby->call(ETCS::Buffer("Lobby.Advertise"), arg);
+    }
+    void turnKey()
+    {
+        m_key = mint();
+        if (ETCS::Entity* s = resolve(m_seal)) { ETCS::Buffer arg; arg.writeString(m_key.c_str()); s->call(ETCS::Buffer("Seal.Key"), arg); }
+        ETCS_LOG("PaintShare", "the key is turned -- writers are posted the new one.");
+        page_event("rekey");
+    }
+    void tellWindow()
+    {
+        PaintVisitors* v = visitors();
+        if (!v || !inSession()) return;
+        v->OpenAs(m_role);
+        v->SetMe(m_name, m_hue.empty() ? "888888" : m_hue);
+    }
+    void outOfStep(const std::string& why)
+    {
+        m_want_page = true;
+        m_sent_view.clear();
+        ETCS_LOG("PaintShare", why);
+        if (!m_syncing && document()) { m_syncing = true; m_sync_since = now_ms(); document()->Syncing(true); }
+    }
+    void inStep()
+    {
+        m_want_page = false;
+        caughtUp();
+    }
+    void caughtUp()
+    {
+        if (!m_syncing) return;
+        m_syncing = false;
+        if (PaintDocument* doc = document()) doc->Syncing(false);
+    }
+    void page_event(const char* what)
+    {
+#if defined(__EMSCRIPTEN__)
+        MAIN_THREAD_EM_ASM({
+            window.dispatchEvent(new CustomEvent('etcs-share', { detail: UTF8ToString($0) }));
+        }, what);
+#endif
+        ETCS_LOG("PaintShare", "share " << what);
+    }
+    static std::string mint()
+    {
+        std::random_device rd;
         char b[17];
-        std::snprintf(b, sizeof(b), "%016llx", static_cast<unsigned long long>(v));
+        std::snprintf(b, sizeof b, "%08x%08x", rd(), rd());
         return b;
     }
-    std::string headLocked(const Session& s) const { return std::to_string(s.seq) + " " + hex64(s.chain); }
-
-    std::string readLocked(const Session& s, uint64_t since) const
+    static long now_ms()
     {
-        std::string out;
-        // The lines are in sequence order and their sequence is their position
-        // plus one, so the slice is arithmetic rather than a scan.
-        const size_t first = (since >= s.seq) ? s.lines.size() : static_cast<size_t>(since);
-        for (size_t i = first; i < s.lines.size(); ++i)
-        {
-            out += s.lines[i];
-            out += "\n";
-        }
-        // LAST, AND NOT AN ENTRY: where the record stands and what it hashes
-        // to, so the page can check what it now holds against what the node
-        // holds in the same answer that brought the lines. '=' cannot begin an
-        // entry (a sequence number does), so nothing reads it as one.
-        out += "= " + headLocked(s) + "\n";
-        return out;
+        return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     }
-
-    std::string requestLocked(const RouteRequest& req)
+    static std::vector<std::string> split(const std::string& s, char c)
     {
-        if (req.at(0) != m_mount) return "NOT FOUND";
-        reapLocked();
-
-        const std::string self = clean(req.at(1));
-        if (self.empty()) return "NOT FOUND";
-
-        const std::string second = req.at(2);
-        if (second.empty()) return "NOT FOUND";
-
-        /*
-     * ── the two verbs reachable without a token ─────────────────────
-     *
-     * `open` mints the id as well as the token, so a host cannot pick a
-     * name and therefore nobody can guess one. `join` takes the id from
-     * the link and hands back a reader's token, with nothing in between:
-     * holding the link IS the right to view, and there is no pending
-     * state because there is nothing to be pending on.
-     */
-        if (second == "open")
+        std::vector<std::string> out;
+        size_t at = 0;
+        while (true)
         {
-            Session fresh;
-            fresh.host = self;
-            Member owner;
-            owner.token = mint();
-            owner.role  = Role::Owner;
-            const std::string token = owner.token;
-            fresh.roster[self] = std::move(owner);
-
-            std::string id = mint();
-            while (m_sessions.count(id)) id = mint();     // astronomically never
-            m_sessions[id] = std::move(fresh);
-            ETCS_LOG("PaintNode", "session '" << id << "' opened by '" << self << "'.");
-            return id + " " + token;
+            const size_t n = s.find(c, at);
+            out.push_back(s.substr(at, n == std::string::npos ? std::string::npos : n - at));
+            if (n == std::string::npos) return out;
+            at = n + 1;
         }
-
-        if (second == "join")
-        {
-            const std::string id = clean(req.at(3), 40);
-            Session* s = find(id);
-            // The SAME answer for an id that never existed and one that has
-            // been closed: telling the two apart is telling somebody guessing
-            // ids which of their guesses was once real.
-            if (!s) return "NO SUCH SESSION";
-
-            /*
-             * THE TOKEN IS THE IDENTITY, NOT THE NAME. A reload comes back with
-             * the token it was given (the page keeps it per tab) and gets its
-             * own membership back at whatever role it now has -- which is also
-             * how a page LEARNS it has been elevated: the role travels with the
-             * answer. A join WITHOUT a token is a new member however familiar
-             * the name, and a name already in the roster is suffixed rather
-             * than shared.
-             *
-             * Matching on the name alone handed a second tab the first tab's
-             * token: every tab of one browser reads the same stored name, so a
-             * host and two readers on one machine were one member to the node,
-             * and each reader dropped every one of the host's lines as its own.
-             */
-            const std::string had = clean(req.at(4), 40);
-            if (!had.empty())
-                for (auto& [name, m] : s->roster)
-                    if (m.token == had)
-                    {
-                        m.seen = std::chrono::steady_clock::now();
-                        return m.token + " " + role_name(m.role) + " " + name;
-                    }
-
-            std::string name = self;
-            for (unsigned n = 2; s->roster.count(name); ++n)
-                name = self + "-" + std::to_string(n);
-
-            Member m;
-            m.token = mint();
-            m.role  = Role::Reader;          // THE LINK IS WORTH EXACTLY THIS
-            const std::string token = m.token;
-            s->roster[name] = std::move(m);
-            ETCS_LOG("PaintNode", "'" << name << "' joined '" << id << "' as reader"
-                     << (name != self ? " (asked for '" + self + "', which was taken)" : "") << ".");
-            return token + " reader " + name;
-        }
-
-        // ── everything else carries a token ─────────────────────────────
-        const std::string token = second;
-        const std::string id    = clean(req.at(3), 40);
-        const std::string verb  = req.at(4);
-        const std::string arg   = req.at(5);
-
-        Session* s = find(id);
-        if (!s) return "NO SUCH SESSION";
-        Member* me = member(*s, self, token);
-        if (!me) return "FORBIDDEN";
-
-        /*
-     * WHERE I AM LOOKING, in one call, carrying the colour with it -- which is
-     * why it is one call: the rectangle and the colour are a single statement
-     * about how this person should appear, and splitting them would let a page
-     * be drawn in last week's colour for one poll.
-     *
-     * ANY MEMBER, INCLUDING A READER. Saying where you are looking is not
-     * writing to the picture; a viewer who could not be seen would be the one
-     * participant nobody could follow, which is the opposite of the point.
-     */
-        if (verb == "view")
-        {
-            std::string payload = req.from(5);
-            for (char& c : payload) if (c == '/') c = ' ';
-            me->view = payload;
-            return "ok";
-        }
-
-        // Everyone's, readable by everyone -- unlike `who`, which is the roster
-        // with ROLES on it and stays the host's. Presence is public within a
-        // session by nature: it exists to be looked at.
-        if (verb == "views")
-        {
-            std::string out;
-            for (const auto& [name, m] : s->roster)
-            {
-                if (m.view.empty() || name == self) continue;   // not my own frame
-                out += name;
-                out += " ";
-                out += m.view;
-                out += "\n";
-            }
-            return out;
-        }
-
-        if (verb == "head") return headLocked(*s);
-
-        /*
-     * THE ROSTER, TO EVERYONE IN IT. Names, roles and colours are what the
-     * people in a room can see of each other anyway -- the frames on the
-     * canvas carry the names -- so it is not the host's secret; the buttons
-     * that act on it are, and those stay below.
-     */
-        if (verb == "who") return whoLocked(*s);
-
-        /*
-     * A NEW NAME FOR MYSELF, kept with my token and my role. Refused if
-     * somebody here already has it: the roster is keyed by name, and two
-     * people answering to one would be one of them unable to be promoted.
-     * Lines already pushed keep the name they were pushed under.
-     */
-        if (verb == "rename")
-        {
-            const std::string want = clean(arg);
-            if (want.empty()) return "BAD NAME";
-            if (want == self) return want;
-            if (s->roster.count(want)) return "TAKEN";
-            Member moved = std::move(*me);
-            s->roster.erase(self);
-            s->roster[want] = std::move(moved);
-            if (s->host == self) s->host = want;
-            for (auto& [key, c] : s->claims) if (c.who == self) c.who = want;
-            ETCS_LOG("PaintNode", "'" << self << "' is now '" << want << "' in '" << id << "'.");
-            return want;
-        }
-        if (verb == "role" && arg.empty())
-        {
-            // Ask what I am. A viewer polls this to notice an elevation without
-            // having to re-join, which is the one thing the roster cannot tell
-            // it -- the roster is the owner's to read.
-            return role_name(me->role);
-        }
-        if (verb == "read")
-        {
-            const uint64_t since = arg.empty() ? 0
-                                 : static_cast<uint64_t>(std::strtoull(arg.c_str(), nullptr, 10));
-            return readLocked(*s, since);
-        }
-
-        /*
-     * claim/<key>: my hand on a text box, if nobody else's is (see Claim). A
-     * held box answers with its holder, which is what the page shows. Asked
-     * again while typing, which is what keeps the claim from lapsing.
-     * release/<key>: letting go, after the box went out with a push.
-     */
-        if (verb == "claim")
-        {
-            if (me->role != Role::Writer && me->role != Role::Owner) return "READ ONLY";
-            const std::string key = clean(arg, 64);
-            if (key.empty()) return "BAD KEY";
-            if (!claimFree(*s, key, self)) return "held " + s->claims[key].who;
-            Claim& c = s->claims[key];
-            c.who  = self;
-            c.last = std::chrono::steady_clock::now();
-            return "ok";
-        }
-        if (verb == "release")
-        {
-            const std::string key = clean(arg, 64);
-            auto it = s->claims.find(key);
-            if (it != s->claims.end() && it->second.who == self) s->claims.erase(it);
-            return "ok";
-        }
-
-        if (verb == "push")
-        {
-            // THE ROLE CHECK, and the only place writing is decided. A reader
-            // reaching this is not an error to log loudly -- it is a page whose
-            // elevation was taken away between its last stroke and this one,
-            // which is exactly what revocation is supposed to feel like.
-            if (me->role != Role::Writer && me->role != Role::Owner) return "READ ONLY";
-            if (!req.posted()) return "POST REQUIRED";
-            const size_t n = pushLocked(*s, self, req.bodyString());
-            return std::to_string(s->seq) + " " + std::to_string(n) + " " + hex64(s->chain);
-        }
-
-        /*
-     * A PUSH IN PARTS: part/<i>/<n>, each body appended to the member's
-     * pending buffer, the whole taken as one push when the last part lands.
-     *
-     * Because a request is bounded (ETCS_NETWORK_MAX_HEADER_SIZE, 64 KB for
-     * headers and body together) and one entry is not: a keyframe is a layer's
-     * PNG, and a page with a photograph on it is megabytes. A line cannot be
-     * split by the page into two entries, so the node joins the bytes back
-     * before it reads a single line. Part 0 starts over, so a push abandoned
-     * half way leaves nothing behind but the next one's first part.
-     */
-        if (verb == "part")
-        {
-            if (me->role != Role::Writer && me->role != Role::Owner) return "READ ONLY";
-            if (!req.posted()) return "POST REQUIRED";
-            const unsigned long i = std::strtoul(arg.c_str(), nullptr, 10);
-            const unsigned long n = std::strtoul(req.at(6).c_str(), nullptr, 10);
-            if (n == 0 || i >= n) return "BAD PART";
-            if (i == 0) me->pending.clear();
-            me->pending += req.bodyString();
-            if (i + 1 < n) return "more";
-            std::string whole;
-            whole.swap(me->pending);
-            const size_t taken = pushLocked(*s, self, whole);
-            return std::to_string(s->seq) + " " + std::to_string(taken) + " " + hex64(s->chain);
-        }
-
-        // ── the host's own verbs ────────────────────────────────────────
-        if (me->role != Role::Owner) return "FORBIDDEN";
-        if (verb == "close")
-        {
-            // CLOSING IS THE KICK. Every other token in this session stops
-            // resolving on the next request, each page keeps the picture it
-            // already has, and nothing has to be told anything -- which is the
-            // only shape available anyway, since none of them can be called.
-            ETCS_LOG("PaintNode", "session '" << id << "' closed by '" << self
-                     << "' -- " << (s->roster.size() - 1) << " other(s) dropped.");
-            m_sessions.erase(id);
-            return "closed";
-        }
-        if (verb == "role")
-        {
-            const std::string guest = clean(arg);
-            const std::string want  = req.at(6);
-            auto it = s->roster.find(guest);
-            if (it == s->roster.end()) return "NO SUCH MEMBER";
-            if (it->second.role == Role::Owner) return "REFUSED";   // not even by themselves
-
-            if (want == "writer")      it->second.role = Role::Writer;
-            else if (want == "reader") it->second.role = Role::Reader;
-            else if (want == "out")
-            {
-                // Dropping the token IS the removal. They keep their canvas and
-                // can come back through the link as a reader, which is the
-                // right amount of undo for a mis-click.
-                ETCS_LOG("PaintNode", "'" << guest << "' removed from '" << id << "'.");
-                s->roster.erase(it);
-                return "out";
-            }
-            else return "BAD ROLE";
-
-            ETCS_LOG("PaintNode", "'" << guest << "' is now " << role_name(it->second.role)
-                     << " in '" << id << "'.");
-            return role_name(it->second.role);
-        }
-
-        return "NOT FOUND";
     }
+    struct Rgb { float r = 0, g = 0, b = 0; };
+    static bool paint_hex_rgb(const std::string& hex, Rgb& out)
+    {
+        std::string h = hex;
+        if (!h.empty() && h[0] == '#') h.erase(0, 1);
+        if (h.size() < 6) return false;
+        out.r = std::strtol(h.substr(0, 2).c_str(), nullptr, 16) / 255.0f;
+        out.g = std::strtol(h.substr(2, 2).c_str(), nullptr, 16) / 255.0f;
+        out.b = std::strtol(h.substr(4, 2).c_str(), nullptr, 16) / 255.0f;
+        return true;
+    }
+    static ETCS::Entity* resolve(ETCS::RID rid)
+    {
+        return rid ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid) : nullptr;
+    }
+    PaintDocument* document() const { ETCS::Entity* e = resolve(m_doc);      return e ? static_cast<PaintDocument*>(e->getTrueType()) : nullptr; }
+    PaintSurface*  canvas()   const { ETCS::Entity* e = resolve(m_canvas);   return e ? static_cast<PaintSurface*>(e->getTrueType())  : nullptr; }
+    PaintVisitors* visitors() const { ETCS::Entity* e = resolve(m_visitors); return e ? static_cast<PaintVisitors*>(e->getTrueType()) : nullptr; }
 
-    mutable std::mutex m_mu;
-    std::string m_mount = "art";
-    std::unordered_map<std::string, Session> m_sessions;
+    ETCS::RID   m_doc = 0, m_canvas = 0, m_visitors = 0;
+    ETCS::RID   m_record = 0, m_intake = 0, m_seal = 0, m_presence = 0, m_link = 0;
+    std::string m_name, m_role, m_owner, m_key, m_hue;
+    std::map<std::string, std::string> m_roles;   // the owner's table
+    std::map<std::string, std::string> m_views;   // the last listing's views, for departures
+    std::string m_sent_view, m_picture;
+    uint64_t    m_picture_at = 0, m_last_head = 0;
+    int         m_mismatch = 0;
+    bool        m_syncing = false, m_want_page = false;
+    long        m_sync_since = 0, m_restated_at = 0;
 };
 
 
@@ -18617,26 +18575,65 @@ DEFINE_WORK_FUNC_TYPED(PaintDocument, SetReadOnly, (int32_t, on))
     self.SetReadOnly(on != 0);
 }
 
-// ImportOps <path> [since] [keep] -- every line of a read, `since` being where
+// ImportOps <path> [since] [seed] -- every line of a read, `since` being where
 // the read started (zero restarts the record chain, and then this page's own
-// lines are applied too, unless `keep`: the host reading its own baseline back). Answers "<taken> <head>
-// <chain-hex> <chain-seq>": the page compares the last two with what the node
-// said in the same read.
+// lines are applied too; a hex `seed` is the same restart from `since`, with the
+// chain the record gave for it -- a read that began at its checkpoint).
+// Answers "<taken> <head> <chain-hex> <chain-seq>
+// <unreadable>": the page compares the chain with what the node said in the
+// same read.
 DEFINE_WORK_FUNC(PaintDocument, ImportOps)
 {
     (void)ctx;
     std::istringstream in(data.restAsString());
-    std::string path;
+    std::string path, seed_hex;
     uint64_t since = 0;
-    in >> path >> since;
+    in >> path >> since >> seed_hex;
     if (path.empty()) { ETCS_LOG("PaintDocument", "ImportOps needs a path."); data.writeString("0"); return; }
-    const size_t n = self.ImportOps(path, since);
+    uint64_t seed = 0;
+    if (!seed_hex.empty()) seed = std::strtoull(seed_hex.c_str(), nullptr, 16);
+    const size_t n = self.ImportOps(path, since, seed_hex.empty() ? nullptr : &seed);
     char chain[17];
     std::snprintf(chain, sizeof(chain), "%016llx", static_cast<unsigned long long>(self.recordChain()));
     // taken head chain chain-seq unreadable
     data.writeString((std::to_string(n) + " " + std::to_string(self.notebookHead()) + " " + chain
                       + " " + std::to_string(self.recordChainSeq())
                       + " " + std::to_string(self.unreadable())).c_str());
+}
+
+// doc.Emit() -> record.Take() -- what this page makes, as it makes it, one
+// entry per message; the whole page first when it has changed. Ends when the
+// far side refuses (a turned key) or the link goes, and what did not go comes
+// off (PaintShare::emitEnded).
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(PaintDocument, Emit)
+{
+    (void)data;
+    // The reader going is noticed between sends (readerGone): a page with
+    // nothing to draw would otherwise never learn its way in had closed.
+    while (!ctx.isInterrupted() && !ctx.isTerminated() && !stream.readerGone())
+    {
+        const int state = self.emitState();
+        if (state < 0) break;
+        if (state == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue; }
+        bool ended = false;
+        for (const std::string& line : self.takeEmit())
+            if (!stream.writeMessage(line)) { ended = true; break; }
+        if (ended) break;
+    }
+    if (ETCS::Entity* share = self.share())
+        static_cast<PaintShare*>(share->getTrueType())->emitEnded();
+}
+// record.Follow(<seq>) -> doc.Absorb() -- the record, every member's lines in
+// its order, this page's own included (they confirm what it drew).
+DEFINE_STREAM_FUNC_CONSUME(PaintDocument, Absorb)
+{
+    (void)data;
+    std::string line;
+    size_t n = 0;
+    while (!ctx.isInterrupted() && stream.readMessage(line, 9u << 20)) { self.absorb(line); ++n; }
+    ETCS_LOG("PaintDocument", "Absorb: the record ended after " << n << " line(s).");
+    if (ETCS::Entity* share = self.share())
+        static_cast<PaintShare*>(share->getTrueType())->absorbEnded();
 }
 
 // PictureReport -- PictureHash's parts, one per layer, for chasing a divergence.
@@ -20825,56 +20822,58 @@ DEFINE_WORK_FUNC(PaintVisitors, Delete)
     data.writeString(self.DeleteConcrete() ? "deleted" : "FAILED");
 }
 
-// ── PaintNode ───────────────────────────────────────────────────────────────
+// ── PaintShare ──────────────────────────────────────────────────────────────
 
-DEFINE_WORK_FUNC(PaintNode, Mount)
+// Attach <doc> <canvas> <visitors> -- this page's own.
+DEFINE_WORK_FUNC_TYPED(PaintShare, Attach, (ETCS::RID, doc), (ETCS::RID, canvas), (ETCS::RID, visitors))
 {
     (void)ctx;
-    const std::string m = data.restAsString();
-    if (!m.empty()) self.SetMount(m);
-    data.writeString(self.MountPath().c_str());
+    self.Attach(doc, canvas, visitors);
 }
-
-/*
- * THE ROUTE TARGET, and a STRUCTURED one -- registered with AddRequestRoute
- * rather than AddRoute, because this node needs two things a path string cannot
- * carry: the METHOD, to tell a push from a read, and the BODY, to receive one.
- *
- * It answers by REFERENCE (RouteRef), which is the other half of the same
- * change: a read of a session's entries is routinely tens of kilobytes and the
- * work-function buffer is 256 bytes. The bytes it points at are the REQUEST's
- * own (RouteRequest::reply), alive until the server has copied them out --
- * the one lifetime that is per request rather than per node, which matters
- * the moment two members poll at once.
- */
-DEFINE_WORK_FUNC(PaintNode, Request)
+// Host <record> <intake> <seal> <presence> <room> <name>
+DEFINE_WORK_FUNC_TYPED(PaintShare, Host, (ETCS::RID, record), (ETCS::RID, intake), (ETCS::RID, seal),
+                       (ETCS::RID, presence), (ETCS::RID, room), (std::string, name))
 {
     (void)ctx;
-    uint64_t p = 0;
-    data.readRaw(&p, sizeof(p));
-    const RouteRequest* req = reinterpret_cast<const RouteRequest*>(
-        static_cast<uintptr_t>(p));
-    if (!req)
-    {
-        ETCS_LOG("PaintNode::Request", "no request handed over -- is this route "
-                 "registered with AddRoute instead of AddRequestRoute?");
-        data.writeString("FAILED");
-        return;
-    }
-    req->reply = self.Request(*req);
-    RouteRef::Emit(data, req->reply.data(), req->reply.size(), "text/plain");
+    self.Host(record, intake, seal, presence, room, name);
 }
-
-DEFINE_WORK_FUNC(PaintNode, Filter)
+// Join <record> <intake> <seal> <presence> <peer> <name>
+DEFINE_WORK_FUNC_TYPED(PaintShare, Join, (ETCS::RID, record), (ETCS::RID, intake), (ETCS::RID, seal),
+                       (ETCS::RID, presence), (ETCS::RID, peer), (std::string, name))
 {
     (void)ctx;
-    self.Accepts(data);
+    self.Join(record, intake, seal, presence, peer, name);
 }
-
-DEFINE_WORK_FUNC(PaintNode, Delete)
+// Key -- the intake's key, for the host to post.
+DEFINE_WORK_FUNC(PaintShare, Key) { (void)ctx; data.reset(); data.writeString(self.Key().c_str()); }
+// Role <who> writer|reader|out -- the host's word.
+DEFINE_WORK_FUNC_TYPED(PaintShare, Role, (std::string, who), (std::string, role))
 {
     (void)ctx;
-    data.writeString(self.DeleteConcrete() ? "deleted" : "FAILED");
+    self.Role(who, role);
+}
+// Writers -- names, space-separated.
+DEFINE_WORK_FUNC(PaintShare, Writers) { (void)ctx; data.reset(); data.writeString(self.Writers().c_str()); }
+// Hue <hex> -- this page's colour in the room.
+DEFINE_WORK_FUNC_TYPED(PaintShare, Hue, (std::string, hex)) { (void)ctx; self.Hue(hex); }
+// Tick -- once a second, from the page.
+DEFINE_WORK_FUNC(PaintShare, Tick)  { (void)ctx; (void)data; self.Tick(); }
+// Leave -- out of the session; the link is the script's to close.
+DEFINE_WORK_FUNC(PaintShare, Leave) { (void)ctx; (void)data; self.Leave(); }
+DEFINE_WORK_FUNC(PaintShare, Delete) { (void)ctx; (void)data; self.Delete(); }
+// presence.Watch() -> share.Roster() -- the listing, whole, on every change.
+DEFINE_STREAM_FUNC_CONSUME(PaintShare, Roster)
+{
+    (void)data;
+    std::string listing;
+    while (!ctx.isInterrupted() && stream.readMessage(listing)) self.roster(listing);
+}
+// mail.Follow(0) -> share.Mail() -- what the host posts this page.
+DEFINE_STREAM_FUNC_CONSUME(PaintShare, Mail)
+{
+    (void)data;
+    std::string line;
+    while (!ctx.isInterrupted() && stream.readMessage(line)) self.mail(line);
 }
 
 #endif // PAINTPROVIDER_H__

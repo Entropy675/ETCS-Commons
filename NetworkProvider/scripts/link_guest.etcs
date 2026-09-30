@@ -33,6 +33,20 @@ nremote.Bind(notes @peer)
 notes.Append(sealed)
 peer.Info()
 
+# The minutes are read-only here: Append is not a verb they were published
+# with. Writing them is through the door, and the door takes the key.
+spawn NetworkProvider::Ledger minutes
+minutes.spawn(NetworkProvider::Remote mremote)
+mremote.Bind(minutes @peer)
+minutes.Append(refused -- not published for writing)
+spawn NetworkProvider::Ledger door
+door.spawn(NetworkProvider::Seal doorseal)
+doorseal.Key(s3cret)
+door.spawn(NetworkProvider::Remote dremote)
+dremote.Bind(door @peer)
+door.Append(the guest wrote the minutes through the door)
+minutes.Head()
+
 # Host produces, this side consumes: a local copy that follows the record,
 # line for line, for as long as it stays.
 spawn NetworkProvider::Ledger copy

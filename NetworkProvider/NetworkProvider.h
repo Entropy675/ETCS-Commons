@@ -5,6 +5,7 @@
 #include "../../ontology.h"
 #include "Contract_NetworkProvider.h"
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -738,13 +739,16 @@ DEFINE_WORK_FUNC(LinkHub, Delete) { (void)ctx; (void)data; self.Delete(); }
 
 // Publish <name> <rid> -- what a guest may bind a surface to, by name.
 // Publish <name> <rid> -- what a guest may bind a surface to, by name.
+// Publish <name> <rid> [<verb>...] -- reachable by that name; only those verbs, if listed.
 DEFINE_WORK_FUNC(Room, Publish)
 {
     (void)ctx;
-    std::string name;
+    std::string name, verb;
     ETCS::RID rid = 0;
     data >> name >> rid;
-    const bool ok = self.Publish(name, rid);
+    std::set<std::string> verbs;
+    while (data.read_offset < data.written) { data >> verb; if (!verb.empty()) verbs.insert(verb); }
+    const bool ok = self.Publish(name, rid, std::move(verbs));
     data.reset(); data << ok;
 }
 DEFINE_WORK_FUNC(Room, Unpublish)
@@ -777,6 +781,15 @@ DEFINE_WORK_FUNC(Room, HostVia)
     std::string url, flag;
     data >> url >> flag;
     const bool ok = self.HostVia(url, flag == "insecure");
+    data.reset(); data << ok;
+}
+// Drop <guest> -- ends that guest's link.
+DEFINE_WORK_FUNC(Room, Drop)
+{
+    (void)ctx;
+    std::string guest;
+    data >> guest;
+    const bool ok = self.Drop(guest);
     data.reset(); data << ok;
 }
 DEFINE_WORK_FUNC(Room, Info)   { (void)ctx; (void)data; self.Info(); }
@@ -814,14 +827,14 @@ DEFINE_WORK_FUNC(Peer, Close)  { (void)ctx; (void)data; self.Close(); }
 DEFINE_WORK_FUNC(Peer, Info)   { (void)ctx; (void)data; self.Info(); }
 DEFINE_WORK_FUNC(Peer, Delete) { (void)ctx; (void)data; self.Delete(); }
 
-// Bind <export name> [<peer rid>]
+// Bind <export name> [<peer rid> | <room rid> <guest>]
 DEFINE_WORK_FUNC(Remote, Bind)
 {
     (void)ctx;
-    std::string name;
+    std::string name, guest;
     ETCS::RID peer = 0;
-    data >> name >> peer;
-    const bool ok = self.Bind(name, peer);
+    data >> name >> peer >> guest;
+    const bool ok = self.Bind(name, peer, guest);
     data.reset(); data << ok;
 }
 DEFINE_WORK_FUNC(Remote, Unbind) { (void)ctx; (void)data; self.Unbind(); }
@@ -864,6 +877,25 @@ DEFINE_WORK_FUNC(Lobby, List)
     data.write(all.c_str());
 }
 DEFINE_WORK_FUNC(Lobby, Delete) { (void)ctx; (void)data; self.Delete(); }
+// Watch() -> x.Consume -- the whole listing as one message, now and on every change.
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(Lobby, Watch)
+{
+    (void)data;
+    uint64_t seen = 0;
+    std::string listing;
+    const auto gone = [&stream]() { return stream.readerGone(); };
+    while (self.waitListing(seen, listing, ctx, gone))
+        if (!stream.writeMessage(listing)) break;
+}
+// x.Watch() -> here.Mirror() -- this lobby is a copy of that listing.
+DEFINE_STREAM_FUNC_CONSUME(Lobby, Mirror)
+{
+    (void)data;
+    std::string listing;
+    size_t n = 0;
+    while (!ctx.isInterrupted() && stream.readMessage(listing)) { self.adopt(listing); ++n; }
+    ETCS_LOG("Lobby", "Mirror: " << n << " listing(s)");
+}
 // Entries(<kind>) -> x.Consume -- one frame per entry.
 DEFINE_STREAM_FUNC_PRODUCE(Lobby, Entries)
 {
@@ -896,38 +928,67 @@ DEFINE_WORK_FUNC(Ledger, Since)
     (void)ctx;
     uint64_t seq = 0;
     data >> seq;
-    const std::string s = self.Since(seq, ETCS::Buffer::bufsize - 1);
+    // Room left in the answer for its header and a restart line.
+    const std::string s = self.Since(seq, ETCS::Buffer::bufsize - 1 - 96);
     data.reset(); data.write(s.c_str());
+}
+// Checkpoint <seq> -- the lines before <seq> are dropped (ontology/Record.h).
+DEFINE_WORK_FUNC(Ledger, Checkpoint)
+{
+    (void)ctx;
+    uint64_t seq = 0;
+    data >> seq;
+    const bool ok = self.Checkpoint(seq);
+    data.reset();
+    data << ok;
+}
+// Author <name> -- what local appends are authored as (a link's are the link's).
+DEFINE_WORK_FUNC(Ledger, Author) { (void)ctx; std::string n; data >> n; self.Author(n); data.reset(); }
+// Feed <rid> -- appends to this ledger go to that record instead.
+DEFINE_WORK_FUNC(Ledger, Feed)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Feed(rid);
+    data.reset(); data << ok;
 }
 DEFINE_WORK_FUNC(Ledger, Delete) { (void)ctx; (void)data; self.Delete(); }
 // Follow(<seq>) -> x.Consume -- every line from <seq>, then each as it is
-// appended, for as long as the consumer reads.
-DEFINE_STREAM_FUNC_PRODUCE(Ledger, Follow)
+// appended, for as long as the consumer reads. One message per line, led by
+// a restart whenever the follower is behind a checkpoint (Ledger::waitLine).
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(Ledger, Follow)
 {
     (void)data;
     uint64_t seq = 0;
     { ETCS::Buffer cfg = stream.getConfig(); cfg >> seq; }
+    // A follower that left is noticed while waiting (readerGone), not only
+    // at the next line, which may never come.
     std::string line;
-    while (self.waitLine(seq, line, ctx))
-    {
-        ETCS::Buffer f;
-        f.writeString(line.c_str());
-        if (!stream.writeRaw(f)) break;
-        ++seq;
-    }
+    const auto gone = [&stream]() { return stream.readerGone(); };
+    while (self.waitLine(seq, line, ctx, gone))
+        if (!stream.writeMessage(line)) break;
 }
 // x.Produce -> copy.Mirror() -- appends another ledger's lines as they were.
 DEFINE_STREAM_FUNC_CONSUME(Ledger, Mirror)
 {
     (void)data;
-    ETCS::Buffer f;
+    std::string m;
     size_t n = 0, refused = 0;
-    while (!ctx.isInterrupted() && stream.readRaw(f))
-    {
-        if (self.appendExact(f.toString())) ++n; else ++refused;
-        f.reset();
-    }
+    while (!ctx.isInterrupted() && stream.readMessage(m, Ledger::kLine + 64))
+        if (self.appendExact(m)) ++n; else ++refused;
     ETCS_LOG("Ledger", "Mirror: " << n << " line(s)" << (refused ? ", " + std::to_string(refused) + " out of order" : std::string()));
+}
+// x.Produce -> book.Take() -- each message appended as a line, authored as
+// Append authors it: by the link it came over, if it came over one.
+DEFINE_STREAM_FUNC_CONSUME(Ledger, Take)
+{
+    (void)data;
+    std::string m;
+    size_t n = 0, refused = 0;
+    while (!ctx.isInterrupted() && stream.readMessage(m, Ledger::kLine))
+        if (self.Append("", m) != UINT64_MAX) ++n; else ++refused;
+    if (refused) ETCS_LOG("Ledger", "Take: " << n << " line(s), " << refused << " refused");
 }
 
 // ===========================================================================

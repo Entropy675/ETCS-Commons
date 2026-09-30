@@ -1,0 +1,16 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── POST THE KEY TO A WRITER ─────────────────────────────────────────────────
+#
+# Run by the host's page when it makes somebody a writer, and again for every
+# writer when the key is turned. {{n}} is the session's, {{g}} a number for this
+# grant, {{who}} the guest's name and {{key}} the key (PaintShare::Key); the
+# session's `room` is handed in. A surface of the guest's mailbox, bound
+# through the room by the guest's name -- their own link, so nobody else's
+# mailbox gets it -- and one line in it.
+
+spawn NetworkProvider::Ledger mail{{n}}_{{g}}
+mail{{n}}_{{g}}.spawn(NetworkProvider::Remote rmail{{n}}_{{g}})
+rmail{{n}}_{{g}}.Bind(mail @room {{who}})
+mail{{n}}_{{g}}.Append(key {{key}})

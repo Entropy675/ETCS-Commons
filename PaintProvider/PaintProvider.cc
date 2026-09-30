@@ -13,7 +13,7 @@
 // thread / OS event pump affinity).
 ETCS_MODULE_EXPORT_MAIN(PaintProvider,
     "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette "
-    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages PaintPagePanel PaintAnimation PaintNode PaintVisitors "
+    "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages PaintPagePanel PaintAnimation PaintShare PaintVisitors "
     "PaintFonts PaintTextBar")
 
 // SetKind is what makes one tool eight: radius/colour/hardness vary
@@ -40,18 +40,19 @@ ETCS_TAG_BLOCK_BASIC(PaintLayer,
 // extent verbs: Resize re-states the page around every layer at once, and New
 // is that plus a clear (PaintDocument::Resize). ImportCanvas is New sized to a
 // file plus ImportImage (PaintDocument::ImportCanvas).
-ETCS_TAG_BLOCK_BASIC(PaintDocument,
-    Create, SetActiveLayer, ClearLayer, RenderToSurface, NewLayer,
-    MoveLayerTo, RenameLayer, RemoveLayer, IsolateLayer, ClearIsolate,
-    BindGlyphs, AddTextBox, SetTextBoxText, RemoveTextBox,
-    ShowTextBoxes, SelectTextBox,
-    SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
-    CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo, RedoAlt, RedoBranches,
-    ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
-    ExportOps, ExportBaseline, ImportOps, NotebookHead, PictureHash, PictureReport, Accept, Perform, RevertPending, Restate, SetAuthor, SetReadOnly, Syncing,
-    TextDenied, SetTextFont, SetTextSize, SetTextColor,
-    MergeDown, MergeUp,
-    Report, Delete)
+ETCS_TAG_BLOCK_HYBRID(PaintDocument,
+    (Create, SetActiveLayer, ClearLayer, RenderToSurface, NewLayer,
+     MoveLayerTo, RenameLayer, RemoveLayer, IsolateLayer, ClearIsolate,
+     BindGlyphs, AddTextBox, SetTextBoxText, RemoveTextBox,
+     ShowTextBoxes, SelectTextBox,
+     SelectRect, SelectEllipse, SelectColor, SelectPath, ClearSelection, MoveSelection,
+     CopySelection, CutSelection, PasteSelection, DeleteSelection, Undo, Redo, RedoAlt, RedoBranches,
+     ImportImage, ImportCanvas, ExportImage, ExportLayer, Resize, New,
+     ExportOps, ExportBaseline, ImportOps, NotebookHead, PictureHash, PictureReport, Accept, Perform, RevertPending, Restate, SetAuthor, SetReadOnly, Syncing,
+     TextDenied, SetTextFont, SetTextSize, SetTextColor,
+     MergeDown, MergeUp,
+     Report, Delete),
+    (Emit, Absorb))
 
 // The projection verbs sit beside Render because every one of them ends in a
 // re-composite: pan and zoom are what Render draws WITH.
@@ -149,15 +150,12 @@ ETCS_TAG_BLOCK_HYBRID(PaintRouter,
      Pointer, Press, Release, PressButton, ReleaseButton, Key, Type, Editing, Report, Delete),
     (ConsumePointer, ConsumeInput))
 
-// PaintNode -- a shared session's roster and its entries, and nothing else. It
-// holds no document and decodes no entry: see its own header note for why a
-// relay that understood its payload would have to be rebuilt every time the
-// payload grew.
-//
-// Request is registered with HttpServer.AddRequestRoute, NOT AddRoute -- it
-// reads the method and the body, and a path string carries neither.
-ETCS_TAG_BLOCK_BASIC(PaintNode,
-    Mount, Request, Filter, Delete)
+// PaintShare -- this page's part in a shared session: its role, the roster and
+// the presence beat. The record and the room are NetworkProvider's, wired by
+// paint_host.etcs / paint_join.etcs; the page relays presses and ticks.
+ETCS_TAG_BLOCK_HYBRID(PaintShare,
+    (Attach, Host, Join, Key, Role, Writers, Hue, Tick, Leave, Delete),
+    (Roster, Mail))
 
 // PaintVisitors -- who is in the session, as a pane on the sheet, for the host
 // and for everyone who joined. Rows are declared by the script and filled here;

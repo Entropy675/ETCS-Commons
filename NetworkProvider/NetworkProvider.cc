@@ -62,9 +62,9 @@ ETCS_TAG_BLOCK_BASIC(TarpitNode,
 // LinkHub is spawned under an HttpServer; Remote and Seal under the entity
 // they belong to -- the surface, the node they guard.
 ETCS_TAG_BLOCK_BASIC(LinkHub, SetPrefix, Info, Delete)
-ETCS_TAG_BLOCK_BASIC(Room,    Publish, Unpublish, SetName, Host, HostVia, Info, Delete)
+ETCS_TAG_BLOCK_BASIC(Room,    Publish, Unpublish, SetName, Host, HostVia, Drop, Info, Delete)
 ETCS_TAG_BLOCK_BASIC(Peer,    Connect, SetName, Publish, Unpublish, Close, Info, Delete)
 ETCS_TAG_BLOCK_BASIC(Remote,  Bind, Unbind, Info, Delete)
 ETCS_TAG_BLOCK_BASIC(Seal,    Key, Delete)
-ETCS_TAG_BLOCK_HYBRID(Lobby,  (Advertise, Withdraw, List, Delete), (Entries))
-ETCS_TAG_BLOCK_HYBRID(Ledger, (Append, Head, Since, Delete), (Follow, Mirror))
+ETCS_TAG_BLOCK_HYBRID(Lobby,  (Advertise, Withdraw, List, Delete), (Entries, Watch, Mirror))
+ETCS_TAG_BLOCK_HYBRID(Ledger, (Append, Head, Since, Checkpoint, Author, Feed, Delete), (Follow, Mirror, Take))

@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 
 /*
@@ -36,7 +37,12 @@
  * ordinary pair machinery, wrap chain included -- and the edge carries that
  * pipe's bytes, already framed and wrapped, as 'D' frames under the
  * channel's number. The frames inside ride along the edge's frames; nothing
- * here reads them. Channel numbers are odd from the side that dialled, even
+ * here reads them -- a stream's messages (MirrorBuffer::writeMessage) cross
+ * as the run of frames they already are.
+ *
+ * EACH OF THE EDGE'S OWN IS A MESSAGE, not a frame (writeMessage/readMessage),
+ * so an answer is as big as it needs to be: a bound node's state is the
+ * surface's starting point, and a record's is not going to fit 4 KiB. Channel numbers are odd from the side that dialled, even
  * from the side that accepted, so both may open channels at once.
  *
  * THE AUTHORITY LAYER IS CHECKED ON EVERY OPENING. A bind and a stream both
@@ -207,14 +213,24 @@ private:
 };
 
 // What one side lets the other reach: names, and nothing else.
+/*
+ * What a link may reach here, by name -- and, per name, WHICH VERBS. A node
+ * published bare answers to everything it has; one published with a verb
+ * list answers to those alone, so a record can be published to be read
+ * (Head, Since, Follow) while what writes it is published elsewhere, behind
+ * its own authority layer. The far side sees a verb not listed as one the
+ * node does not have.
+ */
 class Exports
 {
 public:
-    bool Publish(const std::string& name, ETCS::RID rid)
+    struct Export { ETCS::RID rid = 0; std::set<std::string> verbs; };   // empty: all
+
+    bool Publish(const std::string& name, ETCS::RID rid, std::set<std::string> verbs = {})
     {
         if (name.empty() || rid == 0) return false;
         std::lock_guard<std::mutex> lock(mu_);
-        map_[name] = rid;
+        map_[name] = Export{ rid, std::move(verbs) };
         return true;
     }
     bool Unpublish(const std::string& name) { std::lock_guard<std::mutex> lock(mu_); return map_.erase(name) > 0; }
@@ -225,7 +241,7 @@ public:
             std::lock_guard<std::mutex> lock(mu_);
             auto it = map_.find(name);
             if (it == map_.end()) return nullptr;
-            rid = it->second;
+            rid = it->second.rid;
         }
         if (rid_out) *rid_out = rid;
         return ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
@@ -235,36 +251,56 @@ public:
         {
             std::lock_guard<std::mutex> lock(mu_);
             bool listed = false;
-            for (auto& [n, r] : map_) if (r == rid) { listed = true; break; }
+            for (auto& [n, e] : map_) if (e.rid == rid) { listed = true; break; }
             if (!listed) return nullptr;
         }
         return ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
     }
-    std::map<std::string, ETCS::RID> snapshot() { std::lock_guard<std::mutex> lock(mu_); return map_; }
+    // Whether `verb` is reachable on what `rid` was published as (any of
+    // its names: a node published twice is reachable as the union).
+    bool allows(ETCS::RID rid, const std::string& verb)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        for (auto& [n, e] : map_)
+            if (e.rid == rid && (e.verbs.empty() || e.verbs.count(verb))) return true;
+        return false;
+    }
+    std::map<std::string, Export> snapshot() { std::lock_guard<std::mutex> lock(mu_); return map_; }
 private:
-    std::mutex                       mu_;
-    std::map<std::string, ETCS::RID> map_;
+    std::mutex                    mu_;
+    std::map<std::string, Export> map_;
 };
 
 // ── The hello, before the edge exists ───────────────────────────────────────
 // Exact frames on the bare socket (etcs_ws::send_frame/recv_frame): nothing
 // may be read past them, the pair takes the socket over next.
-inline bool hello_dial(int fd, const std::string& my_name, std::string& far_name)
+// 'W' <name> welcomes; 'N' <reason> refuses (a name already linked here).
+inline bool hello_dial(int fd, const std::string& my_name, std::string& far_name, std::string* why = nullptr)
 {
     std::string w;
     if (!etcs_ws::send_frame(fd, Writer().u8('H').u8(2).str(my_name).s)
-        || !etcs_ws::recv_frame(fd, w, 10000) || w.empty() || w[0] != 'W') return false;
+        || !etcs_ws::recv_frame(fd, w, 10000) || w.empty()) return false;
     Reader r(w, 1);
+    if (w[0] == 'N') { if (why) *why = r.str(); return false; }
+    if (w[0] != 'W') return false;
     far_name = r.str();
     return r.ok;
 }
-inline bool hello_accept(int fd, const std::string& my_name, std::string& far_name)
+// `taken` says whether a name is already linked; empty accepts every name.
+inline bool hello_accept(int fd, const std::string& my_name, std::string& far_name,
+                         const std::function<bool(const std::string&)>& taken = {})
 {
     std::string h;
     if (!etcs_ws::recv_frame(fd, h, 10000) || h.size() < 2 || h[0] != 'H' || h[1] != 2) return false;
     Reader r(h, 2);
     far_name = r.str();
-    return r.ok && etcs_ws::send_frame(fd, Writer().u8('W').str(my_name).s);
+    if (!r.ok) return false;
+    if (taken && taken(far_name))
+    {
+        etcs_ws::send_frame(fd, Writer().u8('N').str("'" + far_name + "' is already linked here").s);
+        return false;
+    }
+    return etcs_ws::send_frame(fd, Writer().u8('W').str(my_name).s);
 }
 
 class Edge
@@ -412,7 +448,7 @@ private:
     bool send(const std::string& msg)
     {
         std::lock_guard<std::mutex> lock(send_mu_);
-        return !stop_.load() && out_.writeFrame(msg.data(), msg.size());
+        return !stop_.load() && out_.writeMessage(msg);
     }
     bool ask(char op, const std::string& body, std::string& answer)
     {
@@ -442,15 +478,13 @@ private:
         return true;
     }
 
-    // ── The reader: one frame at a time, in order ──────────────────────────
+    // ── The reader: one message at a time, in order ────────────────────────
     void run()
     {
         std::string msg;
         while (!stop_.load())
         {
-            ETCS::MBuffer f;
-            if (!in_.readFrame(f)) break;
-            msg.assign(f.buf, f.written);
+            if (!in_.readMessage(msg)) break;
             if (msg.size() < 5) continue;
             Reader r(msg, 1);
             const uint32_t id = r.num<uint32_t>();
@@ -514,10 +548,10 @@ private:
         if (void* env = node->getInterfacePointer(ETCS::Buffer("Environmental")))
             static_cast<Environmental_*>(env)->CaptureState(st);
         std::string packed = st.pack();
-        if (packed.size() > ETCS::MirrorBuffer::MAX_FRAME_PAYLOAD - 64)
+        if (packed.size() > ETCS::MirrorBuffer::MAX_MESSAGE - 64)
         {
             ETCS_LOG("Edge", "'" << name << "': its state (" << packed.size()
-                     << " bytes) is more than one frame; the surface starts without it.");
+                     << " bytes) is more than one message; the surface starts without it.");
             packed.clear();
         }
         ETCS_LOG("Edge", "'" << far_name_ << "' bound a surface to '" << name << "' (RID:" << rid << ")");
@@ -533,6 +567,7 @@ private:
         Writer w;
         ETCS::Entity* node = (r.ok && exports_) ? exports_->byRid(rid) : nullptr;
         if (!node) return w.u8(0).raw("not an export", 13).s;
+        if (!exports_->allows(rid, verb)) return w.u8(0).raw("not a verb this export answers to", 33).s;
         const std::string conj = node->getSourceTag().toString() + "." + verb;
         if (node->actionHash(ETCS::Buffer(conj.c_str())) != hash)
             return w.u8(0).raw("different build of this verb", 28).s;
@@ -562,9 +597,11 @@ private:
         const uint64_t hash = r.num<uint64_t>();
         const std::string manifest = r.str();
         Writer w;
-        ETCS::Entity* node = r.ok ? exported(name) : nullptr;
+        ETCS::RID published = 0;
+        ETCS::Entity* node = r.ok ? exported(name, &published) : nullptr;
         if (!node) return w.u8(0).raw("no such export", 14).s;
         if (ETCS::MirrorBuffer::localFrame(node)) return w.u8(0).raw("of the local frame", 18).s;
+        if (!exports_->allows(published, verb)) return w.u8(0).raw("not a stream this export answers to", 35).s;
         const std::string conj = node->getSourceTag().toString() + "." + verb;
         if (node->actionHash(ETCS::Buffer(conj.c_str())) != hash)
             return w.u8(0).raw("different build of this stream", 30).s;
@@ -618,21 +655,31 @@ private:
     // Far producer -> local consumer: the queue, written into the pipe.
     void pumpIn(std::shared_ptr<Channel> c)
     {
+        bool gone = false;
         while (true)
         {
             std::string next;
             {
                 std::unique_lock<std::mutex> lock(c->mu);
-                c->cv.wait(lock, [&] { return !c->q.empty() || c->ended || c->dead.load(); });
-                if (c->dead.load()) break;
+                // Waited in slices: a consumer that returned with nothing more
+                // arriving is noticed here (its pipe end closed), and the far
+                // producer told -- not only when the next bytes fail to land.
+                while (!c->cv.wait_for(lock, std::chrono::milliseconds(250),
+                                       [&] { return !c->q.empty() || c->ended || c->dead.load(); }))
+                {
+                    pollfd p{ c->fd, POLLOUT, 0 };
+                    if (::poll(&p, 1, 0) > 0 && (p.revents & (POLLERR | POLLHUP | POLLNVAL))) { gone = true; break; }
+                }
+                if (gone || c->dead.load()) break;
                 if (c->q.empty()) break;                         // ended and drained
                 next = std::move(c->q.front());
                 c->q.pop_front();
                 c->bytes -= next.size();
                 c->cv.notify_all();
             }
-            if (!writeAll(c, next)) { send(Writer().u8('X').u32(c->id).s); break; }
+            if (!writeAll(c, next)) { gone = true; break; }
         }
+        if (gone) send(Writer().u8('X').u32(c->id).s);
         ::close(c->fd);
         dropChannel(c->id);
     }

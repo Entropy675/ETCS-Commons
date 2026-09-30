@@ -1,0 +1,11 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── WRITE INTO A SHARED CANVAS ───────────────────────────────────────────────
+#
+# Run by the page when the key has arrived (PaintShare::mail): this page's
+# entries go through the sealed way in. The stream ends when the key is
+# turned (the seal refuses) or the link goes, and what was not taken comes
+# off (PaintShare::emitEnded). Run with `doc` and `intake` handed in.
+
+detach PaintProvider/scripts/paint_emit.etcs src=doc dst=intake

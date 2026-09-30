@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A record into a page, from its start: `detach paint_follow.etcs src=<Ledger> dst=<PaintDocument>`
+requires dst [PaintDocument]
+src.Follow(0) -> dst.Absorb()

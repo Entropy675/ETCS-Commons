@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# This page's mailbox into the share: `detach paint_mail.etcs src=<Ledger> dst=<PaintShare>`
+requires dst [PaintShare]
+src.Follow(0) -> dst.Mail()

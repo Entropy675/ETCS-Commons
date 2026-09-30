@@ -967,7 +967,7 @@
    * ── sharing a session ─────────────────────────────────────────────────────
    *
    * THE LINK IS THE RIGHT TO VIEW. There is nothing to type and nobody to
-   * admit: press share, the node mints a session id, and that id in a URL is
+   * admit: press share, this page mints a session id, and that id in a URL is
    * the whole of what a visitor needs. Anyone who opens it is a reader; writing
    * is the one thing the host grants by hand, in the visitor list on the canvas.
    *
@@ -975,35 +975,20 @@
    * the link -- not in the title, not in the terminal, not in a status line
    * somebody screenshots.
    *
-   * ONE COUNTER, THE NODE'S. `head` is where this page stands in the node's
-   * record -- the `since` of the next read, counted there. What this page has
-   * yet to push is not a counter at all: the runtime marks each entry as it
-   * goes out (PaintOp::sent), so nothing here has to know how its own notebook
-   * is numbered, and nothing goes wrong when that notebook is emptied under a
-   * count -- which a Page entry from the room does.
+   * THE SESSION IS THE RUNTIME'S, NOT THIS PAGE'S. The host's runtime holds the
+   * record and hosts the room through the site's hub; a guest's links to it;
+   * the streams between them carry the picture, the roster and the key
+   * (PaintShare's header note, PaintProvider.h). What is left here is what
+   * needs the page: the scripts that make a session are TEMPLATES
+   * (paint_host.etcs, paint_join.etcs, paint_write.etcs, paint_grant.etcs),
+   * filled in and run from here because their names and addresses are this
+   * page's to know; a press in the visitor window is relayed to a verb; and
+   * the share beats once a second (PaintShare::Tick). No fetch, no poll, no
+   * head: a stream is ordered and whole or it has ended, and the runtime says
+   * which (the etcs-share events below).
    */
-  const SHARE_PUSH_MS = 700;    // how soon after a stroke it leaves this page
-  const SHARE_READ_MS = 900;    // how soon somebody else's stroke arrives
-  const SHARE_WHO_MS  = 3000;   // the roster is people, and people are slow
-  const SHARE_ROLE_MS = 4000;   // how soon a viewer notices it may now write
-  const SHARE_VIEW_MS = 1200;   // how soon a pan of yours shows up on their canvas
-
-  const share = {
-    base: null, self: null, id: null, token: null, role: null,
-    head: 0,
-    push: 0, read: 0, who: 0, role_t: 0, view_t: 0,
-    sent_view: '',
-    busy: false,
-    // The record's chain as this page has taken it in (PaintDocument::
-    // ImportOps), and the owner's name and last reported (head, picture) --
-    // the two checks below (readTheirs, readViews).
-    chain: '', owner: '', owner_head: NaN, owner_picture: '', picture: '', picture_at: 0,
-    last_head: -1, mismatch: 0, resyncs: 0,
-    // Out of step (outOfStep): reading again from the start, how many times
-    // since the picture was last the owner's, whether to ask the owner for the
-    // page whole, the red line said, and when the owner last sent it whole.
-    syncing: false, sync_since: 0, tries: 0, want_page: false, said: '', restated_at: 0
-  };
+  const SHARE_TICK_MS = 1000;
+  const share = { n: 0, id: null, role: null, grants: 0, tick: 0, beating: false };
 
   const shareBtnEl  = document.getElementById('sharebtn');
   const shareLinkEl = document.getElementById('sharelink');
@@ -1037,18 +1022,22 @@
   }
 
   /*
-   * THE NODE THAT SERVED THIS PAGE. A page opened from a laptop, from staging,
-   * or from a second site should reach the node on its own origin rather than
-   * one typed into the markup months ago -- which is also no CORS question to
-   * lose and no hop off the machine. `art` is the mount paint_lobby.etcs uses.
+   * THE HUB THAT SERVED THIS PAGE: ws[s]://<origin>/link, the LinkHub the
+   * site's server spawns (serve_paint.etcs). A page opened from staging or a
+   * second site hosts through its own origin's hub -- and a `hub` query
+   * parameter names another, for a page served from somewhere the hub is not.
    */
-  function defaultNode() { return window.location.origin + '/art'; }
+  function hubUrl() {
+    const given = new URLSearchParams(window.location.search).get('hub');
+    if (given) return given.replace(/\/+$/, '');
+    return window.location.origin.replace(/^http/, 'ws') + '/link';
+  }
 
-  // A name that survives a reload, because the roster is keyed by it: coming
-  // back as somebody else after a refresh means appearing twice in the host's
-  // list, once as a ghost. Made up the first time -- two words and a number,
-  // which people can say to each other -- and changed from the sharing window
-  // (keepName).
+  // A name that survives a reload, because the room knows this page by it:
+  // coming back as somebody else after a refresh means appearing twice in the
+  // host's list, once as a ghost. Made up the first time -- two words and a
+  // number, which people can say to each other -- and changed from the
+  // sharing window (keepName), between sessions.
   const NAME_A = ['amber', 'brisk', 'calm', 'deep', 'eager', 'fern', 'gold', 'hazy',
                   'ivory', 'jade', 'keen', 'lunar', 'mossy', 'north', 'opal', 'plum',
                   'quiet', 'rusty', 'sly', 'tidal', 'umber', 'vivid', 'wild', 'zesty'];
@@ -1068,473 +1057,45 @@
   function keepName(n) {
     try { window.localStorage.setItem('etcs-paint-name', n); } catch (e) {}
   }
+  // Sixteen hex characters from the browser's random source: a session id
+  // anybody could guess is a link anybody could follow.
+  function mintId() {
+    const b = new Uint8Array(8);
+    window.crypto.getRandomValues(b);
+    return Array.from(b, function (x) { return x.toString(16).padStart(2, '0'); }).join('');
+  }
 
   function shareLinkFor(id) { return window.location.origin + window.location.pathname + '?s=' + id; }
 
-  async function nodeGet(path) {
-    try {
-      const r = await fetch(share.base + '/' + path,
-                            { mode: 'cors', cache: 'no-store', credentials: 'omit' });
-      return r.ok ? await r.text() : null;
-    } catch (e) { return null; }
-  }
-
-  async function nodePost(path, body) {
-    try {
-      // text/plain keeps this a SIMPLE request: anything else preflights, and a
-      // preflight is one more thing a node somebody stood up in a hurry has to
-      // answer correctly. paint_lobby.etcs answers one anyway; not depending on
-      // it is cheaper than depending on it.
-      const r = await fetch(share.base + '/' + path, {
-        method: 'POST', mode: 'cors', cache: 'no-store', credentials: 'omit',
-        headers: { 'Content-Type': 'text/plain' }, body: body
-      });
-      return r.ok ? await r.text() : null;
-    } catch (e) { return null; }
-  }
-
-  function tokenPath(verb, arg, arg2) {
-    let p = share.self + '/' + share.token + '/' + share.id + '/' + verb;
-    if (arg  !== undefined && arg  !== null && arg  !== '') p += '/' + arg;
-    if (arg2 !== undefined && arg2 !== null && arg2 !== '') p += '/' + arg2;
-    return p;
-  }
-
   /*
-   * ── pushing what this page drew ───────────────────────────────────────────
-   *
-   * ExportOps writes what this page made and has not sent into the runtime's
-   * filesystem and the page reads that file back. The file is the bridge
-   * because the call bridge is a 256-byte buffer and one stroke is not that --
-   * the same reason an imported image crosses as a path, and deliberately the
-   * same mechanism. What has been sent is the runtime's to know (PaintOp::
-   * sent), so nothing here counts it; a page-level change made here goes as
-   * the whole page (PaintDocument::ExportOps).
+   * A TEMPLATE, FILLED IN AND RUN. The staged script is read from the
+   * runtime's filesystem (it is one of the files the page staged at boot,
+   * modules.json), every {{field}} replaced, and the result written where
+   * `detach` lines in it resolve their siblings -- the root, beside the boot
+   * script -- and pushed to the shell as a line, which is how the page runs
+   * any script. The name is a fresh file each time: a script's names become
+   * globals, and a session run twice must not meet its own leftovers.
    */
-  /*
-   * A PUSH OF ANY SIZE. A request to the node is bounded (64 KB, headers
-   * included) and a keyframe is a layer's PNG -- a page with a photograph on it
-   * is megabytes -- so anything bigger than one comfortable request goes as
-   * numbered parts that the node joins back together before it reads a line
-   * (PaintNode's `part` verb). The answer is the last part's, which is the
-   * push's.
-   */
-  const SHARE_PART_CHARS = 48000;
-  async function pushText(text) {
-    if (text.length <= SHARE_PART_CHARS) return await nodePost(tokenPath('push'), text);
-    const n = Math.ceil(text.length / SHARE_PART_CHARS);
-    let answer = null;
-    for (let i = 0; i < n; i++) {
-      answer = await nodePost(tokenPath('part', String(i), String(n)),
-                              text.slice(i * SHARE_PART_CHARS, (i + 1) * SHARE_PART_CHARS));
-      if (answer === null) return null;
-      if (i + 1 < n && answer !== 'more') return answer;     // READ ONLY, or the session went
-    }
-    return answer;
-  }
-
-  /*
-   * THE WHOLE PAGE, ONCE, as the session's first entries: its size, its
-   * layers and every layer's pixels (PaintDocument::ExportBaseline). Pushing
-   * the history from zero instead sent the strokes and not the picture they
-   * were made on -- a page loaded from the store, or opened from a file, is
-   * pixels no entry describes -- so a joiner saw marks floating on their own
-   * paper.
-   */
-  async function pushBaseline() {
+  function runTemplate(name, fields, inject) {
     const fs = etcsFS();
-    const path = '/share/out.txt';
-    try { fs.mkdirTree('/share'); } catch (e) {}
-    try { fs.unlink(path); } catch (e) {}
-    callVerb('doc', 'ExportBaseline', path);
     let text = '';
-    try { text = new TextDecoder().decode(fs.readFile(path)); } catch (e) { return false; }
-    if (!text.trim()) return false;
-    const answer = await pushText(text);
-    if (answer === null || !/^\d+/.test(answer)) return false;
-    /*
-     * THE HEAD IS NOT MOVED PAST WHAT WAS PUSHED. It used to be, so a page
-     * never read its own lines back -- but the record chain is over every
-     * line, so every line has to come back through a read, own ones included.
-     * The runtime passes over the page it stated when it comes back
-     * (PaintDocument::write_baseline), so the host's own page is not replaced
-     * by a copy of itself.
-     */
+    try { text = new TextDecoder().decode(fs.readFile('/PaintProvider/scripts/' + name)); }
+    catch (e) { log('[etcs] share: ' + name + ' is not staged -- ' + e + '\n', 'err'); return false; }
+    for (const k in fields) text = text.split('{{' + k + '}}').join(String(fields[k]));
+    const path = '/share_' + name.replace(/^paint_/, '').replace(/\.etcs$/, '') + '_' + fields.n
+               + (fields.g !== undefined ? '_' + fields.g : '') + '.etcs';
+    fs.writeFile(path, new TextEncoder().encode(text));
+    pushLine(path + (inject ? ' ' + inject : ''));
     return true;
   }
 
-  /*
-   * The role, and what it does NOT do: it does not stop this page drawing. The
-   * room decides who draws -- the node refuses a reader's push -- and a mark
-   * the room refused comes off this canvas when the refusal comes back
-   * (PaintDocument::RevertPending, pushMine below). Refusing here instead was
-   * a second authority that could disagree with the first, and a page that
-   * thought it could still draw kept marks nobody else had.
-   */
-  function setRole(r) {
-    share.role = r;
-    /*
-     * THE ROLE CHANGED, SO WHAT THE ROLE SAID IS NO LONGER TRUE. told_reader is
-     * a say-it-once latch (pushMine), and leaving it set after a promotion meant
-     * a later demotion went unannounced; leaving the notice on the bar meant the
-     * page went on claiming to be a reader while it was drawing. Both are the
-     * same mistake -- a statement about a state, kept past the state.
-     *
-     * Dropped rather than replaced: the promotion has its own line through
-     * refreshRole, and two notices about one event is one too many.
-     */
-    if (r === 'writer' || r === 'owner') {
-      share.told_reader = false;
-      clearStatusIf('as a reader');
-    }
-    if (!runtimeUp()) return;
-    callVerb('doc', 'SetReadOnly', '0');
-    // The sharing window is the role's too: the host's half or a guest's.
-    if (r) { callVerb('visitors', 'OpenAs', r); tellWindowWhoIAm(); }
-  }
-
-  // The "you" line: the name this page goes by in the room and its colour.
-  function tellWindowWhoIAm() {
-    if (!runtimeUp() || !share.self) return;
-    const hue = (shareHueEl.value || myHue()).replace('#', '');
-    callVerb('visitors', 'SetMe', share.self + ', ' + hue);
-  }
-
-  async function pushMine() {
-    if (share.busy || !share.token || !runtimeUp()) return;
-    share.busy = true;
-    try {
-      const fs = etcsFS();
-      const path = '/share/out.txt';
-      try { fs.mkdirTree('/share'); } catch (e) {}
-      try { fs.unlink(path); } catch (e) {}    // a stale file must not pass for this export
-      callVerb('doc', 'ExportOps', path);
-
-      let text = '';
-      try { text = new TextDecoder().decode(fs.readFile(path)); } catch (e) { return; }
-      if (!text.trim()) return;
-
-      const answer = await pushText(text);
-      if (answer === 'NO SUCH SESSION') { leaveSession(); return; }
-      /*
-       * NOT TAKEN -- refused (this page is a reader, or was just made one) or
-       * never answered: what was drawn here is not the room's, so it comes off
-       * here. There is no state in which a mark is on this canvas and not in
-       * the record for longer than one push takes.
-       */
-      if (answer === null || answer === 'READ ONLY' || !/^\d+/.test(answer)) {
-        callVerb('doc', 'RevertPending', '');
-        callVerb('canvas', 'Render', '');
-        if (answer === 'READ ONLY' && !share.told_reader) {
-          share.told_reader = true;
-          log('[etcs] the room has you as a reader -- what you draw here comes back off\n', 'err');
-        }
-        return;
-      }
-      share.told_reader = false;
-      // The head stays where the last READ put it -- see pushBaseline.
-    } finally { share.busy = false; }
-  }
-
-  /*
-   * ── out of step ───────────────────────────────────────────────────────────
-   *
-   * THIS PICTURE IS NOT THE ROOM'S: read the record again from its start, and
-   * hold the canvas while that lands (PaintDocument::Syncing -- no new stroke,
-   * the throbber up). What this page had pending survives the read (the
-   * runtime's rewind). A second time without the picture having been the
-   * owner's in between means the record will not rebuild it -- a line this
-   * runtime cannot read, say -- so this page asks the owner for the page whole
-   * (want_page, carried by pushMyView and answered in readViews).
-   *
-   * The red line goes once the picture is the owner's again (inStep): a
-   * warning that stays after it stopped being true teaches you to ignore it.
-   */
-  function outOfStep(why) {
-    share.resyncs++;
-    if (++share.tries >= 2) share.want_page = true;
-    share.said = '[etcs] ' + why;
-    log(share.said + '\n', 'err');
-    share.head = 0; share.chain = ''; share.picture = '';
-    share.syncing = true; share.sync_since = Date.now();
-    callVerb('doc', 'Syncing', '1');
-  }
-
-  // The read from the start has landed: the canvas takes strokes again.
-  // Bounded, so a room that stopped answering does not hold the canvas.
-  function caughtUp() {
-    if (!share.syncing) return;
-    share.syncing = false;
-    if (runtimeUp()) callVerb('doc', 'Syncing', '0');
-    if (share.role === 'owner') clearSaid();     // the owner has no picture to compare
-  }
-
-  // The picture is the owner's.
-  function inStep() {
-    share.tries = 0;
-    share.want_page = false;
-    clearSaid();
-  }
-
-  function clearSaid() {
-    if (share.said && statusEl.textContent === share.said) setStatus('', '');
-    share.said = '';
-  }
-
-  /*
-   * ── taking in what somebody else drew ─────────────────────────────────────
-   *
-   * OUR OWN ENTRIES ARE DROPPED ON THE WAY IN. A writer already applied its
-   * strokes locally the instant they were made -- the arriving input is what
-   * drove the picture -- so the copy coming back from the node would draw every
-   * one of them a second time. Filtering by author is what lets local echo and
-   * a shared log coexist; the host's copy of a viewer's stroke is not filtered,
-   * because the host never drew it.
-   */
-  async function readTheirs() {
-    if (share.busy || !share.token || !runtimeUp()) return;
-    share.busy = true;
-    try {
-      const body = await nodeGet(tokenPath('read', String(share.head)));
-      if (body === null) return;
-      if (body === 'FORBIDDEN' || body === 'NO SUCH SESSION') {
-        // Closed, or we were removed. The canvas stays: it is ours, and it is a
-        // copy of the one that was shared.
-        log('[etcs] the shared session has ended -- this canvas is yours to keep\n');
-        leaveSession();
-        return;
-      }
-      /*
-       * THE LAST LINE IS THE NODE'S WORD ON THE RECORD: "= <head> <chain>". Every
-       * entry line goes to the runtime, this page's own included -- it chains
-       * them all and applies the others' (PaintDocument::ImportOps) -- and what
-       * it chained is compared with what the node chained over the same head.
-       * Equal heads with different chains is a line this page never took in
-       * (or took twice, or out of order), which nothing else can tell from
-       * silence: a stroke that never arrived looks exactly like a stroke nobody
-       * made. The answer is to start the record again from zero -- the
-       * baseline at its head becomes this page's page (PaintDocument::
-       * become_page) and everything after it is replayed -- rather than to
-       * guess which line went missing.
-       */
-      const since = share.head;
-      const lines = body.split('\n').filter(function (l) { return l.trim().length > 0; });
-      let nodeHead = NaN, nodeChain = '';
-      const entries = [];
-      for (const line of lines) {
-        const field = line.split(' ');
-        if (field[0] === '=') { nodeHead = parseInt(field[1], 10); nodeChain = field[2] || ''; continue; }
-        entries.push(line);
-      }
-      if (!isNaN(nodeHead)) share.head = Math.max(share.head, nodeHead);
-      if (!entries.length) return;
-
-      const fs = etcsFS();
-      const path = '/share/in.txt';
-      try { fs.mkdirTree('/share'); } catch (e) {}
-      fs.writeFile(path, new TextEncoder().encode(entries.join('\n') + '\n'));
-      const took = await callResult('doc', 'ImportOps', path + ' ' + since);
-      callVerb('canvas', 'Render', '');           // a replayed mark needs showing
-      if (took) {
-        const f = took.trim().split(' ');         // taken head chain chain-seq unreadable
-        share.chain = f[2] || '';
-        const chainSeq = parseInt(f[3], 10);
-        // A line this runtime cannot read will not read any better from the
-        // start: only the page stated whole gets past it.
-        if (parseInt(f[4], 10) > 0) share.want_page = true;
-        if (nodeChain && share.chain && chainSeq === nodeHead && share.chain !== nodeChain) {
-          outOfStep('the record here (' + share.chain + ') is not the room\'s (' + nodeChain
-                    + ') at ' + nodeHead + ' -- reading it again from the start');
-        } else if (share.syncing && chainSeq === nodeHead && share.chain === nodeChain) {
-          caughtUp();
-        }
-      }
-    } finally { share.busy = false; }
-  }
-
-  // The roster, straight into the canvas window. Parsed there rather than here:
-  // the row is that window's, and the page deciding what a row says would be
-  // the page owning a piece of the canvas.
-  async function refreshRoster() {
-    if (!share.token || !runtimeUp()) return;
-    const who = await nodeGet(tokenPath('who'));
-    if (who !== null && who !== 'FORBIDDEN' && who !== 'NO SUCH SESSION') {
-      callVerb('visitors', 'SetRoster', who);
-      for (const line of who.split('\n')) {
-        const f = line.trim().split(/\s+/);
-        if (f[1] === 'owner') share.owner = f[0];
-      }
-    }
-  }
-
-  // A VIEWER ASKS WHAT IT IS. The host's elevation cannot reach this page --
-  // there is no address to reach it at -- so the page asks, on a slow timer,
-  // and finds out within a few seconds. Same asymmetry as everything else here.
-  async function refreshRole() {
-    if (!share.token || share.role === 'owner') return;
-    const r = await nodeGet(tokenPath('role'));
-    if (r === 'writer' || r === 'reader')
-    {
-      if (r !== share.role) {
-        setRole(r);
-        log('[etcs] you are now a ' + r + ' in this session\n', r === 'writer' ? 'ok' : null);
-        shareTimers(true);
-      }
-    }
-    else if (r === 'FORBIDDEN' || r === 'NO SUCH SESSION') leaveSession();
-  }
-
-  /*
-   * ── where I am looking, and where everyone else is ────────────────────────
-   *
-   * ONE CALL, CARRYING BOTH. The rectangle and the colour are a single
-   * statement about how this client should appear; splitting them would let a
-   * page be drawn in a stale colour for a poll.
-   *
-   * SENT ONLY WHEN IT CHANGED. A pan that settles is one request; a pan that is
-   * still happening is none, because the rect is read from the runtime each
-   * tick and compared to the last one sent. Presence is cheap or it is noise.
-   */
-  async function pushMyView() {
-    if (!share.token || !runtimeUp()) return;
-    const rect = await callResult('canvas', 'ViewRect', '');
-    if (!rect) return;
-    const hue = (shareHueEl.value || myHue()).replace('#', '');
-    /*
-     * AND WHAT THE PICTURE IS, beside where this page is looking: the record
-     * head it has taken in and the hash of what it made of it (PaintDocument::
-     * PictureHash). Presence already goes to everyone, so this is how the
-     * members compare pictures without a verb for it -- readViews, below.
-     */
-    // "<hash> <record-seq> <settled>": the picture is sent only when it IS the
-    // record's -- nothing of this page's still to be pushed -- and '-' otherwise,
-    // which no member compares against.
-    const picture = await callResult('doc', 'PictureHash', '');
-    const pf = picture ? picture.trim().split(' ') : [];
-    share.picture = (pf[2] === '1' && pf[0]) ? pf[0] : '-';
-    share.picture_at = parseInt(pf[1], 10);
-    // And, last, whether this page needs the owner's page whole (outOfStep).
-    const line = rect.trim().replace(/\s+/g, '/') + '/' + hue + '/' + share.picture_at + '/' + share.picture
-               + '/' + (share.want_page ? 'R' : '-');
-    if (line === share.sent_view) return;          // nothing moved
-    share.sent_view = line;
-    await nodeGet(tokenPath('view') + '/' + line);
-  }
-
-  /*
-   * AND THEIRS ONTO THIS CANVAS. ClearPeers then one SetPeer each -- which is
-   * the shape the 256-byte call buffer wants, and why no file is involved: a
-   * peer line is about forty bytes and one call each stays well under it.
-   *
-   * The rect arrives in DOCUMENT space and PaintSurface draws it through this
-   * pane's own projection, so somebody at a different zoom still has their
-   * frame in the right place on the picture.
-   */
-  async function readViews() {
-    if (!share.token || !runtimeUp()) return;
-    const body = await nodeGet(tokenPath('views'));
-    if (body === null || body === 'FORBIDDEN' || body === 'NO SUCH SESSION') return;
-    const lines = body.split('\n').filter(function (l) { return l.trim().length > 0; });
-    callVerb('canvas', 'ClearPeers', '');
-    for (const line of lines) {
-      const f = line.trim().split(/\s+/);
-      if (f.length < 6) continue;
-      /*
-       * THE OWNER'S PICTURE IS THE ROOM'S. A member at the same record head as
-       * the owner whose picture hashes differently has diverged -- whatever the
-       * chain says it received, what it made of it is not what the owner made
-       * -- and it reads the record again from zero (readTheirs). Same head
-       * only: a head apart is a stroke in flight, not a divergence. The owner
-       * never resyncs to anyone.
-       */
-      if (f[0] === share.owner && share.role !== 'owner' && f.length >= 8) {
-        share.owner_head = parseInt(f[6], 10);
-        share.owner_picture = f[7];
-        /*
-         * ONLY WHEN NOTHING IS MOVING. A stroke being made is in its maker's
-         * picture before it is in the record, so pictures at one head differ
-         * for a second or two around every stroke; the head then moves. A
-         * divergence is a difference that stays while the head does not --
-         * two ticks running, with the head where it was.
-         */
-        const at = share.picture_at;
-        const still = share.owner_head === at && at > 0
-                   && at === share.last_head
-                   && share.picture && share.picture !== '-'
-                   && share.owner_picture && share.owner_picture !== '-'
-                   && share.picture !== share.owner_picture;
-        share.mismatch = still ? share.mismatch + 1 : 0;
-        share.last_head = at;
-        if (share.owner_head === at && at > 0 && share.picture && share.picture !== '-'
-            && share.picture === share.owner_picture) inStep();
-        // Three ticks: a settled line can still be a read-back behind the
-        // record for a tick or two (pushed, not yet read), and its refresh
-        // one more; a difference that outlives that is not in flight.
-        if (share.mismatch >= 3) {
-          share.mismatch = 0;
-          outOfStep('this picture (' + share.picture + ') is not the owner\'s (' + share.owner_picture
-                    + ') at ' + at + ' -- reading the record again from the start');
-        }
-      }
-      /*
-       * A MEMBER THE RECORD WILL NOT REBUILD asks for the page whole; the
-       * owner sends it with the next push (PaintDocument::Restate), at most
-       * every twenty seconds, since every member reads what it sends.
-       */
-      if (share.role === 'owner' && f[8] === 'R' && Date.now() - share.restated_at > 20000) {
-        share.restated_at = Date.now();
-        callVerb('doc', 'Restate', '');
-        log('[etcs] ' + f[0] + ' cannot rebuild this page from the record -- sending it whole\n');
-      }
-      const hex = f[5].replace('#', '');
-      if (hex.length < 6) continue;
-      const r = parseInt(hex.slice(0, 2), 16) / 255;
-      const g = parseInt(hex.slice(2, 4), 16) / 255;
-      const b = parseInt(hex.slice(4, 6), 16) / 255;
-      callVerb('canvas', 'SetPeer',
-               f[0] + ', ' + f[1] + ', ' + f[2] + ', ' + f[3] + ', ' + f[4]
-               + ', ' + r.toFixed(3) + ', ' + g.toFixed(3) + ', ' + b.toFixed(3));
-    }
-    callVerb('canvas', 'Render', '');
-  }
-
-  async function tickPresence() {
-    if (share.syncing && Date.now() - share.sync_since > 15000) caughtUp();
-    await pushMyView();
-    await readViews();
-  }
-
-  function shareTimers(on) {
-    clearInterval(share.push); clearInterval(share.read);
-    clearInterval(share.who);  clearInterval(share.role_t);
-    clearInterval(share.view_t);
-    share.push = share.read = share.who = share.role_t = share.view_t = 0;
-    if (!on) return;
-    share.view_t = setInterval(tickPresence, SHARE_VIEW_MS);
-    share.read = setInterval(readTheirs, SHARE_READ_MS);
-    // Every member pushes: the node is what says who may draw (pushMine).
-    share.push = setInterval(pushMine, SHARE_PUSH_MS);
-    share.who = setInterval(refreshRoster, SHARE_WHO_MS);
-    if (share.role !== 'owner') share.role_t = setInterval(refreshRole, SHARE_ROLE_MS);
-  }
-
   function leaveSession() {
-    shareTimers(false);
-    share.token = null; share.id = null;
-    share.head = 0;
-    share.chain = ''; share.owner = ''; share.picture = ''; share.owner_picture = '';
-    caughtUp(); inStep();
-    setRole(null);                      // editable again: the canvas is theirs now
-    if (runtimeUp()) {
-      callVerb('doc', 'SetAuthor', '');
-      callVerb('visitors', 'Hide', '');           // idempotent; already shut is fine
-    }
+    clearInterval(share.tick); share.tick = 0;
+    share.id = null; share.role = null;
     shareLinkEl.hidden = true;
     shareHueEl.hidden = true;
     shareBtnEl.hidden = false;
     shareBtnEl.textContent = 'share';
-    share.sent_view = '';
-    if (runtimeUp()) { callVerb('canvas', 'ClearPeers', ''); callVerb('canvas', 'Render', ''); }
   }
 
   function showLink() {
@@ -1544,106 +1105,93 @@
     shareBtnEl.hidden = true;
   }
 
+  // Off the main thread (callResult): a beat advertises over the link, and a
+  // verb that waits on the far side cannot run on the thread that pumps the
+  // socket -- see etcs_web_call_async in loaders/etcs.cc.
+  function beat() {
+    clearInterval(share.tick);
+    share.tick = setInterval(function () { if (share.id && !share.beating) { share.beating = true; callResult('share', 'Tick', '').then(function () { share.beating = false; }); } }, SHARE_TICK_MS);
+  }
+
   /*
    * PRESSING SHARE OPENS THE SESSION AND THE VISITOR LIST TOGETHER, because
    * they are the same act: the list being up IS the statement that this canvas
    * is shared, and closing it is the statement that it is not.
    */
-  async function startHosting() {
+  function startHosting() {
     if (!runtimeUp()) { log('[etcs] share: the runtime is not up yet\n', 'err'); return; }
-    share.base = defaultNode();
-    share.self = myName();
-
-    const answer = await nodeGet(share.self + '/open');
-    if (answer === null) { log('[etcs] share: no answer from ' + share.base + '\n', 'err'); return; }
-    const bits = answer.trim().split(' ');
-    if (bits.length < 2) { log('[etcs] share: ' + answer + '\n', 'err'); return; }
-
-    share.id    = bits[0];
-    share.token = bits[1];
-    setRole('owner');
-    share.head  = 0;
-    callVerb('doc', 'SetAuthor', share.self);
-
-    // THE PICTURE AS IT STANDS, so a session opened on a canvas that is
-    // already painted starts from that picture rather than from the next stroke.
-    if (!(await pushBaseline())) log('[etcs] share: the page could not be sent -- joiners start blank\n', 'err');
-
+    share.n++;
+    share.id   = mintId();
+    share.role = 'owner';
+    callVerb('share', 'Hue', (shareHueEl.value || myHue()).replace('#', ''));
+    if (!runTemplate('paint_host.etcs', { n: share.n, name: myName(), id: share.id, hub: hubUrl() }, 'share=share doc=doc')) { share.id = null; return; }
     showLink();
-    await refreshRoster();
-    shareTimers(true);
+    beat();
     log('[etcs] sharing -- the link in the header is the invitation\n', 'ok');
   }
 
   // Arriving on somebody's link. No knocking and nothing to wait for: holding
-  // the id is the right to view, so this is a join and then a read.
+  // the id is the right to view, so this is a join and then the record.
   async function joinFromLink(id) {
     if (!runtimeUp()) return;
-    share.base = defaultNode();
-    share.self = myName();
-
-    /*
-     * THE TOKEN IS THIS TAB'S, so it is kept per tab (sessionStorage) and
-     * handed back on a reload; a fresh tab has none and is a new member. The
-     * name is only what this page ASKS for -- every tab of one browser reads
-     * the same stored name, and the node grants a free one (suffixed when
-     * taken), which is the name this page then goes by: as the author of what
-     * it pushes, and as the author it passes over on the way back in. Two tabs
-     * that both believed they were the host dropped every one of its lines.
-     */
-    let had = '';
-    try { had = window.sessionStorage.getItem('etcs-paint-token-' + id) || ''; } catch (e) {}
-    const answer = await nodeGet(share.self + '/join/' + id + (had ? '/' + had : ''));
-    if (answer === null || answer === 'NO SUCH SESSION') {
-      log('[etcs] that share link is not open any more\n', 'err');
-      return;
-    }
-    const bits = answer.trim().split(' ');
-    share.id    = id;
-    share.token = bits[0];
-    if (bits[2]) share.self = bits[2];
-    try { window.sessionStorage.setItem('etcs-paint-token-' + id, share.token); } catch (e) {}
-    share.head  = 0;                    // from the beginning: give us the picture
-    share.chain = '';
-
+    share.n++;
+    share.id   = id;
+    share.role = 'reader';
     /*
      * WHAT WAS ON THIS CANVAS IS PUT AWAY FIRST, into the page store, and the
      * canvas leaves its slot (PaintPages::Stash) -- so the session's page,
      * which replaces the document when it arrives, is a new page rather than
-     * an overwrite of theirs. Then the role, which may make it view only.
+     * an overwrite of theirs.
      */
     const kept = await callResult('pages', 'Stash', '');
     if (kept && kept.trim() === 'ok') log('[etcs] your page is kept in the page list\n');
-    setRole(bits[1] || 'reader');
-    callVerb('doc', 'SetAuthor', share.self);
-
-    // The sharing window opens for a guest too (setRole): their name, their
-    // colour and who else is here, without the host's buttons.
+    callVerb('share', 'Hue', (shareHueEl.value || myHue()).replace('#', ''));
+    if (!runTemplate('paint_join.etcs', { n: share.n, name: myName(), id: id, hub: hubUrl() }, 'share=share doc=doc')) { share.id = null; return; }
     shareLinkEl.textContent = 'in a shared canvas';
     shareLinkEl.hidden = false;
     shareHueEl.hidden = false;        // a viewer picks their colour too
     shareBtnEl.hidden = true;
-
-    await readTheirs();
-    await refreshRoster();
-    shareTimers(true);
-    log('[etcs] joined a shared canvas as ' + share.self + ', a ' + share.role
-        + ' -- the sharing window has your name and colour\n', 'ok');
+    beat();
+    log('[etcs] joining a shared canvas as ' + myName() + ' -- the sharing window has your name and colour\n', 'ok');
   }
+
+  // The key to a writer: paint_grant.etcs, once per grant.
+  async function grant(who) {
+    const key = await callResult('share', 'Key', '');
+    if (!key || !key.trim()) return;
+    runTemplate('paint_grant.etcs', { n: share.n, g: ++share.grants, who: who, key: key.trim() }, 'room=room' + share.n);
+  }
+
+  /*
+   * THE RUNTIME SAYS WHAT HAPPENED (PaintShare::page_event):
+   *   writer   the key arrived -- open the way in (paint_write.etcs)
+   *   rekey    the host turned the key -- post it to every writer again
+   *   ended    the record ended for this page -- the session is over here
+   */
+  window.addEventListener('etcs-share', async function (ev) {
+    const what = (ev && ev.detail) || '';
+    if (!share.id) return;
+    if (what === 'writer') { runTemplate('paint_write.etcs', { n: share.n }, 'doc=doc intake=intake' + share.n); return; }
+    if (what === 'rekey') {
+      const names = await callResult('share', 'Writers', '');
+      for (const who of (names || '').trim().split(/\s+/).filter(Boolean)) await grant(who);
+      return;
+    }
+    if (what === 'ended') { leaveSession(); return; }
+  });
 
   shareHueEl.value = myHue();
   shareHueEl.addEventListener('change', function () {
     keepHue(shareHueEl.value);
-    share.sent_view = '';          // force the next tick to state the new colour
-    tellWindowWhoIAm();
+    callVerb('share', 'Hue', shareHueEl.value.replace('#', ''));
   });
 
   shareBtnEl.addEventListener('click', function () {
-    if (!share.token) startHosting();
+    if (!share.id) startHosting();
   });
 
   shareLinkEl.addEventListener('click', function () {
-    if (!share.id) return;
+    if (!share.id || share.role !== 'owner') return;
     const text = shareLinkFor(share.id);
     const done = function () {
       shareLinkEl.classList.add('copied');
@@ -1667,21 +1215,27 @@
   }
 
   /*
-   * THE VISITOR LIST TALKING BACK. PaintVisitors cannot reach the node -- a
-   * fetch is the page's -- so a press on a row raises this and the page
-   * performs the verb. "close" is the one that ends the session, which is why
-   * closing that window is the whole gesture for stopping a share.
+   * THE VISITOR LIST TALKING BACK. A press on a row raises this
+   * (PaintVisitors::page_event) and the page relays it: a role to the share
+   * (which turns the key when drawing is taken back), a grant to the guest's
+   * mailbox, a removal to the room, and the end of the session to the room
+   * as a whole -- closing that window is the whole gesture for stopping a
+   * share. "leave" closes a guest's link; the canvas stays theirs.
    */
   window.addEventListener('etcs-visitors', async function (ev) {
     const what = (ev && ev.detail) || '';
-    if (!share.token) return;
+    if (!share.id) return;
     if (what === 'close') {
-      await nodeGet(tokenPath('close'));
+      callVerb('share', 'Leave', '');
+      callVerb('room' + share.n, 'Delete', '');      // every guest's link ends
+      callVerb('record' + share.n, 'Delete', '');    // and the host's own streams
       leaveSession();
       log('[etcs] sharing ended -- everyone keeps the canvas they have\n');
       return;
     }
     if (what === 'leave') {
+      callVerb('peer' + share.n, 'Close', '');
+      callVerb('share', 'Leave', '');
       leaveSession();
       log('[etcs] you left the shared canvas -- this canvas is yours to keep\n');
       return;
@@ -1691,95 +1245,23 @@
       const hex = '#' + what.slice(4).replace(/[^0-9a-f]/gi, '').slice(0, 6);
       shareHueEl.value = hex;
       keepHue(hex);
-      share.sent_view = '';        // the next presence tick carries it
-      tellWindowWhoIAm();
+      callVerb('share', 'Hue', hex.replace('#', ''));
       return;
     }
     if (what.startsWith('name:')) {
-      /*
-       * A NEW NAME IS THE NODE'S TO GRANT: the roster is keyed by it, so one
-       * somebody else has is refused. Granted, it is this page's from then on
-       * -- kept for the next visit, and the author of what it pushes.
-       */
-      const want = what.slice(5);
-      const got = await nodeGet(tokenPath('rename', encodeURIComponent(want)));
-      if (got === 'TAKEN') log('[etcs] somebody here is already called ' + want + '\n', 'err');
-      else if (got && got !== 'BAD NAME' && got !== 'FORBIDDEN' && got !== 'NO SUCH SESSION') {
-        share.self = got.trim();
-        keepName(share.self);
-        callVerb('doc', 'SetAuthor', share.self);
-        log('[etcs] you are ' + share.self + ' in this session\n', 'ok');
-      }
-      tellWindowWhoIAm();
-      await refreshRoster();
+      // A name is the link's: it is what the record authors this page as and
+      // what the room knows it by, so it changes between sessions, not during.
+      keepName(what.slice(5));
+      log('[etcs] you will be ' + what.slice(5) + ' in the next session you join\n');
       return;
     }
     const colon = what.indexOf(':');
     if (colon < 0) return;
     const verb = what.slice(0, colon), who = what.slice(colon + 1);
     if (verb !== 'writer' && verb !== 'reader' && verb !== 'out') return;
-    await nodeGet(tokenPath('role', who, verb));
-    await refreshRoster();
-  });
-
-  /*
-   * ── one hand on a text box ────────────────────────────────────────────────
-   *
-   * The runtime says when a box is selected (claim), typed into (touch) and
-   * let go (release) -- PaintDocument::SelectTextBox -- and the node decides
-   * who has it. A claim refused puts the box back as it was (TextDenied). The
-   * release goes AFTER a push, so the submission is in the room before the box
-   * is anyone else's to take. A hand idle for SHARE_TEXT_IDLE_MS lets go by
-   * itself: the box is submitted as it stands, and the node would have let the
-   * claim lapse soon after anyway.
-   */
-  const SHARE_TEXT_IDLE_MS = 20000;
-  const SHARE_TEXT_RENEW_MS = 5000;
-  const text = { key: null, renewed: 0, idle: 0 };
-
-  function textIdleArm() {
-    clearTimeout(text.idle);
-    text.idle = setTimeout(function () {
-      if (text.key && runtimeUp()) {
-        log('[etcs] text box let go after a while with no typing -- sent as it stands\n');
-        callVerb('doc', 'SelectTextBox', '0');
-      }
-    }, SHARE_TEXT_IDLE_MS);
-  }
-
-  window.addEventListener('etcs-text', async function (ev) {
-    const what = (ev && ev.detail) || '';
-    if (!share.token) return;
-    const colon = what.indexOf(':');
-    const verb = what.slice(0, colon), key = what.slice(colon + 1);
-    if (verb === 'claim') {
-      text.key = key; text.renewed = Date.now(); textIdleArm();
-      const got = await nodeGet(tokenPath('claim', encodeURIComponent(key)));
-      if (got && got.startsWith('held ')) {
-        const who = got.slice(5).trim();
-        callVerb('doc', 'TextDenied', key + ', ' + who);
-        callVerb('canvas', 'Render', '');
-        log('[etcs] ' + who + ' is editing that text -- it is theirs until they let go\n', 'err');
-        if (text.key === key) { text.key = null; clearTimeout(text.idle); }
-      }
-      return;
-    }
-    if (verb === 'touch') {
-      textIdleArm();
-      if (Date.now() - text.renewed > SHARE_TEXT_RENEW_MS) {
-        text.renewed = Date.now();
-        await nodeGet(tokenPath('claim', encodeURIComponent(key)));
-      }
-      return;
-    }
-    if (verb === 'release') {
-      if (text.key === key) { text.key = null; clearTimeout(text.idle); }
-      // A push already in flight (or a read) holds `busy`; wait it out so this
-      // one is the push that carries the box.
-      for (let i = 0; i < 60 && share.busy; i++) await new Promise(function (r) { setTimeout(r, 50); });
-      await pushMine();
-      await nodeGet(tokenPath('release', encodeURIComponent(key)));
-    }
+    callVerb('share', 'Role', who + ', ' + verb);
+    if (verb === 'writer') await grant(who);
+    if (verb === 'out') callVerb('room' + share.n, 'Drop', who);
   });
 
   // A link opened cold. Waits for the BOOT, not only the runtime: the runtime

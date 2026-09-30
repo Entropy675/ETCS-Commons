@@ -39,10 +39,10 @@ public:
         std::string err;
         const int fd = etcs_ws::link_dial(url, insecure, err);
         if (fd < 0) { ETCS_LOG("Peer", "Connect " << url << ": " << err); return false; }
-        std::string host;
-        if (!etcs_link::hello_dial(fd, name_, host))
+        std::string host, why;
+        if (!etcs_link::hello_dial(fd, name_, host, &why))
         {
-            ETCS_LOG("Peer", "Connect " << url << ": no room answered there.");
+            ETCS_LOG("Peer", "Connect " << url << ": " << (why.empty() ? "no room answered there." : why));
             ::close(fd);
             return false;
         }

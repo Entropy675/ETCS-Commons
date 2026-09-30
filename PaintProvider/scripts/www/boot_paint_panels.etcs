@@ -806,6 +806,13 @@ spawn PaintProvider::PaintVisitors visitors
 visitors.Create()
 visitors.BindWindow(@visitors_pane)
 
+# This page's part in a shared session (PaintShare): the role, the roster and
+# the presence beat. The session itself -- the record, the room, the streams --
+# is made when share is pressed, by paint_host.etcs, or by paint_join.etcs on
+# arriving by link; the page fills those in from the templates and runs them.
+spawn PaintProvider::PaintShare share
+share.Attach(@doc @canvas @visitors)
+
 spawn PaintProvider::PaintInput visitors_input
 visitors_input.Create(@doc, @brush, @canvas)
 visitors_input.BindRoot(@visitors_pane)

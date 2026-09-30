@@ -2,6 +2,7 @@
 #define NETWORKPROVIDER_REMOTE_H__
 #include "../../../ontology.h"
 #include "Peer.h"
+#include "Room.h"
 
 #include <string>
 
@@ -30,6 +31,11 @@
  *
  * The peer may be omitted when the surface's own parent is the Peer
  * (`peer.spawn(PaintProvider::PaintNode canvas)`).
+ *
+ * FROM THE HOST'S SIDE, the same, through the Room and naming the guest:
+ * `remote.Bind(mail @room alice)` makes the parent a surface of what the
+ * guest 'alice' published on her Peer. The link is symmetric (Edge.h); only
+ * which end is being asked differs.
  */
 class Remote : public RemoteBase<Remote>, public DeletableBase<Remote>
 {
@@ -39,16 +45,19 @@ public:
     Remote()  = default;
     ~Remote() { Unbind(); }
 
-    bool Bind(const std::string& name, ETCS::RID peer_rid)
+    bool Bind(const std::string& name, ETCS::RID peer_rid, const std::string& guest = "")
     {
         ETCS::Entity* surface = getParent();
         if (!surface) { ETCS_LOG("Remote", "Bind: no parent -- spawn this under the surface."); return false; }
         if (!peer_rid && surface->getParent() && isPeer(surface->getParent()))
             peer_rid = surface->getParent()->getRID();
-        Peer* peer = resolvePeer(peer_rid);
-        auto edge = peer ? peer->edge() : nullptr;
+        auto edge = edgeOf(peer_rid, guest);
         if (!edge || !edge->isOpen())
-        { ETCS_LOG("Remote", "Bind: no linked Peer (RID:" << peer_rid << ")."); return false; }
+        {
+            ETCS_LOG("Remote", "Bind: no link " << (guest.empty() ? "on Peer" : "to guest '" + guest + "' of Room")
+                     << " RID:" << peer_rid << ".");
+            return false;
+        }
 
         if (ETCS::MirrorBuffer::localFrame(surface))
         { ETCS_LOG("Remote", "Bind: a " << surface->getSourceTag().toString() << " is of the local frame and does not cross."); return false; }
@@ -67,6 +76,7 @@ public:
         }
         name_     = name;
         peer_rid_ = peer_rid;
+        guest_    = guest;
         far_rid_  = far;
         surface_  = surface;
         surface->setRemoteWire(static_cast<ETCS::IWireRemote*>(this));
@@ -141,19 +151,21 @@ private:
         return e && e->getSourceModule().toString() == "NetworkProvider"
                  && e->getSourceTag().toString() == "Peer";
     }
-    std::shared_ptr<etcs_link::Edge> link() const
-    {
-        Peer* peer = resolvePeer(peer_rid_);
-        return peer ? peer->edge() : nullptr;
-    }
-    static Peer* resolvePeer(ETCS::RID rid)
+    std::shared_ptr<etcs_link::Edge> link() const { return edgeOf(peer_rid_, guest_); }
+    // A Peer's one edge, or a Room's edge to the guest of that name.
+    static std::shared_ptr<etcs_link::Edge> edgeOf(ETCS::RID rid, const std::string& guest)
     {
         ETCS::Entity* e = rid ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid) : nullptr;
-        return isPeer(e) ? static_cast<Peer*>(e->getTrueType()) : nullptr;
+        if (!e || e->getSourceModule().toString() != "NetworkProvider") return nullptr;
+        const std::string tag = e->getSourceTag().toString();
+        if (tag == "Peer") return static_cast<Peer*>(e->getTrueType())->edge();
+        if (tag == "Room" && !guest.empty()) return static_cast<Room*>(e->getTrueType())->edgeOf(guest);
+        return nullptr;
     }
 
     std::string    name_;
     ETCS::RID      peer_rid_ = 0;
+    std::string    guest_;
     ETCS::RID      far_rid_  = 0;
     ETCS::Entity*  surface_  = nullptr;
 };

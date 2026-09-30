@@ -675,189 +675,138 @@ tab, which is what `unreachable executed` on a two-axis resize was.
 
 ## Sharing a canvas
 
-`share` in the header opens a session on the node that served the page (`/art`,
-`PaintNode`, started by `paint_lobby.etcs`) and puts the link in the header.
-Whoever opens the link joins. Everything travels as notebook lines through that
-node: each page pushes what it made and reads what everyone else made, on a
-timer (`index.html`, `pushMine` / `readTheirs`).
+`share` in the header opens a session IN THIS PAGE'S RUNTIME and puts the link
+in the header. Whoever opens the link joins: their runtime links to yours
+through the site's hub (`NetworkProvider::LinkHub`, spawned by
+`serve_paint.etcs`; `Room::HostVia`, since a browser cannot listen), and the
+hub only splices bytes. Nothing of the session lives on a server; it ends when
+you close it. The HTTP relay this replaced (`PaintNode`, `/art`) held every
+session on the server and its record grew for as long as the server ran.
+
+**A session is a record and a room.** `paint_host.etcs` (a template the page
+fills in and runs) spawns the record -- a `NetworkProvider::Ledger`, every
+member's lines in the one order this runtime put them, chained by hash -- and
+a `Room` that publishes it to be READ (`Head Since Follow`), a sealed way IN
+(a `Ledger` behind a `Seal`, fed into the record: `Ledger::Feed`) and a
+presence `Lobby`. A guest (`paint_join.etcs`) binds a surface of each through
+its one link (`NetworkProvider::Remote`): the same types as the host's, so the
+same streams run on both sides.
+
+**Everything travels as streams.** `doc.Emit() -> record.Take()` sends what a
+page makes as it makes it, one entry per message, the whole page first
+(`PaintDocument::Emit`); `record.Follow(0) -> doc.Absorb()` takes the record
+back in, every member's lines, your own included (`Absorb`);
+`presence.Watch() -> share.Roster()` brings the listing, whole, on every
+change. A message is any size (`MirrorBuffer::writeMessage`), so a keyframe
+of a layer with a photograph on it is one line like any other. No poll, no
+head, no `since`: a stream is ordered and whole or it has ended, and the
+runtime says which.
+
+**Writing is holding the key.** A guest's `Emit` goes through the sealed way
+in, and the seal passes only a key holder's frames. The host makes somebody a
+writer in the sharing window: `PaintShare::Role` records it, and the page runs
+`paint_grant.etcs` -- a surface of the guest's MAILBOX (a `Ledger` each guest
+publishes on its own link) bound through the room by the guest's name, and the
+key appended there. Nobody else's mailbox gets it. Taking drawing back TURNS
+the key: the seal takes a new one, every remaining writer is posted it, and the
+demoted member's next line fails the seal -- their `Emit` ends and what they
+had drawn since comes off (`PaintShare::emitEnded`, `RevertPending`). The role
+table is advertised in the presence listing, so every window shows it, under
+the name each link was made with -- which is the name the record authors that
+member's lines as, so the two cannot disagree. The name changes between
+sessions, not during one (a name already linked is refused at the hello).
+
+**The record keeps itself short.** The host's own `page` line, coming back
+through `Absorb`, is where the record starts over (`Record::Checkpoint`,
+`PaintDocument::checkpoint`): a late joiner's `Follow(0)` is answered from
+there (`~ <seq> <chain>` first), and nothing before it is kept.
 
 **Joining takes the host's page, and keeps yours.** The session opens with a
 BASELINE, not with history: a `page` line (the page's size and its layer stack)
-and a keyframe of every layer (`PaintDocument::ExportBaseline`). A page loaded
-from the store or opened from a file is pixels no entry describes, so pushing
-the history from zero sent the strokes without the picture under them. A
-joiner first puts their own canvas away (`PaintPages::Stash`: saved to the page
-list if it changed, and then in no slot), and the `page` line then makes their
-document the host's -- same size, same layers -- before the keyframes fill it
+and a keyframe of every layer (`PaintDocument::write_baseline`, sent by the
+host's first `Emit`). A joiner first puts their own canvas away
+(`PaintPages::Stash`), and the `page` line then makes their document the
+host's -- same size, same layers -- before the keyframes fill it
 (`PaintDocument::AcceptOp`). A change to the layer stack made later travels the
 same way and changes every stack in the room.
 
-**What you push is what you have not sent.** Every entry carries a mark saying
-it is in the record (`PaintOp::sent`): set when it arrives from the session,
-when it goes out, and on a keyframe when it is taken. A push is the entries on
-your path without it, so nothing about it depends on how your notebook happens
-to be numbered. It used to be "everything after my entry N", and a `page` line
-from the room empties the notebook under N; that read as your own history
-having been wound back, and you re-sent your whole page -- which emptied
-everyone else's notebook, and they answered the same way, for as long as the
-room lasted. Nobody could draw. A page-level change you make (New, a resize,
-another page from the list) you now SAY you made (`m_page_changed`), and that
-one push is your whole page.
-
-**What you push is what you made.** Lines that arrived from the session sit in
+**What you send is what you have not sent, and what you made.** Every entry
+carries a mark saying it is in the record (`PaintOp::sent`), and `Emit` sends
+the entries on your path without it. Lines that arrived from the session sit in
 your notebook too, so undo and keyframes see the whole picture, but they are
-the room's already, and your keyframes are your own cache of the picture as
-YOU derived it -- on another member one overwrote whatever they had drawn on
-that layer since. Each member takes its own keyframes of arriving strokes
-(`AcceptOp`), so the record past the baseline is changes and nothing else.
+the room's already, and each member takes its own keyframes of arriving
+strokes (`AcceptOp`), so the record past the baseline is changes and nothing
+else. A page-level change you make (New, a resize, another page from the
+list) you SAY you made (`m_page_changed`), and your next `Emit` is your whole
+page.
 
 **Every change is a line.** A stroke is its path; everything else that
-changes the picture is recorded as the change it is and pushed like one: a
-layer's eye, opacity, name or place in the stack (`PaintLayer`'s setters, each
-a pair of `layers` entries -- the stack before, the stack after), a new layer,
-a merge, an import (the `layers` line then carries the layer's pixels), a
-carried selection landing, a paste, a cut or a delete (`patch`: the rectangle
-as it now is), a whole layer cleared (`clear`), a smear (`smudge`, its path).
-Each used to be a whole-layer keyframe here and nothing at all to the room, so
-a hidden layer was hidden on one canvas, and the picture check read that as a
-divergence for as long as it stayed hidden. A mark made under a selection
-carries the selection (`PaintOp::Clip`) and lands under it everywhere,
-replay here included. Names travel as typed: `layer 3` used to arrive as
-`layer_3`.
+changes the picture is recorded as the change it is: a layer's eye, opacity,
+name or place in the stack (`PaintLayer`'s setters, each a pair of `layers`
+entries), a new layer, a merge, an import (the `layers` line then carries the
+layer's pixels), a carried selection landing, a paste, a cut or a delete
+(`patch`), a whole layer cleared (`clear`), a smear (`smudge`). A mark made
+under a selection carries the selection (`PaintOp::Clip`).
 
 **A line is a change's exact input, and the change has one implementation.**
-Every entry names its layer by the layer's key (`PaintLayer::key`: the same
-number on every member, kept when an undo brings the layer back), never by a
-RID, which is one runtime's own. Numbers travel with nine significant digits
-(`paint_float_text`), which brings every float back to the same bits -- six
-decimal places brought a brush size or an opacity back as a neighbouring value,
-and a replay of the same input drew a different picture. And a change made here
-is BUILT as its entry and handed to the document, which lands it through the
-same code a replay runs: a shape, a fill or a cleared layer through `Perform`,
-a stroke point by point through `StrokeTo` (the step `ApplyOp` takes for each of
-its points), every change to the stack -- a new layer, a removal, a merge, an
-import, a restack, a layer's eye, opacity or name -- through `PerformStack`,
-which is reconcile and then the raster the entry carries, exactly what a
-member reading it does. The replay itself is a call: `ImportOps` hands each
-entry to the `Accept` verb by reference (`PaintOpRef`, the shape `RouteRef`
-gives a request), so a replayed change passes the same dispatch a made one
-does. `doc.Perform(<a record line without its sequence>)` replays a line from a
+Every entry names its layer by the layer's key (`PaintLayer::key`), never by a
+RID. Numbers travel with nine significant digits (`paint_float_text`). A change
+made here is BUILT as its entry and handed to the document, which lands it
+through the same code a replay runs (`Perform`, `StrokeTo`, `PerformStack`);
+`Absorb` hands each arriving entry to the `Accept` verb by reference
+(`PaintOpRef`), so a replayed change passes the same dispatch a made one does.
+`doc.Perform(<a record line without its sequence>)` replays a line from a
 script.
 
-**A reader's eye comes back off with every other edit**, since a layer's
-visibility is part of the picture now; the hover peek still shows a hidden
-layer to you alone.
+**An undo is a line in the record.** In a session ctrl+z appends an `undo`
+entry naming YOUR newest stroke that still stands -- by your name and its
+ordinal among your strokes, never by a sequence number -- and every member
+applies it the same way (`PaintNotebook::EffectivePath`). Redo appends the
+reverse. Only your own strokes are yours to take back.
 
-**You are who the node says you are.** A page asks to join under the name it
-keeps in the browser, and the node grants a free one -- suffixed when somebody
-in the room has it -- which is the name the page then goes by, as the author of
-what it pushes and the author it passes over on the way back in. The token is
-the identity and is kept per tab, so a reload comes back as the same member and
-a second tab is a new one. Three tabs of one browser used to be one member to
-the node, and each reader dropped every one of the host's lines as its own.
+**The picture checks itself.** Each member sends, with its presence, the hash
+of what it MADE of the record (`PaintDocument::PictureHash`) and the record
+position it is the picture of, once nothing of its own is still to go. A
+member at the owner's position whose picture differs for three beats running
+has diverged, whatever it received (`PaintShare::roster`): it raises `syncing`
+on the document (the throbber shows, the canvas starts no stroke, fifteen
+seconds at most) and asks for the page whole -- the last field of its presence.
+The owner states it with its next `Emit` (`PaintDocument::Restate`), at most
+every twenty seconds, and every member follows it as a new page; the room's
+history starts again there. A page this runtime states is passed over when it
+comes back (`write_baseline` remembers its Page line). The owner never resyncs
+to anyone.
 
-**An undo is a line in the record.** In a session ctrl+z does not wind your
-notebook back; it appends an `undo` entry naming YOUR newest stroke that still
-stands -- by your name and its ordinal among your strokes, never by a sequence
-number, since the node renumbers everything -- and every member, you included,
-applies it the same way: the path is re-derived without that entry
-(`PaintNotebook::EffectivePath`), from the last keyframe before it. Redo appends
-the reverse. Only your own strokes are yours to take back. Winding a tree back
-was what re-baselined the room with one page's whole picture on every undo,
-and wiped the strokes the others had not sent yet.
-
-**The record checks itself, two ways.** The node chains every stored line
-(`PaintNode::Session::chain`, XXH3 seeded with the chain before it) and answers
-the chain with the head; the runtime chains every line it takes in, own lines
-included (`PaintDocument::ImportOps`), and the page compares the two after each
-read. Equal heads with different chains is a line this page never took in --
-which nothing else can tell from silence -- and the page reads the record again
-from zero, whose `page` line replaces the document. Separately each member
-sends, with its presence, the hash of what it MADE of the record
-(`PaintDocument::PictureHash`: extent, each layer's place and pixels, the boxes)
-and the record position it is the picture of, only once nothing of its own is
-still to be pushed. A member at the owner's position whose picture differs for
-three presence ticks running has diverged, whatever it received, and reads the
-record again. The owner never resyncs to anyone.
-
-**Out of step, the canvas waits, and the owner states the page if it has
-to.** A member that finds itself out of step -- either check -- raises
-`syncing` on the document (`PaintDocument::Syncing`) while it reads the record
-again from zero: the throbber shows (it watches that flag as well as the page
-store's `busy`), and the canvas starts no stroke until the read lands, or for
-fifteen seconds at most. What it had pending survives the read. The red line
-that said so goes once the picture is the owner's again. A second time without
-having got back into step in between -- or a line the runtime cannot read,
-which no re-read changes -- means the record will not rebuild this picture, so
-the member asks for the page whole (the last field of its presence); the owner
-states it with its next push (`PaintDocument::Restate`), at most every twenty
-seconds, and every member follows it as a new page. The room's history starts
-again there -- an undo counts its author's strokes from the page, and a count
-that went on from before it would name a stroke other members no longer have
--- so the owner's does too. A page this runtime states is passed over when it
-comes back (`write_baseline` remembers its Page line), with its own lines
-still in flight ahead of it, which are in it already.
-
-**Draw now; the room decides.** A change you make lands on your canvas at
-once and is held as PENDING (your own entry, not yet read back from the node:
-`PaintOp::confirmed`). The node is the source of truth, so nothing is refused
-up front -- a reader draws like anyone -- and what the room refuses comes back
-off. Everyone's lines, the host's included, arrive through the same read. When
-another member's line arrives while you hold pending entries, the document
-REWINDS: it sets the pending ones aside, appends what arrived after the
-confirmed ones, and when the read is done puts yours back on top and replays
-the page once (`PaintDocument::ImportOps`), so every member ends with the
-node's order -- a stroke drawn over yours while yours was in flight used to
-land under it on your canvas and over it on everyone else's. Your own line
-coming back confirms the entry it was pushed as (matched by its text, in
-order); one pushed earlier that never came back was not taken, and goes. A
-push the node refuses -- you are a reader, or were just made one -- or that
-fails takes every pending entry off (`doc.RevertPending`, and the page says
-once that the room has you as a reader), so no mark of yours stands on your
-canvas that is not on the host's. An open stroke or an open text box survives
-the rewind and is put back where it was. Promotion takes effect within a few
-seconds (the page asks the node for its role on a timer). A document change
-takes the document's lock (`PaintDocument::m_doc_mu`), since the read runs on
-its own thread and your pen on another.
+**Draw now; the room decides.** A change you make lands on your canvas at once
+and is PENDING until your own line comes back through `Absorb`
+(`PaintOp::confirmed`). When another member's line arrives while you hold
+pending entries, the document REWINDS: it sets the pending ones aside, appends
+what arrived, puts yours back on top and replays the page once, so every
+member ends with the record's order. Your own line coming back confirms the
+entry it was sent as (matched by its text, in order). A way in that closes --
+the key turned, the link gone -- takes every pending entry off
+(`RevertPending`), so no mark of yours stands on your canvas that is not in
+the record. An open stroke or an open text box survives the rewind.
 
 **Everyone has a sharing window** (`PaintVisitors`, drawn by
 `paint_visitors.etcs`), opened as the host's or a guest's (`OpenAs`). Its top
-line is you: the name you go by in the room -- two words and a number made up
-the first time, kept in the browser -- pressed to rename it (the field takes
-every key until Enter or Escape; the node refuses a name somebody there
-already has), and the colour your frame is drawn in on everyone else's canvas,
-with eight swatches to change it. Under that, who is here, each with their
-colour and role, your own row lit. The host's window adds `copy link` and, on
-every row but their own, `draw` (make a writer), `view` (back to reader) and
-`out`; its `end` ends the session. A guest's has `leave` instead. The title bar
-moves the window: the router holds the pointer on it for the length of the drag
-(`PaintRouter::Route`, the capture), because it is its own pane and a fast
-flick would otherwise leave it behind.
+line is you: the name you go by in the room and the colour your frame is drawn
+in on everyone else's canvas. Under that, who is here, each with their colour
+and role, your own row lit -- the presence listing, which loses an entry the
+moment its link closes. The host's window adds `copy link` and, on every row
+but their own, `draw`, `view` and `out`; its `end` ends the session (the room
+and the record are deleted; every guest's record ends, and they keep the
+canvas they have). A guest's has `leave` instead.
 
-**Text boxes travel too, one hand at a time.** Selecting a box claims it: the
-page asks the node, which gives each box to the first person who asks and to
-nobody else until they let go (`claim/<key>`; a box is named in the room by who
-made it and their number for it, `PaintTextBox::key`). Someone else pressing a
-held box is told who has it, and anything they typed into it is put back
-(`PaintDocument::TextDenied`). The text bar being up IS the claim. Letting go
--- Escape, `ok`, a press elsewhere, or twenty seconds without a key -- ends the
-edit, which is recorded as one `text` entry and pushed like any stroke, and
-only then released, so it is in the room before anyone else can take it. The
-node refuses a box entry from anyone but the holder, and a claim nobody has
-touched for twenty seconds lapses. What travels is each finished edit, not the
-keystrokes.
-
-**Pushes of any size.** A request to the node is bounded (64 KB with its
-headers, `ETCS_NETWORK_MAX_HEADER_SIZE`) and a keyframe is a layer's PNG, so a
-push bigger than one request goes as numbered parts the node joins back
-together before reading a line (`part/<i>/<n>`). The server hands a request on
-only once its whole body has arrived (`PicoHTTPParser::FeedRaw` reads to the
-`Content-Length`); it used to hand it on at the end of the headers, and a
-browser that sent the body as a second segment pushed an empty part -- the
-node then joined a keyframe from its second half, and every member logged it
-as an unreadable `snap` line. The node's answer lives with the request
-(`RouteRequest::reply`) rather than on the node, which is what two members
-polling at once used to overwrite in each other's replies.
+**Text boxes travel too, one hand at a time.** Selecting a box sends a `hold`
+line naming its key (`PaintOpKind::Hold`); the first hold in the record holds,
+and every member derives the same answer from the same order
+(`PaintDocument::absorb_hold`). Someone whose own hold comes back void is told
+who has it, and anything they typed is put back (`TextDenied`). Letting go --
+Escape, `ok`, a press elsewhere, or twenty seconds without a key
+(`PaintShare::Tick`) -- ends the edit, recorded as one `text` entry, and then a
+`free` line. The host frees what a member who left was holding. Nothing keeps a
+table of claims but the record.
 
 ## On a phone
 

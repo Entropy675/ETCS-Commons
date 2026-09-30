@@ -7,6 +7,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <vector>
 
 /*
  * Room -- the HOST end of links, and so the session's authority.
@@ -19,13 +20,23 @@
  * LinkHub.h). Either way the nodes are here, their verbs run here, and the
  * order they run in is this runtime's.
  *
- * WHAT A GUEST CAN REACH is what was published, by name, behind the
- * authority layer each published node carries (its Wrapper children on the
- * network scope): a guest binds a surface only if the surface carries the
- * same layer. So a role is not a table here -- a reader is a guest that can
- * bind what readers are given, a writer one that can also fulfil what guards
- * the rest. Everything else in this runtime is out of reach, except through
- * what reaches it here.
+ * WHAT A GUEST CAN REACH is what was published, by name -- and by verb, when
+ * the publication lists them (`room.Publish(record @record Head Since
+ * Follow)`) -- behind the authority layer each published node carries (its
+ * Wrapper children on the network scope): a guest binds a surface only if
+ * the surface carries the same layer. So a role is not a table here -- a
+ * reader is a guest that can bind what readers are given, a writer one that
+ * can also fulfil what guards the rest. Everything else in this runtime is
+ * out of reach, except through what reaches it here.
+ *
+ * ONE GUEST PER NAME. A name is what the record authors a guest's lines as
+ * and what a directory lists them under, so two links under one name would
+ * be one member in every table and two at the socket. The second is refused
+ * at the hello; it can come back as somebody else.
+ *
+ * AND THE LINK IS SYMMETRIC: what a guest publishes on its Peer, this side
+ * binds through this Room by the guest's name (`remote.Bind(mail @room
+ * <guest>)`) -- the one channel that is that guest's alone.
  */
 class Room : public DeletableBase<Room>
 {
@@ -35,10 +46,11 @@ public:
     Room()  = default;
     ~Room() { shutdown(); }
 
-    bool Publish(const std::string& name, ETCS::RID rid)
+    bool Publish(const std::string& name, ETCS::RID rid, std::set<std::string> verbs = {})
     {
-        const bool ok = exports_.Publish(name, rid);
-        if (ok) ETCS_LOG("Room", "published '" << name << "' -> RID:" << rid << " on RID:" << getRID());
+        const bool ok = exports_.Publish(name, rid, verbs);
+        if (ok) ETCS_LOG("Room", "published '" << name << "' -> RID:" << rid << " on RID:" << getRID()
+                         << (verbs.empty() ? "" : " (" + std::to_string(verbs.size()) + " verb(s))"));
         return ok;
     }
     bool Unpublish(const std::string& name) { return exports_.Unpublish(name); }
@@ -52,7 +64,8 @@ public:
         threads_.start([this, fd]()
         {
             std::string guest;
-            if (!etcs_link::hello_accept(fd, name_, guest)) { ::close(fd); return; }
+            const auto taken = [this](const std::string& n) { return static_cast<bool>(edgeOf(n)); };
+            if (!etcs_link::hello_accept(fd, name_, guest, taken)) { ::close(fd); return; }
             auto e = std::make_shared<etcs_link::Edge>(fd, getArena(), false, guest, &exports_);
             {
                 std::lock_guard<std::mutex> lock(mu_);
@@ -96,13 +109,40 @@ public:
         return true;
     }
 
+    // The live link to the guest of that name, if any (Remote.h).
+    std::shared_ptr<etcs_link::Edge> edgeOf(const std::string& guest)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        reapLocked();
+        for (auto& e : edges_) if (e->farName() == guest) return e;
+        return nullptr;
+    }
+    // Ends the link to that guest; they can come back.
+    bool Drop(const std::string& guest)
+    {
+        auto e = edgeOf(guest);
+        if (!e) return false;
+        e->stop();
+        ETCS_LOG("Room", "'" << guest << "' dropped from '" << name_ << "'.");
+        return true;
+    }
+    // Every guest's name, for whoever keeps a roster.
+    std::vector<std::string> guests()
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        reapLocked();
+        std::vector<std::string> out;
+        for (auto& e : edges_) out.push_back(e->farName());
+        return out;
+    }
+
     void Info()
     {
         std::lock_guard<std::mutex> lock(mu_);
         reapLocked();
         ETCS_LOG("Room", "RID:" << getRID() << " '" << name_ << "' guests:" << edges_.size()
                  << (via_url_.empty() ? "" : " via:" + via_url_));
-        for (auto& [n, r] : exports_.snapshot()) ETCS_LOG("Room", "  " << n << " -> RID:" << r);
+        for (auto& [n, x] : exports_.snapshot()) ETCS_LOG("Room", "  " << n << " -> RID:" << x.rid);
         for (auto& e : edges_)
             ETCS_LOG("Room", "  guest '" << e->farName() << "' channels:" << e->channels());
     }
