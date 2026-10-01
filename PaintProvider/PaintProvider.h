@@ -6430,10 +6430,13 @@ public:
 
     bool ApplyOp(const PaintOp& op)
     {
-        // A box names no layer; neither does a page, nor a retraction, which
-        // re-derives the path (AcceptOp) rather than drawing anything.
+        // A box names no layer; neither does a page, a hand on a box (absorbed
+        // by absorb_hold before this is reached, never a mark on a picture),
+        // nor a retraction, which re-derives the path (AcceptOp) rather than
+        // drawing anything.
         if (op.kind == PaintOpKind::Text) { apply_text_state(op.box, op.removed); return true; }
-        if (op.kind == PaintOpKind::Page || op.retraction()) return true;
+        if (op.kind == PaintOpKind::Page || op.kind == PaintOpKind::Hold || op.kind == PaintOpKind::Free
+         || op.retraction()) return true;
         PaintLayer* layer = layerFor(op);
         if (!layer)
         {
@@ -6527,6 +6530,8 @@ public:
         case PaintOpKind::Text:
         case PaintOpKind::Undo:
         case PaintOpKind::Redo:
+        case PaintOpKind::Hold:
+        case PaintOpKind::Free:
             return true;
 
         case PaintOpKind::Layers:
