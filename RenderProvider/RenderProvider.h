@@ -791,32 +791,58 @@ DEFINE_WORK_FUNC(Scene3D, Look)
              "nothing accumulates and nothing drifts.");
 }
 
+// The rows, as the integers they are, shown as decimals -- the state, not a
+// rendering of it. Hash is what two runtimes compare.
 DEFINE_WORK_FUNC(Scene3D, Order)
 {
     (void)data; (void)ctx;
     const OrderVector& o = self.Order4();
+    const OrderVector& e = self.LastEmission();
     ETCS_LOG("Scene3D::Order",
-             "row0 (" << o.x << ", " << o.y << ", " << o.z << ", RID:" << o.rid << ")  "
-             "row1 (" << o.ox << ", " << o.oy << ", " << o.oz << ", E=" << o.energy << ")  "
-             "kinetic=" << o.KineticEnergy() << " heat=" << o.Heat()
-             << " fraction=" << o.KineticFraction()
+             "row0 (" << o.x.ToDouble() << ", " << o.y.ToDouble() << ", " << o.z.ToDouble() << ", RID:" << o.rid << ")  "
+             "row1 (" << o.ox.ToDouble() << ", " << o.oy.ToDouble() << ", " << o.oz.ToDouble() << ", E=" << o.energy.ToDouble() << ")  "
+             "kinetic=" << o.KineticEnergy().ToDouble() << " heat=" << o.Heat().ToDouble()
+             << " fraction=" << o.KineticFraction().ToDouble()
              << "  emissivity=" << self.Emissivity()
              << " shed-to-environment=" << self.EmittedToEnvironment()
-             << "\n    row2 pivot (" << o.fx << ", " << o.fy << ", " << o.fz
-             << ", r=" << o.radius << ")  "
+             << "\n    row2 pivot (" << o.fx.ToDouble() << ", " << o.fy.ToDouble() << ", " << o.fz.ToDouble()
+             << ", r=" << o.radius.ToDouble() << ")  "
              << (o.IsAggregate() ? "aggregate" : "leaf")
-             << "   row3 axis (" << o.sx << ", " << o.sy << ", " << o.sz
-             << ", theta=" << o.theta << ")"
+             << "   row3 spinor (" << o.qx.ToDouble() << ", " << o.qy.ToDouble() << ", " << o.qz.ToDouble()
+             << ", w=" << o.qw.ToDouble() << ")"
              << "\n    causal-ticks=" << self.CausalTicks()
-             << "\n    last crossing: row0 (" << self.LastEmission().x << ", "
-             << self.LastEmission().y << ", " << self.LastEmission().z
-             << ", RID:" << self.LastEmission().rid << ")  row1 ("
-             << self.LastEmission().ox << ", " << self.LastEmission().oy << ", "
-             << self.LastEmission().oz << ", E=" << self.LastEmission().energy << ")"
-             << "  heat=" << self.LastEmission().Heat()
-             << " interval=" << self.LastEmission().interval
-             << " uncertainty=" << std::hex << self.LastEmission().uncertainty
-             << std::dec);
+             << "  hash=" << std::hex << self.Hash() << std::dec
+             << "\n    last crossing: row0 (" << e.x.ToDouble() << ", " << e.y.ToDouble() << ", " << e.z.ToDouble()
+             << ", RID:" << e.rid << ")  E=" << e.energy.ToDouble()
+             << " interval=" << e.interval.ToDouble()
+             << " uncertainty=" << std::hex << e.uncertainty << std::dec);
+}
+
+// Run <ticks> <dt_ms> -- the driver: that many interactions of that span, on
+// this node and everything under it, with no clock read (Scene3D::Run). A
+// headless run is this instead of being looked at. The wall time is in the
+// line because the rate is the point of running headless: simulated seconds
+// per real second is the number a script tunes by.
+DEFINE_WORK_FUNC_TYPED(Scene3D, Run, (uint32_t, ticks), (uint32_t, dt_ms))
+{
+    (void)ctx;
+    const auto t0 = std::chrono::steady_clock::now();
+    self.Run(ticks, Fixed::FromInt(dt_ms) / Fixed::FromInt(1000));
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const double simulated_s = static_cast<double>(ticks) * dt_ms / 1000.0;
+    ETCS_LOG("Scene3D::Run", ticks << " x " << dt_ms << " ms in " << ms << " ms ("
+             << (ms > 0.0 ? simulated_s * 1000.0 / ms : 0.0) << "x real time); causal-ticks="
+             << self.CausalTicks() << " hash=" << std::hex << self.Hash() << std::dec);
+}
+
+// Hash -- the subtree's rows as one number, in the answer and the log.
+DEFINE_WORK_FUNC(Scene3D, Hash)
+{
+    (void)ctx;
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(self.Hash()));
+    ETCS_LOG("Scene3D::Hash", hex);
+    data.writeString(hex);
 }
 
 // How fast this node sheds heat into whatever contains it, per second. Drag
