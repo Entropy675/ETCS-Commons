@@ -39,7 +39,9 @@ public:
     WIRE_TYPE_IDENTITY(ChessBoard);
 
     int32_t m_order = 0;
-    bool operator<(const ChessBoard& o) const { return m_order < o.m_order; }
+    // Hidden loses every comparison; then the stated order.
+    bool operator<(const ChessBoard& o) const
+    { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
     ChessBoard()  = default;

@@ -17379,18 +17379,17 @@ public:
         const int32_t at_x = positional ? ev.x : m_x;
         const int32_t at_y = positional ? ev.y : m_y;
 
-        // (Order, index) so the sort is on the number and the tie-break is the
-        // order panes were added, matching every other ordered read here.
-        std::vector<std::pair<int32_t, size_t>> ranked;
+        // (Rank, index): Drawable_::Rank, so a hidden pane loses to every shown
+        // one, and the tie-break is the order panes were added.
+        std::vector<std::pair<std::pair<bool, int32_t>, size_t>> ranked;
         ranked.reserve(m_panes.size());
         for (size_t i = 0; i < m_panes.size(); ++i)
         {
             ETCS::Held<Drawable_> root = ETCS::resolve_held<Drawable_>("Drawable", m_panes[i].root);
-            ranked.emplace_back(root ? root->Order() : 0, i);
+            ranked.emplace_back(root ? Drawable_::Rank(root.get()) : std::pair<bool, int32_t>{ true, 0 }, i);
         }
         std::stable_sort(ranked.begin(), ranked.end(),
-                         [](const std::pair<int32_t, size_t>& a,
-                            const std::pair<int32_t, size_t>& b) { return a.first > b.first; });
+                         [](const auto& a, const auto& b) { return a.first > b.first; });
 
         /*
      * LEAVING IS AN EDGE, AND ONLY THE ROUTER CAN SEE IT.
@@ -17525,7 +17524,7 @@ public:
         // release early-out: ctrl coming UP is the half a chord depends on.
         if (paint_modifiers().Note(key, down)) return;
         if (!down) return;          // nothing else here acts on release yet
-        std::vector<std::pair<int32_t, size_t>> ranked;
+        std::vector<std::pair<std::pair<bool, int32_t>, size_t>> ranked;
         ranked.reserve(m_panes.size());
         for (size_t i = 0; i < m_panes.size(); ++i)
         {
@@ -17535,11 +17534,10 @@ public:
             // used to sink it is gone), so without this a closed window at order
             // 30 answers ctrl+PageDown ahead of the canvas and swallows it.
             if (root && root->Hidden()) continue;
-            ranked.emplace_back(root ? root->Order() : 0, i);
+            ranked.emplace_back(root ? Drawable_::Rank(root.get()) : std::pair<bool, int32_t>{ true, 0 }, i);
         }
         std::stable_sort(ranked.begin(), ranked.end(),
-                         [](const std::pair<int32_t, size_t>& a,
-                            const std::pair<int32_t, size_t>& b) { return a.first > b.first; });
+                         [](const auto& a, const auto& b) { return a.first > b.first; });
 
         for (const auto& r : ranked)
         {
@@ -17611,18 +17609,17 @@ public:
     void Report() const
     {
         ETCS_LOG("PaintRouter", "budget " << m_budget << ", " << m_panes.size() << " pane(s), top first:");
-        std::vector<std::pair<int32_t, size_t>> ranked;
+        std::vector<std::pair<std::pair<bool, int32_t>, size_t>> ranked;
         for (size_t i = 0; i < m_panes.size(); ++i)
         {
             ETCS::Held<Drawable_> root = ETCS::resolve_held<Drawable_>("Drawable", m_panes[i].root);
-            ranked.emplace_back(root ? root->Order() : 0, i);
+            ranked.emplace_back(root ? Drawable_::Rank(root.get()) : std::pair<bool, int32_t>{ true, 0 }, i);
         }
         std::stable_sort(ranked.begin(), ranked.end(),
-                         [](const std::pair<int32_t, size_t>& a,
-                            const std::pair<int32_t, size_t>& b) { return a.first > b.first; });
+                         [](const auto& a, const auto& b) { return a.first > b.first; });
         for (const auto& r : ranked)
-            ETCS_LOG("PaintRouter", "  order=" << r.first
-                     << " root RID:" << m_panes[r.second].root
+            ETCS_LOG("PaintRouter", "  order=" << r.first.second
+                     << (r.first.first ? "" : " (hidden)") << " root RID:" << m_panes[r.second].root
                      << " -> input RID:" << m_panes[r.second].input);
     }
 

@@ -46,7 +46,9 @@ public:
 
     // --- Orderable_ (required by Surface, which Drawable refines) ---
     int32_t m_order = 0;
-    bool operator<(const TextLabel& o) const { return m_order < o.m_order; }
+    // Hidden loses every comparison; then the stated order.
+    bool operator<(const TextLabel& o) const
+    { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
     TextLabel()  = default;
