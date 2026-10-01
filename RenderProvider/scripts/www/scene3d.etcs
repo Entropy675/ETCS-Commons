@@ -6,8 +6,8 @@
 #     cd modules/RenderProvider/scripts && etcs serve_scene3d.etcs
 #     then open https://localhost:8443/
 #
-# and with the pointer over the canvas: move it to look around. From the
-# terminal beside it, while it is running:
+# and with the pointer over the canvas: move it to look around, W/A/S/D to
+# walk, Q/E to rise and sink. From the terminal beside it, while it is running:
 #
 #     Root> RenderProvider                              # read the RIDs back
 #     Root> eye.LookAt(0.0, 12.0, -6.0, 0.0, 0.0, 6.0)  # move the eye
@@ -33,30 +33,13 @@
 #   no profile script      that one exists to tear the window down on exit, and
 #                          a tab closing is not an exit this runtime sees
 #
-# THE FOURTH IS AN OPEN BUG, AND IT IS WHY THE EDGES ARE ARRANGED AS THEY ARE
-# BELOW -- not a browser limitation and not a preference. A projection running
-# on a DETACHED thread corrupts the heap here: the next free faults, wherever it
-# happens to be. Bisected, in this page, with everything else held constant:
-#
-#   2D tree, frame edge detached ........... stable (this is the paint page)
-#   camera + scene, frame edge on THIS thread .... stable, and it renders
-#   camera + scene, frame edge DETACHED .......... faults in free(), inside
-#                                                 Scene3D::ProjectConcrete or
-#                                                 CompositeDrawable2D::recompose
-#   ... plus a key edge (ProduceEvents -> ConsumeInput)
-#       detached ................................. faults in the loader, through
-#                                                 checkMailbox -- a proxied call
-#
-# The projection code itself is fine: the same scene, the same camera and the
-# same geometry draw correctly when the frame edge is stated on this thread, and
-# the pixels were checked (sky, ground slab and three tower shades all distinct).
-# So what is broken is a 3D projection's interaction with a detached thread, and
-# until that is fixed this page states the frame edge HERE and detaches only the
-# pointer -- which is measurably stable and leaves the look control working.
-#
-# WHAT THAT COSTS: W/A/S/D. The key edge is also the window's event pump, so it
-# wants this thread too, and only one edge can have it. The line is left below,
-# commented, with this note rather than quietly omitted.
+# The edges are arranged as the OS script arranges them: the frame edge and
+# the pointer edge detached, the key edge last on this worker. An earlier
+# version of this page kept the frame edge on this worker and left the keys
+# out, having found a projection on a detached thread faulting in free();
+# that was before the scene's children lists and the device hand-off were
+# kept under the entity's own locks, and the chess and paint pages have run
+# all three edges detached since. W/A/S/D are the key edge, below.
 #
 # THE STRUCTURE, three things, each doing one job:
 #
@@ -157,7 +140,7 @@ hud.Create(24)
 # Says what this page can actually do, not what the control scheme is meant to
 # be: the key edge is not attached here (see the pumps, below), so promising
 # W/A/S/D on screen would be the caption lying about the build.
-hud.SetText(pointer looks -- keys pending, see scene3d.etcs)
+hud.SetText(wasd move / pointer look)
 hud.SetPosition(16, 16)
 hud.SetColor(0.6, 1.0, 0.7, 1.0)
 hud.SetBackground(0.0, 0.0, 0.0, 0.45)
@@ -185,25 +168,9 @@ view.Compose(@eye)
 # ── the pumps ────────────────────────────────────────────────────────────────
 #
 # A stream edge blocks the thread that states it, so everything but the last is
-# detached -- and WHICH one is last is what the note at the top of this file is
-# about. The FRAME edge is last, on this thread, because a projection on a
-# detached thread corrupts the heap here; the POINTER edge is the one detached,
-# because it demonstrably survives being.
-#
-# So this is not the arrangement scripts/scene3d.etcs uses, and the difference is
-# a bug rather than a substrate. Once it is fixed, the frame edge goes back to
-#
-#     detach RenderProvider/scripts/render_frames.etcs view=view
-#
-# and the key half becomes the last edge, which is where W/A/S/D comes from:
-#
-#     main.ProduceEvents() -> world.ConsumeInput()
-#
-# Both lines are left here rather than quietly omitted, because a page that
-# silently lacks half its controls is the kind of thing that gets rediscovered
-# as a mystery.
+# detached: the frame edge, then the pointer edge, and the key edge last --
+# the OS script's own arrangement (scripts/scene3d.etcs, scene3d_input.etcs),
+# which is where W/A/S/D comes from.
+detach RenderProvider/scripts/render_frames.etcs view=view
 detach scene3d_look.etcs window=main scene=world
-
-# One tick, not a pair -- presenting is a step on the Presentable family now and
-# the producer no longer stands on a pool worker. See render_frames.etcs.
-view.RunFrames(16)
+main.ProduceEvents() -> world.ConsumeInput()
