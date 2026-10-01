@@ -73,11 +73,9 @@ ETCS_TAG_BLOCK_BASIC(Camera3D,
     LookAt, SetLens, SetScene, SetDeviceProjection,
     Render, Draw, Clear, DrawRect, Blit, Delete)
 
-// Geometry for the device path: a shape a Scene3D node names by RID
-// (Scene3D.SetMesh). Spawned anywhere, sent to the device once, shared by
-// every node that names it. Nothing draws it on the host -- there a node is
-// its box regardless -- so a script that never touches the device never
-// needs one.
+// Geometry: a shape a Scene3D node names by RID (Scene3D.SetMesh). Spawned
+// anywhere, shared by every node that names it; sent to the device once,
+// and rasterised from the same triangles on the host.
 ETCS_TAG_BLOCK_BASIC(Mesh,
     Create, Clear, Box, AddVertex, AddTriangle, Delete)
 

@@ -860,9 +860,9 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetVisible, (int32_t, on))
     self.SetVisible(on != 0);
 }
 
-// The shape a device draws this node with: a Mesh by RID, or 0 for the
-// node's own box. Presentational only -- the rows and the extent are the
-// physics either way, and the host rasteriser always draws the box.
+// The shape this node is drawn with, on either path: a Mesh by RID, or 0
+// for the node's own box. Presentational only -- the rows and the extent
+// are the physics either way.
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetMesh, (ETCS::RID, mesh))
 {
     (void)ctx;

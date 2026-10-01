@@ -4,6 +4,7 @@
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
 #include "../OS/SceneSink.h"
+#include "Mesh.h"
 
 #include <algorithm>
 #include <atomic>
@@ -174,8 +175,9 @@ public:
     // destroying it -- the children's coordinates stay relative to a box
     // that is still there.
     void SetVisible(bool on) { m_visible = on; markViewersDirty(); }
-    // The shape this node is drawn with on the device (a Mesh, by RID); 0 is
-    // its box. The host path draws the box either way.
+    // The shape this node is drawn with (a Mesh, by RID); 0 is its box. Both
+    // paths draw it: the device from the geometry sent once, the host from
+    // the same triangles (rasterMesh).
     void SetMesh(ETCS::RID mesh) { m_mesh = mesh; markViewersDirty(); }
 
     // ── the held-key bitset ──────────────────────────────────────────────
@@ -759,7 +761,13 @@ public:
         std::vector<Node> nodes;
         collectSubtree(Point3D{0,0,0}, nodes);
         coverRows();
-        for (const Node& n : nodes) rasterBox(sink, v, n);
+        for (const Node& n : nodes)
+        {
+            // The same picture the device makes: a node's Mesh with its
+            // triangles, the box otherwise, both placed by T*R*S.
+            if (const Mesh* mesh = n.mesh ? meshOf(n.mesh) : nullptr) rasterMesh(sink, v, n, *mesh);
+            else                                                        rasterBox(sink, v, n);
+        }
 
         // The camera now holds an image of me, so it is an observer of me in
         // the literal sense -- registered here rather than in a setter, so a
@@ -1184,11 +1192,29 @@ private:
         v.x /= len; v.y /= len; v.z /= len;
         return true;
     }
+    // A point of the node's unit space -- the box's corner, a mesh's vertex
+    // -- placed in the scene: scaled by the extent, turned by row 3,
+    // carried to the position. T * R * S, exactly the model matrix the
+    // device is handed (projectToDevice).
+    static Point3D place(const Node& n, float ux, float uy, float uz)
+    {
+        const float sx = ux * n.half.x * 2.0f, sy = uy * n.half.y * 2.0f, sz = uz * n.half.z * 2.0f;
+        return Point3D{ n.pos.x + n.rot.at(0,0) * sx + n.rot.at(0,1) * sy + n.rot.at(0,2) * sz,
+                        n.pos.y + n.rot.at(1,0) * sx + n.rot.at(1,1) * sy + n.rot.at(1,2) * sz,
+                        n.pos.z + n.rot.at(2,0) * sx + n.rot.at(2,1) * sy + n.rot.at(2,2) * sz };
+    }
     static Point3D corner(const Node& n, int i)
     {
-        return Point3D{ n.pos.x + ((i & 1) ? n.half.x : -n.half.x),
-                        n.pos.y + ((i & 2) ? n.half.y : -n.half.y),
-                        n.pos.z + ((i & 4) ? n.half.z : -n.half.z) };
+        return place(n, (i & 1) ? 0.5f : -0.5f, (i & 2) ? 0.5f : -0.5f, (i & 4) ? 0.5f : -0.5f);
+    }
+
+    // The Mesh a node names, by RID and tag -- the way the surface finds it
+    // to send to the device (HostSurface::sendMeshes). Not a family.
+    static const Mesh* meshOf(ETCS::RID rid)
+    {
+        ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
+        if (!e || e->getSourceTag() != ETCS::Buffer("Mesh")) return nullptr;
+        return static_cast<const Mesh*>(e->getTrueType());
     }
 
     // A point in the camera's own frame: x right, y up, z straight ahead.
@@ -1291,6 +1317,39 @@ private:
             const int* q = faces[f];
             clipAndFill(sink, v, c[q[0]], c[q[1]], c[q[2]], col);
             clipAndFill(sink, v, c[q[0]], c[q[2]], c[q[3]], col);
+        }
+    }
+
+    /*
+     * A node's Mesh, triangle by triangle, through the same clip and fill the
+     * box takes. Lit as the device lights it (shaders/mesh.frag): one fixed
+     * lamp in the scene, 0.45 ambient and 0.55 of the normal's cosine, with
+     * the triangle's stated normal turned by the node's row 3 -- so a shape
+     * reads the same on the host and through the device. The box keeps its
+     * six fixed shades: that is the picture every scene has always had.
+     */
+    void rasterMesh(const Sink& sink, const View& v, const Node& n, const Mesh& mesh)
+    {
+        const std::vector<float>&    vb = mesh.Vertices();
+        const std::vector<uint32_t>& ib = mesh.Indices();
+        static const float lx = 0.4f / 1.0028f, ly = 0.8f / 1.0028f, lz = 0.45f / 1.0028f;   // normalised (0.4, 0.8, 0.45)
+        for (size_t t = 0; t + 2 < ib.size(); t += 3)
+        {
+            const uint32_t a = ib[t], b = ib[t + 1], c = ib[t + 2];
+            if ((a + 1) * 6 > vb.size() || (b + 1) * 6 > vb.size() || (c + 1) * 6 > vb.size()) continue;
+            const Point3D pa = toView(v, place(n, vb[a * 6], vb[a * 6 + 1], vb[a * 6 + 2]));
+            const Point3D pb = toView(v, place(n, vb[b * 6], vb[b * 6 + 1], vb[b * 6 + 2]));
+            const Point3D pc = toView(v, place(n, vb[c * 6], vb[c * 6 + 1], vb[c * 6 + 2]));
+            // The normal: the first vertex's, through the rotation alone.
+            const float nx0 = vb[a * 6 + 3], ny0 = vb[a * 6 + 4], nz0 = vb[a * 6 + 5];
+            const float nx = n.rot.at(0,0) * nx0 + n.rot.at(0,1) * ny0 + n.rot.at(0,2) * nz0;
+            const float ny = n.rot.at(1,0) * nx0 + n.rot.at(1,1) * ny0 + n.rot.at(1,2) * nz0;
+            const float nz = n.rot.at(2,0) * nx0 + n.rot.at(2,1) * ny0 + n.rot.at(2,2) * nz0;
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            const float cosl = len > 0.0f ? (nx * lx + ny * ly + nz * lz) / len : 0.0f;
+            const float lit  = 0.45f + 0.55f * (cosl > 0.0f ? cosl : 0.0f);
+            const float col[4] = { n.color[0] * lit, n.color[1] * lit, n.color[2] * lit, n.color[3] };
+            clipAndFill(sink, v, pa, pb, pc, col);
         }
     }
 

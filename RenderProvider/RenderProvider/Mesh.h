@@ -14,9 +14,9 @@
 // NOT CAUSAL, NOT DRAWABLE. A mesh is the SHAPE a projection gives a node:
 // the rows say where and which way (ontology/OrderVector.h); the extent says
 // how big; the mesh says what it looks like. A node with no mesh is drawn as
-// its box (Scene3D), which is the same box the host rasteriser draws, so the
-// device path and the host path show the same thing by default and differ
-// only when somebody asked for a shape the host has no rasteriser for.
+// its box. Both paths draw the same triangles -- the device from the copy it
+// was sent, the host rasteriser from these (Scene3D::rasterMesh) -- so a
+// shape looks the same whichever path a camera is on.
 //
 // SENT ONCE, BY RID. The device keeps geometry the way it keeps a layer's
 // pixels (DeviceFrame.h): keyed by this entity's RID, uploaded when it does
@@ -64,6 +64,11 @@ public:
         device_unit_box(m_vertices, m_indices);
         ++m_version;
     }
+
+    // The geometry as it is kept, for a rasteriser on the host
+    // (Scene3D::rasterMesh): the same interleaved floats Fill sends.
+    const std::vector<float>&    Vertices() const { return m_vertices; }
+    const std::vector<uint32_t>& Indices()  const { return m_indices; }
 
     uint32_t VertexCount()   const { return static_cast<uint32_t>(m_vertices.size() / 6); }
     uint32_t TriangleCount() const { return static_cast<uint32_t>(m_indices.size() / 3); }

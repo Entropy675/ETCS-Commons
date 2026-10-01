@@ -52,9 +52,8 @@ typedef HostSurface Surface;
 #include "RenderProvider/Scene3D.h"
 #include "RenderProvider/Camera3D.h"
 
-// The shape a node takes on the device path (Mesh.h). After the pair only
-// by convention: it depends on neither, and the surface that sends it to
-// the device resolves it by RID and tag, never by type.
+// The shape a node takes (Mesh.h): Scene3D includes it itself, since the
+// host rasteriser reads its triangles; here for the module's own order.
 #include "RenderProvider/Mesh.h"
 
 // The Glyphs leaf. AFTER the surfaces, because a label bound to a frame rate
