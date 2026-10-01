@@ -3,6 +3,7 @@
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
+#include "../OS/SceneSink.h"
 
 #include <algorithm>
 #include <atomic>
@@ -171,6 +172,9 @@ public:
     // destroying it -- the children's coordinates stay relative to a box
     // that is still there.
     void SetVisible(bool on) { m_visible = on; markViewersDirty(); }
+    // The shape this node is drawn with on the device (a Mesh, by RID); 0 is
+    // its box. The host path draws the box either way.
+    void SetMesh(ETCS::RID mesh) { m_mesh = mesh; markViewersDirty(); }
 
     // ── the held-key bitset ──────────────────────────────────────────────
     //
@@ -709,6 +713,24 @@ public:
  * mid-flight lands here as a quiet fall back to the buffer the camera never
  * gave up.
  */
+        // A camera on the device path that can take a scene gets the scene
+        // and not a raster: the device draws it (OS/SceneSink.h). A device
+        // camera that cannot -- another provider's -- still gets the runs.
+        if (camera->DeviceProjection())
+            if (void* raw = camera->getInterfacePointer(ETCS::Buffer(RP_SCENE_SINK)))
+            {
+                std::vector<Node> nodes;
+                collectSubtree(Point3D{0,0,0}, nodes);
+                coverRows();
+                projectToDevice(static_cast<SceneSink*>(raw), v, nodes);
+                m_depth_cam = 0;            // no host picture: DepthAt says so
+                this->Observe(camera->getRID());
+                etcs_mark_observed(camera);
+                ++m_projections;
+                for (Drawable3D_* alien : foreignChildren()) alien->Project(camera);
+                return cameraPlane(camera);
+            }
+
         Sink sink;
         if (camera->DeviceProjection()) sink.dst = cameraSurface(camera);
         else                            sink.px  = cameraPixels(camera);
@@ -847,6 +869,8 @@ private:
         Point3D   pos;
         Point3D   half;
         float     color[4];
+        Matrix4   rot;        // the node's own row 3, for the device (the host draws boxes axis-aligned)
+        ETCS::RID mesh;       // 0: the unit box, scaled to the extent
     };
 
     // The camera's pose and lens, resolved once per projection into the form
@@ -990,9 +1014,66 @@ private:
             n.half = m_half;
             n.color[0] = m_color[0]; n.color[1] = m_color[1];
             n.color[2] = m_color[2]; n.color[3] = m_color[3];
+            // A node's row 3 is its facing -- except the root's, which the look
+            // control writes to aim the camera (applyLookTo): that one is the
+            // viewer's, not the box's, and the box stays where it stands.
+            n.rot  = out.empty() ? Matrix4::Identity() : Order4().ToMatrix4();
+            n.rot.at(0,3) = n.rot.at(1,3) = n.rot.at(2,3) = 0.0f;
+            n.mesh = m_mesh;
             out.push_back(n);
         }
         for (Scene3D* kid : ownChildren()) kid->collectSubtree(abs, out);
+    }
+
+    /*
+     * THE DEVICE PROJECTION: the same subtree, as one op per node, handed to
+     * the camera (OS/SceneSink.h) for the device to draw with its own depth
+     * buffer. Nothing is rasterised here, so DepthAt has no picture to answer
+     * from on this path (it says so); DepthFor, over corners, still does.
+     *
+     * The matrices are the picture's floats, built from the rows at this
+     * boundary and nowhere else: view from the camera's basis (the same basis
+     * toView uses), projection with depth to [0,1] and y up, model as
+     * translate * rotate * scale -- the OrderVector's own 4x4 with the extent
+     * on it. Column-major, as both devices take them.
+     */
+    void projectToDevice(SceneSink* sink, const View& v, const std::vector<Node>& nodes)
+    {
+        float view[16], proj[16];
+        // Rows right/up/fwd as the columns of the transpose: column-major.
+        view[0] = v.right.x; view[4] = v.right.y; view[8]  = v.right.z; view[12] = -(v.right.x*v.eye.x + v.right.y*v.eye.y + v.right.z*v.eye.z);
+        view[1] = v.up.x;    view[5] = v.up.y;    view[9]  = v.up.z;    view[13] = -(v.up.x*v.eye.x    + v.up.y*v.eye.y    + v.up.z*v.eye.z);
+        view[2] = v.fwd.x;   view[6] = v.fwd.y;   view[10] = v.fwd.z;   view[14] = -(v.fwd.x*v.eye.x   + v.fwd.y*v.eye.y   + v.fwd.z*v.eye.z);
+        view[3] = 0.0f;      view[7] = 0.0f;      view[11] = 0.0f;      view[15] = 1.0f;
+        for (float& f : proj) f = 0.0f;
+        const float n = v.near_p, f = v.far_p;
+        proj[0]  = 1.0f / (v.tan_half * v.aspect);
+        proj[5]  = 1.0f / v.tan_half;
+        proj[10] = f / (f - n);
+        proj[11] = 1.0f;
+        proj[14] = -(n * f) / (f - n);
+        sink->BeginScene(view, proj);
+
+        for (const Node& nd : nodes)
+        {
+            DeviceMeshOp op;
+            op.mesh = nd.mesh;
+            // A mesh is in unit space like the box is; the extent is the size
+            // of either, so a shape swapped in stands where the box stood.
+            const float sx = nd.half.x * 2.0f;
+            const float sy = nd.half.y * 2.0f;
+            const float sz = nd.half.z * 2.0f;
+            // model = T * R * S, column-major: column c is R's column c scaled.
+            for (int c = 0; c < 3; ++c)
+            {
+                const float sc = c == 0 ? sx : c == 1 ? sy : sz;
+                for (int r = 0; r < 3; ++r) op.model[c * 4 + r] = nd.rot.at(r, c) * sc;
+                op.model[c * 4 + 3] = 0.0f;
+            }
+            op.model[12] = nd.pos.x; op.model[13] = nd.pos.y; op.model[14] = nd.pos.z; op.model[15] = 1.0f;
+            for (int i = 0; i < 4; ++i) op.color[i] = nd.color[i];
+            sink->AddMesh(op);
+        }
     }
 
     // Children of this module's own 3D leaf, which are the ones whose
@@ -1661,6 +1742,7 @@ private:
     // here, and the motion integrator writes the same three floats the
     // projection reads (ontology/OrderVector.h).
     Point3D m_half{0.5f, 0.5f, 0.5f};
+    ETCS::RID m_mesh = 0;
     float   m_color[4] = {0.8f, 0.8f, 0.85f, 1.0f};
     bool    m_visible  = true;
     // Causal: they decide what an impulse is and how motion decays, so they

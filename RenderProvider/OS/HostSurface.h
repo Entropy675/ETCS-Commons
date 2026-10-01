@@ -3,6 +3,8 @@
 
 #include "../../../ontology.h"
 #include "DeviceFrame.h"
+#include "SceneSink.h"
+#include "../RenderProvider/Mesh.h"
 
 #include <algorithm>
 #include <array>
@@ -69,14 +71,23 @@ class HostSurface : public SurfaceBase<HostSurface>,
                     public PresentableBase<HostSurface>,
                     public DeletableBase<HostSurface>,
                     public LifecycleBase<HostSurface>,
-                    public ThreadedBase<HostSurface>
+                    public ThreadedBase<HostSurface>,
+                    public SceneTaker
 {
 public:
     int32_t m_order = 0;
     bool operator<(const HostSurface& o) const { return m_order < o.m_order; }
     WIRE_TYPE_IDENTITY(HostSurface);
 
-    HostSurface()  = default;
+    // Reached by name, like the sink on the camera's side (OS/SceneSink.h).
+    HostSurface()
+    {
+        this->registerInterfacePointer(ETCS::Buffer(RP_SCENE_TAKER),
+                                       static_cast<void*>(static_cast<SceneTaker*>(this)));
+    }
+    // SceneTaker: while the draws go to the device. Read on the frame thread,
+    // which is the thread that sets it.
+    bool TakesScenes() const override { return m_device; }
     ~HostSurface() { m_presenter.reset(); closeHostPresenter(); }
 
     /*
@@ -225,6 +236,32 @@ public:
                       uint32_t w, uint32_t h, float opacity) override
     {
         if (!source) { ETCS_LOG("HostSurface", "Blit called with no source."); return; }
+        /*
+         * A CAMERA ON THE DEVICE PATH IS A SCENE, NOT PIXELS. Its host raster
+         * is whatever it last drew on the host, which is not this frame; what
+         * is this frame is the recording it collected as the sink of its
+         * scene's projection (SceneSink.h). Taken here, once per projection,
+         * and drawn by the device into a texture under the camera's RID that
+         * the Blit op below then samples -- so the op is an ordinary Blit and
+         * the composition does not know it was 3D.
+         */
+        if (m_device)
+            if (void* raw = source->getInterfacePointer(ETCS::Buffer(RP_SCENE_SINK)))
+                if (Camera_* cam = static_cast<Camera_*>(source->getInterfacePointer(ETCS::Buffer("Camera"))))
+                    if (cam->DeviceProjection())
+                    {
+                        std::lock_guard<std::mutex> lock(m_rasterMutex);
+                        DeviceOp op;
+                        op.kind = DeviceOp::Kind::Blit;
+                        op.x = x; op.y = y; op.w = w; op.h = h;
+                        op.c[3] = opacity;
+                        op.source = source->getRID();
+                        m_ops.push_back(op);
+                        m_targets.insert(op.source);
+                        DeviceScene sc;
+                        if (static_cast<SceneSink*>(raw)->TakeScene(sc)) m_scenes[sc.target] = std::move(sc);
+                        return;
+                    }
         Pixels_* px = static_cast<Pixels_*>(source->getInterfacePointer(ETCS::Buffer("Pixels")));
         if (!px)
         {
@@ -279,8 +316,16 @@ public:
                     frame.uploads.push_back(std::move(up));
                 }
                 m_uploads.clear();
+                frame.scenes.reserve(m_scenes.size());
+                for (auto& [rid, sc] : m_scenes)
+                {
+                    (void)rid;
+                    frame.scenes.push_back(std::move(sc));
+                }
+                m_scenes.clear();
             }
             sendMissing(frame);
+            sendMeshes(frame);
             if (m_presenter->Present(frame))
             {
                 std::lock_guard<std::mutex> lock(m_rasterMutex);
@@ -438,6 +483,9 @@ private:
             m_device = true;
             m_uploads.clear();
             m_sent.clear();
+            m_scenes.clear();
+            m_targets.clear();
+            m_meshSent.clear();
         }
         m_onDevice.store(true);
         ETCS_LOG("HostSurface", "RID:" << getRID() << " now draws through the device ("
@@ -470,6 +518,9 @@ private:
             m_device = false;
             m_uploads.clear();
             m_sent.clear();
+            m_scenes.clear();
+            m_targets.clear();
+            m_meshSent.clear();
             rasterizeRecordedLocked();
         }
         m_onDevice.store(false);
@@ -515,9 +566,12 @@ private:
         { std::lock_guard<std::mutex> lock(m_rasterMutex); sent = m_sent; }
         std::unordered_set<ETCS::RID> queued;
         for (const DeviceUpload& up : frame.uploads) queued.insert(up.source);
+        std::unordered_set<ETCS::RID> targets;
+        { std::lock_guard<std::mutex> lock(m_rasterMutex); targets = m_targets; }
         for (const DeviceOp& op : frame.ops)
         {
             if (op.kind != DeviceOp::Kind::Blit || sent.count(op.source) || queued.count(op.source)) continue;
+            if (targets.count(op.source)) continue;   // the device draws this one itself
             queued.insert(op.source);
             ETCS::Held<Surface_> src = ETCS::resolve_held<Surface_>("Surface", op.source);
             if (!src) continue;
@@ -530,6 +584,34 @@ private:
             up.bytes.assign(px->PixelData(), px->PixelData() + px->PixelBytes());
             frame.uploads.push_back(std::move(up));
         }
+    }
+
+    /*
+     * GEOMETRY THE DEVICE LACKS, sent beside the scenes that use it -- a mesh
+     * the backend has never had, or one whose version moved since it was
+     * sent. Resolved by RID to this module's Mesh; the unit box (mesh 0) is
+     * the backend's own and never travels.
+     */
+    // Each distinct mesh is resolved once per frame -- fifty nodes sharing
+    // a shape are one registry lookup, not fifty -- and sent only when the
+    // device lacks it or its version moved.
+    void sendMeshes(DeviceFrame& frame)
+    {
+        m_meshSeen.clear();
+        for (const DeviceScene& sc : frame.scenes)
+            for (const DeviceMeshOp& op : sc.meshes)
+            {
+                if (op.mesh == 0 || !m_meshSeen.insert(op.mesh).second) continue;
+                ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), op.mesh);
+                if (!e || e->getSourceTag() != ETCS::Buffer("Mesh")) continue;
+                const Mesh* mesh = static_cast<const Mesh*>(e->getTrueType());
+                auto it = m_meshSent.find(op.mesh);
+                if (it != m_meshSent.end() && it->second == mesh->Version() && m_presenter && m_presenter->HasMesh(op.mesh)) continue;
+                DeviceMeshUpload up;
+                mesh->Fill(up);
+                frame.meshes.push_back(std::move(up));
+                m_meshSent[op.mesh] = mesh->Version();
+            }
     }
 
     // ── the host raster ──────────────────────────────────────────────────────
@@ -882,6 +964,10 @@ private:
     std::unordered_map<ETCS::RID, DeviceUpload> m_uploads;   // device mode, not yet presented
     std::unordered_set<ETCS::RID> m_observing;    // sources this surface asked to be told about
     std::unordered_set<ETCS::RID> m_sent;         // sources the current backend holds
+    std::unordered_map<ETCS::RID, DeviceScene> m_scenes;   // device mode: projections taken, not yet presented
+    std::unordered_set<ETCS::RID> m_targets;      // sources the device draws itself (cameras)
+    std::unordered_map<ETCS::RID, uint64_t> m_meshSent;   // mesh RID -> the version the backend holds
+    std::unordered_set<ETCS::RID>           m_meshSeen;   // per frame, kept to avoid reallocating
 
     // Front buffer -- the last snapshot the host present handed over.
     std::vector<uint8_t>    m_front;

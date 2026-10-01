@@ -52,6 +52,11 @@ typedef HostSurface Surface;
 #include "RenderProvider/Scene3D.h"
 #include "RenderProvider/Camera3D.h"
 
+// The shape a node takes on the device path (Mesh.h). After the pair only
+// by convention: it depends on neither, and the surface that sends it to
+// the device resolves it by RID and tag, never by type.
+#include "RenderProvider/Mesh.h"
+
 // The Glyphs leaf. AFTER the surfaces, because a label bound to a frame rate
 // reads it off the Presentable family of whatever it names.
 #include "RenderProvider/TextLabel.h"

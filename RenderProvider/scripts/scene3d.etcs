@@ -66,3 +66,39 @@ anchor.spawn(RenderProvider::Scene3D block)
 block.Create(2.0, 2.0, 2.0)
 block.SetPosition(0.6, -0.5, 2.0)
 block.SetColor(0.75, 0.45, 0.85, 1.0)
+
+# A shape that is not a box: a pyramid, as a Mesh the node names by RID. On
+# the device path it is drawn with this geometry, scaled to the node's
+# extent; on the host the node is still its box -- the mesh is
+# presentational, the rows and the extent are the physics either way
+# (Scene3D.SetMesh). Five vertices per face so each face has its own normal.
+spawn RenderProvider::Mesh pyramid
+pyramid.Create()
+pyramid.AddVertex(-0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
+pyramid.AddVertex( 0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
+pyramid.AddVertex( 0.5, -0.5,  0.5,  0.0, -1.0, 0.0)
+pyramid.AddVertex(-0.5, -0.5,  0.5,  0.0, -1.0, 0.0)
+pyramid.AddTriangle(0, 2, 1)
+pyramid.AddTriangle(0, 3, 2)
+pyramid.AddVertex(-0.5, -0.5, -0.5,  0.0, 0.447, -0.894)
+pyramid.AddVertex( 0.5, -0.5, -0.5,  0.0, 0.447, -0.894)
+pyramid.AddVertex( 0.0,  0.5,  0.0,  0.0, 0.447, -0.894)
+pyramid.AddTriangle(4, 5, 6)
+pyramid.AddVertex( 0.5, -0.5, -0.5,  0.894, 0.447, 0.0)
+pyramid.AddVertex( 0.5, -0.5,  0.5,  0.894, 0.447, 0.0)
+pyramid.AddVertex( 0.0,  0.5,  0.0,  0.894, 0.447, 0.0)
+pyramid.AddTriangle(7, 8, 9)
+pyramid.AddVertex( 0.5, -0.5,  0.5,  0.0, 0.447, 0.894)
+pyramid.AddVertex(-0.5, -0.5,  0.5,  0.0, 0.447, 0.894)
+pyramid.AddVertex( 0.0,  0.5,  0.0,  0.0, 0.447, 0.894)
+pyramid.AddTriangle(10, 11, 12)
+pyramid.AddVertex(-0.5, -0.5,  0.5, -0.894, 0.447, 0.0)
+pyramid.AddVertex(-0.5, -0.5, -0.5, -0.894, 0.447, 0.0)
+pyramid.AddVertex( 0.0,  0.5,  0.0, -0.894, 0.447, 0.0)
+pyramid.AddTriangle(13, 14, 15)
+
+anchor.spawn(RenderProvider::Scene3D spire)
+spire.Create(2.4, 3.0, 2.4)
+spire.SetPosition(-1.5, -1.25, 9.0)
+spire.SetColor(0.90, 0.60, 0.25, 1.0)
+spire.SetMesh(@pyramid)

@@ -860,6 +860,21 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetVisible, (int32_t, on))
     self.SetVisible(on != 0);
 }
 
+// The shape a device draws this node with: a Mesh by RID, or 0 for the
+// node's own box. Presentational only -- the rows and the extent are the
+// physics either way, and the host rasteriser always draws the box.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetMesh, (ETCS::RID, mesh))
+{
+    (void)ctx;
+    ETCS::Entity* e = mesh ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), mesh) : nullptr;
+    if (mesh != 0 && (!e || e->getSourceTag() != ETCS::Buffer("Mesh")))
+    {
+        ETCS_LOG("Scene3D::SetMesh", "RID:" << mesh << " does not resolve as a Mesh.");
+        return;
+    }
+    self.SetMesh(mesh);
+}
+
 // Project into a camera on demand -- the same verb the frame path calls, so a
 // script can force one view without a frame edge running at all. Useful in the
 // shell: move the scene, Render, look at it.
@@ -1146,6 +1161,54 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, Blit, (ETCS::RID, source),
 }
 
 DEFINE_WORK_FUNC(Camera3D, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}
+
+// ── Mesh ─────────────────────────────────────────────────────────────────
+//
+// Geometry a scene node can be drawn with on the device (Mesh.h). Not in the
+// scene tree: a mesh is spawned anywhere and named by RID from Scene3D.SetMesh,
+// so one shape serves any number of nodes and the device holds it once.
+
+DEFINE_WORK_FUNC(Mesh, Create)
+{
+    (void)data; (void)ctx;
+    self.Create();
+}
+
+DEFINE_WORK_FUNC(Mesh, Clear)
+{
+    (void)data; (void)ctx;
+    self.Clear();
+}
+
+// The unit cube -- what a node without a mesh gets anyway, here so a script
+// can start from it and reshape.
+DEFINE_WORK_FUNC(Mesh, Box)
+{
+    (void)data; (void)ctx;
+    self.Box();
+    ETCS_LOG("Mesh::Box", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
+}
+
+DEFINE_WORK_FUNC_TYPED(Mesh, AddVertex, (float, x), (float, y), (float, z),
+                       (float, nx), (float, ny), (float, nz))
+{
+    (void)ctx;
+    ETCS_LOG("Mesh::AddVertex", "index " << self.AddVertex(x, y, z, nx, ny, nz));
+}
+
+DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_t, c))
+{
+    (void)ctx;
+    if (!self.AddTriangle(a, b, c))
+        ETCS_LOG("Mesh::AddTriangle", "(" << a << "," << b << "," << c << ") names a vertex past "
+                 << self.VertexCount());
+}
+
+DEFINE_WORK_FUNC(Mesh, Delete)
 {
     (void)data; (void)ctx;
     self.DeleteConcrete();

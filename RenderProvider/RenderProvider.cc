@@ -3,7 +3,7 @@
 // Every tag here is BASIC except Scene3D, whose input edge is a stream
 // consumer (see its block). Surface included: its frame pump is a work function
 // a script detaches, not a stream pair -- see the Surface block below.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel Throbber")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D Mesh TextLabel Throbber")
 
 // The GPU -- Vulkan natively, WebGPU in a browser. Spawn one, Create it, and
 // name it from a Device under whatever should use it.
@@ -61,7 +61,7 @@ ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
 // what a window is.
 ETCS_TAG_BLOCK_HYBRID(Scene3D,
     (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetSensitivity,
-     Impulse, Halt, Order, Run, Hash, Look, SetEmissivity, SetVisible, Project, DepthAt, Delete),
+     Impulse, Halt, Order, Run, Hash, Look, SetEmissivity, SetVisible, SetMesh, Project, DepthAt, Delete),
     (ConsumeInput, ConsumeLook))
 
 // The camera: a Drawable2D that owns pixels, filled by a scene rather than by
@@ -72,6 +72,14 @@ ETCS_TAG_BLOCK_BASIC(Camera3D,
     Create, SetPosition, SetOrder, SetBackground, MoveTo, ResizeTo,
     LookAt, SetLens, SetScene, SetDeviceProjection,
     Render, Draw, Clear, DrawRect, Blit, Delete)
+
+// Geometry for the device path: a shape a Scene3D node names by RID
+// (Scene3D.SetMesh). Spawned anywhere, sent to the device once, shared by
+// every node that names it. Nothing draws it on the host -- there a node is
+// its box regardless -- so a script that never touches the device never
+// needs one.
+ETCS_TAG_BLOCK_BASIC(Mesh,
+    Create, Clear, Box, AddVertex, AddTriangle, Delete)
 
 // Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of
 // whatever it labels and needs no drawing code at the call site. Its font is

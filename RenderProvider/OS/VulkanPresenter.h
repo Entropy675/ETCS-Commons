@@ -89,6 +89,7 @@ public:
         auto it = m_textures.find(source);
         return it != m_textures.end() && it->second.everUploaded && it->second.w == w && it->second.h == h;
     }
+    bool HasMesh(ETCS::RID mesh) const override { return mesh == 0 || m_meshes.count(mesh) != 0; }
 
     bool Present(DeviceFrame& frame) override
     {
@@ -105,8 +106,37 @@ public:
         std::unordered_set<ETCS::RID> used;
         for (const DeviceOp& op : frame.ops)
             if (op.kind == DeviceOp::Kind::Blit) used.insert(op.source);
+        for (const DeviceScene& sc : frame.scenes) used.insert(sc.target);
 
         VkDevice dev = m_instance->GetDevice();
+
+        /*
+         * THE SCENES' TARGETS AND THEIR GEOMETRY, before anything is recorded.
+         * A target is a texture the device renders INTO this frame and the
+         * blit of the camera samples; geometry is kept like textures are, by
+         * RID, and what arrives beside the frame is what the device lacked.
+         * The mesh pipeline needs its shaders; without them (an older
+         * shaders/ directory) the scenes are dropped and said so, once.
+         */
+        std::unordered_set<ETCS::RID> usedMeshes;
+        for (const DeviceScene& sc : frame.scenes)
+            for (const DeviceMeshOp& op : sc.meshes) usedMeshes.insert(op.mesh);
+        if (!frame.meshes.empty() || !frame.scenes.empty())
+        {
+            vkWaitForFences(dev, VK_PRESENTER_FRAMES_IN_FLIGHT, m_inFlight.data(), VK_TRUE, UINT64_MAX);
+            for (const DeviceMeshUpload& up : frame.meshes) ensureMesh(up.mesh, up.vertices, up.indices, usedMeshes);
+            if (usedMeshes.count(0) && !m_meshes.count(0)) ensureUnitBox();
+            for (const DeviceScene& sc : frame.scenes)
+                if (sc.w && sc.h) ensureTarget(sc.target, sc.w, sc.h, used);
+        }
+        if (!frame.scenes.empty() && m_meshPipeline == VK_NULL_HANDLE && !m_meshWarned)
+        {
+            m_meshWarned = true;
+            ETCS_LOG("VulkanPresenter", "a scene arrived and there is no mesh pipeline -- shaders/mesh.vert.spv "
+                     "and mesh.frag.spv are missing (modules/RenderProvider/shaders/build.sh makes them). "
+                     "3D on this device draws nothing until they exist.");
+        }
+
         std::vector<UploadJob> jobs;
         if (!frame.uploads.empty())
         {
@@ -210,7 +240,25 @@ private:
         uint32_t        w = 0, h = 0;
         bool            everUploaded  = false;
         uint64_t        lastUsed      = 0;
+        // A TARGET: a texture the device draws a scene into rather than one
+        // it is sent -- its own depth, its own framebuffer, no staging.
+        bool            isTarget      = false;
+        VkImage         depthImage    = VK_NULL_HANDLE;
+        VkDeviceMemory  depthMem      = VK_NULL_HANDLE;
+        VkImageView     depthView     = VK_NULL_HANDLE;
+        VkFramebuffer   framebuffer   = VK_NULL_HANDLE;
     };
+    // Geometry the device holds, by mesh RID (0 is the unit box, its own).
+    struct MeshBuf
+    {
+        VkBuffer       vb = VK_NULL_HANDLE, ib = VK_NULL_HANDLE;
+        VkDeviceMemory vbMem = VK_NULL_HANDLE, ibMem = VK_NULL_HANDLE;
+        uint32_t       indexCount = 0;
+        uint64_t       lastUsed   = 0;
+    };
+    // 128 bytes, the push-constant floor every device guarantees: the whole
+    // transform, the rotation for the normals, and the colour.
+    struct MeshPush { float mvp[16]; float rot[12]; float color[4]; };
     struct UploadJob
     {
         VkImage  image;
@@ -363,6 +411,16 @@ private:
         m_blitVertShader = loadShaderModule(dir + "blit.vert.spv");
         m_blitFragShader = loadShaderModule(dir + "blit.frag.spv");
         if (!m_vertShader || !m_fragShader || !m_blitVertShader || !m_blitFragShader) return false;
+        // The mesh pair is optional: a shaders/ directory from before 3D was
+        // on the device still presents every 2D frame.
+        {
+            std::ifstream probe(dir + "mesh.vert.spv", std::ios::binary);
+            if (probe.good())
+            {
+                m_meshVertShader = loadShaderModule(dir + "mesh.vert.spv");
+                m_meshFragShader = loadShaderModule(dir + "mesh.frag.spv");
+            }
+        }
 
         VkPushConstantRange rectPush{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(RectPush) };
         VkPipelineLayoutCreateInfo layoutInfo{};
@@ -431,7 +489,337 @@ private:
             ETCS_LOG("VulkanPresenter", "vkCreatePipelineLayout (blit) failed.");
             return false;
         }
+
+        if (m_meshVertShader && m_meshFragShader)
+        {
+            VkPushConstantRange meshPush{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPush) };
+            VkPipelineLayoutCreateInfo meshLayoutInfo{};
+            meshLayoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            meshLayoutInfo.pushConstantRangeCount = 1;
+            meshLayoutInfo.pPushConstantRanges    = &meshPush;
+            if (vkCreatePipelineLayout(dev, &meshLayoutInfo, nullptr, &m_meshPipelineLayout) != VK_SUCCESS
+                || !createScenePass() || !buildMeshPipeline())
+                ETCS_LOG("VulkanPresenter", "the mesh pipeline could not be made -- scenes will not draw.");
+        }
         return true;
+    }
+
+    // ── scenes: the pass, the pipeline, the targets, the geometry ─────────
+
+    /*
+     * THE SCENE PASS draws into a target: colour cleared to the camera's,
+     * depth cleared to far, and the colour left in the layout the blit
+     * samples from -- with the dependency that makes the main pass's read
+     * wait for this pass's write. Not the swapchain's pass: its format and
+     * extent are the target's, and it does not present.
+     */
+    bool createScenePass()
+    {
+        VkAttachmentDescription att[2]{};
+        att[0].format         = VK_FORMAT_R8G8B8A8_UNORM;
+        att[0].samples        = VK_SAMPLE_COUNT_1_BIT;
+        att[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        att[0].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[0].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        att[0].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        att[1].format         = VK_FORMAT_D32_SFLOAT;
+        att[1].samples        = VK_SAMPLE_COUNT_1_BIT;
+        att[1].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att[1].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[1].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[1].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        att[1].finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference colorRef{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkAttachmentReference depthRef{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+        VkSubpassDescription sub{};
+        sub.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount    = 1;
+        sub.pColorAttachments       = &colorRef;
+        sub.pDepthStencilAttachment = &depthRef;
+        VkSubpassDependency deps[2]{};
+        deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass    = 0;
+        deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        deps[1].srcSubpass    = 0;
+        deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        VkRenderPassCreateInfo ci{};
+        ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        ci.attachmentCount = 2;
+        ci.pAttachments    = att;
+        ci.subpassCount    = 1;
+        ci.pSubpasses      = &sub;
+        ci.dependencyCount = 2;
+        ci.pDependencies   = deps;
+        if (vkCreateRenderPass(m_instance->GetDevice(), &ci, nullptr, &m_scenePass) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanPresenter", "vkCreateRenderPass (scene) failed.");
+            return false;
+        }
+        return true;
+    }
+
+    // Position and normal in, depth tested, no blending (the depth buffer
+    // decides), no culling (the host rasteriser draws every face too), and
+    // the viewport dynamic because every target has its own size.
+    bool buildMeshPipeline()
+    {
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = m_meshVertShader; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = m_meshFragShader; stages[1].pName = "main";
+        VkVertexInputBindingDescription bind{ 0, 24, VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attrs[2] = { { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 }, { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12 } };
+        VkPipelineVertexInputStateCreateInfo vi{};
+        vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vi.vertexBindingDescriptionCount   = 1;
+        vi.pVertexBindingDescriptions      = &bind;
+        vi.vertexAttributeDescriptionCount = 2;
+        vi.pVertexAttributeDescriptions    = attrs;
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{};
+        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{};
+        ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO; ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+        VkPipelineRasterizationStateCreateInfo raster{};
+        raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        raster.polygonMode = VK_POLYGON_MODE_FILL; raster.cullMode = VK_CULL_MODE_NONE;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; raster.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo msaa{};
+        msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO; msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo depth{};
+        depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depth.depthTestEnable = VK_TRUE; depth.depthWriteEnable = VK_TRUE; depth.depthCompareOp = VK_COMPARE_OP_LESS;
+        VkPipelineColorBlendAttachmentState ba{};
+        ba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo blend{};
+        blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO; blend.attachmentCount = 1; blend.pAttachments = &ba;
+        VkGraphicsPipelineCreateInfo ci{};
+        ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        ci.stageCount          = 2;
+        ci.pStages             = stages;
+        ci.pVertexInputState   = &vi;
+        ci.pInputAssemblyState = &ia;
+        ci.pViewportState      = &vp;
+        ci.pDynamicState       = &ds;
+        ci.pRasterizationState = &raster;
+        ci.pMultisampleState   = &msaa;
+        ci.pDepthStencilState  = &depth;
+        ci.pColorBlendState    = &blend;
+        ci.layout              = m_meshPipelineLayout;
+        ci.renderPass          = m_scenePass;
+        if (vkCreateGraphicsPipelines(m_instance->GetDevice(), VK_NULL_HANDLE, 1, &ci, nullptr, &m_meshPipeline) != VK_SUCCESS)
+        {
+            ETCS_LOG("VulkanPresenter", "vkCreateGraphicsPipelines (mesh) failed.");
+            return false;
+        }
+        return true;
+    }
+
+    bool createImage(uint32_t w, uint32_t h, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                     VkImage& image, VkDeviceMemory& memory, VkImageView& view)
+    {
+        VkDevice dev = m_instance->GetDevice();
+        VkImageCreateInfo ii{};
+        ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; ii.imageType = VK_IMAGE_TYPE_2D; ii.format = format;
+        ii.extent = { w, h, 1 }; ii.mipLevels = 1; ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT;
+        ii.tiling = VK_IMAGE_TILING_OPTIMAL; ii.usage = usage; ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(dev, &ii, nullptr, &image) != VK_SUCCESS) return false;
+        VkMemoryRequirements req{};
+        vkGetImageMemoryRequirements(dev, image, &req);
+        const uint32_t typeIndex = m_instance->FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VkMemoryAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; alloc.allocationSize = req.size; alloc.memoryTypeIndex = typeIndex;
+        if (typeIndex == UINT32_MAX || vkAllocateMemory(dev, &alloc, nullptr, &memory) != VK_SUCCESS) return false;
+        vkBindImageMemory(dev, image, memory, 0);
+        VkImageViewCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = format; vi.subresourceRange = { aspect, 0, 1, 0, 1 };
+        return vkCreateImageView(dev, &vi, nullptr, &view) == VK_SUCCESS;
+    }
+
+    // A target at a size: made, or remade when the camera's plane changed.
+    // Sampled through the same descriptor a sent texture is, so a Blit of
+    // the camera is the blit path unchanged.
+    Texture* ensureTarget(ETCS::RID rid, uint32_t w, uint32_t h, const std::unordered_set<ETCS::RID>& used)
+    {
+        VkDevice dev = m_instance->GetDevice();
+        auto it = m_textures.find(rid);
+        if (it != m_textures.end())
+        {
+            if (it->second.isTarget && it->second.w == w && it->second.h == h) { it->second.lastUsed = m_frameNo; return &it->second; }
+            vkDeviceWaitIdle(dev);
+            destroyTexture(it->second);
+            m_textures.erase(it);
+        }
+        if (m_textures.size() >= VK_PRESENTER_MAX_SOURCES && !evictOne(used)) return nullptr;
+        if (m_scenePass == VK_NULL_HANDLE) return nullptr;
+
+        Texture tex{};
+        tex.isTarget = true; tex.everUploaded = true;
+        tex.w = w; tex.h = h; tex.lastUsed = m_frameNo;
+        if (!createImage(w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                         VK_IMAGE_ASPECT_COLOR_BIT, tex.image, tex.memory, tex.view)
+         || !createImage(w, h, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                         VK_IMAGE_ASPECT_DEPTH_BIT, tex.depthImage, tex.depthMem, tex.depthView))
+        {
+            ETCS_LOG("VulkanPresenter", "a scene target could not be made for RID:" << rid);
+            destroyTexture(tex);
+            return nullptr;
+        }
+        VkImageView views[2] = { tex.view, tex.depthView };
+        VkFramebufferCreateInfo fb{};
+        fb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO; fb.renderPass = m_scenePass;
+        fb.attachmentCount = 2; fb.pAttachments = views; fb.width = w; fb.height = h; fb.layers = 1;
+        if (vkCreateFramebuffer(dev, &fb, nullptr, &tex.framebuffer) != VK_SUCCESS) { destroyTexture(tex); return nullptr; }
+
+        VkDescriptorSetAllocateInfo setAlloc{};
+        setAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; setAlloc.descriptorPool = m_blitDescriptorPool;
+        setAlloc.descriptorSetCount = 1; setAlloc.pSetLayouts = &m_blitSetLayout;
+        if (vkAllocateDescriptorSets(dev, &setAlloc, &tex.set) != VK_SUCCESS) { destroyTexture(tex); return nullptr; }
+        VkDescriptorImageInfo imgInfo{ m_blitSampler, tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.dstSet = tex.set; write.dstBinding = 0;
+        write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(dev, 1, &write, 0, nullptr);
+        return &(m_textures[rid] = tex);
+    }
+
+    // The least recently drawn source not in this frame gives its slot up.
+    bool evictOne(const std::unordered_set<ETCS::RID>& used)
+    {
+        auto victim = m_textures.end();
+        for (auto v = m_textures.begin(); v != m_textures.end(); ++v)
+            if (!used.count(v->first) && (victim == m_textures.end() || v->second.lastUsed < victim->second.lastUsed))
+                victim = v;
+        if (victim == m_textures.end())
+        {
+            ETCS_LOG("VulkanPresenter", "more than " << VK_PRESENTER_MAX_SOURCES << " sources in one frame -- dropping one.");
+            return false;
+        }
+        vkDeviceWaitIdle(m_instance->GetDevice());
+        destroyTexture(victim->second);
+        m_textures.erase(victim);
+        return true;
+    }
+
+    // Geometry into host-visible buffers: a mesh is sent once and read many
+    // times, and the sizes here are far below where a device-local copy pays.
+    void ensureMesh(ETCS::RID rid, const std::vector<float>& vertices, const std::vector<uint32_t>& indices,
+                    const std::unordered_set<ETCS::RID>& used)
+    {
+        if (vertices.empty() || indices.empty()) return;
+        VkDevice dev = m_instance->GetDevice();
+        auto it = m_meshes.find(rid);
+        if (it != m_meshes.end()) { vkDeviceWaitIdle(dev); destroyMesh(it->second); m_meshes.erase(it); }
+        if (m_meshes.size() >= VK_PRESENTER_MAX_SOURCES)
+        {
+            auto victim = m_meshes.end();
+            for (auto v = m_meshes.begin(); v != m_meshes.end(); ++v)
+                if (!used.count(v->first) && (victim == m_meshes.end() || v->second.lastUsed < victim->second.lastUsed)) victim = v;
+            if (victim == m_meshes.end()) { ETCS_LOG("VulkanPresenter", "more than " << VK_PRESENTER_MAX_SOURCES << " meshes in one frame -- dropping RID:" << rid); return; }
+            vkDeviceWaitIdle(dev);
+            destroyMesh(victim->second);
+            m_meshes.erase(victim);
+        }
+        MeshBuf mb{};
+        const VkDeviceSize vbytes = vertices.size() * sizeof(float), ibytes = indices.size() * sizeof(uint32_t);
+        const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        if (!createBuffer(vbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, host, mb.vb, mb.vbMem)
+         || !createBuffer(ibytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,  host, mb.ib, mb.ibMem))
+        {
+            ETCS_LOG("VulkanPresenter", "mesh buffers could not be made for RID:" << rid);
+            destroyMesh(mb);
+            return;
+        }
+        void* p = nullptr;
+        vkMapMemory(dev, mb.vbMem, 0, vbytes, 0, &p); std::memcpy(p, vertices.data(), vbytes); vkUnmapMemory(dev, mb.vbMem);
+        vkMapMemory(dev, mb.ibMem, 0, ibytes, 0, &p); std::memcpy(p, indices.data(),  ibytes); vkUnmapMemory(dev, mb.ibMem);
+        mb.indexCount = static_cast<uint32_t>(indices.size());
+        mb.lastUsed   = m_frameNo;
+        m_meshes[rid] = mb;
+    }
+
+    // Mesh 0: the unit cube (DeviceFrame.h), kept here so a box never travels.
+    void ensureUnitBox()
+    {
+        std::vector<float> v; std::vector<uint32_t> idx;
+        device_unit_box(v, idx);
+        ensureMesh(0, v, idx, {});
+    }
+
+    void destroyMesh(MeshBuf& mb)
+    {
+        VkDevice dev = m_instance ? m_instance->GetDevice() : VK_NULL_HANDLE;
+        if (!dev) return;
+        if (mb.vb)    { vkDestroyBuffer(dev, mb.vb, nullptr);  mb.vb = VK_NULL_HANDLE; }
+        if (mb.ib)    { vkDestroyBuffer(dev, mb.ib, nullptr);  mb.ib = VK_NULL_HANDLE; }
+        if (mb.vbMem) { vkFreeMemory(dev, mb.vbMem, nullptr);  mb.vbMem = VK_NULL_HANDLE; }
+        if (mb.ibMem) { vkFreeMemory(dev, mb.ibMem, nullptr);  mb.ibMem = VK_NULL_HANDLE; }
+    }
+
+    // Every scene, each into its own target, before the frame's own pass.
+    void recordScenes(VkCommandBuffer cmd, const DeviceFrame& frame)
+    {
+        if (m_meshPipeline == VK_NULL_HANDLE) return;
+        for (const DeviceScene& sc : frame.scenes)
+        {
+            auto it = m_textures.find(sc.target);
+            if (it == m_textures.end() || !it->second.isTarget) continue;
+            Texture& t = it->second;
+            t.lastUsed = m_frameNo;
+            VkClearValue clears[2]{};
+            clears[0].color = { { sc.clear[0], sc.clear[1], sc.clear[2], sc.clear[3] } };
+            clears[1].depthStencil = { 1.0f, 0 };
+            VkRenderPassBeginInfo rp{};
+            rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO; rp.renderPass = m_scenePass; rp.framebuffer = t.framebuffer;
+            rp.renderArea.extent = { t.w, t.h }; rp.clearValueCount = 2; rp.pClearValues = clears;
+            vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
+            VkViewport viewport{ 0.0f, 0.0f, static_cast<float>(t.w), static_cast<float>(t.h), 0.0f, 1.0f };
+            VkRect2D scissor{ { 0, 0 }, { t.w, t.h } };
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+            float vp[16];
+            device_mul4(sc.proj, sc.view, vp);
+            // Nodes sharing a mesh keep its buffers bound: a scene of boxes
+            // is one bind and a push + draw per node.
+            ETCS::RID bound = 0;
+            const MeshBuf* mb = nullptr;
+            for (const DeviceMeshOp& op : sc.meshes)
+            {
+                if (!mb || op.mesh != bound)
+                {
+                    auto mit = m_meshes.find(op.mesh);
+                    if (mit == m_meshes.end()) { mb = nullptr; continue; }
+                    mb = &mit->second; bound = op.mesh;
+                    mit->second.lastUsed = m_frameNo;
+                    VkDeviceSize off = 0;
+                    vkCmdBindVertexBuffers(cmd, 0, 1, &mb->vb, &off);
+                    vkCmdBindIndexBuffer(cmd, mb->ib, 0, VK_INDEX_TYPE_UINT32);
+                }
+                MeshPush pc{};
+                device_mul4(vp, op.model, pc.mvp);
+                for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) pc.rot[c * 4 + r] = op.model[c * 4 + r];
+                for (int i = 0; i < 4; ++i) pc.color[i] = op.color[i];
+                vkCmdPushConstants(cmd, m_meshPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+                vkCmdDrawIndexed(cmd, mb->indexCount, 1, 0, 0, 0);
+            }
+            vkCmdEndRenderPass(cmd);
+        }
     }
 
     // --- textures ---
@@ -577,6 +965,10 @@ private:
     {
         VkDevice dev = m_instance ? m_instance->GetDevice() : VK_NULL_HANDLE;
         if (!dev) return;
+        if (tex.framebuffer)   { vkDestroyFramebuffer(dev, tex.framebuffer, nullptr); tex.framebuffer = VK_NULL_HANDLE; }
+        if (tex.depthView)     { vkDestroyImageView(dev, tex.depthView, nullptr);     tex.depthView   = VK_NULL_HANDLE; }
+        if (tex.depthImage)    { vkDestroyImage(dev, tex.depthImage, nullptr);        tex.depthImage  = VK_NULL_HANDLE; }
+        if (tex.depthMem)      { vkFreeMemory(dev, tex.depthMem, nullptr);            tex.depthMem    = VK_NULL_HANDLE; }
         if (tex.set)           { vkFreeDescriptorSets(dev, m_blitDescriptorPool, 1, &tex.set); tex.set = VK_NULL_HANDLE; }
         if (tex.stagingMapped) { vkUnmapMemory(dev, tex.stagingMem); tex.stagingMapped = nullptr; }
         if (tex.staging)       { vkDestroyBuffer(dev, tex.staging, nullptr);  tex.staging    = VK_NULL_HANDLE; }
@@ -855,6 +1247,7 @@ private:
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &begin);
         recordUploads(cmd, jobs);
+        recordScenes(cmd, frame);
 
         VkClearValue clear{};
         clear.color = { { frame.clear[0], frame.clear[1], frame.clear[2], frame.clear[3] } };
@@ -923,9 +1316,14 @@ private:
         {
             for (auto& [rid, tex] : m_textures) { (void)rid; destroyTexture(tex); }
             m_textures.clear();
+            for (auto& [rid, mb] : m_meshes) { (void)rid; destroyMesh(mb); }
+            m_meshes.clear();
+            if (m_meshPipeline)       { vkDestroyPipeline(dev, m_meshPipeline, nullptr);             m_meshPipeline = VK_NULL_HANDLE; }
+            if (m_meshPipelineLayout) { vkDestroyPipelineLayout(dev, m_meshPipelineLayout, nullptr); m_meshPipelineLayout = VK_NULL_HANDLE; }
+            if (m_scenePass)          { vkDestroyRenderPass(dev, m_scenePass, nullptr);              m_scenePass = VK_NULL_HANDLE; }
             if (m_pipelineLayout)     { vkDestroyPipelineLayout(dev, m_pipelineLayout, nullptr);     m_pipelineLayout = VK_NULL_HANDLE; }
             if (m_blitPipelineLayout) { vkDestroyPipelineLayout(dev, m_blitPipelineLayout, nullptr); m_blitPipelineLayout = VK_NULL_HANDLE; }
-            for (VkShaderModule* m : { &m_vertShader, &m_fragShader, &m_blitVertShader, &m_blitFragShader })
+            for (VkShaderModule* m : { &m_vertShader, &m_fragShader, &m_blitVertShader, &m_blitFragShader, &m_meshVertShader, &m_meshFragShader })
                 if (*m) { vkDestroyShaderModule(dev, *m, nullptr); *m = VK_NULL_HANDLE; }
             if (m_blitDescriptorPool) { vkDestroyDescriptorPool(dev, m_blitDescriptorPool, nullptr); m_blitDescriptorPool = VK_NULL_HANDLE; }
             if (m_blitSetLayout)      { vkDestroyDescriptorSetLayout(dev, m_blitSetLayout, nullptr); m_blitSetLayout = VK_NULL_HANDLE; }
@@ -969,6 +1367,14 @@ private:
     VkShaderModule        m_vertShader = VK_NULL_HANDLE, m_fragShader = VK_NULL_HANDLE;
     VkShaderModule        m_blitVertShader = VK_NULL_HANDLE, m_blitFragShader = VK_NULL_HANDLE;
     std::unordered_map<ETCS::RID, Texture> m_textures;
+
+    // Scenes: the pass into a target, the mesh pipeline, the geometry held.
+    VkRenderPass          m_scenePass          = VK_NULL_HANDLE;
+    VkPipelineLayout      m_meshPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline            m_meshPipeline       = VK_NULL_HANDLE;
+    VkShaderModule        m_meshVertShader = VK_NULL_HANDLE, m_meshFragShader = VK_NULL_HANDLE;
+    std::unordered_map<ETCS::RID, MeshBuf> m_meshes;
+    bool                  m_meshWarned = false;
 
     std::array<VkCommandBuffer, VK_PRESENTER_FRAMES_IN_FLIGHT> m_commandBuffers{};
     std::array<VkSemaphore, VK_PRESENTER_FRAMES_IN_FLIGHT>     m_imageAvailable{};

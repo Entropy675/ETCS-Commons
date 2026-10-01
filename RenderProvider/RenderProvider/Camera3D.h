@@ -3,6 +3,7 @@
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
+#include "../OS/SceneSink.h"
 
 #include <cmath>
 #include <cstdint>
@@ -49,7 +50,8 @@
 class Camera3D : public CameraBase<Camera3D>,
                  public PixelsBase<Camera3D>,
                  public ClippableBase<Camera3D>,
-                 public DeletableBase<Camera3D>
+                 public DeletableBase<Camera3D>,
+                 public SceneSink
 {
 public:
     WIRE_TYPE_IDENTITY(Camera3D);
@@ -59,8 +61,50 @@ public:
     bool operator<(const Camera3D& o) const { return m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
-    Camera3D()  = default;
+    // The sink is reached by name (OS/SceneSink.h), the way a family is,
+    // so the scene never casts a Camera_ to this type.
+    Camera3D()
+    {
+        this->registerInterfacePointer(ETCS::Buffer(RP_SCENE_SINK),
+                                       static_cast<void*>(static_cast<SceneSink*>(this)));
+    }
     ~Camera3D() = default;
+
+    // ── SceneSink: the device projection, collected ──────────────────────
+    //
+    // A scene projecting on the device path lands here as ops rather than
+    // pixels (Scene3D::ProjectConcrete). The surface this camera is blitted
+    // into takes the recording once per projection (TakeScene) and the
+    // device draws it into a texture keyed by this camera's RID; a still
+    // scene is not re-taken and costs the device nothing, like a layer that
+    // did not move.
+    void BeginScene(const float view[16], const float proj[16]) override
+    {
+        std::lock_guard<std::mutex> lk(m_scene_mtx);
+        m_scene_rec.meshes.clear();
+        m_scene_rec.target = getRID();
+        m_scene_rec.w = m_w; m_scene_rec.h = m_h;
+        m_scene_rec.clear = { m_bg[0], m_bg[1], m_bg[2], m_bg[3] };
+        for (int i = 0; i < 16; ++i) { m_scene_rec.view[i] = view[i]; m_scene_rec.proj[i] = proj[i]; }
+        m_scene_fresh = true;
+    }
+    void AddMesh(const DeviceMeshOp& op) override
+    {
+        std::lock_guard<std::mutex> lk(m_scene_mtx);
+        m_scene_rec.meshes.push_back(op);
+    }
+    bool TakeScene(DeviceScene& out) override
+    {
+        std::lock_guard<std::mutex> lk(m_scene_mtx);
+        if (!m_scene_fresh) return false;
+        m_scene_fresh = false;
+        // Handed over, not copied.
+        out.meshes.swap(m_scene_rec.meshes);
+        m_scene_rec.meshes.clear();
+        out.target = m_scene_rec.target; out.w = m_scene_rec.w; out.h = m_scene_rec.h; out.clear = m_scene_rec.clear;
+        for (int i = 0; i < 16; ++i) { out.view[i] = m_scene_rec.view[i]; out.proj[i] = m_scene_rec.proj[i]; }
+        return true;
+    }
 
     bool Create(uint32_t w, uint32_t h)
     {
@@ -199,6 +243,11 @@ public:
     }
 
     bool DeviceProjectionRequestedConcrete() const override { return m_want_device; }
+
+    // Asked of the destination at every draw (DrawIntoConcrete): a surface
+    // drawing on the host cannot take a scene, so this camera projects on
+    // the host into it (ontology/Camera.h, OS/SceneSink.h).
+    bool DeviceProjectionLandsConcrete() const override { return m_scene_lands; }
 
     bool RenderConcrete() override
     {
@@ -351,7 +400,21 @@ public:
         // walk that draws it, so the mark it leaves is consumed by this
         // frame's own upload and there is nothing left to schedule the next
         // frame with. Asking is what closes that loop, and it costs a load.
-        if (TakeObserved(getRID()) || sceneInMotion() || anyChildNeedsFrame())
+        /*
+         * WHERE THE PICTURE LANDS, asked now: the surface underneath is on
+         * its device or not THIS frame (HostSurface chooses at each
+         * Present), and the projection below branches on the answer. A
+         * change of answer is a change of what this camera produces, so it
+         * re-renders on the spot rather than showing the other mode's
+         * leftovers for a frame.
+         */
+        bool lands = false;
+        if (void* t = dst->getInterfacePointer(ETCS::Buffer(RP_SCENE_TAKER)))
+            lands = static_cast<SceneTaker*>(t)->TakesScenes();
+        const bool relanded = (lands != m_scene_lands);
+        m_scene_lands = lands;
+
+        if (relanded || TakeObserved(getRID()) || sceneInMotion() || anyChildNeedsFrame())
         {
             // No self-clear: Render's writes mark with origin=this, so my own
             // edge is skipped at the source rather than cleared afterwards.
@@ -377,17 +440,23 @@ public:
          */
         if (this->DeviceProjection())
         {
+            /*
+             * THE PROJECTION IS A BLIT OF THIS CAMERA. The surface underneath
+             * sees a device-path camera and takes its scene (HostSurface's
+             * Blit) rather than its host pixels, and the device draws the
+             * scene into a texture that this blit then samples -- so the 3D
+             * view composes exactly as a layer does, at this plane's place
+             * in the tree. What was recorded as rects -- the 2D children
+             * drawn over the frame -- follows, on top, in the camera's own
+             * space, as before.
+             */
+            dst->Blit(this, base.x + m_x, base.y + m_y, m_w, m_h, 1.0f);
             std::vector<Op> ops;
             { std::lock_guard<std::mutex> lk(m_ops_mtx); ops = m_ops; }
             for (const Op& o : ops)
-            {
-                if (o.kind == Op::Kind::Clear)
-                    dst->DrawRect(base.x + m_x, base.y + m_y, m_w, m_h,
-                                  o.c[0], o.c[1], o.c[2], o.c[3]);
-                else
+                if (o.kind == Op::Kind::Rect)
                     dst->DrawRect(base.x + m_x + o.x, base.y + m_y + o.y, o.w, o.h,
                                   o.c[0], o.c[1], o.c[2], o.c[3]);
-            }
             return;
         }
 
@@ -547,6 +616,11 @@ private:
     bool               m_want_device = true;
     std::vector<Op>    m_ops;
     mutable std::mutex m_ops_mtx;
+    // The scene, as the device draws it; fresh until the surface takes it.
+    DeviceScene        m_scene_rec;
+    bool               m_scene_fresh = false;
+    bool               m_scene_lands = true;    // DeviceProjectionLands, asked at each draw
+    mutable std::mutex m_scene_mtx;
     uint64_t  m_renders = 0;
 };
 
