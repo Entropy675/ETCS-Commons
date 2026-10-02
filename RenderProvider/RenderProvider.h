@@ -796,10 +796,11 @@ DEFINE_WORK_FUNC(Scene3D, Look)
 DEFINE_WORK_FUNC(Scene3D, Order)
 {
     (void)data; (void)ctx;
+    std::lock_guard<std::recursive_mutex> lk(self.TreeMutex());   // one state of the rows (Causal.h, Order4)
     const OrderVector& o = self.Order4();
     const OrderVector& e = self.LastEmission();
     ETCS_LOG("Scene3D::Order",
-             "row0 (" << o.x.ToDouble() << ", " << o.y.ToDouble() << ", " << o.z.ToDouble() << ", RID:" << o.rid << ")  "
+             "row0 (" << o.x.ToDouble() << ", " << o.y.ToDouble() << ", " << o.z.ToDouble() << ", id:" << std::hex << o.id << std::dec << ")  "
              "row1 (" << o.ox.ToDouble() << ", " << o.oy.ToDouble() << ", " << o.oz.ToDouble() << ", E=" << o.energy.ToDouble() << ")  "
              "kinetic=" << o.KineticEnergy().ToDouble() << " heat=" << o.Heat().ToDouble()
              << " fraction=" << o.KineticFraction().ToDouble()
@@ -813,7 +814,7 @@ DEFINE_WORK_FUNC(Scene3D, Order)
              << "\n    causal-ticks=" << self.CausalTicks()
              << "  hash=" << std::hex << self.Hash() << std::dec
              << "\n    last crossing: row0 (" << e.x.ToDouble() << ", " << e.y.ToDouble() << ", " << e.z.ToDouble()
-             << ", RID:" << e.rid << ")  E=" << e.energy.ToDouble()
+             << ", id:" << std::hex << e.id << std::dec << ")  E=" << e.energy.ToDouble()
              << " interval=" << e.interval.ToDouble()
              << " uncertainty=" << std::hex << e.uncertainty << std::dec);
 }

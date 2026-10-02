@@ -55,7 +55,7 @@
 // cleared on an up. It is deliberately a bitset rather than a "current
 // direction", because holding W and A is two facts, not a third one, and a
 // consumer that stored the resultant could not answer which key released.
-// The stream edge writes it; StepFromHeld reads it and integrates. See
+// The stream edge writes it; stepOver reads it and integrates. See
 // RenderProvider.h's ConsumeInput for the edge itself.
 // ---------------------------------------------------------------------------
 class Scene3D : public Drawable3DBase<Scene3D>,
@@ -93,9 +93,8 @@ public:
             return false;
         }
         m_half = Point3D{ w * 0.5f, h * 0.5f, d * 0.5f };
-        // Row 0's fourth slot: identity is a coordinate, so it is filled in
-        // where the point starts existing rather than derived at each read.
-        Rows().rid = getRID();
+        // Row 0's fourth slot, the identity, is the family base's to fill
+        // (CausalBase::refreshIdentityLocked): the state hash, not the RID.
         // Row 2's fourth slot. A box is not a point -- it is already an
         // aggregate over the volume it occupies -- so its reach is its own
         // bounding sphere, and it is an aggregate from the moment it exists.
@@ -367,8 +366,7 @@ public:
  * It also closes the loop that keeps frames coming. Moving marks the viewers
  * dirty, which is what makes the next frame render, which advances the motion
  * again; when the keys are released and the velocity decays to rest,
- * StepFromHeld stops returning true, nothing is marked, and the whole
- * pipeline goes quiet on its own. No idle spin anywhere, and no thread whose
+ * stepOver stops marking, and the whole pipeline goes quiet on its own. No idle spin anywhere, and no thread whose
  * job is to ask whether anything happened.
  */
     /*
@@ -391,23 +389,23 @@ public:
     using CausalBase<Scene3D>::Interact;    // the driver's form, beside the observed one
     void Interact()
     {
-        // The observed path measures its two intervals with two ceilings (see
-        // AdvanceForObserver); the driver (CausalBase::Interact) charges one
-        // stated span for both. Same commit, same step.
-        // Under the tree's lock, as the driver's interaction is
-        // (CausalBase::Interact): a Run on a script's thread and a frame
-        // observing at the same time take turns on the tree rather than
-        // interleaving inside a step.
+        // THE OBSERVED INTERACTION IS THE FAMILY'S, with the two spans an
+        // observer measures (two ceilings; the reasoning is on the clocks
+        // below) handed in as the Fixed values the rows will see -- the whole of what the wall clock contributed, and what
+        // CausalBase puts on the tape so an observed history replays. The
+        // hop under it is the driver's hop: commit, step, members, contacts.
+        // Under the tree's lock, as the driver's interaction is: a Run on a
+        // script's thread and a frame observing at the same time take turns
+        // on the tree rather than interleaving inside a step.
         std::lock_guard<std::recursive_mutex> lk(TreeMutex());
-        const Fixed dt = Fixed::From(static_cast<double>(m_entropy_clock.Take()) * 0.001);
-        CommitEntropy(dt);
-        AdvanceForObserver();
-        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->Interact(); }
+        const Fixed commit = Fixed::From(static_cast<double>(m_entropy_clock.Take()) * 0.001);
+        const Fixed step   = Fixed::From(static_cast<double>(m_motion_clock.Take())  * 0.001);
+        InteractObserved(commit, step);   // a first observation has nothing behind it: both zero, nothing happens
     }
 
     // The family's step: what a held key pushes with and what drag takes,
-    // then the rows advance (CausalBase::StepConcrete).
-    bool StepConcrete(Fixed dt) override { return stepOver(dt); }
+    // then the rows advance (CausalBase::AdvanceConcrete).
+    void AdvanceConcrete(Fixed dt) override { stepOver(dt); }
     Fixed MassConcrete() const override { return m_mass; }
 
     // The driver and the hash are the family's; named here so the verbs and
@@ -417,7 +415,7 @@ public:
 
     /*
  * NOT Animated_, AND THAT IS A CLAIM RATHER THAN AN OVERSIGHT. The family
- * (ontology/Animated.h) is for a thing a driver advances; these two steps are
+ * (ontology/Animated.h) is for a thing a driver advances; these steps are
  * charged for by being LOOKED AT -- see Interact above -- so a frame edge
  * stepping this node whether or not a camera is on it would be a different
  * model, not the same one wired up more neatly. What the family and this node
@@ -428,14 +426,10 @@ public:
  * refuses to believe in more than a tenth of a second of unobserved movement;
  * the entropy ledger will credit a whole second of unobserved cooling, because
  * a box does not stop being warm while nobody is looking at it and a scene
- * does stop being thrown across the map. Both numbers are now where the
- * difference is visible, instead of in a comment claiming they matched.
+ * does stop being thrown across the map. Both numbers are on the clocks
+ * below, where the difference is visible, and both spans go to the family
+ * (CausalBase::InteractObserved) as the two inputs they are.
  */
-    void AdvanceForObserver()
-    {
-        const float dt = static_cast<float>(m_motion_clock.Take()) * 0.001f;
-        if (dt > 0.0f) StepFromHeld(dt);   // the first observation has nothing behind it
-    }
 
     /*
  * THE ONE THING THAT CROSSES THREADS, and the reason it is not the bitset
@@ -489,8 +483,6 @@ public:
  * steps per axis makes every diagonal 1.41x faster, which is invisible in a
  * screenshot and immediately obvious to anyone holding two keys.
  */
-    bool StepFromHeld(float dt) { return stepOver(Fixed::From(dt)); }
-
     bool stepOver(Fixed sdt)
     {
         if (!sdt.IsPositive()) return false;
@@ -618,6 +610,7 @@ public:
     // only sort that says anything about what is actually in front.
     DepthSpan DepthForConcrete(Camera_* camera) override
     {
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // one state of the rows (Causal.h, Order4)
         View v;
         if (!buildView(camera, v)) return DepthSpan{-1.0f, -1.0f};
 
@@ -1923,7 +1916,7 @@ private:
     float              m_ref_elev   = 0.0f;
 
     // Motion: a tenth of a second is the most unobserved movement this will
-    // believe in. See AdvanceForObserver.
+    // believe in. See Interact().
     StepClock                             m_motion_clock{ 100.0 };
 
     // The entropy ledger: the interval this node was last charged for, how fast
