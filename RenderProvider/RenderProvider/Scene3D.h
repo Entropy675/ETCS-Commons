@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <memory>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -119,14 +120,17 @@ public:
 
     // A teleport, and deliberately not a motion: it moves the point without
     // touching what the point is carrying (OrderVector::PlaceAt).
+    // Every writer of the rows outside a step takes the tree's lock, as the
+    // step does (CausalBase): a script's verb and a frame's step land whole.
     void SetPosition(float x, float y, float z)
     {
-        Rows().PlaceAt(Fixed::From(x), Fixed::From(y), Fixed::From(z));
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().PlaceAt(Fixed::From(x), Fixed::From(y), Fixed::From(z)); }
         markViewersDirty();
     }
     void Move(float dx, float dy, float dz)
     {
-        Rows().PlaceAt(Order4().x + Fixed::From(dx), Order4().y + Fixed::From(dy), Order4().z + Fixed::From(dz));
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+          Rows().PlaceAt(Order4().x + Fixed::From(dx), Order4().y + Fixed::From(dy), Order4().z + Fixed::From(dz)); }
         markViewersDirty();
     }
 
@@ -138,7 +142,7 @@ public:
     {
         CausalBase<Scene3D>::Impulse(Fixed::From(dx), Fixed::From(dy), Fixed::From(dz), Fixed::From(joules));
     }
-    void Halt() { Rows().Rest(); }
+    void Halt() { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
     void SetEmissivity(float per_sec) { CausalBase<Scene3D>::SetEmissivity(Fixed::From(per_sec)); }
     float Emissivity() const { return CausalBase<Scene3D>::Emissivity().ToFloat(); }
     float EmittedToEnvironment() const { return EmittedOut().ToFloat(); }
@@ -390,10 +394,15 @@ public:
         // The observed path measures its two intervals with two ceilings (see
         // AdvanceForObserver); the driver (CausalBase::Interact) charges one
         // stated span for both. Same commit, same step.
+        // Under the tree's lock, as the driver's interaction is
+        // (CausalBase::Interact): a Run on a script's thread and a frame
+        // observing at the same time take turns on the tree rather than
+        // interleaving inside a step.
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
         const Fixed dt = Fixed::From(static_cast<double>(m_entropy_clock.Take()) * 0.001);
         CommitEntropy(dt);
         AdvanceForObserver();
-        for (Scene3D* kid : ownChildren()) kid->Interact();
+        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->Interact(); }
     }
 
     // The family's step: what a held key pushes with and what drag takes,
@@ -667,6 +676,9 @@ public:
  */
     Drawable2D_* ProjectConcrete(Camera_* camera) override
     {
+        // The whole projection under the tree's lock: the picture is of one
+        // state, not of rows a Run on another thread is halfway through.
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
         applyLookTo(camera);
         Interact();
 
@@ -731,7 +743,7 @@ public:
                 this->Observe(camera->getRID());
                 etcs_mark_observed(camera);
                 ++m_projections;
-                for (Drawable3D_* alien : foreignChildren()) alien->Project(camera);
+                { const auto aliens = foreignChildren(); for (Drawable3D_* alien : *aliens) alien->Project(camera); }
                 return cameraPlane(camera);
             }
 
@@ -781,8 +793,7 @@ public:
         // another module has its own geometry this walk cannot read, so it
         // is asked to project itself. It gets the same camera and therefore
         // lands in the same pixels, but it brings its own occlusion.
-        for (Drawable3D_* alien : foreignChildren())
-            alien->Project(camera);
+        { const auto aliens = foreignChildren(); for (Drawable3D_* alien : *aliens) alien->Project(camera); }
 
         return cameraPlane(camera);
     }
@@ -858,7 +869,7 @@ public:
         markViewersDirty();
         { std::vector<uint64_t> cams; ObserverRids(cams);
           for (uint64_t c : cams) Unobserve(c); }
-        Rows().Rest();
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
         ClearHeld();
     }
 
@@ -1032,7 +1043,7 @@ private:
             n.mesh = m_mesh;
             out.push_back(n);
         }
-        for (Scene3D* kid : ownChildren()) kid->collectSubtree(abs, out);
+        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out); }
     }
 
     /*
@@ -1098,18 +1109,25 @@ private:
     // subtree three times a frame (collect, cover, interact) -- six typed
     // walks and six allocations per node per frame, for lists that change
     // when a script spawns something.
-    const std::vector<Scene3D*>& ownChildren()         { refreshKids(); return m_own_kids; }
-    const std::vector<Drawable3D_*>& foreignChildren() { refreshKids(); return m_foreign_kids; }
+    // Snapshots go out, shared: a walker (the frame edge, a script's Project)
+    // iterates a list nobody rebuilds under it, for one reference count --
+    // the shape CausalBase::causalChildren has.
+    using OwnKids     = std::shared_ptr<const std::vector<Scene3D*>>;
+    using ForeignKids = std::shared_ptr<const std::vector<Drawable3D_*>>;
+    OwnKids     ownChildren()     { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); refreshKids(); return m_own_kids; }
+    ForeignKids foreignChildren() { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); refreshKids(); return m_foreign_kids; }
     void refreshKids()
     {
         const uint32_t epoch = hashEpoch();
-        if (epoch == m_kids_epoch) return;
-        m_own_kids.clear(); m_foreign_kids.clear();
+        if (m_own_kids && epoch == m_kids_epoch) return;
+        auto own = std::make_shared<std::vector<Scene3D*>>();
+        auto foreign = std::make_shared<std::vector<Drawable3D_*>>();
         for (ETCS::Entity* e : drawable3DChildren())
         {
-            if (isOwnLeaf(e)) m_own_kids.push_back(static_cast<Scene3D*>(e->getTrueType()));
-            else m_foreign_kids.push_back(static_cast<Drawable3D_*>(e->getInterfacePointer(ETCS::Buffer("Drawable3D"))));
+            if (isOwnLeaf(e)) own->push_back(static_cast<Scene3D*>(e->getTrueType()));
+            else foreign->push_back(static_cast<Drawable3D_*>(e->getInterfacePointer(ETCS::Buffer("Drawable3D"))));
         }
+        m_own_kids = std::move(own); m_foreign_kids = std::move(foreign);
         m_kids_epoch = epoch;
     }
     static bool isOwnLeaf(ETCS::Entity* e)
@@ -1562,8 +1580,9 @@ private:
             // Row 2: what the look turns about is the eye, in the scene's
             // frame -- a first-person look is a rotation about the viewer, and
             // that is exactly what a pivot is for.
-            Rows().SetPivot(Fixed::From(v.position.x) - Order4().x, Fixed::From(v.position.y) - Order4().y, Fixed::From(v.position.z) - Order4().z);
-            Rows().Orient(Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
+            { std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+              Rows().SetPivot(Fixed::From(v.position.x) - Order4().x, Fixed::From(v.position.y) - Order4().y, Fixed::From(v.position.z) - Order4().z);
+              Rows().Orient(Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), Fixed::Zero()); }
             m_yaw = 0.0f;
             // The view's elevation, which at seeding is the reference's. Yaw
             // has no such absolute zero worth naming -- it is a circle -- so
@@ -1629,14 +1648,16 @@ private:
         // The look's two angles cross into the rows here: the mouse is an
         // input like a key, and row 3 is causal state -- so the angles are
         // taken as Fixed and the spinor is composed by Fixed's own series.
-        Rows().Orient(Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
-        if (pitch_rot != 0.0f)
-            Rows().RotateBy(Fixed::From(m_ref_right.x), Fixed::From(m_ref_right.y), Fixed::From(m_ref_right.z), Fixed::From(pitch_rot));
-        if (m_yaw != 0.0f)
-            Rows().RotateBy(Fixed::Zero(), Fixed::One(), Fixed::Zero(), Fixed::From(m_yaw));
-
         Fixed fx2 = Fixed::From(m_ref_fwd.x), fy2 = Fixed::From(m_ref_fwd.y), fz2 = Fixed::From(m_ref_fwd.z);
-        Order4().RotateVector(fx2, fy2, fz2);
+        {
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+            Rows().Orient(Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
+            if (pitch_rot != 0.0f)
+                Rows().RotateBy(Fixed::From(m_ref_right.x), Fixed::From(m_ref_right.y), Fixed::From(m_ref_right.z), Fixed::From(pitch_rot));
+            if (m_yaw != 0.0f)
+                Rows().RotateBy(Fixed::Zero(), Fixed::One(), Fixed::Zero(), Fixed::From(m_yaw));
+            Order4().RotateVector(fx2, fy2, fz2);
+        }
         v.look_at = Point3D{ v.position.x + fx2.ToFloat() * dist,
                              v.position.y + fy2.ToFloat() * dist,
                              v.position.z + fz2.ToFloat() * dist };
@@ -1761,11 +1782,16 @@ private:
     {
         std::vector<OrderVector> parts;
         gatherParts(Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), parts);
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
         Rows().Cover(parts.data(), parts.size());
     }
     void gatherParts(Fixed ox, Fixed oy, Fixed oz, std::vector<OrderVector>& out)
     {
-        const Fixed ax = ox + Order4().x, ay = oy + Order4().y, az = oz + Order4().z;
+        Fixed ax, ay, az;
+        {
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // one whole position, not a mid-step one
+            ax = ox + Order4().x; ay = oy + Order4().y; az = oz + Order4().z;
+        }
         if (m_visible)
         {
             OrderVector p;
@@ -1773,7 +1799,7 @@ private:
             p.radius = Fixed::Length(Fixed::From(m_half.x), Fixed::From(m_half.y), Fixed::From(m_half.z));
             out.push_back(p);
         }
-        for (Scene3D* kid : ownChildren()) kid->gatherParts(ax, ay, az, out);
+        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->gatherParts(ax, ay, az, out); }
     }
 
     // Reduce the wide bitset to the six bits the projection reads. Called on
@@ -1813,8 +1839,8 @@ private:
     Fixed   m_mass     = Fixed::One();
     Fixed   m_drag_dt, m_drag_damping, m_drag_factor;   // exp(-k dt) for the last (k, dt) seen
 
-    std::vector<Scene3D*>     m_own_kids;        // the child lists at m_kids_epoch (refreshKids)
-    std::vector<Drawable3D_*> m_foreign_kids;
+    OwnKids     m_own_kids;        // the child lists at m_kids_epoch (refreshKids)
+    ForeignKids m_foreign_kids;
     uint32_t                  m_kids_epoch = 0;
 
     ETCS::TBuffer<NUM_KEYS / 8> m_held;   // one bit per key in the spectrum
