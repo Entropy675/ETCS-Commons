@@ -1,9 +1,9 @@
-#ifndef SCENE3D_H__
-#define SCENE3D_H__
+#ifndef RENDERPROVIDER_SCENE3D_H__
+#define RENDERPROVIDER_SCENE3D_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
-#include "../OS/SceneSink.h"
+#include "SceneSink.h"
 #include "Mesh.h"
 
 #include <algorithm>
@@ -754,7 +754,7 @@ public:
  * gave up.
  */
         // A camera on the device path that can take a scene gets the scene
-        // and not a raster: the device draws it (OS/SceneSink.h). A device
+        // and not a raster: the device draws it (RenderProvider/SceneSink.h). A device
         // camera that cannot -- another provider's -- still gets the runs.
         if (camera->DeviceProjection())
             if (void* raw = camera->getInterfacePointer(ETCS::Buffer(RP_SCENE_SINK)))
@@ -1072,7 +1072,7 @@ private:
 
     /*
      * THE DEVICE PROJECTION: the same subtree, as one op per node, handed to
-     * the camera (OS/SceneSink.h) for the device to draw with its own depth
+     * the camera (RenderProvider/SceneSink.h) for the device to draw with its own depth
      * buffer. Nothing is rasterised here, so DepthAt has no picture to answer
      * from on this path (it says so); DepthFor, over corners, still does.
      *

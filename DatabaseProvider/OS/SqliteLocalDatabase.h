@@ -1,5 +1,5 @@
-#ifndef SQLITE_LOCALDATABASE_H__
-#define SQLITE_LOCALDATABASE_H__
+#ifndef DATABASEPROVIDER_SQLITELOCALDATABASE_H__
+#define DATABASEPROVIDER_SQLITELOCALDATABASE_H__
 
 #include "../../../ontology.h"
 #include "../sqlite/sqlite3.h"

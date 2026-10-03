@@ -1,5 +1,5 @@
-#ifndef MBEDTLSWRAPPER_H__
-#define MBEDTLSWRAPPER_H__
+#ifndef NETWORKPROVIDER_MBEDTLSCONTEXT_H__
+#define NETWORKPROVIDER_MBEDTLSCONTEXT_H__
 
 #include "../../../ontology.h"
 #include <iostream>

@@ -1,5 +1,5 @@
-#ifndef SOCKETCONNECTIONSTATE_H__
-#define SOCKETCONNECTIONSTATE_H__
+#ifndef NETWORKPROVIDER_SOCKETCONNECTIONSTATE_H__
+#define NETWORKPROVIDER_SOCKETCONNECTIONSTATE_H__
 #include "../../../ontology.h"
 #include "PicoHTTPParser.h"
 #include "TLSServerContext.h"
@@ -530,4 +530,4 @@ private:
     // discipline, same as any other third-party library embedded here.
     TLSServerContext tls_;
 };
-#endif // SOCKETCONNECTIONSTATE_H__
+#endif // NETWORKPROVIDER_SOCKETCONNECTIONSTATE_H__

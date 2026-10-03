@@ -30,6 +30,8 @@
     #include "NetworkProvider/Seal.h"
     #include "NetworkProvider/Lobby.h"
     #include "NetworkProvider/Ledger.h"
+    // Not a tag: the in-module pipe the parse verbs drive directly.
+    #include "NetworkProvider/LocalPipePair.h"
 
     typedef MbedTLSContext TLSContext;
     typedef PicoHTTPParser HTTPParser;

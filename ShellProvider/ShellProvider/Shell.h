@@ -1,8 +1,8 @@
-#ifndef SHELL_H__
-#define SHELL_H__
+#ifndef SHELLPROVIDER_SHELL_H__
+#define SHELLPROVIDER_SHELL_H__
 
-#include "../../core_defs.h"
-#include "../../ontology.h"
+#include "../../../core_defs.h"
+#include "../../../ontology.h"
 
 #include <string>
 
@@ -32,9 +32,9 @@
     // implied, so adding one is a file.
     #error "ShellProvider has no Windows terminal yet; see Shell.h"
 #elif defined(__EMSCRIPTEN__)
-#include "Web/WebTerminal.h"
+#include "../Web/WebTerminal.h"
 #else
-#include "Linux/LinuxTerminal.h"
+#include "../Linux/LinuxTerminal.h"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -266,4 +266,4 @@ private:
     uint64_t     m_last_spawn  = 0;
 };
 
-#endif // SHELL_H__
+#endif // SHELLPROVIDER_SHELL_H__

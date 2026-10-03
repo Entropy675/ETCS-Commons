@@ -1,5 +1,5 @@
-#ifndef CONNECTIONMANAGER_H__
-#define CONNECTIONMANAGER_H__
+#ifndef NETWORKPROVIDER_CONNECTIONMANAGER_H__
+#define NETWORKPROVIDER_CONNECTIONMANAGER_H__
 #include "../../../ontology.h"
 #include "SocketConnectionState.h"
 #include "TLSServerConfig.h"
@@ -1552,4 +1552,4 @@ private:
     }
 };
 
-#endif // CONNECTIONMANAGER_H__
+#endif // NETWORKPROVIDER_CONNECTIONMANAGER_H__

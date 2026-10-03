@@ -1,5 +1,5 @@
-#ifndef TLSCONNECTIONIO_H__
-#define TLSCONNECTIONIO_H__
+#ifndef NETWORKPROVIDER_TLSCONNECTIONIO_H__
+#define NETWORKPROVIDER_TLSCONNECTIONIO_H__
 #include "../../../ontology.h"
 #include "SocketConnectionState.h"
 #include "TLSServerContext.h"
@@ -540,4 +540,4 @@ inline bool SubmitTLSSend(SocketConnectionState* conn, ETCS::Entity* owner,
 
 } // namespace TLSIO
 
-#endif // TLSCONNECTIONIO_H__
+#endif // NETWORKPROVIDER_TLSCONNECTIONIO_H__

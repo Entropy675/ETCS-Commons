@@ -1,5 +1,5 @@
-#ifndef CONNECTIONRECVLOOP_H__
-#define CONNECTIONRECVLOOP_H__
+#ifndef NETWORKPROVIDER_CONNECTIONRECVLOOP_H__
+#define NETWORKPROVIDER_CONNECTIONRECVLOOP_H__
 #include "SocketConnectionState.h"
 #include "TLSConnectionIO.h"
 #include "ConnRef.h"
@@ -152,4 +152,4 @@ inline void ReadUntilParsed(SocketConnectionState* conn, ETCS::Entity* owner,
     }
 }
 
-#endif // CONNECTIONRECVLOOP_H__
+#endif // NETWORKPROVIDER_CONNECTIONRECVLOOP_H__

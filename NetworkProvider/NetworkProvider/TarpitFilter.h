@@ -1,5 +1,5 @@
-#ifndef TARPITFILTER_H__
-#define TARPITFILTER_H__
+#ifndef NETWORKPROVIDER_TARPITFILTER_H__
+#define NETWORKPROVIDER_TARPITFILTER_H__
 #include <algorithm>
 #include <cctype>
 #include <iterator>
@@ -105,4 +105,4 @@ private:
     std::vector<std::string> patterns_;
 };
 
-#endif // TARPITFILTER_H__
+#endif // NETWORKPROVIDER_TARPITFILTER_H__

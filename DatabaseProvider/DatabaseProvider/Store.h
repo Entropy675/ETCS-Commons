@@ -1,5 +1,5 @@
-#ifndef DATABASEPROVIDER_PERSISTENCE_STORE_H__
-#define DATABASEPROVIDER_PERSISTENCE_STORE_H__
+#ifndef DATABASEPROVIDER_STORE_H__
+#define DATABASEPROVIDER_STORE_H__
 #include "../../../ontology.h"
 #include "../sqlite/sqlite3.h"
 
@@ -323,4 +323,4 @@ private:
     bool        failed_ = false;
 };
 
-#endif // DATABASEPROVIDER_PERSISTENCE_STORE_H__
+#endif // DATABASEPROVIDER_STORE_H__

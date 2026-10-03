@@ -1,5 +1,5 @@
-#ifndef CHESSSHARE_H__
-#define CHESSSHARE_H__
+#ifndef CHESSPROVIDER_CHESSSHARE_H__
+#define CHESSPROVIDER_CHESSSHARE_H__
 #include "ChessGame.h"
 #include <atomic>
 #include <map>
@@ -247,4 +247,4 @@ private:
     std::map<std::string, std::string> m_here;   // name -> "<seat> <hash> <seq>"
 };
 
-#endif // CHESSSHARE_H__
+#endif // CHESSPROVIDER_CHESSSHARE_H__

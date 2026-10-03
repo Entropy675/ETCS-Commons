@@ -1,5 +1,5 @@
-#ifndef TEXTLABEL_H__
-#define TEXTLABEL_H__
+#ifndef RENDERPROVIDER_TEXTLABEL_H__
+#define RENDERPROVIDER_TEXTLABEL_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"

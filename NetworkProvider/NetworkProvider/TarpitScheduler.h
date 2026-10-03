@@ -1,5 +1,5 @@
-#ifndef TARPITSCHEDULER_H__
-#define TARPITSCHEDULER_H__
+#ifndef NETWORKPROVIDER_TARPITSCHEDULER_H__
+#define NETWORKPROVIDER_TARPITSCHEDULER_H__
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -142,4 +142,4 @@ private:
     std::vector<Job>  jobs_;
 };
 
-#endif // TARPITSCHEDULER_H__
+#endif // NETWORKPROVIDER_TARPITSCHEDULER_H__

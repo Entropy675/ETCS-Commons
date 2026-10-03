@@ -1,5 +1,5 @@
-#ifndef VULKAN_INSTANCE_H__
-#define VULKAN_INSTANCE_H__
+#ifndef RENDERPROVIDER_VULKANINSTANCE_H__
+#define RENDERPROVIDER_VULKANINSTANCE_H__
 
 #include "../../../ontology.h"
 #include "VulkanPlatform.h"

@@ -1,9 +1,9 @@
-#ifndef CAMERA3D_H__
-#define CAMERA3D_H__
+#ifndef RENDERPROVIDER_CAMERA3D_H__
+#define RENDERPROVIDER_CAMERA3D_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
-#include "../OS/SceneSink.h"
+#include "SceneSink.h"
 
 #include <cmath>
 #include <cstdint>
@@ -63,7 +63,7 @@ public:
     { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
-    // The sink is reached by name (OS/SceneSink.h), the way a family is,
+    // The sink is reached by name (RenderProvider/SceneSink.h), the way a family is,
     // so the scene never casts a Camera_ to this type.
     Camera3D()
     {
@@ -248,7 +248,7 @@ public:
 
     // Asked of the destination at every draw (DrawIntoConcrete): a surface
     // drawing on the host cannot take a scene, so this camera projects on
-    // the host into it (ontology/Camera.h, OS/SceneSink.h).
+    // the host into it (ontology/Camera.h, RenderProvider/SceneSink.h).
     bool DeviceProjectionLandsConcrete() const override { return m_scene_lands; }
 
     bool RenderConcrete() override

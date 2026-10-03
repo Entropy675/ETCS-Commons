@@ -1,8 +1,8 @@
 #ifndef LAYOUTPROVIDER_CLAYOUT_H__
 #define LAYOUTPROVIDER_CLAYOUT_H__
 
-#include "../../core_defs.h"
-#include "../../ontology.h"
+#include "../../../core_defs.h"
+#include "../../../ontology.h"
 
 /*
  * THE ONLY PLACE clay.h IS INCLUDED, and the only place it CAN be -- nothing
@@ -37,7 +37,7 @@
 #pragma GCC diagnostic ignored "-Wtype-limits"
 #pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
 #define CLAY_IMPLEMENTATION
-#include "clay/clay.h"
+#include "../clay/clay.h"
 #pragma GCC diagnostic pop
 
 #include <cstdlib>

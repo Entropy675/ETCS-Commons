@@ -2,7 +2,7 @@
 #define RENDERPROVIDER_WEBGPUPRESENTER_H__
 
 #include "../../../ontology.h"
-#include "DeviceFrame.h"
+#include "../RenderProvider/DeviceFrame.h"
 #include "WebGpuInstance.h"
 #include "WebGpuJs.h"
 

@@ -1,5 +1,5 @@
-#ifndef WEBSHELL_TERMINAL_H__
-#define WEBSHELL_TERMINAL_H__
+#ifndef SHELLPROVIDER_WEBTERMINAL_H__
+#define SHELLPROVIDER_WEBTERMINAL_H__
 
 #include <atomic>
 #include <chrono>
@@ -182,4 +182,4 @@ inline bool attach(const std::string& path, ETCS::SignalContext ctx)
 
 /* Line I/O: MAIN Module.ccall (etcs_web_shell_* in etcs.cc). */
 
-#endif // WEBSHELL_TERMINAL_H__
+#endif // SHELLPROVIDER_WEBTERMINAL_H__

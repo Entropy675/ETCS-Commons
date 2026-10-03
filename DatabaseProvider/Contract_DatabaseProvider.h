@@ -35,11 +35,11 @@
 
     /*
      * PERSISTENCE -- the child that keeps its parent across runs, and the one
-     * store all of them share (Persistence/). Not a platform fork either: it
+     * store all of them share (DatabaseProvider/Persistence.h, Store.h). Not a platform fork either: it
      * is the sqlite leaf's engine over etcs_store_dir(), which is a disk here
      * and IndexedDB in a browser, and the tag is the class.
      */
-    #include "Persistence/Persistence.h"
+    #include "DatabaseProvider/Persistence.h"
 
     /*
      * The postgres leaf goes here, exported alongside rather than instead of:

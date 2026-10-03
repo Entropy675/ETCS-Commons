@@ -1,5 +1,5 @@
-#ifndef CHESSTABLE_H__
-#define CHESSTABLE_H__
+#ifndef CHESSPROVIDER_CHESSTABLE_H__
+#define CHESSPROVIDER_CHESSTABLE_H__
 #include "ChessBoard.h"
 #include "ChessShare.h"
 #include <sstream>
@@ -337,4 +337,4 @@ private:
     uint32_t m_tick = 0;
 };
 
-#endif // CHESSTABLE_H__
+#endif // CHESSPROVIDER_CHESSTABLE_H__

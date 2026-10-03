@@ -31,7 +31,7 @@ ETCS_TAG_BLOCK_HYBRID(
     (QueryProduce, RowProduce, RowConsume)
 )
 
-// Persistence (Persistence/Persistence.h). Save/Restore/Info/Forget on a
+// Persistence (DatabaseProvider/Persistence.h). Save/Restore/Info/Forget on a
 // child that keeps its parent; Resume/Finish on the loader's handle.
 ETCS_TAG_BLOCK_BASIC(Persistence, Save, Restore, Resume, Finish, Forget, Info, Delete)
 

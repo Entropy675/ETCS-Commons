@@ -1,5 +1,5 @@
-#ifndef STATICHTMLPAGE_H__
-#define STATICHTMLPAGE_H__
+#ifndef NETWORKPROVIDER_STATICHTMLPAGE_H__
+#define NETWORKPROVIDER_STATICHTMLPAGE_H__
 #include "../../../ontology.h"
 #include <string>
 
@@ -82,4 +82,4 @@ public:
     }
 };
 
-#endif // STATICHTMLPAGE_H__
+#endif // NETWORKPROVIDER_STATICHTMLPAGE_H__

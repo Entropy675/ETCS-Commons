@@ -1,5 +1,5 @@
-#ifndef ETCS_RENDERPROVIDER_THROBBER_H__
-#define ETCS_RENDERPROVIDER_THROBBER_H__
+#ifndef RENDERPROVIDER_THROBBER_H__
+#define RENDERPROVIDER_THROBBER_H__
 
 #include <atomic>
 #include "../../../core_defs.h"

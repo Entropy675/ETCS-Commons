@@ -1,5 +1,5 @@
-#ifndef GLFW_WINDOWHANDLER_H__
-#define GLFW_WINDOWHANDLER_H__
+#ifndef WINDOWPROVIDER_GLFWWINDOW_H__
+#define WINDOWPROVIDER_GLFWWINDOW_H__
 
 #include "../../../ontology.h"
 #include <GLFW/glfw3.h>

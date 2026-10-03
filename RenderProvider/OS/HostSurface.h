@@ -2,8 +2,8 @@
 #define RENDERPROVIDER_HOSTSURFACE_H__
 
 #include "../../../ontology.h"
-#include "DeviceFrame.h"
-#include "SceneSink.h"
+#include "../RenderProvider/DeviceFrame.h"
+#include "../RenderProvider/SceneSink.h"
 #include "../RenderProvider/Mesh.h"
 
 #include <algorithm>
@@ -79,7 +79,7 @@ public:
     bool operator<(const HostSurface& o) const { return m_order < o.m_order; }
     WIRE_TYPE_IDENTITY(HostSurface);
 
-    // Reached by name, like the sink on the camera's side (OS/SceneSink.h).
+    // Reached by name, like the sink on the camera's side (RenderProvider/SceneSink.h).
     HostSurface()
     {
         this->registerInterfacePointer(ETCS::Buffer(RP_SCENE_TAKER),

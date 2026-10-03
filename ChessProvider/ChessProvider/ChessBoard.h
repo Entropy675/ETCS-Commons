@@ -1,5 +1,5 @@
-#ifndef CHESSBOARD_H__
-#define CHESSBOARD_H__
+#ifndef CHESSPROVIDER_CHESSBOARD_H__
+#define CHESSPROVIDER_CHESSBOARD_H__
 #include "ChessGame.h"
 #include <cstring>
 #include <functional>
@@ -318,4 +318,4 @@ private:
     std::string m_selected, m_drawn;
 };
 
-#endif // CHESSBOARD_H__
+#endif // CHESSPROVIDER_CHESSBOARD_H__

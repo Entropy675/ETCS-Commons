@@ -1,5 +1,5 @@
-#ifndef POLYGONDRAWABLE2D_H__
-#define POLYGONDRAWABLE2D_H__
+#ifndef RENDERPROVIDER_POLYGONDRAWABLE2D_H__
+#define RENDERPROVIDER_POLYGONDRAWABLE2D_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"

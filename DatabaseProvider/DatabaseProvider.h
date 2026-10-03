@@ -454,7 +454,7 @@ DEFINE_STREAM_FUNC_CONSUME(LocalDatabase, RowConsume)
 }
 
 
-// --- Persistence (Persistence/Persistence.h) ---
+// --- Persistence (DatabaseProvider/Persistence.h) ---
 
 DEFINE_WORK_FUNC(Persistence, Save)    { (void)ctx; (void)data; self.Save(); }
 DEFINE_WORK_FUNC(Persistence, Restore) { (void)ctx; (void)data; self.Restore(); }

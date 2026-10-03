@@ -1,5 +1,5 @@
-#ifndef COMPOSITEDRAWABLE2D_H__
-#define COMPOSITEDRAWABLE2D_H__
+#ifndef RENDERPROVIDER_COMPOSITEDRAWABLE2D_H__
+#define RENDERPROVIDER_COMPOSITEDRAWABLE2D_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"

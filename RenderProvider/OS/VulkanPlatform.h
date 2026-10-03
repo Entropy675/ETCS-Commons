@@ -1,5 +1,5 @@
-#ifndef VULKAN_PLATFORM_H__
-#define VULKAN_PLATFORM_H__
+#ifndef RENDERPROVIDER_VULKANPLATFORM_H__
+#define RENDERPROVIDER_VULKANPLATFORM_H__
 
 // The single place RenderProvider's window-system (WSI) selection is made,
 // and -- since it is already the one platform-conditional file -- the

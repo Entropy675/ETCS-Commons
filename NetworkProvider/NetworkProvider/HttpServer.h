@@ -1,5 +1,5 @@
-#ifndef HTTPSERVER_H__
-#define HTTPSERVER_H__
+#ifndef NETWORKPROVIDER_HTTPSERVER_H__
+#define NETWORKPROVIDER_HTTPSERVER_H__
 #include "../../../ontology.h"
 #include "ConnectionManager.h"
 #include "StaticHtmlPage.h"
@@ -579,4 +579,4 @@ private:
     ETCS::SignalContext  run_ctx_;
 };
 
-#endif // HTTPSERVER_H__
+#endif // NETWORKPROVIDER_HTTPSERVER_H__

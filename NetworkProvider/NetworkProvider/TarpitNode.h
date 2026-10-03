@@ -1,5 +1,5 @@
-#ifndef TARPITNODE_H__
-#define TARPITNODE_H__
+#ifndef NETWORKPROVIDER_TARPITNODE_H__
+#define NETWORKPROVIDER_TARPITNODE_H__
 #include "../../../ontology.h"
 #include "ConnectionManager.h"
 #include "SocketConnectionState.h"
@@ -345,4 +345,4 @@ private:
     int          delay_ms_ = 6000;
 };
 
-#endif // TARPITNODE_H__
+#endif // NETWORKPROVIDER_TARPITNODE_H__

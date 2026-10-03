@@ -3,7 +3,7 @@
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
-#include "../OS/DeviceFrame.h"
+#include "DeviceFrame.h"
 
 #include <cstdint>
 #include <vector>

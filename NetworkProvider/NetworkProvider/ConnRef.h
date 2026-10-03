@@ -1,5 +1,5 @@
-#ifndef CONNREF_H__
-#define CONNREF_H__
+#ifndef NETWORKPROVIDER_CONNREF_H__
+#define NETWORKPROVIDER_CONNREF_H__
 #include "SocketConnectionState.h"
 
 // ConnRef — one io_inflight_ reference, owned for exactly this scope's
@@ -92,4 +92,4 @@ private:
     SocketConnectionState* conn_;
 };
 
-#endif // CONNREF_H__
+#endif // NETWORKPROVIDER_CONNREF_H__

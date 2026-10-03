@@ -1,5 +1,5 @@
-#ifndef CHESSGAME_H__
-#define CHESSGAME_H__
+#ifndef CHESSPROVIDER_CHESSGAME_H__
+#define CHESSPROVIDER_CHESSGAME_H__
 #include "../../../ontology.h"
 
 // The CChess engine, a folder inside this module's own type folder so this
@@ -693,4 +693,4 @@ private:
     size_t chat_base_ = 0, history_base_ = 0;
 };
 
-#endif // CHESSGAME_H__
+#endif // CHESSPROVIDER_CHESSGAME_H__

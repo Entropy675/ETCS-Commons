@@ -2,7 +2,7 @@
 #define RENDERPROVIDER_VULKANPRESENTER_H__
 
 #include "../../../ontology.h"
-#include "DeviceFrame.h"
+#include "../RenderProvider/DeviceFrame.h"
 #include "VulkanInstance.h"
 #include "VulkanPlatform.h"
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env etcs
-# Keep a scene across runs (Persistence/Persistence.h).
+# Keep a scene across runs (DatabaseProvider/Persistence.h).
 #
 #   etcs persistence.etcs       builds it; `exit`, then start `etcs` with no
 #                               script and answer y -- or `etcs --resume`
