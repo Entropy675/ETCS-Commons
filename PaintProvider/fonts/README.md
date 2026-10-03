@@ -1,6 +1,6 @@
 # Fonts for text boxes
 
-Loaded by `PaintFonts` (PaintProvider.h) from `boot_paint_panels.etcs`, and staged
+Loaded by `PaintFonts` (PaintProvider/PaintFonts.h) from `boot_paint_panels.etcs`, and staged
 into the browser like the scripts are (`assets` in `scripts/www/modules.json`).
 They ship with the program, not borrowed from the machine, because a text box in a
 shared session has to wrap at the same words on every page in the room, and that

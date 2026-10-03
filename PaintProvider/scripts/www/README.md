@@ -551,7 +551,7 @@ reel rather than to the layer-or-canvas question (`PaintCanvasMenu::OfferImport`
 decides, since "a file came in" is the same event on every substrate): the
 region takes the file's size at its own corner, the frames replace the reel,
 and the file's delay sets the rate. A still GIF is a picture and takes the
-question. Out is the encoder in `PaintProvider.h` (`paint_gif`), since stb has
+question. Out is the encoder in `PaintProvider/PaintImage.h` (`paint_gif`), since stb has
 none: one global 256-colour table by median cut over every frame, plain LZW,
 every frame whole, looping. Not small, and every viewer plays it -- verified by
 exporting a reel and reading it back through the same upload.

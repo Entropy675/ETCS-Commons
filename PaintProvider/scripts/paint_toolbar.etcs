@@ -21,7 +21,7 @@
 # and it was those nine times -- until it learned to stretch. A polygon has no
 # transform, so growing one means rebuilding it, which PaintPalette does at the
 # cell's real width whenever the layout changes it (stretchArrows). That put the
-# shape's rule in PaintProvider.h and left nine authored copies of it in this
+# shape's rule in PaintProvider/PaintPalette.h and left nine authored copies of it in this
 # file for the rule to overwrite, which is one copy too many and eight too many
 # after that. It is paint_cell_arrow.etcs now, `run` once per cell.
 #

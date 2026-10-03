@@ -17,7 +17,7 @@
 # paint_toolbar.etcs -- six swatches and three mode slices -- and they stopped
 # being decoration the moment the arrows learned to stretch: PaintPalette::
 # stretchArrows rebuilds this triangle at the cell's real width on every layout
-# change, from a rule in PaintProvider.h. Nine authored copies that a tenth
+# change, from a rule in PaintProvider/PaintPalette.h. Nine authored copies that a tenth
 # place now overwrites is the eye's problem again, one dimension over.
 #
 # AUTHORED AT 60 WIDE because that is the cell's declared width and the first
