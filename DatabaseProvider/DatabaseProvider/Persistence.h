@@ -150,7 +150,23 @@ public:
         std::string script, roots, why;
         long long at = 0;
         if (!store.getScene("last", script, roots, at, why)) { ETCS_LOG("Persistence", "Resume: " << why); return false; }
-        Keeper::get().expect(roots);
+        // Each root's state hash is its own row (root_states); a scene saved
+        // before that carried it on the root's line, which still reads.
+        std::map<std::string, std::string> state;
+        for (auto& [name, hash] : store.getStates("last")) state[name] = hash;
+        std::string expected;
+        std::istringstream in(roots);
+        for (std::string line; std::getline(in, line); )
+        {
+            std::istringstream f(line);
+            std::string name, type, hash;
+            if (!(f >> name >> type)) continue;
+            f >> hash;
+            auto st = state.find(name);
+            if (st != state.end()) hash = st->second;
+            expected += name + " " + type + " " + hash + "\n";
+        }
+        Keeper::get().expect(expected);
         std::string body = "# The scene this loader left (keyid " + store.keyid() + "), saved "
                          + std::to_string(at) + ". Written by Persistence.Resume.\n" + script;
         if (!store.writeFile("resume.etcs", body)) { Keeper::get().release(); ETCS_LOG("Persistence", "Resume: cannot write the script."); return false; }
@@ -171,9 +187,7 @@ public:
 
     void Forget()
     {
-        PersistenceStore::get().forgetScene("last");
-        PersistenceStore::get().removeFile("scene");
-        PersistenceStore::get().flush();
+        Keeper::get().forget();
         ETCS_LOG("Persistence", "the last scene is forgotten.");
     }
 
@@ -207,9 +221,12 @@ public:
 private:
     struct Scene
     {
-        std::string                           script, roots;
-        std::vector<PersistenceStore::Record> recs;
+        std::string                           script;
+        std::string                           roots;     // "name type" per root: what the script makes
+        std::vector<PersistenceStore::RootState> states; // each root's state hash, in roots' order
+        std::vector<const PersistenceStore::Record*> recs;   // into the Keeper's record cache, valid until the next capture
         std::vector<uint64_t>                 digests;   // each record's content (Keeper::digestOf), beside it
+        std::vector<uint64_t>                 keys;      // each record's key as a number (Keeper::recKey)
         std::vector<std::string>              warnings;
         size_t                                nroots = 0;
         uint64_t                              print  = 0;
@@ -219,7 +236,32 @@ private:
     { return e->getSourceModule().toString() + "::" + e->getSourceTag().toString(); }
     static std::string typeOf(const FrozenNode& n) { return n.module + "::" + n.tag; }
     static std::string hex64(uint64_t v)
-    { char b[17]; std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(v)); return b; }
+    {
+        static const char* x = "0123456789abcdef";
+        std::string out(16, '0');
+        for (int i = 15; i >= 0; --i, v >>= 4) out[static_cast<size_t>(i)] = x[v & 15];
+        return out;
+    }
+    /*
+     * A RECORD'S KEY AS A NUMBER -- (type, identity, ord) folded -- so the
+     * walk that counts and matches records does integer work per entity, and
+     * strings are made only for a record that is built again. The type is
+     * hashed from its two halves exactly as from "Module::Tag" (typeKeyOf),
+     * so a key read back from the store folds the same.
+     */
+    static uint64_t typeKey(const std::string& module, const std::string& tag)
+    { return XXH3_64bits_withSeed(tag.data(), tag.size(), XXH3_64bits(module.data(), module.size())); }
+    static uint64_t typeKeyOf(const std::string& type)
+    {
+        const size_t at = type.find("::");
+        return at == std::string::npos ? typeKey(std::string(), type) : typeKey(type.substr(0, at), type.substr(at + 2));
+    }
+    static uint64_t recKey(uint64_t type, uint64_t identity, int ord)
+    {
+        uint64_t h = (type ^ 0x9e3779b97f4a7c15ULL) * 0x100000001b3ULL;
+        h = (h ^ identity) * 0x100000001b3ULL;
+        return (h ^ static_cast<uint64_t>(static_cast<uint32_t>(ord))) * 0x100000001b3ULL;
+    }
     // The name a script gave a root (IWireEnvironmental::NoteName).
     static std::string nameOf(ETCS::Entity* e)
     {
@@ -234,11 +276,11 @@ private:
     // RIDs it hands out: twins count in the order they were attached.
     static void walk(ETCS::Entity* e, std::vector<ETCS::Entity*>& out)
     {
-        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
-        e->getTypedChildren(kids);
+        std::vector<ETCS::Entity::ChildRef> kids;
+        e->getTypedChildRefs(kids);
         ETCS::etcs_hash_detail::order_canonical(e, kids);
         for (auto& [tag, rid] : kids)
-            if (ETCS::Entity* c = e->getTypedChild(tag, rid)) walk(c, out);
+            if (ETCS::Entity* c = e->getTypedChild(*tag, rid)) walk(c, out);
         out.push_back(e);
     }
     // Which of them get a record: one that claims Environmental, or one with
@@ -382,8 +424,12 @@ private:
             return out;
         }
 
-        void capture(Scene& sc)
+        // Built into last_scene_ and answered by reference: the records it
+        // points at live in rec_cache_, valid until the next capture.
+        const Scene& capture()
         {
+            Scene built;
+            Scene& sc = built;
             std::vector<std::string> warn;
             const auto rs = roots(&warn);
             std::vector<std::pair<ETCS::Entity*, ETCS::LifetimeHold>> held;
@@ -460,7 +506,7 @@ private:
             // This read is what the next one starts from.
             auto keepReads = [&]() { for (size_t i = 0; i < held.size(); ++i) prev_[held[i].first->getRID()] = std::move(frozen[i]); };
             // Nothing moved anywhere: the scene is the last one, as it was built.
-            if (!gather_all && copied == 0 && have_last_) { keepReads(); sc = last_scene_; return; }
+            if (!gather_all && copied == 0 && have_last_) { keepReads(); return last_scene_; }
             sc.script += cap.script;
             std::map<ETCS::Entity*, std::string> own;
             for (size_t i = 0; i < cap.environmental.size(); ++i)
@@ -479,41 +525,47 @@ private:
                 if (pn == names.end())
                 { warn.push_back(typeOf(r) + "'s Persistence was not made by a script line"); continue; }
                 sc.script += pn->second + ".Restore()\n";
-                sc.roots  += names[r->getRID()] + " " + typeOf(r) + " " + hex64(t.state_hash) + "\n";   // the state hash: what Finish must see again
+                sc.roots  += names[r->getRID()] + " " + typeOf(r) + "\n";
+                sc.states.emplace_back(names[r->getRID()], hex64(t.state_hash));   // what Finish must see again
                 ++sc.nroots;
 
                 std::vector<size_t> order;
                 postOrder(t, 0, order);
-                std::map<std::string, int> seen;
+                std::unordered_map<uint64_t, int> seen;   // (type, identity) -> how many so far: the ord
+                seen.reserve(order.size());
                 for (size_t k : order)
                 {
                     const FrozenNode& n = t.nodes[k];
-                    const std::string type = typeOf(n), hash = hex64(n.identity);   // the key: what it is, not where it stands
-                    const int ord = seen[type + "#" + hash]++;   // counted for every entity: the order is the walk's
+                    const uint64_t tk = typeKey(n.module, n.tag);   // the key: what it is, not where it stands
+                    const int ord = seen[recKey(tk, n.identity, 0)]++;   // counted for every entity: the order is the walk's
                     if (!kept(n)) continue;
-                    auto s = own.find(n.e);
-                    const std::string script = s != own.end() ? s->second : std::string();
+                    const std::string* script = nullptr;
+                    if (n.environmental) { auto o = own.find(n.e); if (o != own.end()) script = &o->second; }
                     // A node that stood still since its record was made (the
                     // stamp the freeze reuses it by) keeps that record.
                     auto c = rec_cache_.find(n.rid);
                     if (c != rec_cache_.end() && n.digestible && c->second.epoch == n.epoch && c->second.digest == n.digest
-                        && c->second.rec.type == type && c->second.rec.hash == hash && c->second.rec.ord == ord
-                        && c->second.rec.script == script)
+                        && c->second.type == tk && c->second.identity == n.identity && c->second.rec.ord == ord
+                        && (script ? c->second.rec.script == *script : c->second.rec.script.empty()))
                     {
-                        sc.recs.push_back(c->second.rec);
-                        sc.digests.push_back(c->second.content);
-                        fresh_cache[n.rid] = std::move(c->second);
+                        CachedRecord& kept_rec = fresh_cache[n.rid] = std::move(c->second);
+                        sc.recs.push_back(&kept_rec.rec);
+                        sc.digests.push_back(kept_rec.content);
+                        sc.keys.push_back(recKey(tk, n.identity, ord));
                         continue;
                     }
-                    PersistenceStore::Record rec;
-                    rec.type = type; rec.hash = hash; rec.ord = ord; rec.script = script;
-                    for (auto& f : n.flags) rec.tags += (rec.tags.empty() ? "" : " ") + f;
-                    rec.kv = packed(n);
-                    const uint64_t content = digestOf({ rec.tags, rec.script, rec.kv });
-                    sc.recs.push_back(rec);
-                    sc.digests.push_back(content);
+                    CachedRecord made;
+                    made.rec.type = typeOf(n); made.rec.hash = hex64(n.identity); made.rec.ord = ord;
+                    if (script) made.rec.script = *script;
+                    for (auto& f : n.flags) made.rec.tags += (made.rec.tags.empty() ? "" : " ") + f;
+                    made.rec.kv = packed(n);
+                    made.content = digestOf({ made.rec.tags, made.rec.script, made.rec.kv });
+                    made.epoch = n.epoch; made.digest = n.digest; made.type = tk; made.identity = n.identity;
+                    CachedRecord& slot = fresh_cache[n.rid] = std::move(made);
+                    sc.recs.push_back(&slot.rec);
+                    sc.digests.push_back(slot.content);
+                    sc.keys.push_back(recKey(tk, n.identity, ord));
                     ++rebuilt;
-                    fresh_cache[n.rid] = CachedRecord{ std::move(rec), content, n.epoch, n.digest };
                 }
             }
             last_.rebuilt = rebuilt;
@@ -523,18 +575,35 @@ private:
             sc.warnings = std::move(warn);
 
             std::string all = sc.script + sc.roots;
+            for (auto& [name, hash] : sc.states) all += name + " " + hash + "\n";
             for (size_t i = 0; i < sc.recs.size(); ++i)
             {
-                const auto& rec = sc.recs[i];
-                all += rec.type + rec.hash + std::to_string(rec.ord);
+                all.append(reinterpret_cast<const char*>(&sc.keys[i]), sizeof(uint64_t));
                 all.append(reinterpret_cast<const char*>(&sc.digests[i]), sizeof(uint64_t));
             }
             sc.print = XXH3_64bits(all.data(), all.size());
-            last_scene_ = sc; have_last_ = true;
+            last_scene_ = std::move(built); have_last_ = true;
+            return last_scene_;
+        }
+
+        // The last scene and its states, gone from the store -- and from what
+        // this Keeper remembers writing, or the next save would think the
+        // scene row still there.
+        void forget() { std::lock_guard<std::mutex> lock(save_mu_); forgetLocked(); }
+        void forgetLocked()
+        {
+            auto& store = PersistenceStore::get();
+            store.forgetScene("last");
+            store.removeFile("scene");
+            store.flush();
+            saved_any_ = false;
+            last_print_ = 0;
+            scene_written_ = 0;
+            states_written_.clear();
         }
 
         // A capture outside a save, for Info: one at a time with the saves.
-        void peek(Scene& sc) { std::lock_guard<std::mutex> lock(save_mu_); capture(sc); }
+        void peek(Scene& sc) { std::lock_guard<std::mutex> lock(save_mu_); sc = capture(); }
 
         // Capture and, when it changed (or `force`), write. False when
         // nothing was written.
@@ -542,8 +611,7 @@ private:
         {
             std::lock_guard<std::mutex> lock(save_mu_);
             if (restoring_.load() || (closed_ && !force)) return false;
-            Scene sc;
-            capture(sc);
+            const Scene& sc = capture();
             const std::string warned = join(sc.warnings);
             if (warned != last_warn_)
             {
@@ -555,56 +623,75 @@ private:
             {
                 // Forget only what this run saved and has since let go of.
                 if (!saved_any_) return false;
-                store.forgetScene("last");
-                store.removeFile("scene");
-                store.flush();
-                saved_any_ = false;
-                last_print_ = 0;
+                forgetLocked();
                 ETCS_LOG("Persistence", "nothing kept any more; the last scene is forgotten.");
                 return true;
             }
             if (!force && sc.print == last_print_) return false;
             /*
              * ONLY WHAT CHANGED. Each record is remembered as it was last
-             * written (written_, by content digest): a save writes the records
-             * whose content moved, drops the ones whose entity is gone, and
-             * rewrites the scene only when its script or roots did -- all in
-             * one transaction (PersistenceStore::putSave). A run's first save
-             * also drops what an earlier run left behind. A refused write
-             * forgets everything, so the next save writes it all again.
+             * written (written_: its key as a number, its content digest): a
+             * save writes the records whose content moved, drops the ones
+             * whose entity is gone, writes a root's state hash only when it
+             * moved, and the scene row only when its script or roots did --
+             * all in one transaction (PersistenceStore::putSave). A record
+             * that did not move is carried over as it was, with no string
+             * made for it. A run's first save also drops what an earlier run
+             * left behind. A refused write forgets everything, so the next
+             * save writes it all again.
              */
             if (!store.ready()) { ETCS_LOG("Persistence", "the store refused the scene."); return false; }
-            std::map<std::string, std::pair<PersistenceStore::Key, uint64_t>> now;
+            std::unordered_map<uint64_t, Written> now;
+            now.reserve(sc.recs.size());
             std::vector<const PersistenceStore::Record*> changed;
             for (size_t ri = 0; ri < sc.recs.size(); ++ri)
             {
-                const auto& rec = sc.recs[ri];
-                PersistenceStore::Key k{ rec.type, rec.hash, rec.ord };
-                const std::string key = keyOf(k);
-                const uint64_t d = sc.digests[ri];
+                const uint64_t key = sc.keys[ri], d = sc.digests[ri];
                 auto w = written_.find(key);
-                if (w == written_.end() || w->second.second != d) changed.push_back(&rec);
-                now[key] = { std::move(k), d };
+                if (w != written_.end() && w->second.digest == d)
+                {
+                    now.emplace(key, std::move(w->second));
+                    written_.erase(w);
+                    continue;
+                }
+                if (w != written_.end()) written_.erase(w);
+                const PersistenceStore::Record& rec = *sc.recs[ri];
+                changed.push_back(&rec);
+                now.emplace(key, Written{ PersistenceStore::Key{ rec.type, rec.hash, rec.ord }, d });
             }
+            // What is left of written_ is what was written and is not here any more.
             std::vector<PersistenceStore::Key> gone;
-            if (!swept_) { for (auto& k : store.recordKeys()) if (!now.count(keyOf(k))) gone.push_back(k); }
-            else           for (auto& [key, kd] : written_) if (!now.count(key)) gone.push_back(kd.first);
+            if (!swept_)
+            {
+                for (auto& k : store.recordKeys())
+                    if (!now.count(recKey(typeKeyOf(k.type), std::strtoull(k.hash.c_str(), nullptr, 16), k.ord)))
+                        gone.push_back(k);
+            }
+            else for (auto& [key, w] : written_) gone.push_back(w.key);
             const uint64_t scene_d = digestOf({ sc.script, sc.roots });
             const bool scene_moved = scene_d != scene_written_;
-            const PersistenceStore::SceneRow row{ "last", sc.script, sc.roots };
-            if (!store.putSave(changed, gone, scene_moved ? &row : nullptr))
+            std::vector<PersistenceStore::RootState> states;
+            for (auto& st : sc.states)
             {
-                written_.clear(); swept_ = false; scene_written_ = 0;
+                auto was = states_written_.find(st.first);
+                if (scene_moved || was == states_written_.end() || was->second != st.second) states.push_back(st);
+            }
+            const PersistenceStore::SceneRow row{ "last", sc.script, sc.roots };
+            if (!store.putSave(changed, gone, scene_moved ? &row : nullptr, "last", states))
+            {
+                written_.clear(); swept_ = false; scene_written_ = 0; states_written_.clear();
                 ETCS_LOG("Persistence", "the store refused the scene.");
                 return false;
             }
             written_ = std::move(now); swept_ = true; scene_written_ = scene_d;
+            if (scene_moved) states_written_.clear();
+            for (auto& st : states) states_written_[st.first] = st.second;
             std::string summary;
             std::istringstream in(sc.roots);
-            std::string n, t, h;
-            while (in >> n >> t >> h) summary += (summary.empty() ? "" : ", ") + n + " (" + t + ")";
+            std::string n, t;
+            while (in >> n >> t) summary += (summary.empty() ? "" : ", ") + n + " (" + t + ")";
             if (scene_moved) store.writeFile("scene", std::to_string(sc.nroots) + " root(s): " + summary + "\n");
-            if (!changed.empty() || !gone.empty() || scene_moved) store.flush();
+            if (!changed.empty() || !gone.empty() || scene_moved || !states.empty()) store.flush();
             if (sc.print != last_print_)
                 ETCS_LOG("Persistence", "scene saved: " << summary << " -- " << sc.recs.size() << " record(s)");
             last_.records = sc.recs.size(); last_.written = changed.size(); last_.dropped = gone.size();
@@ -667,8 +754,6 @@ private:
             }
             return h;
         }
-        static std::string keyOf(const PersistenceStore::Key& k)
-        { return k.type + "\n" + k.hash + "\n" + std::to_string(k.ord); }
         static uint64_t digestOf(std::initializer_list<std::string> fields)
         {
             std::string in;
@@ -690,14 +775,17 @@ private:
         std::atomic<bool>        closing_{ false };
         bool                     saved_any_ = false;
         uint64_t                 last_print_ = 0;
-        std::map<std::string, std::pair<PersistenceStore::Key, uint64_t>> written_;   // key -> (key, content digest) as last written
+        struct Written { PersistenceStore::Key key; uint64_t digest = 0; };
+        std::unordered_map<uint64_t, Written> written_;   // recKey -> the record as last written
+        std::map<std::string, std::string> states_written_;   // root name -> state hash as last written
         bool                     swept_ = false;         // this run has dropped what earlier runs left
         // The last read, so the next reads only what moved (etcs_freeze prev),
         // and the replay as last composed, with the root epochs it saw.
         std::map<ETCS::RID, FrozenTree> prev_;
         // Each kept node's record as last built, with the stamp its node had
         // (hash epoch, value digest): unchanged, it is not built again.
-        struct CachedRecord { PersistenceStore::Record rec; uint64_t content = 0; uint32_t epoch = 0; uint64_t digest = 0; };
+        struct CachedRecord { PersistenceStore::Record rec; uint64_t content = 0; uint32_t epoch = 0; uint64_t digest = 0;
+                              uint64_t type = 0, identity = 0; };
         std::unordered_map<ETCS::RID, CachedRecord> rec_cache_;
         std::map<ETCS::RID, uint32_t>   replay_epochs_;
         ETCS::ReplayCapture             last_cap_;

@@ -45,7 +45,11 @@
  *            cannot say (ontology/Environmental.h).
  *   scenes   (keyid, name) -> at, script, roots, mac
  *            The whole: the script that rebuilds every persisted root, and
- *            each root's name and hash, which a resume checks itself against.
+ *            each root's name and type. Written when either changes.
+ *   root_states (keyid, scene, name) -> hash, mac
+ *            Each root's state hash, which a resume checks itself against:
+ *            its own row, because it moves on every save that anything
+ *            under the root does, and the scene row does not.
  *
  * In a browser the directory is IDBFS (/persist), which the page must mount
  * and pull before main() runs; after a write the page is asked to push it
@@ -96,7 +100,11 @@ public:
      */
     struct Key { std::string type, hash; int ord = 0; };
     struct SceneRow { std::string name, script, roots; };
-    bool putSave(const std::vector<const Record*>& changed, const std::vector<Key>& gone, const SceneRow* scene)
+    using RootState = std::pair<std::string, std::string>;   // root name, state hash
+    // `states`: the roots whose state hash moved. With a scene row, the
+    // scene's states are replaced whole (a root may have gone with it).
+    bool putSave(const std::vector<const Record*>& changed, const std::vector<Key>& gone, const SceneRow* scene,
+                 const std::string& scene_name, const std::vector<RootState>& states)
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (!openLocked()) return false;
@@ -104,7 +112,8 @@ public:
         bool ok = true;
         for (const Record* r : changed) ok = ok && putRecordLocked(*r);
         for (const Key& k : gone)       ok = ok && dropRecordLocked(k);
-        if (scene) ok = ok && putSceneLocked(scene->name, scene->script, scene->roots);
+        if (scene) ok = ok && putSceneLocked(scene->name, scene->script, scene->roots) && dropStatesLocked(scene_name);
+        for (const RootState& st : states) ok = ok && putStateLocked(scene_name, st.first, st.second);
         if (!ok) { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); return false; }
         return sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK;
     }
@@ -119,6 +128,24 @@ public:
         if (!st) return out;
         bindText(st, 1, keyid_);
         while (sqlite3_step(st) == SQLITE_ROW) out.push_back({ column(st, 0), column(st, 1), sqlite3_column_int(st, 2) });
+        sqlite3_finalize(st);
+        return out;
+    }
+
+    // A scene's root state hashes, verified; a row that does not verify is left out.
+    std::vector<RootState> getStates(const std::string& scene)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::vector<RootState> out;
+        if (!openLocked()) return out;
+        sqlite3_stmt* st = prepare("SELECT name,hash,mac FROM root_states WHERE keyid=? AND scene=?");
+        if (!st) return out;
+        bindText(st, 1, keyid_); bindText(st, 2, scene);
+        while (sqlite3_step(st) == SQLITE_ROW)
+        {
+            std::string name = column(st, 0), hash = column(st, 1);
+            if (column(st, 2) == macOf({ "H", keyid_, scene, name, hash })) out.emplace_back(std::move(name), std::move(hash));
+        }
         sqlite3_finalize(st);
         return out;
     }
@@ -190,6 +217,7 @@ public:
         bindText(st, 1, keyid_); bindText(st, 2, name);
         sqlite3_step(st);
         sqlite3_finalize(st);
+        dropStatesLocked(name);
     }
 
     // In a browser, push what was written to IndexedDB.
@@ -238,7 +266,9 @@ private:
             "CREATE TABLE IF NOT EXISTS records(keyid TEXT, type TEXT, hash TEXT, ord INTEGER,"
             " tags TEXT, script TEXT, kv BLOB, mac TEXT, PRIMARY KEY(keyid,type,hash,ord));"
             "CREATE TABLE IF NOT EXISTS scenes(keyid TEXT, name TEXT, at TEXT, script TEXT,"
-            " roots TEXT, mac TEXT, PRIMARY KEY(keyid,name));";
+            " roots TEXT, mac TEXT, PRIMARY KEY(keyid,name));"
+            "CREATE TABLE IF NOT EXISTS root_states(keyid TEXT, scene TEXT, name TEXT, hash TEXT,"
+            " mac TEXT, PRIMARY KEY(keyid,scene,name));";
         if (sqlite3_exec(db_, schema, nullptr, nullptr, nullptr) != SQLITE_OK)
         {
             ETCS_LOG("Persistence", "store: schema: " << sqlite3_errmsg(db_));
@@ -348,6 +378,21 @@ private:
         bindText(st, 4, script); bindText(st, 5, roots); bindText(st, 6, mac);
         return sqlite3_step(st) == SQLITE_DONE;
     }
+    bool putStateLocked(const std::string& scene, const std::string& name, const std::string& hash)
+    {
+        sqlite3_stmt* st = cached(put_state_, "INSERT OR REPLACE INTO root_states(keyid,scene,name,hash,mac) VALUES(?,?,?,?,?)");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, scene); bindText(st, 3, name); bindText(st, 4, hash);
+        bindText(st, 5, macOf({ "H", keyid_, scene, name, hash }));
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    bool dropStatesLocked(const std::string& scene)
+    {
+        sqlite3_stmt* st = cached(drop_states_, "DELETE FROM root_states WHERE keyid=? AND scene=?");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, scene);
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
     sqlite3_stmt* cached(sqlite3_stmt*& slot, const char* sql)
     {
         if (!slot) slot = prepare(sql);
@@ -381,6 +426,8 @@ private:
     sqlite3_stmt* put_rec_ = nullptr;     // cached(): leaked with the store, like the handle
     sqlite3_stmt* drop_rec_ = nullptr;
     sqlite3_stmt* put_scene_ = nullptr;
+    sqlite3_stmt* put_state_ = nullptr;
+    sqlite3_stmt* drop_states_ = nullptr;
 };
 
 #endif // DATABASEPROVIDER_STORE_H__
