@@ -208,13 +208,14 @@ private:
     static Environmental_* iface(ETCS::Entity* e)
     { return static_cast<Environmental_*>(e->getInterfacePointer(ETCS::Buffer("Environmental"))); }
 
-    // Every entity under (and including) `e`, children first, in the order
-    // the hash walks them -- the same order in any replay.
+    // Every entity under (and including) `e`, children first, in the
+    // canonical order (order_canonical) -- the same in any replay, whatever
+    // RIDs it hands out: twins count in the order they were attached.
     static void walk(ETCS::Entity* e, std::vector<ETCS::Entity*>& out)
     {
         std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
         e->getTypedChildren(kids);
-        ETCS::etcs_hash_detail::order_children(kids);
+        ETCS::etcs_hash_detail::order_canonical(e, kids);
         for (auto& [tag, rid] : kids)
             if (ETCS::Entity* c = e->getTypedChild(tag, rid)) walk(c, out);
         out.push_back(e);
