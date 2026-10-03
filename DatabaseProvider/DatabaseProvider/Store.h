@@ -2,6 +2,7 @@
 #define DATABASEPROVIDER_STORE_H__
 #include "../../../ontology.h"
 #include "../sqlite/sqlite3.h"
+#include "Wal.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -232,6 +233,7 @@ private:
             sqlite3_close(db_); db_ = nullptr;
             return false;
         }
+        if (!etcs_sqlite_wal(db_)) ETCS_LOG("Persistence", "store: not in WAL mode; every commit syncs.");
         const char* schema =
             "CREATE TABLE IF NOT EXISTS records(keyid TEXT, type TEXT, hash TEXT, ord INTEGER,"
             " tags TEXT, script TEXT, kv BLOB, mac TEXT, PRIMARY KEY(keyid,type,hash,ord));"
