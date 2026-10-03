@@ -12,6 +12,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -82,19 +83,43 @@ public:
     bool putRecord(const Record& r)
     {
         std::lock_guard<std::mutex> lock(mu_);
+        return openLocked() && putRecordLocked(r);
+    }
+
+    /*
+     * ONE SAVE, ONE TRANSACTION: the records that changed, the ones whose
+     * entity is gone, and the scene that names them land together or not at
+     * all. Autocommit made each record its own transaction -- a journal write
+     * and a sync apiece, the whole cost of a save -- and let a crash leave new
+     * records under the old scene. `scene` null: the records only.
+     */
+    struct Key { std::string type, hash; int ord = 0; };
+    struct SceneRow { std::string name, script, roots; };
+    bool putSave(const std::vector<const Record*>& changed, const std::vector<Key>& gone, const SceneRow* scene)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
         if (!openLocked()) return false;
-        const std::string mac = macOf({ "R", keyid_, r.type, r.hash, std::to_string(r.ord), r.tags, r.script, r.kv });
-        sqlite3_stmt* st = prepare("INSERT OR REPLACE INTO records(keyid,type,hash,ord,tags,script,kv,mac)"
-                                   " VALUES(?,?,?,?,?,?,?,?)");
-        if (!st) return false;
-        bindText(st, 1, keyid_); bindText(st, 2, r.type); bindText(st, 3, r.hash);
-        sqlite3_bind_int(st, 4, r.ord);
-        bindText(st, 5, r.tags); bindText(st, 6, r.script);
-        sqlite3_bind_blob(st, 7, r.kv.data(), static_cast<int>(r.kv.size()), SQLITE_TRANSIENT);
-        bindText(st, 8, mac);
-        const bool ok = sqlite3_step(st) == SQLITE_DONE;
+        if (sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) return false;
+        bool ok = true;
+        for (const Record* r : changed) ok = ok && putRecordLocked(*r);
+        for (const Key& k : gone)       ok = ok && dropRecordLocked(k);
+        if (scene) ok = ok && putSceneLocked(scene->name, scene->script, scene->roots);
+        if (!ok) { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); return false; }
+        return sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK;
+    }
+    // Every record key this loader has, for a run's first save to find what
+    // an earlier run left behind.
+    std::vector<Key> recordKeys()
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::vector<Key> out;
+        if (!openLocked()) return out;
+        sqlite3_stmt* st = prepare("SELECT type,hash,ord FROM records WHERE keyid=?");
+        if (!st) return out;
+        bindText(st, 1, keyid_);
+        while (sqlite3_step(st) == SQLITE_ROW) out.push_back({ column(st, 0), column(st, 1), sqlite3_column_int(st, 2) });
         sqlite3_finalize(st);
-        return ok;
+        return out;
     }
 
     // False with `why` when there is none, or it is not this loader's.
@@ -127,16 +152,7 @@ public:
     bool putScene(const std::string& name, const std::string& script, const std::string& roots)
     {
         std::lock_guard<std::mutex> lock(mu_);
-        if (!openLocked()) return false;
-        const std::string at  = std::to_string(static_cast<long long>(std::time(nullptr)));
-        const std::string mac = macOf({ "S", keyid_, name, at, script, roots });
-        sqlite3_stmt* st = prepare("INSERT OR REPLACE INTO scenes(keyid,name,at,script,roots,mac) VALUES(?,?,?,?,?,?)");
-        if (!st) return false;
-        bindText(st, 1, keyid_); bindText(st, 2, name); bindText(st, 3, at);
-        bindText(st, 4, script); bindText(st, 5, roots); bindText(st, 6, mac);
-        const bool ok = sqlite3_step(st) == SQLITE_DONE;
-        sqlite3_finalize(st);
-        return ok;
+        return openLocked() && putSceneLocked(name, script, roots);
     }
 
     bool getScene(const std::string& name, std::string& script, std::string& roots, long long& at, std::string& why)
@@ -175,7 +191,7 @@ public:
         sqlite3_finalize(st);
     }
 
-    // Everything above is autocommit; in a browser, push it to IndexedDB.
+    // In a browser, push what was written to IndexedDB.
     void flush()
     {
 #if defined(__EMSCRIPTEN__)
@@ -298,6 +314,45 @@ private:
         for (size_t i = 0; i < n; ++i) { s += x[d[i] >> 4]; s += x[d[i] & 15]; }
         return s;
     }
+    // The writes a save repeats, prepared once and reset per use.
+    bool putRecordLocked(const Record& r)
+    {
+        const std::string mac = macOf({ "R", keyid_, r.type, r.hash, std::to_string(r.ord), r.tags, r.script, r.kv });
+        sqlite3_stmt* st = cached(put_rec_, "INSERT OR REPLACE INTO records(keyid,type,hash,ord,tags,script,kv,mac)"
+                                            " VALUES(?,?,?,?,?,?,?,?)");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, r.type); bindText(st, 3, r.hash);
+        sqlite3_bind_int(st, 4, r.ord);
+        bindText(st, 5, r.tags); bindText(st, 6, r.script);
+        sqlite3_bind_blob(st, 7, r.kv.data(), static_cast<int>(r.kv.size()), SQLITE_TRANSIENT);
+        bindText(st, 8, mac);
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    bool dropRecordLocked(const Key& k)
+    {
+        sqlite3_stmt* st = cached(drop_rec_, "DELETE FROM records WHERE keyid=? AND type=? AND hash=? AND ord=?");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, k.type); bindText(st, 3, k.hash);
+        sqlite3_bind_int(st, 4, k.ord);
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    bool putSceneLocked(const std::string& name, const std::string& script, const std::string& roots)
+    {
+        const std::string at  = std::to_string(static_cast<long long>(std::time(nullptr)));
+        const std::string mac = macOf({ "S", keyid_, name, at, script, roots });
+        sqlite3_stmt* st = cached(put_scene_, "INSERT OR REPLACE INTO scenes(keyid,name,at,script,roots,mac) VALUES(?,?,?,?,?,?)");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, name); bindText(st, 3, at);
+        bindText(st, 4, script); bindText(st, 5, roots); bindText(st, 6, mac);
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    sqlite3_stmt* cached(sqlite3_stmt*& slot, const char* sql)
+    {
+        if (!slot) slot = prepare(sql);
+        else { sqlite3_reset(slot); sqlite3_clear_bindings(slot); }
+        return slot;
+    }
+
     sqlite3_stmt* prepare(const char* sql)
     {
         sqlite3_stmt* st = nullptr;
@@ -321,6 +376,9 @@ private:
     std::string dir_, key_, keyid_;
     sqlite3*    db_     = nullptr;
     bool        failed_ = false;
+    sqlite3_stmt* put_rec_ = nullptr;     // cached(): leaked with the store, like the handle
+    sqlite3_stmt* drop_rec_ = nullptr;
+    sqlite3_stmt* put_scene_ = nullptr;
 };
 
 #endif // DATABASEPROVIDER_STORE_H__

@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 /*
@@ -53,8 +54,16 @@
  * ONE STATE PER READ. A scene is read while it moves, so each root is read
  * frozen (etcs_freeze, ontology/Environmental.h): its Causal trees held, the
  * funnel watched by the root's hash epoch, the state hash composed from the
- * very values copied and the replay capture made in the same window; packing
- * and writing read the copy with nothing held.
+ * very values copied and the replay's records gathered in the same window;
+ * composing, packing and writing read the copy with nothing held.
+ *
+ * ONLY WHAT MOVED. Each step does the work of what changed and no more: the
+ * read takes again only the nodes whose hash epoch or value digest moved
+ * (the rest come from the last read); the replay is composed again only when
+ * a root's epoch moved (an action is a funnel change); a record is rebuilt
+ * only for a node that was read; the store writes only the records whose
+ * content changed, drops the ones whose entity is gone, and commits them with
+ * the scene in one transaction. Info reports how little the last save took.
  *
  * WHEN. As it goes: a watcher recaptures twice a second and writes only
  * when the scene changed; and once more as the loader closes (Closing, the
@@ -173,10 +182,14 @@ public:
         auto& store = PersistenceStore::get();
         ETCS_LOG("Persistence", "RID:" << getRID() << " store " << store.dir() << " keyid "
                  << store.keyid() << (getParent() ? " keeping " + typeOf(getParent()) : std::string(" (handle)")));
+        const Keeper::Last l = Keeper::get().last();   // before the peek, which is a read too
         Scene sc;
         Keeper::get().peek(sc);
         ETCS_LOG("Persistence", "scene now (" << sc.nroots << " root(s), " << sc.recs.size() << " record(s)):\n" << sc.script);
         for (auto& w : sc.warnings) ETCS_LOG("Persistence", "  cannot rebuild: " << w);
+        ETCS_LOG("Persistence", "last save: read " << l.read << " of " << l.nodes << " node(s) (the rest stood still), rebuilt "
+                 << l.rebuilt << " record(s), wrote " << l.written << " of " << l.records << ", dropped " << l.dropped
+                 << "; replay " << (l.replay_reused ? "reused" : "composed") << ", scene " << (l.scene_written ? "written" : "unchanged"));
     }
 
     bool DeleteConcrete() override
@@ -196,6 +209,7 @@ private:
     {
         std::string                           script, roots;
         std::vector<PersistenceStore::Record> recs;
+        std::vector<uint64_t>                 digests;   // each record's content (Keeper::digestOf), beside it
         std::vector<std::string>              warnings;
         size_t                                nroots = 0;
         uint64_t                              print  = 0;
@@ -259,6 +273,7 @@ private:
     class Keeper
     {
     public:
+
         static Keeper& get() { static Keeper* k = new Keeper(); return *k; }
 
         void add(Persistence* p)
@@ -387,22 +402,65 @@ private:
                 sc.script += "spawn " + typeOf(r) + " " + name + "\n";
                 held.emplace_back(r, std::move(hold));
             }
-            // ONE READ PER ROOT, FROZEN (etcs_freeze): its surface, its values,
-            // the state hash composed from them, and -- inside the same window --
-            // the replay capture, so the script, the hash and the values are one
-            // state. A retry starts the capture again from where it was.
-            ETCS::ReplayCapture cap;   // one names table for all of them: a line may name another root
-            std::vector<FrozenTree> frozen(held.size());
+            /*
+             * ONE READ PER ROOT, FROZEN (etcs_freeze): its surface, its values
+             * and the state hash composed from them, in one window -- and only
+             * what moved since the last read is read again (prev_). The replay's
+             * records are gathered in the same window, but only when the root's
+             * hash epoch moved since they last were (every recorded action is a
+             * funnel change, and moves it); the script is composed after, with
+             * nothing held. All roots or none: they share one names table.
+             */
+            std::vector<FrozenTree> frozen(held.size()), base(held.size());   // base: what each read starts from
             for (size_t i = 0; i < held.size(); ++i)
             {
-                ETCS::Entity* r = held[i].first;
-                const ETCS::ReplayCapture cap0 = cap;
-                const std::map<ETCS::RID, std::string> names0 = names;
-                if (!etcs_freeze(r, frozen[i], [&]() {
-                        cap = cap0; names = names0;
-                        ETCS::etcs_replay_capture(r, names[r->getRID()], names, cap); }))
-                    warn.push_back("'" + names[r->getRID()] + "' kept changing through every read; this save may be torn");
+                auto pv = prev_.find(held[i].first->getRID());
+                if (pv != prev_.end()) base[i] = std::move(pv->second);
             }
+            prev_.clear();
+            std::vector<ETCS::ReplayGather> gathered(held.size());
+            std::vector<uint32_t> epochs(held.size(), 0);
+            bool same_roots = held.size() == replay_epochs_.size();
+            for (auto& [r, hold] : held) same_roots = same_roots && replay_epochs_.count(r->getRID());
+            bool gather_all = !same_roots;
+            for (int pass = 0; pass < 2; ++pass)
+            {
+                if (pass) { base = std::move(frozen); frozen = std::vector<FrozenTree>(held.size()); }
+                bool gathered_any = false, reused_any = false;
+                for (size_t i = 0; i < held.size(); ++i)
+                {
+                    ETCS::Entity* r = held[i].first;
+                    bool took = false;
+                    if (!etcs_freeze(r, frozen[i], [&]() {
+                            epochs[i] = r->hashEpoch();
+                            auto c = replay_epochs_.find(r->getRID());
+                            took = gather_all || c == replay_epochs_.end() || c->second != epochs[i];
+                            gathered[i] = ETCS::ReplayGather{};
+                            if (took) ETCS::etcs_replay_gather(r, gathered[i]); }, 4, &base[i]))
+                        warn.push_back("'" + names[r->getRID()] + "' kept changing through every read; this save may be torn");
+                    (took ? gathered_any : reused_any) = true;
+                }
+                if (!(gathered_any && reused_any)) { gather_all = gathered_any; break; }
+                gather_all = true;   // some moved and some did not: read them all once more, with their records
+            }
+            ETCS::ReplayCapture cap;   // one names table for all of them: a line may name another root
+            if (gather_all)
+            {
+                for (size_t i = 0; i < held.size(); ++i)
+                    ETCS::etcs_replay_compose(gathered[i], names[held[i].first->getRID()], names, cap);
+                last_cap_ = cap; last_names_ = names;
+                replay_epochs_.clear();
+                for (size_t i = 0; i < held.size(); ++i) replay_epochs_[held[i].first->getRID()] = epochs[i];
+            }
+            else { cap = last_cap_; names = last_names_; }
+            size_t copied = 0;
+            last_.nodes = 0;
+            for (auto& t : frozen) { copied += t.copied; last_.nodes += t.nodes.size(); }
+            last_.read = copied; last_.rebuilt = 0; last_.replay_reused = !gather_all;
+            // This read is what the next one starts from.
+            auto keepReads = [&]() { for (size_t i = 0; i < held.size(); ++i) prev_[held[i].first->getRID()] = std::move(frozen[i]); };
+            // Nothing moved anywhere: the scene is the last one, as it was built.
+            if (!gather_all && copied == 0 && have_last_) { keepReads(); sc = last_scene_; return; }
             sc.script += cap.script;
             std::map<ETCS::Entity*, std::string> own;
             for (size_t i = 0; i < cap.environmental.size(); ++i)
@@ -410,6 +468,8 @@ private:
                     cap.script.substr(cap.spans[i].first, cap.spans[i].second - cap.spans[i].first);
 
             // From here on the copy only: nothing is held, nothing live is read.
+            std::unordered_map<ETCS::RID, CachedRecord> fresh_cache;
+            size_t rebuilt = 0;
             for (size_t i = 0; i < held.size(); ++i)
             {
                 ETCS::Entity* r = held[i].first;
@@ -428,24 +488,49 @@ private:
                 for (size_t k : order)
                 {
                     const FrozenNode& n = t.nodes[k];
-                    PersistenceStore::Record rec;
-                    rec.type = typeOf(n);
-                    rec.hash = hex64(n.identity);   // the record's key: what it is, not where it stands
-                    rec.ord  = seen[rec.type + "#" + rec.hash]++;   // counted for every entity: the order is the walk's
+                    const std::string type = typeOf(n), hash = hex64(n.identity);   // the key: what it is, not where it stands
+                    const int ord = seen[type + "#" + hash]++;   // counted for every entity: the order is the walk's
                     if (!kept(n)) continue;
-                    for (auto& f : n.flags) rec.tags += (rec.tags.empty() ? "" : " ") + f;
                     auto s = own.find(n.e);
-                    if (s != own.end()) rec.script = s->second;
+                    const std::string script = s != own.end() ? s->second : std::string();
+                    // A node that stood still since its record was made (the
+                    // stamp the freeze reuses it by) keeps that record.
+                    auto c = rec_cache_.find(n.rid);
+                    if (c != rec_cache_.end() && n.digestible && c->second.epoch == n.epoch && c->second.digest == n.digest
+                        && c->second.rec.type == type && c->second.rec.hash == hash && c->second.rec.ord == ord
+                        && c->second.rec.script == script)
+                    {
+                        sc.recs.push_back(c->second.rec);
+                        sc.digests.push_back(c->second.content);
+                        fresh_cache[n.rid] = std::move(c->second);
+                        continue;
+                    }
+                    PersistenceStore::Record rec;
+                    rec.type = type; rec.hash = hash; rec.ord = ord; rec.script = script;
+                    for (auto& f : n.flags) rec.tags += (rec.tags.empty() ? "" : " ") + f;
                     rec.kv = packed(n);
-                    sc.recs.push_back(std::move(rec));
+                    const uint64_t content = digestOf({ rec.tags, rec.script, rec.kv });
+                    sc.recs.push_back(rec);
+                    sc.digests.push_back(content);
+                    ++rebuilt;
+                    fresh_cache[n.rid] = CachedRecord{ std::move(rec), content, n.epoch, n.digest };
                 }
             }
+            last_.rebuilt = rebuilt;
+            rec_cache_ = std::move(fresh_cache);
+            keepReads();
             for (auto& w : cap.warnings) warn.push_back(w);
             sc.warnings = std::move(warn);
 
             std::string all = sc.script + sc.roots;
-            for (auto& rec : sc.recs) all += rec.type + rec.hash + std::to_string(rec.ord) + rec.kv;
+            for (size_t i = 0; i < sc.recs.size(); ++i)
+            {
+                const auto& rec = sc.recs[i];
+                all += rec.type + rec.hash + std::to_string(rec.ord);
+                all.append(reinterpret_cast<const char*>(&sc.digests[i]), sizeof(uint64_t));
+            }
             sc.print = XXH3_64bits(all.data(), all.size());
+            last_scene_ = sc; have_last_ = true;
         }
 
         // A capture outside a save, for Info: one at a time with the saves.
@@ -479,18 +564,51 @@ private:
                 return true;
             }
             if (!force && sc.print == last_print_) return false;
-            bool ok = store.ready();
-            for (auto& rec : sc.recs) ok = ok && store.putRecord(rec);
-            ok = ok && store.putScene("last", sc.script, sc.roots);
-            if (!ok) { ETCS_LOG("Persistence", "the store refused the scene."); return false; }
+            /*
+             * ONLY WHAT CHANGED. Each record is remembered as it was last
+             * written (written_, by content digest): a save writes the records
+             * whose content moved, drops the ones whose entity is gone, and
+             * rewrites the scene only when its script or roots did -- all in
+             * one transaction (PersistenceStore::putSave). A run's first save
+             * also drops what an earlier run left behind. A refused write
+             * forgets everything, so the next save writes it all again.
+             */
+            if (!store.ready()) { ETCS_LOG("Persistence", "the store refused the scene."); return false; }
+            std::map<std::string, std::pair<PersistenceStore::Key, uint64_t>> now;
+            std::vector<const PersistenceStore::Record*> changed;
+            for (size_t ri = 0; ri < sc.recs.size(); ++ri)
+            {
+                const auto& rec = sc.recs[ri];
+                PersistenceStore::Key k{ rec.type, rec.hash, rec.ord };
+                const std::string key = keyOf(k);
+                const uint64_t d = sc.digests[ri];
+                auto w = written_.find(key);
+                if (w == written_.end() || w->second.second != d) changed.push_back(&rec);
+                now[key] = { std::move(k), d };
+            }
+            std::vector<PersistenceStore::Key> gone;
+            if (!swept_) { for (auto& k : store.recordKeys()) if (!now.count(keyOf(k))) gone.push_back(k); }
+            else           for (auto& [key, kd] : written_) if (!now.count(key)) gone.push_back(kd.first);
+            const uint64_t scene_d = digestOf({ sc.script, sc.roots });
+            const bool scene_moved = scene_d != scene_written_;
+            const PersistenceStore::SceneRow row{ "last", sc.script, sc.roots };
+            if (!store.putSave(changed, gone, scene_moved ? &row : nullptr))
+            {
+                written_.clear(); swept_ = false; scene_written_ = 0;
+                ETCS_LOG("Persistence", "the store refused the scene.");
+                return false;
+            }
+            written_ = std::move(now); swept_ = true; scene_written_ = scene_d;
             std::string summary;
             std::istringstream in(sc.roots);
             std::string n, t, h;
             while (in >> n >> t >> h) summary += (summary.empty() ? "" : ", ") + n + " (" + t + ")";
-            store.writeFile("scene", std::to_string(sc.nroots) + " root(s): " + summary + "\n");
-            store.flush();
+            if (scene_moved) store.writeFile("scene", std::to_string(sc.nroots) + " root(s): " + summary + "\n");
+            if (!changed.empty() || !gone.empty() || scene_moved) store.flush();
             if (sc.print != last_print_)
                 ETCS_LOG("Persistence", "scene saved: " << summary << " -- " << sc.recs.size() << " record(s)");
+            last_.records = sc.recs.size(); last_.written = changed.size(); last_.dropped = gone.size();
+            last_.scene_written = scene_moved;
             last_print_ = sc.print;
             saved_any_  = true;
             return true;
@@ -512,15 +630,50 @@ private:
             k.closed_ = true;
         }
     private:
+        /*
+         * WAITS FOR QUIET. A root whose hash epoch moved since the last wake is
+         * being changed through the funnel right now -- a script building it,
+         * say -- and a read in the middle of that is stale before it is
+         * written and retries against every line. So the watcher reads once
+         * the epochs have stood still for one wake, or after four wakes (two
+         * seconds) whatever happens: a scene that never stops still gets kept.
+         */
         void watch()
         {
+            uint64_t last = 0;
+            int deferred = 0;
             while (!stop_.load())
             {
                 for (int i = 0; i < 5 && !stop_.load(); ++i)
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 if (stop_.load()) continue;
+                const uint64_t now = epochSum();
+                if (now != last && deferred < 4) { last = now; ++deferred; continue; }
+                last = now; deferred = 0;
                 save(false);
             }
+        }
+        // Every root's hash epoch, folded: moves when any flag or stored value
+        // under any root does.
+        uint64_t epochSum()
+        {
+            uint64_t h = 0;
+            for (auto& [rid, prid] : roots())
+            {
+                (void)prid;
+                ETCS::Entity* r = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
+                ETCS::LifetimeHold hold(r);
+                if (hold) h = (h ^ (static_cast<uint64_t>(rid) + r->hashEpoch())) * 0x100000001b3ULL;
+            }
+            return h;
+        }
+        static std::string keyOf(const PersistenceStore::Key& k)
+        { return k.type + "\n" + k.hash + "\n" + std::to_string(k.ord); }
+        static uint64_t digestOf(std::initializer_list<std::string> fields)
+        {
+            std::string in;
+            for (const std::string& f : fields) { const uint32_t n = static_cast<uint32_t>(f.size()); in.append(reinterpret_cast<const char*>(&n), 4); in += f; }
+            return XXH3_64bits(in.data(), in.size());
         }
         static std::string join(const std::vector<std::string>& v)
         { std::string s; for (auto& x : v) s += x + "\n"; return s; }
@@ -537,6 +690,28 @@ private:
         std::atomic<bool>        closing_{ false };
         bool                     saved_any_ = false;
         uint64_t                 last_print_ = 0;
+        std::map<std::string, std::pair<PersistenceStore::Key, uint64_t>> written_;   // key -> (key, content digest) as last written
+        bool                     swept_ = false;         // this run has dropped what earlier runs left
+        // The last read, so the next reads only what moved (etcs_freeze prev),
+        // and the replay as last composed, with the root epochs it saw.
+        std::map<ETCS::RID, FrozenTree> prev_;
+        // Each kept node's record as last built, with the stamp its node had
+        // (hash epoch, value digest): unchanged, it is not built again.
+        struct CachedRecord { PersistenceStore::Record rec; uint64_t content = 0; uint32_t epoch = 0; uint64_t digest = 0; };
+        std::unordered_map<ETCS::RID, CachedRecord> rec_cache_;
+        std::map<ETCS::RID, uint32_t>   replay_epochs_;
+        ETCS::ReplayCapture             last_cap_;
+        std::map<ETCS::RID, std::string> last_names_;
+        Scene                           last_scene_;
+        bool                            have_last_ = false;
+    public:
+        // What the last save did -- how little of the scene it touched.
+        struct Last { size_t nodes = 0, read = 0, rebuilt = 0, records = 0, written = 0, dropped = 0;
+                      bool replay_reused = false, scene_written = false; };
+        Last last() { std::lock_guard<std::mutex> lock(save_mu_); return last_; }
+    private:
+        Last                            last_;
+        uint64_t                 scene_written_ = 0;
         std::string              last_warn_;
         std::map<std::string, std::pair<std::string, std::string>> expected_;   // name -> (type, hash)
     };

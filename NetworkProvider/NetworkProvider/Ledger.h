@@ -64,7 +64,14 @@ public:
         bindValue(ETCS::Buffer("ledger"), ETCS::Entity::ValueBinding{
             this,
             [](void* self, std::string& out) { static_cast<Ledger*>(self)->writeState(out); },
-            [](void* self, const std::string& in) { return static_cast<Ledger*>(self)->readState(in); } });
+            [](void* self, const std::string& in) { return static_cast<Ledger*>(self)->readState(in); },
+            // The head is the digest: where the lines start and the chain at
+            // their end move exactly when the lines do.
+            [](void* self) {
+                Ledger* l = static_cast<Ledger*>(self);
+                std::lock_guard<std::mutex> lock(l->mu_);
+                return XXH3_64bits_withSeed(&l->base_, sizeof l->base_, l->chain() ^ l->next());
+            } });
     }
     ~Ledger() { close(); }
 
