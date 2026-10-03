@@ -73,37 +73,39 @@ public:
     { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
-    // What the step is parameterised by -- terminal speed, damping, mass --
-    // is state the script cannot say after the fact (a SetDamping is an
-    // action, but its result is a number here), so it is the value behind
-    // "motion" on the tag surface: a store keeps it with the rows and a
-    // resume puts it back (Entity::bindValue; the rows themselves are the
-    // family's "Causal" value, CausalBase).
-    Scene3D()
+    // WHAT A VERB SETS IS A VALUE ON THE TAG SURFACE: speed, damping,
+    // colour, order, sensitivity (and the family's emissivity, CausalBase),
+    // each through the funnel under its own flag, so the record keeps the
+    // verb, a replay sets it again and a store keeps what it says. The
+    // members below are the working copies the step and the picture read,
+    // and onValue is their one writer -- a verb, a replay and a restore all
+    // land there. Mass has no verb: it is what a box is, a constant.
+    Scene3D() = default;
+    void onValue(const ETCS::Buffer& key, const std::string* value) override
     {
-        bindValue(ETCS::Buffer("motion"), ETCS::Entity::ValueBinding{
-            this,
-            [](void* self, std::string& out) {
-                const Scene3D* n = static_cast<const Scene3D*>(self);
-                std::lock_guard<std::recursive_mutex> lk(const_cast<Scene3D*>(n)->TreeMutex());
-                const int64_t w[3] = { n->m_speed.raw, n->m_damping.raw, n->m_mass.raw };
-                for (int64_t v : w) for (int i = 0; i < 8; ++i) out.push_back(static_cast<char>((static_cast<uint64_t>(v) >> (8 * i)) & 0xff));
-            },
-            [](void* self, const std::string& in) {
-                if (in.size() != 24) return false;
-                int64_t w[3];
-                for (int k = 0; k < 3; ++k)
-                {
-                    uint64_t u = 0;
-                    for (int i = 0; i < 8; ++i) u |= static_cast<uint64_t>(static_cast<unsigned char>(in[8 * k + i])) << (8 * i);
-                    w[k] = static_cast<int64_t>(u);
-                }
-                Scene3D* n = static_cast<Scene3D*>(self);
-                std::lock_guard<std::recursive_mutex> lk(n->TreeMutex());
-                n->m_speed = Fixed::FromRaw(w[0]); n->m_damping = Fixed::FromRaw(w[1]); n->m_mass = Fixed::FromRaw(w[2]);
-                n->m_drag_dt = Fixed::Zero();   // the drag cache keys on (dt, damping): recompute
-                return true;
-            } });
+        int64_t w[4];
+        const std::string_view k(key.c_str());
+        if (k == "speed" || k == "damping")
+        {
+            const bool speed = (k == "speed");
+            if (!readWords(value, w, 1)) w[0] = (speed ? kSpeed : kDamping).raw;
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the step reads these under it
+            (speed ? m_speed : m_damping) = Fixed::FromRaw(w[0]);
+        }
+        else if (k == "color")
+        {
+            if (!readWords(value, w, 4)) { for (int i = 0; i < 4; ++i) m_color[i] = kColor[i]; }
+            else for (int i = 0; i < 4; ++i) m_color[i] = Fixed::FromRaw(w[i]).ToFloat();
+            markViewersDirty();
+        }
+        else if (k == "order")
+        {
+            m_order = readWords(value, w, 1) ? static_cast<int32_t>(w[0]) : 0;
+            Reorder(); markViewersDirty();
+        }
+        else if (k == "sensitivity")
+            m_sens_scale = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : kSensitivity;
+        else CausalBase<Scene3D>::onValue(key, value);
     }
     ~Scene3D() = default;
 
@@ -178,10 +180,9 @@ public:
     float EmittedToEnvironment() const { return EmittedOut().ToFloat(); }
     void SetColor(float r, float g, float b, float a)
     {
-        m_color[0] = r; m_color[1] = g; m_color[2] = b; m_color[3] = a;
-        markViewersDirty();
+        this->addTag("color", words({ Fixed::From(r).raw, Fixed::From(g).raw, Fixed::From(b).raw, Fixed::From(a).raw }));
     }
-    void SetOrder(int32_t z) { m_order = z; Reorder(); markViewersDirty(); }
+    void SetOrder(int32_t z) { this->addTag("order", words({ z })); }
 
     // Terminal speed, in scene units per SECOND -- not per tick. The right
     // value is a property of the scene's scale, which the script knows and
@@ -189,7 +190,7 @@ public:
     // often the input edge happens to run.
     void SetSpeed(float units_per_sec)
     {
-        if (units_per_sec > 0.0f) m_speed = Fixed::From(units_per_sec);
+        if (units_per_sec > 0.0f) this->addTag("speed", words({ Fixed::From(units_per_sec).raw }));
     }
     float Speed() const { return m_speed.ToFloat(); }
 
@@ -200,15 +201,16 @@ public:
     // stops dead; low damping drifts.
     void SetDamping(float per_sec)
     {
-        if (per_sec > 0.0f) m_damping = Fixed::From(per_sec);
+        if (per_sec > 0.0f) this->addTag("damping", words({ Fixed::From(per_sec).raw }));
     }
     float Damping() const { return m_damping.ToFloat(); }
 
-    // Whether this node is drawn at all. A node with no extent still has
-    // children, and turning one off is how a script hides a subtree without
-    // destroying it -- the children's coordinates stay relative to a box
-    // that is still there.
-    void SetVisible(bool on) { m_visible = on; markViewersDirty(); }
+    // Whether this node's own box is drawn. Its children still are, and
+    // their coordinates stay relative to a box that is still there -- how a
+    // script draws a group with no box of its own. The Drawable "hidden"
+    // flag, so it is on the surface like every other presence, rather than a
+    // private bool beside it (DrawableBase::SetHidden).
+    void SetVisible(bool on) { SetHidden(!on); markViewersDirty(); }
     // The shape this node is drawn with (a Mesh, by RID); 0 is its box. Both
     // paths draw it: the device from the geometry sent once, the host from
     // the same triangles (rasterMesh).
@@ -324,7 +326,7 @@ public:
  * conflated while the rate was derived from tan(fov/2), and separating them is
  * why changing SetLens no longer changes how far a movement turns you.
  */
-    void SetSensitivity(float span)  { if (span  > 0.0f) m_sens_scale = span; }
+    void SetSensitivity(float span)  { if (span  > 0.0f) this->addTag("sensitivity", words({ Fixed::From(span).raw })); }
 
     // The look's state, as the two angles it actually is. Reported rather than
     // inferred: the previous limit was a rejection test on a rotated vector's
@@ -1052,7 +1054,7 @@ private:
     {
         const Point3D p = Pos();
         const Point3D abs{ origin.x + p.x, origin.y + p.y, origin.z + p.z };
-        if (m_visible)
+        if (!Hidden())
         {
             Node n;
             n.pos  = abs;
@@ -1816,7 +1818,7 @@ private:
             std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // one whole position, not a mid-step one
             ax = ox + Order4().x; ay = oy + Order4().y; az = oz + Order4().z;
         }
-        if (m_visible)
+        if (!Hidden())
         {
             OrderVector p;
             p.x = ax; p.y = ay; p.z = az;
@@ -1853,13 +1855,31 @@ private:
     // here, and the motion integrator writes the same three floats the
     // projection reads (ontology/OrderVector.h).
     Point3D m_half{0.5f, 0.5f, 0.5f};
+    // A value's words (Entity::putWord), and back: false when there is no
+    // value or it is not `n` words -- the caller's default then applies.
+    static std::string words(std::initializer_list<int64_t> ws)
+    {
+        std::string v;
+        for (int64_t x : ws) ETCS::Entity::putWord(v, x);
+        return v;
+    }
+    static bool readWords(const std::string* v, int64_t* out, size_t n)
+    {
+        if (!v || v->size() != 8 * n) return false;
+        size_t at = 0;
+        for (size_t i = 0; i < n; ++i) ETCS::Entity::getWord(*v, at, out[i]);
+        return true;
+    }
+
     ETCS::RID m_mesh = 0;
-    float   m_color[4] = {0.8f, 0.8f, 0.85f, 1.0f};
-    bool    m_visible  = true;
+    static constexpr float kColor[4] = {0.8f, 0.8f, 0.85f, 1.0f};
+    float   m_color[4] = {kColor[0], kColor[1], kColor[2], kColor[3]};
     // Causal: they decide what an impulse is and how motion decays, so they
     // are Fixed and cross from a script's floats once, in their setters.
-    Fixed   m_speed    = Fixed::FromInt(6);    // terminal, scene units per second
-    Fixed   m_damping  = Fixed::FromInt(8);    // kinetic -> heat, per second
+    static inline const Fixed kSpeed   = Fixed::FromInt(6);
+    static inline const Fixed kDamping = Fixed::FromInt(8);
+    Fixed   m_speed    = kSpeed;      // terminal, scene units per second
+    Fixed   m_damping  = kDamping;    // kinetic -> heat, per second
     Fixed   m_mass     = Fixed::One();
     Fixed   m_drag_dt, m_drag_damping, m_drag_factor;   // exp(-k dt) for the last (k, dt) seen
 
@@ -1941,7 +1961,8 @@ private:
  * through. Decoupling them is a one-line change if the wasted vertical band
  * turns out to matter more than the uniformity.
  */
-    float              m_sens_scale = 2.0f;
+    static constexpr float kSensitivity = 2.0f;
+    float              m_sens_scale = kSensitivity;
     // The seeded direction's elevation. Frame-thread only, written once at
     // seeding -- see applyLookTo's seeding block for what it is for.
     float              m_ref_elev   = 0.0f;
