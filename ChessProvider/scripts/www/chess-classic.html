@@ -38,7 +38,6 @@
         cursor:pointer; font:inherit; letter-spacing:.04em; }
   #me:hover { text-decoration:underline; background:none; color:var(--sel); }
   #record { color:var(--dim); font-size:12px; }
-  #lock { color:var(--dim); font-size:11px; }
   main { padding:20px 16px; }
   .hidden { display:none !important; }
 
@@ -151,7 +150,6 @@
          white-space:nowrap; }
   #status { min-height:1.4em; letter-spacing:.04em; }
   #status.review { color:var(--sel); }
-  #status.review { color:var(--sel); }
   #status.bad { color:#d4674f; }
   #fen { font-size:11px; color:var(--dim); word-break:break-all; max-width:520px; }
   #role { color:var(--sel); font-size:12px; }
@@ -205,8 +203,6 @@
        goes to your own self rather than to some separate "menu" page. -->
   <button id="me" title="Go to your lobby">—</button>
   <span id="record"></span>
-  <span id="lock"></span>
-  <input id="rename" size="10" placeholder="rename" title="Pick a name — locks once you have a result">
   <span class="spacer"></span>
   <span id="here" class="link"></span>
   <button id="to-home" class="hidden">&larr; my lobby</button>
@@ -325,7 +321,6 @@ let room    = qs.get('room') || null;   // the match id, null == home
 // every navigation, so a stale ?room left in qs kept being read back after
 // returning home and the client went on polling a room it had left.
 qs.delete('room');
-let locked  = false;                    // name locked by a recorded result
 
 // /<mount>/<self>/<match>/<verb>[/<arg>] -- SELF first, because that is the
 // segment that becomes implicit when the request arrives at your own machine:
@@ -559,8 +554,8 @@ async function verb(name){
     await refreshStatus();
   }catch(e){ flash(name+' failed: '+e); }
 }
-$('resign').onclick=()=>{ if(confirm('Resign this game?')) verb('resign'); };
-$('draw').onclick=()=>verb('draw');
+ $('resign').onclick=()=>{ if(confirm('Resign this game?')) verb('resign'); };
+ $('draw').onclick=()=>verb('draw');
 
 // ── Review: stepping back through the game ───────────────────────────────────
 // Reviewing is a purely LOCAL mode. Nothing is sent, no seat is affected, and
@@ -776,17 +771,17 @@ async function stepBack(){
   await showPly(ply<0 ? histEnd-2 : ply-1);
 }
 
-$('rw-back').onclick=stepBack;
-$('rw-fwd').onclick=()=>{ if(ply>=0&&ply<histEnd-1) showPly(ply+1); };
-$('rw-first').onclick=()=>showPly(histBase);
-$('rw-last').onclick=()=>showPly(histEnd-1);
+ $('rw-back').onclick=stepBack;
+ $('rw-fwd').onclick=()=>{ if(ply>=0&&ply<histEnd-1) showPly(ply+1); };
+ $('rw-first').onclick=()=>showPly(histBase);
+ $('rw-last').onclick=()=>showPly(histEnd-1);
 // Wrapped, NOT passed directly: an onclick handler is called with the MouseEvent
 // as its first argument, so `onclick=goLive` invoked goLive(event) -- and event
 // is truthy, so it took the `quiet` path, which exists to SKIP the redraw for
 // the poll that is about to draw the new position itself. Pressing Live
 // therefore un-greyed the board and left the reviewed position sitting on it,
 // so the next click sent a move read off squares the pieces were no longer on.
-$('rw-live').onclick=()=>goLive();
+ $('rw-live').onclick=()=>goLive();
 
 // Arrow keys, but never while the chat box or a text field has focus -- typing
 // "e4" into chat must not also rewind the board.
@@ -828,7 +823,7 @@ function hideGameOver(){ overEl.classList.remove('on'); overShown=''; }
 // Any participant may reset: the position is already dead, so there is nothing
 // left to protect, and requiring a seat would strand a game whose loser closed
 // their tab. Reset clears the seats, so colours are re-taken next round.
-$('over-new').onclick=async()=>{
+ $('over-new').onclick=async()=>{
   try{
     const t=(await get(api('reset'))).trim();
     hideGameOver();
@@ -1048,7 +1043,7 @@ async function refreshChat(){
       const p = parsePage(t);
       // No header means a server that predates paging: the body is the whole
       // log, so render it wholesale. Keeps a new page working against an old
-      // binary instead of showing nothing.
+      // binary without showing nothing.
       if(!p){ if(t !== chatSeen) renderChat(t); return; }
 
       if(p.base > chatFrom){
@@ -1082,31 +1077,12 @@ sayEl.addEventListener('keydown',async ev=>{
 async function refreshMe(){
   try{
     const p=(await get(mine('me'))).trim().split(/\s+/);
-    if(p.length<5) return;
-    const [, w, l, d, lk]=p;
+    if(p.length<4) return;
+    const [, w, l, d]=p;
     $('record').textContent=w+'W '+l+'L '+d+'D';
-    locked=(lk==='locked');
-    // The name locks on the first recorded result. Not enforcement -- there is
-    // no authority here, the name is a client-supplied token -- but the client
-    // honouring its own declaration, and the seed of real persistence once an
-    // ACE key signs the identity instead of a cookie carrying it.
-    $('rename').classList.toggle('hidden', locked);
-    $('lock').textContent = locked ? '(name locked by your record)' : '';
   }catch(e){}
 }
-$('me').onclick=()=>leaveRoom();          // your name IS the way home
-$('rename').addEventListener('change',()=>{
-  const v=$('rename').value.trim();
-  if(!v||/[\/\s]/.test(v)) { $('rename').value=''; return; }
-  if(locked) return;
-  // The seat is held by the TOKEN, so renaming mid-match abandons the old name
-  // in the chair -- visible to everyone else as a seat held by a player who no
-  // longer exists, for the full grace period. Leave under the old name first;
-  // the next poll re-enters as the new one, and reclaims the seat by moving.
-  sendLeave();
-  TOKEN=v; setCookie(COOKIE,TOKEN,365); localStorage.setItem('ace_chess_token',TOKEN);
-  $('rename').value=''; $('me').textContent=TOKEN; syncUrl(); tick();
-});
+ $('me').onclick=()=>leaveRoom();          // your name IS the way home
 
 // ── Home ─────────────────────────────────────────────────────────────────────
 function stateCell(s){ return '<td class="st-'+s+'">'+s+'</td>'; }
@@ -1171,7 +1147,7 @@ async function refreshPlayers(){
 
 // Fill-in pairing: the node returns a match with space, rejoining one of my own
 // unfinished games first so a reload does not pair me with a stranger.
-$('quick').onclick=async()=>{
+ $('quick').onclick=async()=>{
   try{
     const m=(await get(mine('join'))).trim();
     if(!m||m.includes(' ')){ alert('join failed: '+m); return; }
@@ -1179,9 +1155,9 @@ $('quick').onclick=async()=>{
   }catch(e){ alert('join failed: '+e); }
 };
 // Matches are created on demand, so opening one is just visiting it.
-$('make').onclick=()=>{ const k=$('new-room').value.trim(); if(k&&!/[\/\s]/.test(k)) enterRoom(k); };
-$('new-room').addEventListener('keydown',ev=>{ if(ev.key==='Enter') $('make').click(); });
-$('refresh').onclick=tick;
+ $('make').onclick=()=>{ const k=$('new-room').value.trim(); if(k&&!/[\/\s]/.test(k)) enterRoom(k); };
+ $('new-room').addEventListener('keydown',ev=>{ if(ev.key==='Enter') $('make').click(); });
+ $('refresh').onclick=tick;
 
 // ── Views ────────────────────────────────────────────────────────────────────
 function syncUrl(){
@@ -1190,7 +1166,7 @@ function syncUrl(){
   if(qs.get('as')) p.set('as',TOKEN);
   history.replaceState(null,'',location.pathname+(p.toString()?'?'+p:''));
 }
-// ── Departure ────────────────────────────────────────────────────────────────
+// ── Departure ───────────────────────────────────────────────────────────────
 // HTTP has no disconnect signal, so the server infers presence from polling and
 // releases an idle seat after thirty seconds. That grace is right for the cases
 // it was built for -- a crashed tab, a closed laptop, a dropped connection --
@@ -1234,7 +1210,7 @@ function leaveRoom(){
   cacheKey=null; boardEl.classList.remove('review');
   hideGameOver(); tick();
 }
-$('to-home').onclick=leaveRoom;
+ $('to-home').onclick=leaveRoom;
 
 // pagehide, not visibilitychange: switching tabs is not leaving, and dropping a
 // seat because someone looked at their email mid-game would be worse than the
