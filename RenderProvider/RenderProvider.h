@@ -855,6 +855,27 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetEmissivity, (float, per_sec))
     self.SetEmissivity(per_sec);
 }
 
+// The room inside this node, as a radius: a node whose reach lies inside it
+// is in it, and moves in and out of it as it fits (ontology/Causal.h). Zero,
+// the default, is solid -- it holds nothing by fit.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSpace, (float, radius))
+{
+    (void)ctx;
+    self.SetSpace(radius);
+}
+
+// Take a Causal node in, keeping where it is in the world. The line a replay
+// writes for a move the step made (Entity::moveTo), and a script's own way to
+// put something somewhere; fitness has the last word at the next step.
+DEFINE_WORK_FUNC_TYPED(Scene3D, Contain, (ETCS::RID, member))
+{
+    (void)ctx;
+    Causal_* m = ETCS::resolve_in_family<Causal_>("Causal", member);
+    if (!m) { ETCS_LOG("Scene3D::Contain", "RID:" << member << " does not resolve as a Causal entity."); return; }
+    if (!self.Contain(m))
+        ETCS_LOG("Scene3D::Contain", "RID:" << member << " cannot move here (not movable, another module's, or this is inside it).");
+}
+
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetVisible, (int32_t, on))
 {
     (void)ctx;

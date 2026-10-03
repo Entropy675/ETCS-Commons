@@ -176,6 +176,9 @@ public:
     }
     void Halt() { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
     void SetEmissivity(float per_sec) { CausalBase<Scene3D>::SetEmissivity(Fixed::From(per_sec)); }
+    // The room inside this node, as a radius about its position: what fits
+    // in it is in it (Causal.h). Zero, the default, is solid.
+    void SetSpace(float radius) { CausalBase<Scene3D>::SetSpace(Fixed::From(radius)); }
     float Emissivity() const { return CausalBase<Scene3D>::Emissivity().ToFloat(); }
     float EmittedToEnvironment() const { return EmittedOut().ToFloat(); }
     void SetColor(float r, float g, float b, float a)

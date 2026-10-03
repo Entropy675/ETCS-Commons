@@ -54,6 +54,13 @@ tower_far.SetColor(0.40, 0.55, 0.90, 1.0)
 # space -- so it is at the tower's top, not at the world's. Move the tower and
 # the cap goes with it; move the anchor and all of it goes. Same contract the
 # gem has with the diamond in scene_emblem.etcs.
+#
+# NESTED BECAUSE IT FITS: what holds a Causal thing is what it fits in
+# (ontology/Causal.h), and a box is solid unless it says otherwise -- so the
+# tower provides the room its cap sits in (2.2 up, plus the cap's own reach,
+# is inside 4). Without it the cap would be handed up to the anchor at the
+# first step, to the same place in the world.
+tower_near.SetSpace(4.0)
 tower_near.spawn(RenderProvider::Scene3D cap)
 cap.Create(2.2, 0.4, 2.2)
 cap.SetPosition(0.0, 2.2, 0.0)
