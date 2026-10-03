@@ -6,8 +6,7 @@ way:
     cd modules/RenderProvider/scripts && etcs serve_scene3d.etcs
     # then open https://localhost:8443/
 
-Build with `ace wasm make module RenderProvider` (and WindowProvider, ShellProvider
-and the `etcs` loader); the artifacts land in `bin/wasm/`, the serve script mounts
+Build with `ace wasm make all` and `ace wasm make loader etcs`; the artifacts land in `bin/wasm/`, the serve script mounts
 that directory at `/wasm/`, and the page resolves its modules from there --
 nothing is copied beside the page (the ETCS Makefile's `WASM_DIR` note has the
 argument).

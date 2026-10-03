@@ -148,9 +148,9 @@ patch this page came with:
 
 Build. There is no copy step any more:
 
-    ace make loader etcs EMSCRIPTEN=1
-    ace make module WindowProvider EMSCRIPTEN=1
-    ace make module ShellProvider  EMSCRIPTEN=1
+    ace wasm make module WindowProvider
+    ace wasm make module ShellProvider
+    ace wasm make loader etcs
 
 Every web artifact lands in `bin/wasm/` (`WASM_DIR` in ETCS's Makefile,
 `ARTIFACT_DIR` in the generated `loaders/Makefile`), `serve_web.etcs` mounts that

@@ -19,13 +19,25 @@ the loader checks says nothing about it.
   <Name>/OS/*.h                Platform-specific types, when one implementation
                                serves every platform's #if branch -- or
   <Name>/Linux|Win|Web/*.h     one directory per platform, when each has its own.
-  <Name>/scripts/              .etcs scripts; scripts/www/ is the module's
-                               browser page.
-  <Name>/www/                  pages a native ETCS HttpServer serves.
+  <Name>/scripts/              .etcs scripts.
+  <Name>/scripts/www/          The module's pages: its wasm page, and any page a
+                               native HttpServer serves for it. A site mounts
+                               them from here and keeps no copy (ETCS's
+                               scripts/site_pages.etcs, <name>_mounts.etcs).
+  <Name>/shaders/ etc.         Sources of runtime assets. Built by the manifest
+                               (produces.assets) into bin/ beside the module;
+                               never a binary in the tree.
   <Name>/exports.map           from the template beside this file.
 
 Vendored code sits in its own directory under the module (sqlite, mbedtls,
 glfw, clay, stb, vulkan-headers), fetched or pinned by the manifest.
+
+STATE A VERB SETS IS A VALUE ON THE TAG SURFACE, set through the funnel
+(addTag(flag, value)), not a member a verb writes: the record then keeps the
+verb, a replay sets it again, and a store keeps what it says. A member read
+every tick is a working copy refreshed in onValue (core/Entity.h, "THE VALUE
+BEHIND A TAG"; Scene3D is the worked example). State that moves without a verb
+is bound instead (bindValue).
 
 A type header's guard is <NAME>_<FILE>_H__ (DATABASEPROVIDER_PERSISTENCE_H__),
 and it includes ../../../core_defs.h and ../../../ontology.h itself. The

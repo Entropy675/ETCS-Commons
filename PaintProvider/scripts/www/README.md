@@ -24,10 +24,7 @@ The page holds the runtime, two canvases and the terminal:
 
 Deploy is build, and that is all of it — there is no copy step any more:
 
-    ace wasm make module WindowProvider
-    ace wasm make module RenderProvider
-    ace wasm make module PaintProvider
-    ace wasm make module ShellProvider
+    ace wasm make all
     ace wasm make loader etcs
 
 `ace wasm make` writes every web artifact into `bin/wasm/` (`WASM_DIR` in ETCS's
@@ -38,9 +35,10 @@ to be one epoch behind, and a stale one does not 404 — it answers 200 and the
 loader refuses it on a manifest hash (the Makefile's `WASM_DIR` note has the
 whole argument).
 
-(`ace wasm make modules` builds only the modules whose own manifest declares
-`"Web"`; PaintProvider and ShellProvider build from `default.json` and so are
-listed as not-built rather than guessed at. The tool says so.)
+(`ace wasm make all` builds the modules whose own manifest declares `"Web"` --
+Window, Render, Paint, Shell and Chess among them -- and lists any module with no
+manifest of its own as not built rather than guessing. `ace wasm make module
+<n>` builds one.)
 
 ## Why the second canvas is a second SURFACE, not a second window
 

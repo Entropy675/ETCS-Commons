@@ -7,7 +7,7 @@ build has no threads without cross-origin isolation) and mount `bin/wasm/` at
 ETCS Makefile on why the artifacts live there and not beside a page). Nothing is
 copied into this directory.
 
-Build with `ace wasm make module ShellProvider` and `ace wasm make loader etcs`.
+Build with `ace wasm make module ShellProvider` (or `ace wasm make all`) and `ace wasm make loader etcs`.
 
 Embedded as the terminal of the paint and window pages, it skips its own boot and
 is a view only; served on its own it boots the runtime itself.
