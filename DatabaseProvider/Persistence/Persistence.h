@@ -24,21 +24,31 @@
  * in this loader's store (Store.h) as it changes, and the next start of the
  * loader can put it back: "Continue where you left off?" (loaders/etcs.cc).
  *
- * WHAT IS KEPT IS HOW, NOT WHAT. The parent claims Environmental (ontology/
- * Environmental.h), so the runtime has been recording the actions that made
- * its tags what they are (core/Provenance.h); the scene is those actions,
- * compacted, as the ETCS script that makes it again (etcs_replay_capture),
- * plus what each Environmental entity says its script cannot (CaptureState).
- * A resume runs the script, then Restore puts each entity's named values
- * back (RebuildLocal) -- the local frame's half of the family; a surface on
- * the far side of a MirrorBuffer gets the other half (ReflectRemote).
+ * WHAT IS KEPT IS HOW, AND THE VALUES BEHIND IT. The parent claims
+ * Environmental (ontology/Environmental.h), so the runtime has been
+ * recording the actions that made its tags what they are (core/
+ * Provenance.h); the scene is those actions, compacted, as the ETCS script
+ * that makes it again (etcs_replay_capture), plus the VALUE SURFACE of every
+ * entity under the root -- the values behind its tags (Entity::values_: a
+ * body's rows behind "Causal", a ledger's lines behind "ledger", a flag's
+ * value set by an action), read off the one surface by etcs_capture_values.
+ * Not only the Environmental ones: a box under the root has rows, and they
+ * come back with it. A resume runs the script, then Restore hands each
+ * entity its values back (etcs_restore_values) and lets an Environmental
+ * one finish (RebuildLocal) -- the local frame's half of the family; a
+ * surface on the far side of a MirrorBuffer gets the other half
+ * (ReflectRemote).
  *
  * LOOKED UP BY WHAT IT IS. Each entity's record is keyed by its Module:Tag
- * and its RID-free merkle hash, and among entities equal in both, by the
- * order they were made in -- emergent, the same in the replay as the first
- * time, and never a stored RID. So a replay that did not reproduce an
- * entity finds no record for it, and says so, rather than handing it
- * someone else's state.
+ * and its RID-free identity hash (Entity::identityHash: the merkle over the
+ * tag surface, which the values are not part of -- a box that moved is the
+ * same box) and, among entities equal in both, by the order they were made
+ * in: emergent, the same in the replay as the first time, and never a
+ * stored RID. So a replay that did not reproduce an entity finds no record
+ * for it, and says so, rather than handing it someone else's state. Whether
+ * it came back AS IT WAS is the second question, and the STATE hash answers
+ * it (Entity::getHash: the identity half and every value under it, as one
+ * number -- Finish compares each root's, and names the values that differ).
  *
  * WHEN. As it goes: a watcher recaptures twice a second and writes only
  * when the scene changed; and once more as the loader closes (Closing, the
@@ -80,14 +90,15 @@ public:
     {
         ETCS::Entity* root = getParent();
         if (!root) { ETCS_LOG("Persistence", "Restore: no parent."); return; }
-        std::vector<ETCS::Entity*> envs;
-        walk(root, envs);
+        std::vector<ETCS::Entity*> all;
+        walk(root, all);
         std::map<std::string, int> seen;
-        size_t put = 0;
-        for (ETCS::Entity* e : envs)
+        size_t put = 0, values = 0;
+        for (ETCS::Entity* e : all)
         {
-            const std::string type = typeOf(e), hash = hex64(e->getHash());
+            const std::string type = typeOf(e), hash = hex64(e->identityHash());
             const int ord = seen[type + "#" + hash]++;
+            if (!kept(e)) continue;
             PersistenceStore::Record rec;
             std::string why;
             if (!PersistenceStore::get().getRecord(type, hash, ord, rec, why))
@@ -96,16 +107,21 @@ public:
                          << (why == "no record" ? " -- the replay did not make what was saved" : ""));
                 continue;
             }
-            Environmental_* env = iface(e);
-            if (!env) continue;
             ETCS::EnvironmentState st;
             if (!st.unpack(rec.kv)) { ETCS_LOG("Persistence", "Restore: " << type << ": state unreadable."); continue; }
-            st.migrate(env->MigrateTo());
-            if (!st.kv.empty() && !env->RebuildLocal(st))
+            Environmental_* env = iface(e);
+            if (env) st.migrate(env->MigrateTo());
+            // The values back onto the surface, then what the type does with them.
+            const size_t landed = etcs_restore_values(e, st);
+            if (landed < st.kv.size())
+                ETCS_LOG("Persistence", "Restore: " << type << ": " << (st.kv.size() - landed) << " of "
+                         << st.kv.size() << " value(s) found no place on the surface.");
+            values += landed;
+            if (env && !st.kv.empty() && !env->RebuildLocal(st))
                 ETCS_LOG("Persistence", "Restore: " << type << " refused its state.");
             ++put;
         }
-        ETCS_LOG("Persistence", "restored " << put << "/" << envs.size() << " under "
+        ETCS_LOG("Persistence", "restored " << put << " record(s), " << values << " value(s), under "
                  << typeOf(root) << " RID:" << root->getRID());
     }
 
@@ -192,8 +208,8 @@ private:
     static Environmental_* iface(ETCS::Entity* e)
     { return static_cast<Environmental_*>(e->getInterfacePointer(ETCS::Buffer("Environmental"))); }
 
-    // Environmental entities under (and including) `e`, children first, in
-    // the order the hash walks them -- the same order in any replay.
+    // Every entity under (and including) `e`, children first, in the order
+    // the hash walks them -- the same order in any replay.
     static void walk(ETCS::Entity* e, std::vector<ETCS::Entity*>& out)
     {
         std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
@@ -201,7 +217,16 @@ private:
         ETCS::etcs_hash_detail::order_children(kids);
         for (auto& [tag, rid] : kids)
             if (ETCS::Entity* c = e->getTypedChild(tag, rid)) walk(c, out);
-        if (e->isEnvironmental()) out.push_back(e);
+        out.push_back(e);
+    }
+    // Which of them get a record: one that claims Environmental, or one with
+    // anything on its value surface. The rest the script makes whole.
+    static bool kept(const ETCS::Entity* e)
+    {
+        if (e->isEnvironmental()) return true;
+        std::vector<std::pair<std::string, std::string>> kv;
+        e->values(kv);
+        return !kv.empty();
     }
 
     /*
@@ -251,16 +276,47 @@ private:
                 const std::string name = nameOf(r);
                 auto it = want.find(name);
                 if (it == want.end()) continue;
+                // The state hash: identity and every value under it. When it
+                // differs, say which half -- the identity (the script did not
+                // rebuild what was saved) or the values (named by count).
                 const std::string now = hex64(r->getHash());
-                if (now == it->second.second) ++same;
-                else out.push_back("'" + name + "' came back different (" + now + ", was "
-                                   + it->second.second + ") -- see what Info says it cannot rebuild");
+                if (now == it->second.second) { ++same; want.erase(it); continue; }
+                const size_t off = valuesOff(r);
+                if (off) out.push_back("'" + name + "' came back different: " + std::to_string(off)
+                                       + " value(s) under it differ from the record (state " + now + ", was "
+                                       + it->second.second + ")");
+                else     out.push_back("'" + name + "' came back different (" + now + ", was "
+                                       + it->second.second + ") -- see what Info says it cannot rebuild");
                 want.erase(it);
             }
             for (auto& [name, th] : want) out.push_back("'" + name + "' (" + th.first + ") did not come back");
             out.insert(out.begin(), "resumed: " + std::to_string(same) + " root(s) as they were"
                        + (out.empty() ? "." : ", " + std::to_string(out.size()) + " not:"));
             return out;
+        }
+
+        // The values under a root against their records, after a restore:
+        // how many entities' surfaces differ from what was kept. The second
+        // half of "as it was" -- the identity hash is the first.
+        static size_t valuesOff(ETCS::Entity* root)
+        {
+            std::vector<ETCS::Entity*> all;
+            walk(root, all);
+            std::map<std::string, int> seen;
+            size_t off = 0;
+            for (ETCS::Entity* e : all)
+            {
+                const std::string type = typeOf(e), hash = hex64(e->identityHash());
+                const int ord = seen[type + "#" + hash]++;
+                if (!kept(e)) continue;
+                PersistenceStore::Record rec;
+                std::string why;
+                if (!PersistenceStore::get().getRecord(type, hash, ord, rec, why)) { ++off; continue; }
+                ETCS::EnvironmentState st;
+                etcs_capture_values(e, st);
+                if (st.pack() != rec.kv) ++off;
+            }
+            return off;
         }
 
         // (root RID, its first Persistence's RID) for every global-scope
@@ -324,18 +380,19 @@ private:
                 if (pn == names.end())
                 { warn.push_back(typeOf(r) + "'s Persistence was not made by a script line"); continue; }
                 sc.script += pn->second + ".Restore()\n";
-                sc.roots  += names[r->getRID()] + " " + typeOf(r) + " " + hex64(r->getHash()) + "\n";
+                sc.roots  += names[r->getRID()] + " " + typeOf(r) + " " + hex64(r->getHash()) + "\n";   // the state hash: what Finish must see again
                 ++sc.nroots;
 
-                std::vector<ETCS::Entity*> envs;
-                walk(r, envs);
+                std::vector<ETCS::Entity*> all;
+                walk(r, all);
                 std::map<std::string, int> seen;
-                for (ETCS::Entity* e : envs)
+                for (ETCS::Entity* e : all)
                 {
                     PersistenceStore::Record rec;
                     rec.type = typeOf(e);
-                    rec.hash = hex64(e->getHash());
-                    rec.ord  = seen[rec.type + "#" + rec.hash]++;
+                    rec.hash = hex64(e->identityHash());   // the record's key: what it is, not where it stands
+                    rec.ord  = seen[rec.type + "#" + rec.hash]++;   // counted for every entity: the order is the walk's
+                    if (!kept(e)) continue;
                     std::vector<std::string> flags;
                     e->stateFlags(flags);
                     std::sort(flags.begin(), flags.end());
@@ -343,7 +400,7 @@ private:
                     auto s = own.find(e);
                     if (s != own.end()) rec.script = s->second;
                     ETCS::EnvironmentState st;
-                    if (Environmental_* env = iface(e)) env->CaptureState(st);
+                    etcs_capture_values(e, st);
                     rec.kv = st.pack();
                     sc.recs.push_back(std::move(rec));
                 }

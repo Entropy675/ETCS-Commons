@@ -142,8 +142,11 @@ private:
         if (!env || packed.empty() || !st.unpack(packed)) return;
         auto* e = static_cast<Environmental_*>(env);
         st.migrate(e->MigrateTo());
+        // Onto the surface first (the values behind its tags), then what the
+        // type does with them.
+        const size_t landed = etcs_restore_values(surface, st);
         if (!e->ReflectRemote(st)) ETCS_LOG("Remote", "the surface refused the far node's state.");
-        else ETCS_LOG("Remote", "the surface reflects the far node's state (" << st.kv.size() << " value(s)).");
+        else ETCS_LOG("Remote", "the surface reflects the far node's state (" << landed << " of " << st.kv.size() << " value(s) landed).");
     }
 
     static bool isPeer(ETCS::Entity* e)

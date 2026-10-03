@@ -73,7 +73,38 @@ public:
     { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
-    Scene3D()  = default;
+    // What the step is parameterised by -- terminal speed, damping, mass --
+    // is state the script cannot say after the fact (a SetDamping is an
+    // action, but its result is a number here), so it is the value behind
+    // "motion" on the tag surface: a store keeps it with the rows and a
+    // resume puts it back (Entity::bindValue; the rows themselves are the
+    // family's "Causal" value, CausalBase).
+    Scene3D()
+    {
+        bindValue(ETCS::Buffer("motion"), ETCS::Entity::ValueBinding{
+            this,
+            [](void* self, std::string& out) {
+                const Scene3D* n = static_cast<const Scene3D*>(self);
+                std::lock_guard<std::recursive_mutex> lk(const_cast<Scene3D*>(n)->TreeMutex());
+                const int64_t w[3] = { n->m_speed.raw, n->m_damping.raw, n->m_mass.raw };
+                for (int64_t v : w) for (int i = 0; i < 8; ++i) out.push_back(static_cast<char>((static_cast<uint64_t>(v) >> (8 * i)) & 0xff));
+            },
+            [](void* self, const std::string& in) {
+                if (in.size() != 24) return false;
+                int64_t w[3];
+                for (int k = 0; k < 3; ++k)
+                {
+                    uint64_t u = 0;
+                    for (int i = 0; i < 8; ++i) u |= static_cast<uint64_t>(static_cast<unsigned char>(in[8 * k + i])) << (8 * i);
+                    w[k] = static_cast<int64_t>(u);
+                }
+                Scene3D* n = static_cast<Scene3D*>(self);
+                std::lock_guard<std::recursive_mutex> lk(n->TreeMutex());
+                n->m_speed = Fixed::FromRaw(w[0]); n->m_damping = Fixed::FromRaw(w[1]); n->m_mass = Fixed::FromRaw(w[2]);
+                n->m_drag_dt = Fixed::Zero();   // the drag cache keys on (dt, damping): recompute
+                return true;
+            } });
+    }
     ~Scene3D() = default;
 
     // The centre, read out of row 0 -- the rows are the family's (CausalBase),

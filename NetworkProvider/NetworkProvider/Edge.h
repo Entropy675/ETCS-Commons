@@ -542,11 +542,11 @@ private:
         if (guard != manifest)
             return w.u8(0).str("'" + name + "' is guarded by [" + guard + "], the surface carries ["
                                + manifest + "]").s;
-        // The far frame's half of Environmental: the named values a reflection
-        // starts from. Its tags are the surface's own already -- the same type.
+        // The far frame's half of Environmental: the values behind the node's
+        // tags, which a reflection starts from. Its tags are the surface's
+        // own already -- the same type.
         ETCS::EnvironmentState st;
-        if (void* env = node->getInterfacePointer(ETCS::Buffer("Environmental")))
-            static_cast<Environmental_*>(env)->CaptureState(st);
+        if (node->getInterfacePointer(ETCS::Buffer("Environmental"))) etcs_capture_values(node, st);
         std::string packed = st.pack();
         if (packed.size() > ETCS::MirrorBuffer::MAX_MESSAGE - 64)
         {

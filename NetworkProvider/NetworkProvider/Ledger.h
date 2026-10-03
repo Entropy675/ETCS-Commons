@@ -55,7 +55,17 @@ public:
     static constexpr size_t kLine   = 8u << 20;
     static constexpr size_t kAuthor = 32;
 
-    Ledger()  = default;
+    // The lines are the value behind "ledger" on the tag surface
+    // (Entity::bindValue): what a store keeps and a reflection starts from,
+    // read off the surface and handed back to it -- no capture of the
+    // type's own. One value, so the base and the lines arrive together.
+    Ledger()
+    {
+        bindValue(ETCS::Buffer("ledger"), ETCS::Entity::ValueBinding{
+            this,
+            [](void* self, std::string& out) { static_cast<Ledger*>(self)->writeState(out); },
+            [](void* self, const std::string& in) { return static_cast<Ledger*>(self)->readState(in); } });
+    }
     ~Ledger() { close(); }
 
     // What a line appended here, not over a link, is authored as.
@@ -169,16 +179,10 @@ public:
     }
 
     // ── Environmental ──────────────────────────────────────────────────────
-    void CaptureStateConcrete(ETCS::EnvironmentState& out) const
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        std::string all;
-        for (auto& l : lines_) all += l + "\n";
-        out.set("lines", std::move(all));
-        if (base_) out.set("base", std::to_string(base_) + " " + hex(base_chain_));
-    }
-    bool RebuildLocalConcrete(const ETCS::EnvironmentState& st) override { return adopt(st); }
-    bool ReflectRemoteConcrete(const ETCS::EnvironmentState& st) override { return adopt(st); }
+    // The values are back on the surface already (the "ledger" binding read
+    // them); nothing more to do here or as a reflection.
+    bool RebuildLocalConcrete(const ETCS::EnvironmentState&) override  { return true; }
+    bool ReflectRemoteConcrete(const ETCS::EnvironmentState&) override { return true; }
 
     static std::string hex(uint64_t v) { char b[17]; std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(v)); return b; }
 
@@ -195,25 +199,34 @@ private:
         cv_.notify_all();
     }
     void close() { std::lock_guard<std::mutex> lock(mu_); closed_ = true; cv_.notify_all(); }
-    // Lines as captured, re-chained here: the chain is derived, never taken.
-    bool adopt(const ETCS::EnvironmentState& st)
+    // The "ledger" value: the restart line when there is a base ("~ <base>
+    // <chain>"), then every line, one per line. The same text a restart
+    // reads, so one format serves both.
+    void writeState(std::string& out) const
     {
-        const std::string* all = st.get("lines");
-        if (!all) return true;
+        std::lock_guard<std::mutex> lock(mu_);
+        if (base_) out += restart() + "\n";
+        for (auto& l : lines_) out += l + "\n";
+    }
+    // Lines as captured, re-chained here: the chain is derived, never taken.
+    bool readState(const std::string& all)
+    {
         std::lock_guard<std::mutex> lock(mu_);
         lines_.clear(); chains_.clear();
         base_ = 0; base_chain_ = 0;
-        if (const std::string* b = st.get("base"))
-        {
-            unsigned long long n = 0, c = 0;
-            if (std::sscanf(b->c_str(), "%llu %llx", &n, &c) == 2) { base_ = n; base_chain_ = c; }
-        }
         size_t from = 0;
-        while (from < all->size())
+        if (all.compare(0, 2, "~ ") == 0)
         {
-            const size_t nl = all->find('\n', from);
+            const size_t nl = all.find('\n');
+            unsigned long long n = 0, c = 0;
+            if (std::sscanf(all.c_str() + 2, "%llu %llx", &n, &c) == 2) { base_ = n; base_chain_ = c; }
+            from = (nl == std::string::npos) ? all.size() : nl + 1;
+        }
+        while (from < all.size())
+        {
+            const size_t nl = all.find('\n', from);
             if (nl == std::string::npos) break;
-            push(all->substr(from, nl - from));
+            push(all.substr(from, nl - from));
             from = nl + 1;
         }
         return true;
