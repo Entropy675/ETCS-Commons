@@ -133,7 +133,7 @@ public:
         {
             m_meshWarned = true;
             ETCS_LOG("VulkanPresenter", "a scene arrived and there is no mesh pipeline -- shaders/mesh.vert.spv "
-                     "and mesh.frag.spv are missing (modules/RenderProvider/shaders/build.sh makes them). "
+                     "and mesh.frag.spv are missing (the RenderProvider build compiles them into bin/shaders/). "
                      "3D on this device draws nothing until they exist.");
         }
 
@@ -351,8 +351,10 @@ private:
 
     /*
      * WHERE THE SHADERS ARE, decided by the module rather than the caller's
-     * working directory: a module's shaders ship with it, dladdr gives this
-     * .so's own path, and the caller's argument stays a first-choice override.
+     * working directory: the build compiles the GLSL in shaders/ into
+     * bin/shaders/ beside this .so (the module's manifest, produces.assets),
+     * dladdr gives this .so's own path, and the caller's argument stays a
+     * first-choice override. The source tree holds GLSL only.
      * A total miss lists every path tried -- a window that never draws was the
      * symptom of the old cwd-relative lookup.
      */
@@ -384,12 +386,7 @@ private:
             return shader_dir_has_pipeline(dir) ? dir : std::string();
         };
         const std::string so_dir = own_module_dir();
-        for (const std::string& candidate : {
-                 requested,
-                 so_dir + "shaders",
-                 so_dir + "../modules/RenderProvider/shaders",
-                 std::string("modules/RenderProvider/shaders"),
-                 std::string("../modules/RenderProvider/shaders") })
+        for (const std::string& candidate : { requested, so_dir + "shaders" })
         {
             const std::string hit = consider(candidate);
             if (!hit.empty()) { ETCS_LOG("VulkanPresenter", "shaders: " << hit); return hit; }
