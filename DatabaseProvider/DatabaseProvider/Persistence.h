@@ -50,6 +50,12 @@
  * it (Entity::getHash: the identity half and every value under it, as one
  * number -- Finish compares each root's, and names the values that differ).
  *
+ * ONE STATE PER READ. A scene is read while it moves, so each root is read
+ * frozen (etcs_freeze, ontology/Environmental.h): its Causal trees held, the
+ * funnel watched by the root's hash epoch, the state hash composed from the
+ * very values copied and the replay capture made in the same window; packing
+ * and writing read the copy with nothing held.
+ *
  * WHEN. As it goes: a watcher recaptures twice a second and writes only
  * when the scene changed; and once more as the loader closes (Closing, the
  * family's wire), after which nothing is written this run. A capture that
@@ -197,6 +203,7 @@ private:
 
     static std::string typeOf(ETCS::Entity* e)
     { return e->getSourceModule().toString() + "::" + e->getSourceTag().toString(); }
+    static std::string typeOf(const FrozenNode& n) { return n.module + "::" + n.tag; }
     static std::string hex64(uint64_t v)
     { char b[17]; std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(v)); return b; }
     // The name a script gave a root (IWireEnvironmental::NoteName).
@@ -228,6 +235,20 @@ private:
         std::vector<std::pair<std::string, std::string>> kv;
         e->values(kv);
         return !kv.empty();
+    }
+    static bool kept(const FrozenNode& n) { return n.environmental || !n.kv.empty(); }
+    // A frozen tree (etcs_freeze, the hash's pre-order) in walk's order:
+    // children first, which is the order a record's `ord` counts in.
+    static void postOrder(const FrozenTree& t, size_t i, std::vector<size_t>& out)
+    {
+        for (size_t k : t.nodes[i].kids) postOrder(t, k, out);
+        out.push_back(i);
+    }
+    static std::string packed(const FrozenNode& n)
+    {
+        ETCS::EnvironmentState st;
+        for (auto& [k, v] : n.kv) st.set(k, v);
+        return st.pack();
     }
 
     /*
@@ -280,9 +301,11 @@ private:
                 // The state hash: identity and every value under it. When it
                 // differs, say which half -- the identity (the script did not
                 // rebuild what was saved) or the values (named by count).
-                const std::string now = hex64(r->getHash());
+                FrozenTree t;
+                etcs_freeze(r, t);
+                const std::string now = hex64(t.state_hash);
                 if (now == it->second.second) { ++same; want.erase(it); continue; }
-                const size_t off = valuesOff(r);
+                const size_t off = valuesOff(t);
                 if (off) out.push_back("'" + name + "' came back different: " + std::to_string(off)
                                        + " value(s) under it differ from the record (state " + now + ", was "
                                        + it->second.second + ")");
@@ -299,23 +322,22 @@ private:
         // The values under a root against their records, after a restore:
         // how many entities' surfaces differ from what was kept. The second
         // half of "as it was" -- the identity hash is the first.
-        static size_t valuesOff(ETCS::Entity* root)
+        static size_t valuesOff(const FrozenTree& t)
         {
-            std::vector<ETCS::Entity*> all;
-            walk(root, all);
+            std::vector<size_t> order;
+            postOrder(t, 0, order);
             std::map<std::string, int> seen;
             size_t off = 0;
-            for (ETCS::Entity* e : all)
+            for (size_t i : order)
             {
-                const std::string type = typeOf(e), hash = hex64(e->identityHash());
+                const FrozenNode& n = t.nodes[i];
+                const std::string type = typeOf(n), hash = hex64(n.identity);
                 const int ord = seen[type + "#" + hash]++;
-                if (!kept(e)) continue;
+                if (!kept(n)) continue;
                 PersistenceStore::Record rec;
                 std::string why;
                 if (!PersistenceStore::get().getRecord(type, hash, ord, rec, why)) { ++off; continue; }
-                ETCS::EnvironmentState st;
-                etcs_capture_values(e, st);
-                if (st.pack() != rec.kv) ++off;
+                if (packed(n) != rec.kv) ++off;
             }
             return off;
         }
@@ -365,44 +387,56 @@ private:
                 sc.script += "spawn " + typeOf(r) + " " + name + "\n";
                 held.emplace_back(r, std::move(hold));
             }
-            ETCS::ReplayCapture cap;
-            // One names table for all of them: a line may name another root.
-            for (auto& [r, hold] : held) ETCS::etcs_replay_capture(r, names[r->getRID()], names, cap);
+            // ONE READ PER ROOT, FROZEN (etcs_freeze): its surface, its values,
+            // the state hash composed from them, and -- inside the same window --
+            // the replay capture, so the script, the hash and the values are one
+            // state. A retry starts the capture again from where it was.
+            ETCS::ReplayCapture cap;   // one names table for all of them: a line may name another root
+            std::vector<FrozenTree> frozen(held.size());
+            for (size_t i = 0; i < held.size(); ++i)
+            {
+                ETCS::Entity* r = held[i].first;
+                const ETCS::ReplayCapture cap0 = cap;
+                const std::map<ETCS::RID, std::string> names0 = names;
+                if (!etcs_freeze(r, frozen[i], [&]() {
+                        cap = cap0; names = names0;
+                        ETCS::etcs_replay_capture(r, names[r->getRID()], names, cap); }))
+                    warn.push_back("'" + names[r->getRID()] + "' kept changing through every read; this save may be torn");
+            }
             sc.script += cap.script;
             std::map<ETCS::Entity*, std::string> own;
             for (size_t i = 0; i < cap.environmental.size(); ++i)
                 own[cap.environmental[i].second] =
                     cap.script.substr(cap.spans[i].first, cap.spans[i].second - cap.spans[i].first);
 
-            for (auto& [r, hold] : held)
+            // From here on the copy only: nothing is held, nothing live is read.
+            for (size_t i = 0; i < held.size(); ++i)
             {
+                ETCS::Entity* r = held[i].first;
+                const FrozenTree& t = frozen[i];
                 const ETCS::RID prid = rs.at(r->getRID());
                 auto pn = names.find(prid);
                 if (pn == names.end())
                 { warn.push_back(typeOf(r) + "'s Persistence was not made by a script line"); continue; }
                 sc.script += pn->second + ".Restore()\n";
-                sc.roots  += names[r->getRID()] + " " + typeOf(r) + " " + hex64(r->getHash()) + "\n";   // the state hash: what Finish must see again
+                sc.roots  += names[r->getRID()] + " " + typeOf(r) + " " + hex64(t.state_hash) + "\n";   // the state hash: what Finish must see again
                 ++sc.nroots;
 
-                std::vector<ETCS::Entity*> all;
-                walk(r, all);
+                std::vector<size_t> order;
+                postOrder(t, 0, order);
                 std::map<std::string, int> seen;
-                for (ETCS::Entity* e : all)
+                for (size_t k : order)
                 {
+                    const FrozenNode& n = t.nodes[k];
                     PersistenceStore::Record rec;
-                    rec.type = typeOf(e);
-                    rec.hash = hex64(e->identityHash());   // the record's key: what it is, not where it stands
+                    rec.type = typeOf(n);
+                    rec.hash = hex64(n.identity);   // the record's key: what it is, not where it stands
                     rec.ord  = seen[rec.type + "#" + rec.hash]++;   // counted for every entity: the order is the walk's
-                    if (!kept(e)) continue;
-                    std::vector<std::string> flags;
-                    e->stateFlags(flags);
-                    std::sort(flags.begin(), flags.end());
-                    for (auto& f : flags) rec.tags += (rec.tags.empty() ? "" : " ") + f;
-                    auto s = own.find(e);
+                    if (!kept(n)) continue;
+                    for (auto& f : n.flags) rec.tags += (rec.tags.empty() ? "" : " ") + f;
+                    auto s = own.find(n.e);
                     if (s != own.end()) rec.script = s->second;
-                    ETCS::EnvironmentState st;
-                    etcs_capture_values(e, st);
-                    rec.kv = st.pack();
+                    rec.kv = packed(n);
                     sc.recs.push_back(std::move(rec));
                 }
             }
