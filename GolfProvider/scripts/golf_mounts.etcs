@@ -1,0 +1,16 @@
+#!/usr/bin/env etcs
+# The golf page's files, mounted into a FileHtmlPage: the page, its manifest,
+# the boot and every script it stages. One list, for any server that hosts it.
+#   run GolfProvider/scripts/golf_mounts.etcs tree=tree
+requires tree [FileHtmlPage]
+tree.MountFile(index.html ACE_ROOT/modules/RenderProvider/scripts/www/index.html)
+tree.MountFile(modules.json ACE_ROOT/modules/GolfProvider/scripts/www/modules.json)
+tree.MountFile(boot_golf.etcs ACE_ROOT/modules/GolfProvider/scripts/www/boot_golf.etcs)
+tree.MountFile(GolfProvider/scripts/golf_course.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course.etcs)
+tree.MountFile(GolfProvider/scripts/golf_surface.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_surface.etcs)
+tree.MountFile(GolfProvider/scripts/golf_wall.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_wall.etcs)
+tree.MountFile(GolfProvider/scripts/golf_play.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_play.etcs)
+tree.MountFile(GolfProvider/scripts/golf_pointer.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_pointer.etcs)
+tree.MountFile(GolfProvider/scripts/golf_keys.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_keys.etcs)
+tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
+tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)

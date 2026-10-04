@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "THE INCLUDE LIST for the golf page: what it loads, in order, and nothing else.",
+    "The page itself is RenderProvider's 3D page (golf_mounts.etcs mounts it, not a copy): it",
+    "reads this file for the providers, the scripts to stage and which one is argv[1].",
+    "GolfProvider after RenderProvider: the game drives RenderProvider's nodes by their verbs;",
+    "ShellProvider last so the navigator comes up in the embedded terminal."
+  ],
+  "modules": [
+    "WindowProvider.wasm",
+    "RenderProvider.wasm",
+    "GolfProvider.wasm",
+    "ShellProvider.wasm"
+  ],
+  "_scripts": [
+    "Staged into the browser's filesystem under these names before main() runs, each",
+    "also answering over HTTP (golf_mounts.etcs). A name may be a path: the course and the",
+    "game are run by the same paths the native script uses."
+  ],
+  "scripts": [
+    "boot_golf.etcs",
+    "GolfProvider/scripts/golf_course.etcs",
+    "GolfProvider/scripts/golf_surface.etcs",
+    "GolfProvider/scripts/golf_wall.etcs",
+    "GolfProvider/scripts/golf_play.etcs",
+    "GolfProvider/scripts/golf_pointer.etcs",
+    "GolfProvider/scripts/golf_keys.etcs",
+    "RenderProvider/scripts/render_frames.etcs"
+  ],
+  "boot": "boot_golf.etcs",
+  "_glue": [
+    "The emscripten loader output, STAGED AS .js: served extensionless it arrives",
+    "as application/octet-stream, which the browser warns is not a valid",
+    "JavaScript MIME type. Naming it here rather than probing removes a guaranteed",
+    "failed fetch on every load."
+  ],
+  "glue": "etcs.js"
+}

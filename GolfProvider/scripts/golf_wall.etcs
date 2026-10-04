@@ -1,0 +1,7 @@
+#!/usr/bin/env etcs
+# A bumper's material: solid, held in place, and it gives the ball back.
+#   run GolfProvider/scripts/golf_wall.etcs part=<a Scene3D>
+requires part [Drawable3D]
+part.SetColor(0.52, 0.36, 0.22, 1.0)
+part.SetAnchored(1)
+part.SetSolid(0.7, 0.05)

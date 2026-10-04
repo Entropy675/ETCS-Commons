@@ -1,0 +1,24 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE GOLF PAGE, served by ETCS.
+#
+#     ./bin/etcs modules/GolfProvider/scripts/serve_golf.etcs
+#     then open https://localhost:8443/
+#
+# Build first: ace wasm make all, then ace wasm make loader etcs.
+
+spawn NetworkProvider::HttpServer web
+web.SetPort(8443)
+web.EnableTLS(/tmp/etcs-cert.pem /tmp/etcs-key.pem)
+web.AddHeader(Cross-Origin-Opener-Policy same-origin)
+web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
+
+web.spawn(NetworkProvider::FileHtmlPage tree)
+tree.SetDefaultExtension(.html)
+tree.MountTree(wasm ACE_ROOT/bin/wasm)
+run GolfProvider/scripts/golf_mounts.etcs tree=tree
+tree.ListPaths()
+
+web.Start()
+web.IsStarted()

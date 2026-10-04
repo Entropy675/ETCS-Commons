@@ -1,0 +1,9 @@
+#!/usr/bin/env etcs
+# The native window's run and its teardown: what golf.etcs detaches last.
+requires main [Window]
+requires gpu  [Instance]
+requires view [Surface]
+main.Run(1024, 768, 'ETCS golf')
+view.Delete()
+gpu.Delete()
+main.Delete()
