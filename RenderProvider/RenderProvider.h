@@ -1197,6 +1197,8 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, Draw, (ETCS::RID, target))
     self.DrawInto(dst);
     ETCS_LOG("Camera3D::Draw", "renders so far: " << self.Renders());
 }
+// How many projections this camera has driven: whether a draw re-rendered.
+DEFINE_WORK_FUNC(Camera3D, Renders) { (void)ctx; data.reset(); data.writeString(std::to_string(self.Renders()).c_str()); }
 
 DEFINE_WORK_FUNC_TYPED(Camera3D, Clear,
                        (float, r), (float, g), (float, b), (float, a))

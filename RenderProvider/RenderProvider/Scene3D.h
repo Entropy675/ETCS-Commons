@@ -451,7 +451,8 @@ public:
     {
         return m_motion.load(std::memory_order_relaxed) != 0
             || m_look_dirty.load(std::memory_order_relaxed)
-            || Order4().KineticEnergy().IsPositive();
+            || Order4().KineticEnergy().IsPositive()
+            || Moving();   // a member in flight: a ball rolling on a still green
     }
 
     /*
@@ -1288,10 +1289,13 @@ private:
                 markPixelPath(c);
     }
 
-    // Mark a camera and every observer above it (ontology/Observable.h). Taken
-    // as Entity because the chain crosses families: a camera's parent is a
-    // compositor, whose parent may be anything at all.
-    static void markPixelPath(ETCS::Entity* node) { etcs_mark_observed(node); }
+    // Mark a camera and every observer above it (ontology/Observable.h).
+    // Restated rather than observed: the camera's picture is derived from this
+    // scene, so its own self edge is set too, or a camera on a still scene
+    // never re-renders a box that moved. Taken as Entity because the chain
+    // crosses families: a camera's parent is a compositor, whose parent may
+    // be anything at all.
+    static void markPixelPath(ETCS::Entity* node) { etcs_mark_restated(node); }
 
     // ── geometry helpers ─────────────────────────────────────────────────
 

@@ -173,7 +173,7 @@ public:
     void SetBackground(float r, float g, float b, float a)
     {
         m_bg[0] = r; m_bg[1] = g; m_bg[2] = b; m_bg[3] = a;
-        markPath();
+        restate();
     }
 
     // Pose and lens go in together (ontology/Camera.h on why), so the two
@@ -200,14 +200,14 @@ public:
     void SetViewConcrete(ViewFrustum view) override
     {
         m_view = view;
-        markPath();              // a moved eye is a different image
+        restate();               // a moved eye is a different image
     }
     ViewFrustum GetViewConcrete() override { return m_view; }
 
     void SetSceneConcrete(ETCS::RID scene) override
     {
         m_scene = scene;
-        markPath();
+        restate();
     }
     ETCS::RID GetSceneConcrete() override { return m_scene; }
 
@@ -540,6 +540,11 @@ private:
     // leaves a stale view inside a clean parent, which is blitted, correctly,
     // forever. The walk lives in ontology/Observable.h.
     void markPath() { etcs_mark_observed(this); }
+    // What the picture is made FROM changed (the eye, the sky, the scene): the
+    // same marks, and this camera's own self edge with them, which a mark from
+    // itself leaves alone -- DrawInto renders on that edge, so without it a
+    // still scene under a turned eye blits the old picture.
+    void restate() { etcs_mark_restated(this); }
 
     // Seeded from the live values on first stage, so a MoveTo alone does not
     // drag a stale size along with it. Called under m_pending_mtx.
