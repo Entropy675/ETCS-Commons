@@ -105,14 +105,41 @@ public:
         }
         else if (k == "sensitivity")
             m_sens_scale = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : kSensitivity;
+        else if (k == "solid")
+        {
+            CausalBase<Scene3D>::onValue(key, value);
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+            reachLocked();   // a sphere reaches its radius, a box its corners
+        }
         else CausalBase<Scene3D>::onValue(key, value);
     }
     ~Scene3D() = default;
+
+    // ── the solid (CausalBase, ontology/Causal.h) ─────────────────────────
+    //
+    // A node is a box by its extent until SetShape says otherwise; a sphere
+    // is the largest half extent about the centre, which is how a ball made
+    // with Create(d, d, d) and drawn with a sphere mesh is the sphere it
+    // looks like.
+    CausalSolid::Shape DefaultShapeConcrete() const override { return CausalSolid::Box; }
+    void ExtentConcrete(Fixed& hx, Fixed& hy, Fixed& hz) const override
+    {
+        hx = Fixed::From(m_half.x); hy = Fixed::From(m_half.y); hz = Fixed::From(m_half.z);
+    }
 
     // The centre, read out of row 0 -- the rows are the family's (CausalBase),
     // and every reader below goes through them rather than a copy: one
     // position, one writer. The float is the picture's.
     Point3D Pos() const { return Point3D{ Order4().x.ToFloat(), Order4().y.ToFloat(), Order4().z.ToFloat() }; }
+
+    // Row 2's reach, from the extent and the shape: a sphere's radius is its
+    // largest half extent; anything else reaches its box's corners.
+    void reachLocked()
+    {
+        const Fixed hx = Fixed::From(m_half.x), hy = Fixed::From(m_half.y), hz = Fixed::From(m_half.z);
+        Rows().radius = Solid().shape == CausalSolid::Sphere ? Fixed::Max(hx, Fixed::Max(hy, hz))
+                                                             : Fixed::Length(hx, hy, hz);
+    }
 
     // A box centred on its own origin, so SetPosition places the CENTRE --
     // which is what a script means by "put the cube here", and what keeps
@@ -134,7 +161,7 @@ public:
         // Only a node with no extent is a leaf here.
         // Causal, so computed on the causal side: the extent's numbers cross
         // the boundary once, here, and the reach is their Fixed length.
-        Rows().radius = Fixed::Length(Fixed::From(m_half.x), Fixed::From(m_half.y), Fixed::From(m_half.z));
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); reachLocked(); }
         this->addTag("active");
         /*
  * The symmetric half of ReleaseConcrete's, and needed for the same reason: a
@@ -173,6 +200,45 @@ public:
     void Impulse(float dx, float dy, float dz, float joules)
     {
         CausalBase<Scene3D>::Impulse(Fixed::From(dx), Fixed::From(dy), Fixed::From(dz), Fixed::From(joules));
+        markViewersDirty();   // a push on a settled view is the next frame's motion
+    }
+
+    // The space's field (CausalBase::SetGravity): what everything inside falls
+    // along, in scene units per second squared.
+    void SetGravity(float gx, float gy, float gz)
+    {
+        CausalBase<Scene3D>::SetGravity(Fixed::From(gx), Fixed::From(gy), Fixed::From(gz));
+    }
+    void SetSolid(float restitution, float friction)
+    {
+        CausalBase<Scene3D>::SetSolid(Fixed::From(restitution), Fixed::From(friction));
+    }
+    // "sphere", "box", "plane" (a half-space: solid below the plane through
+    // the centre, facing the node's up) or "off". False for anything else.
+    bool SetShape(const std::string& kind)
+    {
+        CausalSolid::Shape s;
+        if      (kind == "sphere") s = CausalSolid::Sphere;
+        else if (kind == "box")    s = CausalSolid::Box;
+        else if (kind == "plane")  s = CausalSolid::HalfSpace;
+        else if (kind == "off")    s = CausalSolid::Off;
+        else return false;
+        CausalBase<Scene3D>::SetShape(s);
+        return true;
+    }
+    // Which way the node faces (row 3), outright: about an axis by an angle,
+    // or with its up along a direction. A teleport of the facing, as
+    // SetPosition is of the place.
+    void Orient(float ax, float ay, float az, float degrees)
+    {
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+          Rows().Orient(Fixed::From(ax), Fixed::From(ay), Fixed::From(az), Fixed::From(degrees * 3.14159265358979 / 180.0)); }
+        markViewersDirty();
+    }
+    void Aim(float dx, float dy, float dz)
+    {
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Aim(Fixed::From(dx), Fixed::From(dy), Fixed::From(dz)); }
+        markViewersDirty();
     }
     void Halt() { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
     void SetEmissivity(float per_sec) { CausalBase<Scene3D>::SetEmissivity(Fixed::From(per_sec)); }
@@ -1053,7 +1119,7 @@ private:
     // A child's position is stated relative to its parent's CENTRE, which is
     // the 3D reading of Drawable2D's parent-relative rule, and is why one
     // translation at the root relocates everything below it.
-    void collectSubtree(Point3D origin, std::vector<Node>& out)
+    void collectSubtree(Point3D origin, std::vector<Node>& out, bool root = true)
     {
         const Point3D p = Pos();
         const Point3D abs{ origin.x + p.x, origin.y + p.y, origin.z + p.z };
@@ -1064,15 +1130,17 @@ private:
             n.half = m_half;
             n.color[0] = m_color[0]; n.color[1] = m_color[1];
             n.color[2] = m_color[2]; n.color[3] = m_color[3];
-            // A node's row 3 is its facing -- except the root's, which the look
-            // control writes to aim the camera (applyLookTo): that one is the
-            // viewer's, not the box's, and the box stays where it stands.
-            n.rot  = out.empty() ? Matrix4::Identity() : Order4().ToMatrix4();
+            // A node's row 3 is its facing -- except the projection root's,
+            // which the look control writes to aim the camera (applyLookTo):
+            // that one is the viewer's, not the box's. The root by being the
+            // root, not by being drawn first: under a hidden root the first
+            // node drawn is a child, and its facing is its own.
+            n.rot  = root ? Matrix4::Identity() : Order4().ToMatrix4();
             n.rot.at(0,3) = n.rot.at(1,3) = n.rot.at(2,3) = 0.0f;
             n.mesh = m_mesh;
             out.push_back(n);
         }
-        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out); }
+        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out, false); }
     }
 
     /*

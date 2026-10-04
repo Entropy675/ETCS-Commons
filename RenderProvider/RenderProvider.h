@@ -864,6 +864,52 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetSpace, (float, radius))
     self.SetSpace(radius);
 }
 
+// THE SPACE'S PARAMETERS AND THE SOLID (ontology/Causal.h,
+// ontology/etcs_causal_constraints.md §12-§13). The field everything inside
+// this node falls along, stated -- zero included -- or taken back to inherit
+// the field this node is in.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetGravity, (float, gx), (float, gy), (float, gz))
+{
+    (void)ctx;
+    self.SetGravity(gx, gy, gz);
+}
+DEFINE_WORK_FUNC(Scene3D, InheritGravity)
+{
+    (void)data; (void)ctx;
+    self.InheritGravity();
+}
+// Meets other solids by its shape: the normal motion kept on a bounce, and the
+// share of the load that rubs, both in [0,1].
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSolid, (float, restitution), (float, friction))
+{
+    (void)ctx;
+    self.SetSolid(restitution, friction);
+}
+// Held where it is: a place rather than a thing -- a green, a wall, a cup.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetAnchored, (int32_t, on))
+{
+    (void)ctx;
+    self.SetAnchored(on != 0);
+}
+// sphere, box, plane or off.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetShape, (std::string, kind))
+{
+    (void)ctx;
+    if (!self.SetShape(kind)) ETCS_LOG("Scene3D::SetShape", "'" << kind << "' is not a shape: sphere, box, plane or off.");
+}
+// The facing, outright: about an axis by degrees, or with the node's up along
+// a direction.
+DEFINE_WORK_FUNC_TYPED(Scene3D, Orient, (float, ax), (float, ay), (float, az), (float, degrees))
+{
+    (void)ctx;
+    self.Orient(ax, ay, az, degrees);
+}
+DEFINE_WORK_FUNC_TYPED(Scene3D, Aim, (float, dx), (float, dy), (float, dz))
+{
+    (void)ctx;
+    self.Aim(dx, dy, dz);
+}
+
 // Take a Causal node in, keeping where it is in the world. The line a replay
 // writes for a move the step made (Entity::moveTo), and a script's own way to
 // put something somewhere; fitness has the last word at the next step.
@@ -1213,6 +1259,22 @@ DEFINE_WORK_FUNC(Mesh, Box)
     (void)data; (void)ctx;
     self.Box();
     ETCS_LOG("Mesh::Box", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
+}
+
+// A sphere in the unit box, `segments` bands pole to pole.
+DEFINE_WORK_FUNC_TYPED(Mesh, Sphere, (uint32_t, segments))
+{
+    (void)ctx;
+    self.Sphere(segments);
+    ETCS_LOG("Mesh::Sphere", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
+}
+// An arrow along +y in the unit box: the shaft's width, and the head's share
+// of the length (both fractions of the box).
+DEFINE_WORK_FUNC_TYPED(Mesh, Arrow, (float, shaft_width), (float, head))
+{
+    (void)ctx;
+    self.Arrow(shaft_width, head);
+    ETCS_LOG("Mesh::Arrow", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
 }
 
 DEFINE_WORK_FUNC_TYPED(Mesh, AddVertex, (float, x), (float, y), (float, z),

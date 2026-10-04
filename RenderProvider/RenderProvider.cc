@@ -61,7 +61,8 @@ ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
 // what a window is.
 ETCS_TAG_BLOCK_HYBRID(Scene3D,
     (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetSensitivity,
-     Impulse, Halt, Order, Run, Hash, Look, SetEmissivity, SetSpace, Contain, SetVisible, SetMesh, Project, DepthAt, Delete),
+     Impulse, Halt, Order, Run, Hash, Look, SetEmissivity, SetSpace, Contain, SetVisible, SetMesh, Project, DepthAt, Delete,
+     SetGravity, InheritGravity, SetSolid, SetAnchored, SetShape, Orient, Aim),
     (ConsumeInput, ConsumeLook))
 
 // The camera: a Drawable2D that owns pixels, filled by a scene rather than by
@@ -77,7 +78,7 @@ ETCS_TAG_BLOCK_BASIC(Camera3D,
 // anywhere, shared by every node that names it; sent to the device once,
 // and rasterised from the same triangles on the host.
 ETCS_TAG_BLOCK_BASIC(Mesh,
-    Create, Clear, Box, AddVertex, AddTriangle, Delete)
+    Create, Clear, Box, AddVertex, AddTriangle, Delete, Sphere, Arrow)
 
 // Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of
 // whatever it labels and needs no drawing code at the call site. Its font is
