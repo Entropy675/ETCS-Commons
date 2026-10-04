@@ -1206,8 +1206,8 @@ private:
                 ETCS_LOG("ConnectionManager", "accept chain interrupted -- closing gate "
                          "(RID:" << getRID() << ").");
                 {
-                    std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
-                    getTypedChildren(kids);
+                    std::vector<ETCS::Entity::ChildRef> kids;   // counted only
+                    getTypedChildRefs(kids);
                     ETCS::MemoryArena& a = getArena();
                     ETCS::MemoryArena& g = ETCS::MemoryArena::getInstance();
                     ETCS_LOG("CM.mem", "manager arena: capacity=" << a.getCapacity()

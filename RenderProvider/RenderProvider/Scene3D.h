@@ -1166,13 +1166,14 @@ private:
     std::vector<ETCS::Entity*> drawable3DChildren()
     {
         std::vector<ETCS::Entity*> out;
-        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
-        getOrderedTypedChildren(kids);
-        for (const auto& entry : kids)
+        std::vector<ETCS::Entity::ChildRef> kids;   // no tag copied per child
+        getOrderedTypedChildRefs(kids);
+        static const ETCS::Buffer kDrawable3D("Drawable3D");
+        for (const auto& [tag, rid] : kids)
         {
-            ETCS::Entity* child = getTypedChild(entry.first, entry.second);
+            ETCS::Entity* child = getTypedChild(*tag, rid);
             if (!child) continue;
-            if (!child->getInterfacePointer(ETCS::Buffer("Drawable3D"))) continue;
+            if (!child->getInterfacePointer(kDrawable3D)) continue;
             out.push_back(child);
         }
         return out;

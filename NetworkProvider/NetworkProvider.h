@@ -270,19 +270,20 @@ DEFINE_WORK_FUNC(HttpServer, ListPaths)
     (void)ctx; (void)data;
     ETCS_LOG("HttpServer::ListPaths", "Paths served by RID:" << self.getRID() << ":");
 
-    std::vector<std::pair<ETCS::Buffer, ETCS::RID>> children;
-    self.getTypedChildren(children);
+    std::vector<ETCS::Entity::ChildRef> children;
+    self.getTypedChildRefs(children);
+    static const ETCS::Buffer kHtmlPage("HtmlPage"), kFileHtmlPage("FileHtmlPage");
     for (auto& [tag, rid] : children)
     {
-        ETCS::Entity* child = self.getTypedChild(tag, rid);
+        ETCS::Entity* child = self.getTypedChild(*tag, rid);
         if (!child) continue;
-        if (!child->getInterfacePointer(ETCS::Buffer("HtmlPage"))) continue;
+        if (!child->getInterfacePointer(kHtmlPage)) continue;
 
-        ETCS_LOG("HttpServer::ListPaths", "  [" << tag.toString() << " RID:" << rid << "]");
+        ETCS_LOG("HttpServer::ListPaths", "  [" << tag->toString() << " RID:" << rid << "]");
         // FileHtmlPage is the only page type that enumerates; a static page
         // answers three fixed paths and has nothing to walk.
         //
-        // Tag comparison, not dynamic_cast: getTypedChildren already handed
+        // Tag comparison, not dynamic_cast: getTypedChildRefs already handed
         // back the tag alongside the RID, and in this runtime the tag IS the
         // type -- so the concrete type is established before the pointer is,
         // and asking RTTI to re-derive it would be re-deciding something the
@@ -290,7 +291,7 @@ DEFINE_WORK_FUNC(HttpServer, ListPaths)
         // most-derived address, which is what makes the static_cast correct
         // under this family's virtual Entity inheritance where a plain
         // downcast would not be.
-        if (tag == ETCS::Buffer("FileHtmlPage"))
+        if (*tag == kFileHtmlPage)
         {
             FileHtmlPage* tree = static_cast<FileHtmlPage*>(child->getTrueType());
             for (const std::string& path : tree->ListAllPaths())

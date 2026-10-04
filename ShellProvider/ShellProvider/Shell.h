@@ -232,8 +232,8 @@ public:
 
     void Report()
     {
-        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
-        this->getTypedChildren(kids);
+        std::vector<ETCS::Entity::ChildRef> kids;   // counted, not read: no tag copied
+        this->getTypedChildRefs(kids);
         ETCS_LOG("Shell", "RID:" << this->getRID()
                  << " script:'" << m_script.c_str()
                  << "' children:" << kids.size()

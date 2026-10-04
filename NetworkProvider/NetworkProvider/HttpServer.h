@@ -493,12 +493,13 @@ public:
     // the way pages are, among this server's typed children (LinkHub.h).
     LinkHub* FindLinkHub(const RouteRequest& req) const
     {
-        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> children;
-        getTypedChildren(children);
+        std::vector<ETCS::Entity::ChildRef> children;
+        getTypedChildRefs(children);
+        static const ETCS::Buffer kLinkHub("LinkHub");
         for (auto& [tag, rid] : children)
         {
-            if (tag.toString() != "LinkHub") continue;
-            ETCS::Entity* child = getTypedChild(tag, rid);
+            if (!(*tag == kLinkHub)) continue;
+            ETCS::Entity* child = getTypedChild(*tag, rid);
             LinkHub* hub = child ? static_cast<LinkHub*>(child->getTrueType()) : nullptr;
             if (hub && hub->Claims(req)) return hub;
         }
@@ -508,19 +509,21 @@ public:
     // Resolve a request path against this server's own pages, attach order, first match wins.
     HtmlPage_::ResolvedAsset ResolvePath(const std::string& path) const
     {
-        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> children;
-        getTypedChildren(children);
+        // Every request walks this: refs and a key made once, nothing copied.
+        std::vector<ETCS::Entity::ChildRef> children;
+        getTypedChildRefs(children);
+        static const ETCS::Buffer kHtmlPage("HtmlPage");
 
         for (auto& [tag, rid] : children)
         {
-            ETCS::Entity* child = getTypedChild(tag, rid);
+            ETCS::Entity* child = getTypedChild(*tag, rid);
             if (!child) continue;
 
             // Family membership by interface pointer, not by tag name: any
             // HtmlPage_ answers, including types this module has never heard
             // of. ETCS_MAKE_INSTANCE registers this under the bare family
             // name for every member (see ETCS_API.h).
-            void* raw = child->getInterfacePointer(ETCS::Buffer("HtmlPage"));
+            void* raw = child->getInterfacePointer(kHtmlPage);
             if (!raw) continue;
 
             HtmlPage_* page = static_cast<HtmlPage_*>(raw);

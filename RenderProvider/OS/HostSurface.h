@@ -442,13 +442,15 @@ private:
      */
     Device* readyDevice()
     {
-        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
-        this->getTypedChildren(kids);
-        for (const auto& entry : kids)
+        // Asked every frame (chooseSink): refs and a key made once.
+        std::vector<ETCS::Entity::ChildRef> kids;
+        this->getTypedChildRefs(kids);
+        static const ETCS::Buffer kDevice("Device");
+        for (const auto& [tag, rid] : kids)
         {
-            ETCS::Entity* child = this->getTypedChild(entry.first, entry.second);
-            if (!child || !child->getInterfacePointer(ETCS::Buffer("Device"))) continue;
-            if (child->getSourceTag() != ETCS::Buffer("Device")) continue;
+            ETCS::Entity* child = this->getTypedChild(*tag, rid);
+            if (!child || !child->getInterfacePointer(kDevice)) continue;
+            if (child->getSourceTag() != kDevice) continue;
             Device* d = static_cast<Device*>(child->getTrueType());
             if (d && d->DeviceReady()) return d;
         }

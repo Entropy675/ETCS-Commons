@@ -33,11 +33,11 @@ public:
  * disagree. That is what the trait is for -- see PaintLayer::Subject.
  *
  * ORDERED BY THE LAYERS' OWN RELATION, and read straight out of the list that
- * holds them: getOrderedTypedChildren dispatches to RIDList::collect_ordered,
- * which sorts by the pointee's operator< when the concrete type declares one,
- * and PaintLayer does. So the composite order, the layer window's row order and
- * Layer_::Neighbourhood are not three implementations of one rule -- they are
- * one read.
+ * holds them: getOrderedTypedChildRefs reads this document's ordered view,
+ * which RIDList keeps in the pointee's operator< order when the concrete type
+ * declares one, and PaintLayer does. So the composite order, the layer
+ * window's row order and Layer_::Neighbourhood are not three implementations
+ * of one rule -- they are one read.
  *
  * FILTERED BY TAG, because a document may hold children that are not layers and
  * an order across two concrete types is a question with no answer (core/
@@ -46,14 +46,14 @@ public:
     void OrderedLayers(std::vector<PaintLayer*>& out) const
     {
         out.clear();
-        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
-        this->getOrderedTypedChildren(kids);
+        std::vector<ETCS::Entity::ChildRef> kids;   // no tag copied per layer
+        this->getOrderedTypedChildRefs(kids);
         out.reserve(kids.size());
         static const ETCS::Buffer kLayerTag("PaintLayer");
-        for (const auto& entry : kids)
+        for (const auto& [tag, rid] : kids)
         {
-            if (!(entry.first == kLayerTag)) continue;
-            ETCS::Entity* child = this->getTypedChild(entry.first, entry.second);
+            if (!(*tag == kLayerTag)) continue;
+            ETCS::Entity* child = this->getTypedChild(*tag, rid);
             if (!child) continue;
             if (auto* l = static_cast<PaintLayer*>(child->getTrueType())) out.push_back(l);
         }
