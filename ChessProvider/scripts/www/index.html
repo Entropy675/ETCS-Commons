@@ -266,13 +266,6 @@
     pushLine(path + (inject ? ' ' + inject : ''));
     return true;
   }
-  // A one-line script, the same way.
-  function runLine(line) {
-    const fs = etcsFS();
-    const path = '/line_' + (++templateSeq) + '.etcs';
-    fs.writeFile(path, new TextEncoder().encode('#!/usr/bin/env etcs\n' + line + '\n'));
-    pushLine(path);
-  }
 
   // ── the session ───────────────────────────────────────────────────────────
   //
@@ -317,8 +310,11 @@
   }
   function leaveTable() {
     if (!session.mode) return;
-    if (session.mode === 'hosting') runLine('run ChessProvider/scripts/chess_close.etcs share=share room=room' + session.n);
-    else                            runLine('run ChessProvider/scripts/chess_leave.etcs share=share peer=peer' + session.n);
+    // Launched with the names handed in, as host and join are: a `run` line
+    // of a later root script cannot name the boot's globals (the preflight
+    // refuses it), so the button did nothing.
+    if (session.mode === 'hosting') runTemplate('chess_close.etcs', {}, 'share=share room=room' + session.n);
+    else                            runTemplate('chess_leave.etcs', {}, 'share=share peer=peer' + session.n);
     clearInterval(session.tick); session.tick = 0;
     session.mode = null; session.id = null; session.owner = null;
     linkEl.classList.add('hidden'); hostBtn.classList.remove('hidden'); leaveBtn.classList.add('hidden');
