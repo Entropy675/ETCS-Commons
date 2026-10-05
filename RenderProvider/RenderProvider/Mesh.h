@@ -101,6 +101,47 @@ public:
     }
 
     /*
+     * A CYLINDER along +y in the unit box (radius 0.5, y from -0.5 to 0.5),
+     * `segments` sides: the side shaded round (normals out from the axis),
+     * the two caps flat. A wheel, laid on its side by the node's facing.
+     */
+    void Cylinder(uint32_t segments)
+    {
+        Clear();
+        const uint32_t n = segments < 3 ? 3 : (segments > 128 ? 128 : segments);
+        const float pi = 3.14159265358979f;
+        const float c[3] = { 0.0f, 0.0f, 0.0f };
+        // The side: a ring of vertices at each end, normals radial.
+        for (uint32_t j = 0; j <= n; ++j)
+        {
+            const float a = 2.0f * pi * static_cast<float>(j) / static_cast<float>(n);
+            const float nx = std::cos(a), nz = std::sin(a);
+            m_vertices.insert(m_vertices.end(), { 0.5f * nx, -0.5f, 0.5f * nz, nx, 0.0f, nz });
+            m_vertices.insert(m_vertices.end(), { 0.5f * nx,  0.5f, 0.5f * nz, nx, 0.0f, nz });
+        }
+        for (uint32_t j = 0; j < n; ++j)
+        {
+            const uint32_t a = 2 * j, b = a + 1, d = a + 2, e = a + 3;
+            outward(a, d, b, c);
+            outward(b, d, e, c);
+        }
+        // The caps: a fan about each end's centre, normals along the axis.
+        for (int end = 0; end < 2; ++end)
+        {
+            const float y = end ? 0.5f : -0.5f, ny = end ? 1.0f : -1.0f;
+            const uint32_t centre = VertexCount();
+            m_vertices.insert(m_vertices.end(), { 0.0f, y, 0.0f, 0.0f, ny, 0.0f });
+            for (uint32_t j = 0; j <= n; ++j)
+            {
+                const float a = 2.0f * pi * static_cast<float>(j) / static_cast<float>(n);
+                m_vertices.insert(m_vertices.end(), { 0.5f * std::cos(a), y, 0.5f * std::sin(a), 0.0f, ny, 0.0f });
+            }
+            for (uint32_t j = 0; j < n; ++j) outward(centre, centre + 1 + j, centre + 2 + j, c);
+        }
+        ++m_version;
+    }
+
+    /*
      * AN ARROW along +y in the unit box: a square shaft from the bottom to
      * `head` (a fraction of the height from the top, the head's length), and a
      * four-sided head as wide as the box to the top. A node aimed along a

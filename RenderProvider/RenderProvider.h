@@ -1276,6 +1276,13 @@ DEFINE_WORK_FUNC_TYPED(Mesh, Sphere, (uint32_t, segments))
     self.Sphere(segments);
     ETCS_LOG("Mesh::Sphere", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
 }
+// A cylinder along +y in the unit box, `segments` sides.
+DEFINE_WORK_FUNC_TYPED(Mesh, Cylinder, (uint32_t, segments))
+{
+    (void)ctx;
+    self.Cylinder(segments);
+    ETCS_LOG("Mesh::Cylinder", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
+}
 // An arrow along +y in the unit box: the shaft's width, and the head's share
 // of the length (both fractions of the box).
 DEFINE_WORK_FUNC_TYPED(Mesh, Arrow, (float, shaft_width), (float, head))
