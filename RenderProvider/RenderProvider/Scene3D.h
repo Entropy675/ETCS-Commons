@@ -103,6 +103,11 @@ public:
             m_order = readWords(value, w, 1) ? static_cast<int32_t>(w[0]) : 0;
             Reorder(); markViewersDirty();
         }
+        else if (k == "driven")
+        {
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the projection reads it under it
+            m_driven = value != nullptr;
+        }
         else if (k == "sensitivity")
             m_sens_scale = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : kSensitivity;
         else if (k == "solid")
@@ -241,6 +246,21 @@ public:
         markViewersDirty();
     }
     void Halt() { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
+    /*
+     * STEPPED BY ITS DRIVER ALONE (the value behind "driven"): a projection
+     * reads this tree and changes nothing -- no observed step, no look. For a
+     * world several runtimes replay from one record (a race), where the only
+     * steps are the record's (Run, Interact(dt)) and a picture taken at a
+     * different moment on each runtime must not move anything: the wall clock
+     * and each runtime's own eye are the two things they do not share.
+     */
+    void SetDriven(bool on)
+    {
+        if (!on) { this->removeTag(ETCS::Buffer("driven")); return; }
+        std::string v;
+        ETCS::Entity::putWord(v, 1);
+        this->addTag("driven", v);
+    }
     void SetEmissivity(float per_sec) { CausalBase<Scene3D>::SetEmissivity(Fixed::From(per_sec)); }
     // The room inside this node, as a radius about its position: what fits
     // in it is in it (Causal.h). Zero, the default, is solid.
@@ -267,10 +287,11 @@ public:
     // at once and that is not a coincidence: with a fixed terminal speed, the
     // acceleration needed to reach it is speed * damping, so one number gives
     // you the coast and the responsiveness together. High damping is crisp and
-    // stops dead; low damping drifts.
+    // stops dead; low damping drifts. Zero is no drag at all: a body whose
+    // drag is somebody else's to apply (a kart's, KartProvider's race).
     void SetDamping(float per_sec)
     {
-        if (per_sec > 0.0f) this->addTag("damping", words({ Fixed::From(per_sec).raw }));
+        if (per_sec >= 0.0f) this->addTag("damping", words({ Fixed::From(per_sec).raw }));
     }
     float Damping() const { return m_damping.ToFloat(); }
 
@@ -775,8 +796,7 @@ public:
         // The whole projection under the tree's lock: the picture is of one
         // state, not of rows a Run on another thread is halfway through.
         std::lock_guard<std::recursive_mutex> lk(TreeMutex());
-        applyLookTo(camera);
-        Interact();
+        if (!m_driven) { applyLookTo(camera); Interact(); }   // a driven tree is only read (SetDriven)
 
         View v;
         if (!buildView(camera, v)) return nullptr;
@@ -1983,6 +2003,7 @@ private:
     std::atomic<bool>  m_ptr_seen{false};
     std::atomic<bool>  m_look_dirty{false};
     bool               m_look_seeded = false;
+    bool               m_driven = false;    // "driven": stepped by its driver alone (SetDriven)
     Point3D            m_ref_fwd{0.0f, 0.0f, 1.0f};   // what row 3 rotates FROM
     Point3D            m_ref_right{1.0f, 0.0f, 0.0f}; // and what pitch turns about
 

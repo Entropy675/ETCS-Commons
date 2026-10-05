@@ -891,6 +891,12 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetAnchored, (int32_t, on))
     (void)ctx;
     self.SetAnchored(on != 0);
 }
+// SetDriven <0|1> -- stepped by its driver (Run) alone; a projection only reads it.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetDriven, (int32_t, on))
+{
+    (void)ctx;
+    self.SetDriven(on != 0);
+}
 // sphere, box, plane or off.
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetShape, (std::string, kind))
 {
