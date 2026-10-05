@@ -1,0 +1,36 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── THE KART PAGE'S FILES, for any server that hosts it ────────────────────
+#
+#     tree.SetMountPrefix(kart)
+#     run KartProvider/scripts/kart_mounts.etcs tree=tree
+#     tree.SetMountPrefix()
+#
+# The page and what it stages, each at the path it is fetched from -- the same
+# list as www/modules.json's scripts. The runtime (/wasm/) and the marks
+# (/favicon/) are the site's, mounted once for every page.
+
+requires tree [FileHtmlPage]
+
+tree.MountFile(index.html ACE_ROOT/modules/KartProvider/scripts/www/index.html)
+tree.MountFile(modules.json ACE_ROOT/modules/KartProvider/scripts/www/modules.json)
+tree.MountFile(boot_kart.etcs ACE_ROOT/modules/KartProvider/scripts/www/boot_kart.etcs)
+tree.MountFile(KartProvider/scripts/kart_course.etcs ACE_ROOT/modules/KartProvider/scripts/kart_course.etcs)
+tree.MountFile(KartProvider/scripts/kart_wall.etcs ACE_ROOT/modules/KartProvider/scripts/kart_wall.etcs)
+tree.MountFile(KartProvider/scripts/kart_car.etcs ACE_ROOT/modules/KartProvider/scripts/kart_car.etcs)
+tree.MountFile(KartProvider/scripts/kart_wheel.etcs ACE_ROOT/modules/KartProvider/scripts/kart_wheel.etcs)
+tree.MountFile(KartProvider/scripts/kart_play.etcs ACE_ROOT/modules/KartProvider/scripts/kart_play.etcs)
+tree.MountFile(KartProvider/scripts/kart_keys.etcs ACE_ROOT/modules/KartProvider/scripts/kart_keys.etcs)
+tree.MountFile(KartProvider/scripts/kart_host.etcs ACE_ROOT/modules/KartProvider/scripts/kart_host.etcs)
+tree.MountFile(KartProvider/scripts/kart_join.etcs ACE_ROOT/modules/KartProvider/scripts/kart_join.etcs)
+tree.MountFile(KartProvider/scripts/kart_leave.etcs ACE_ROOT/modules/KartProvider/scripts/kart_leave.etcs)
+tree.MountFile(KartProvider/scripts/kart_close.etcs ACE_ROOT/modules/KartProvider/scripts/kart_close.etcs)
+tree.MountFile(KartProvider/scripts/kart_judge.etcs ACE_ROOT/modules/KartProvider/scripts/kart_judge.etcs)
+tree.MountFile(KartProvider/scripts/kart_follow.etcs ACE_ROOT/modules/KartProvider/scripts/kart_follow.etcs)
+tree.MountFile(KartProvider/scripts/kart_emit.etcs ACE_ROOT/modules/KartProvider/scripts/kart_emit.etcs)
+tree.MountFile(KartProvider/scripts/kart_watch.etcs ACE_ROOT/modules/KartProvider/scripts/kart_watch.etcs)
+tree.MountFile(ChessProvider/scripts/chess_hall.etcs ACE_ROOT/modules/ChessProvider/scripts/chess_hall.etcs)
+tree.MountFile(ChessProvider/scripts/chess_mirror.etcs ACE_ROOT/modules/ChessProvider/scripts/chess_mirror.etcs)
+tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
+tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)

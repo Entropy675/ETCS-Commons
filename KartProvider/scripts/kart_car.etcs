@@ -1,0 +1,24 @@
+#!/usr/bin/env etcs
+# One kart of the pool: a body to look at, a solid sphere to everything else,
+# no drag of its own (the race's tyres and pedal are its drag), and four
+# wheels -- drawn, held, solid to nothing; the race puts them at the body's
+# corners after every step and turns the front two with the wheel. Handed to
+# the race, which colours the body and puts it all in the pit.
+#   run kart_car.etcs world=<Scene3D> race=<KartRace> tyre=<Mesh>
+requires world [Drawable3D]
+requires race [KartRace]
+requires tyre [Mesh]
+world.spawn(RenderProvider::Scene3D kart)
+kart.Create(1.1, 0.4, 2.0)
+kart.SetShape(sphere)
+kart.SetSolid(0.35, 0.0)
+kart.SetDamping(0.0)
+world.spawn(RenderProvider::Scene3D fl)
+world.spawn(RenderProvider::Scene3D fr)
+world.spawn(RenderProvider::Scene3D rl)
+world.spawn(RenderProvider::Scene3D rr)
+run kart_wheel.etcs wheel=fl tyre=tyre
+run kart_wheel.etcs wheel=fr tyre=tyre
+run kart_wheel.etcs wheel=rl tyre=tyre
+run kart_wheel.etcs wheel=rr tyre=tyre
+race.AddKart(@kart @fl @fr @rl @rr)

@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A guest's proposals to the host: `detach kart_emit.etcs src=<KartRace> dst=<Ledger>`
+requires src [KartRace]
+src.Emit() -> dst.Take()

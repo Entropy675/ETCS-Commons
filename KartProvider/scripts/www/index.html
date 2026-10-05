@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ETCS Kart</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
+  <link rel="icon" href="/favicon/favicon.ico">
+  <link rel="apple-touch-icon" href="/favicon/apple-touch-icon.png">
+  <link rel="manifest" href="/favicon/site.webmanifest">
+  <style>
+    :root {
+      --light: #e8e2d5; --dark: #7a8a6f; --sel: #c9b458; --ink: #1c1c1a;
+      --bg: #14150f; --panel: #1b1c14; --line: #3b3d31; --dim: #8d907c;
+      --ok: #7a9a5a; --err: #c45c4a;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--light);
+                 font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    body { overflow-y: auto; }
+    /*
+     * THE TRACK IS THE RUNTIME'S. The canvas is the window's surface
+     * (boot_kart.etcs: a Window, a Surface, a camera on the world), drawn and
+     * driven entirely on that side -- GLFW owns the canvas and its keys reach
+     * KartRace through the window's key stream; this page never learns where
+     * a kart is. What is HTML here is what a window has no DOM for: the hall,
+     * the standings and the buttons that host, join and leave.
+     */
+    #layout { display: grid; grid-template-rows: auto 1fr auto; min-height: 100%; }
+    header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+             padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .brand { color: var(--sel); letter-spacing: .12em; text-decoration: none; font-weight: bold; }
+    .spacer { flex: 1; }
+    #name { width: 14ch; background: var(--bg); color: var(--light); border: 1px solid var(--line);
+            padding: 2px 6px; font: inherit; }
+    #status { font-size: 12px; color: var(--dim); max-width: 40ch; overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+    #status.ok { color: var(--ok); } #status.err { color: var(--err); }
+    #main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(300px, 380px); gap: 12px;
+            padding: 12px 14px; align-items: start; }
+    #stage { position: relative; aspect-ratio: 4 / 3; background: #1c1d21;
+             box-shadow: 0 0 0 1px var(--line); }
+    canvas#canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+    #bootthrob { position: absolute; left: calc(50% - 48px); top: calc(50% - 48px); pointer-events: none; }
+    aside { display: flex; flex-direction: column; gap: 10px; }
+    section { border: 1px solid var(--line); background: var(--panel); padding: 8px 10px; }
+    h3 { margin: 0 0 6px; font-weight: normal; color: var(--dim); font-size: 11px;
+         letter-spacing: .1em; text-transform: uppercase; }
+    button { font: inherit; background: var(--bg); color: var(--light); border: 1px solid var(--line);
+             padding: 2px 10px; cursor: pointer; }
+    button:hover { border-color: var(--sel); color: var(--sel); }
+    button.primary { border-color: var(--sel); color: var(--sel); }
+    button[disabled] { opacity: .5; cursor: default; }
+    .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    #turn { color: var(--sel); }
+    #seats, #note { font-size: 12px; color: var(--dim); }
+    #note { color: #c9975a; min-height: 1.3em; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    td { padding: 2px 4px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    td.key { color: var(--sel); }
+    .empty { color: var(--dim); font-size: 12px; padding: 4px 0; }
+    .keys { font-size: 12px; color: var(--dim); }
+    .keys b { color: var(--light); font-weight: normal; border: 1px solid var(--line); padding: 0 5px; }
+    #link { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            font-size: 12px; color: var(--sel); cursor: pointer; }
+    #link.copied { color: var(--ok); }
+    .hidden { display: none !important; }
+    iframe#shell { width: 100%; height: 180px; border: 0; border-top: 1px solid var(--line); background: var(--bg); }
+    @media (max-width: 760px) { #main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<div id="layout">
+  <header>
+    <a class="brand" href="/kart/" target="_top">ETCS KART</a>
+    <label for="name" style="color:var(--dim);font-size:12px">you are</label>
+    <input id="name" spellcheck="false" title="your name in a race -- what the hall lists and the record is authored as">
+    <span class="spacer"></span>
+    <span id="status">loading…</span>
+  </header>
+
+  <div id="main">
+    <div id="stage">
+      <canvas id="canvas" width="1024" height="768" tabindex="0"></canvas>
+      <canvas id="bootthrob" width="96" height="96"></canvas>
+    </div>
+
+    <aside>
+      <section>
+        <h3>The race</h3>
+        <div id="turn">—</div>
+        <div id="seats"></div>
+        <div id="note"></div>
+        <div class="row" style="margin-top:6px">
+          <button id="host" class="primary" title="host a race of your own, listed in the hall">host a race</button>
+          <button id="leave" class="hidden" title="leave this race">leave</button>
+        </div>
+        <div id="link" class="hidden" title="click to copy the link to this race"></div>
+      </section>
+
+      <section>
+        <h3>Standings</h3>
+        <table><tbody id="standings"></tbody></table>
+        <div id="no-standings" class="empty">nobody on the track</div>
+      </section>
+
+      <section>
+        <h3>The hall</h3>
+        <table><tbody id="hall"></tbody></table>
+        <div id="no-hall" class="empty">nobody is racing yet — host one</div>
+      </section>
+
+      <section>
+        <h3>Driving</h3>
+        <div class="keys"><b>W</b> go &nbsp; <b>S</b> brake, reverse &nbsp; <b>A</b> <b>D</b> steer — the wheels turn, the kart follows them.
+        Click the track first so it has the keys.</div>
+      </section>
+    </aside>
+  </div>
+
+  <!-- The ShellProvider page as the terminal VIEW only: it detects being framed
+       and boots no runtime of its own; lines cross by postMessage. -->
+  <iframe id="shell" src="shell?view=line" title="ETCS shell"></iframe>
+</div>
+
+<script>
+(function () {
+  const $ = function (id) { return document.getElementById(id); };
+  const statusEl = $('status'), canvas = $('canvas'), shellFrame = $('shell');
+  const ORIGIN = window.location.origin;
+  const QS = new URLSearchParams(window.location.search);
+
+  // ── the log and the status line (PaintProvider's page, same shape) ────────
+  const ANSI_STRIP = /\x1b\[[0-9;?]*[A-Za-z]/g;
+  const STATUS_TTL_MS = 6000;
+  let statusTimer = 0;
+  function setStatus(s, cls, ttl) {
+    statusEl.textContent = s; statusEl.className = cls || '';
+    if (statusTimer) { clearTimeout(statusTimer); statusTimer = 0; }
+    if (ttl && s) statusTimer = setTimeout(function () { statusTimer = 0; if (statusEl.textContent === s) setStatus('', ''); }, ttl);
+  }
+  function log(text, cls) {
+    termWrite(text);
+    if (cls === 'err' || cls === 'ok') setStatus(String(text).replace(ANSI_STRIP, '').trim().split('\n')[0], cls, STATUS_TTL_MS);
+  }
+  let shellReady = false;
+  const pending = [];
+  function toShell(msg) { if (shellFrame.contentWindow) shellFrame.contentWindow.postMessage(msg, ORIGIN); }
+  function termWrite(text) {
+    if (!shellReady) { pending.push(text); if (pending.length > 2000) pending.shift(); return; }
+    toShell({ etcs: 'out', text: text });
+  }
+  window.etcsTermWrite = function (t) { if (t != null) termWrite(String(t)); };
+  const SHELL_DRAIN_MS = 250;
+  let shellDrainTimer = 0, lastMenuJson = '';
+  function drainShellOutput() {
+    const mod = window.Module;
+    if (!mod || !mod.ccall) return;
+    let text = '';
+    try { text = mod.ccall('etcs_web_shell_drain', 'string', [], []); } catch (e) { return; }
+    if (text) termWrite(text);
+    let menu = '';
+    try { menu = mod.ccall('etcs_web_shell_menu', 'string', [], []); } catch (e) { menu = ''; }
+    if (menu && menu !== lastMenuJson) { lastMenuJson = menu; toShell({ etcs: 'menu', json: menu }); }
+  }
+  function startShellDrain() { if (!shellDrainTimer) shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS); }
+  function pushLine(line) {
+    const mod = window.Module;
+    if (!mod) { log('[etcs] line dropped, runtime not up: ' + line + '\n', 'err'); return; }
+    try { mod.ccall('etcs_web_shell_push_line', null, ['string'], [line]); }
+    catch (e) { log('[etcs] push_line failed: ' + e + '\n', 'err'); }
+  }
+  window.addEventListener('message', function (ev) {
+    if (ev.origin !== ORIGIN || ev.source !== shellFrame.contentWindow) return;
+    const m = ev.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.etcs === 'view-ready') {
+      shellReady = true;
+      for (const t of pending) toShell({ etcs: 'out', text: t });
+      pending.length = 0;
+      toShell({ etcs: 'enable', enabled: !!(window.Module && window.Module.calledRun) });
+      if (lastMenuJson) toShell({ etcs: 'menu', json: lastMenuJson });
+      return;
+    }
+    if (m.etcs === 'line') { pushLine(String(m.line == null ? '' : m.line)); return; }
+  });
+
+  // ── the runtime ───────────────────────────────────────────────────────────
+  function etcsFS() { return (typeof FS !== 'undefined') ? FS : (window.Module && window.Module.FS); }
+  let runtimeIsUp = false, sceneUp = false;
+  function runtimeUp() { return runtimeIsUp && !!(window.Module && window.Module.ccall); }
+  function callVerb(name, work, args) {
+    return window.Module.ccall('etcs_web_call', 'number', ['string', 'string', 'string'], [name, work, args]);
+  }
+  // A call that answers, off the main thread -- the thread GLFW delivers every
+  // press on, and the one a verb that waits on the link must not hold.
+  let __seq = 1; const __pending = new Map();
+  window.__etcs_call_done = function (handle, ok, text) {
+    const p = __pending.get(handle); if (!p) return;
+    __pending.delete(handle); p.resolve(ok ? text : null);
+  };
+  function callResult(name, work, args) {
+    if (!runtimeUp()) return Promise.resolve(null);
+    const handle = __seq++;
+    return new Promise(function (resolve) {
+      __pending.set(handle, { resolve: resolve });
+      window.Module.ccall('etcs_web_call_async', null, ['number', 'string', 'string', 'string'], [handle, name, work, args == null ? '' : args]);
+    });
+  }
+  function nameLive(name) {
+    try { return !!window.Module.ccall('etcs_web_has', 'number', ['string'], [name]); } catch (e) { return false; }
+  }
+  canvas.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+
+  // ── who you are, where the hub is ─────────────────────────────────────────
+  function hubUrl() {
+    const given = QS.get('hub');
+    if (given) return given.replace(/\/+$/, '');
+    return window.location.origin.replace(/^http/, 'ws') + '/link';
+  }
+  const NAME_A = ['amber', 'brisk', 'calm', 'deep', 'eager', 'fern', 'gold', 'hazy', 'ivory', 'jade', 'keen', 'lunar',
+                  'mossy', 'north', 'opal', 'plum', 'quiet', 'rusty', 'sly', 'tidal', 'umber', 'vivid', 'wild', 'zesty'];
+  const NAME_B = ['otter', 'heron', 'lynx', 'wren', 'moth', 'finch', 'badger', 'newt', 'crane', 'fox', 'marten', 'owl',
+                  'raven', 'seal', 'stoat', 'swift', 'toad', 'vole', 'yak', 'gecko', 'ibis', 'koi', 'lark', 'mole'];
+  // A name the hall knows this page by, kept across reloads (the room refuses
+  // a name already linked, so a page coming back as itself is the point).
+  function myName() {
+    try { const kept = window.localStorage.getItem('etcs-kart-name'); if (kept) return kept; } catch (e) {}
+    const pick = function (a) { return a[Math.floor(Math.random() * a.length)]; };
+    const made = pick(NAME_A) + '-' + pick(NAME_B) + '-' + Math.floor(Math.random() * 90 + 10);
+    keepName(made); return made;
+  }
+  function keepName(n) { try { window.localStorage.setItem('etcs-kart-name', n); } catch (e) {} }
+  const nameEl = $('name');
+  nameEl.value = myName();
+  nameEl.addEventListener('change', function () {
+    const n = nameEl.value.trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
+    if (!n) { nameEl.value = myName(); return; }
+    keepName(n); nameEl.value = n;
+    log('[etcs] you are ' + n + ' from the next race on\n', 'ok');
+  });
+  function mintId() {
+    const b = new Uint8Array(8); window.crypto.getRandomValues(b);
+    return Array.from(b, function (x) { return x.toString(16).padStart(2, '0'); }).join('');
+  }
+
+  /*
+   * A TEMPLATE, FILLED IN AND RUN (ChessProvider's page, the same): the
+   * staged script read out of the runtime's filesystem, every {{field}}
+   * replaced, written under a fresh name and pushed to the shell as a line.
+   * `path` is the script's staged name (its OS path); `inject` hands the
+   * boot's globals in (race=race ...), which a later root script cannot name.
+   */
+  let templateSeq = 0;
+  function runTemplate(path, fields, inject) {
+    const fs = etcsFS();
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    let text = '';
+    try { text = new TextDecoder().decode(fs.readFile('/' + path)); }
+    catch (e) { log('[etcs] ' + path + ' is not staged -- ' + e + '\n', 'err'); return false; }
+    for (const k in fields) text = text.split('{{' + k + '}}').join(String(fields[k]));
+    const out = '/run_' + name.replace(/\.etcs$/, '') + '_' + (++templateSeq) + '.etcs';
+    fs.writeFile(out, new TextEncoder().encode(text));
+    pushLine(out + (inject ? ' ' + inject : ''));
+    return true;
+  }
+
+  // ── the session ───────────────────────────────────────────────────────────
+  //
+  // THE TEMPLATES THE OS RUNS: hosting is kart_host.etcs filled in, joining
+  // is kart_join.etcs, and the hall is the site's -- chess_hall.etcs, run once
+  // when the runtime is up and mirrored here. Out of a race, the race is your
+  // own: practice, alone on the track.
+  const session = { n: 0, mode: null, id: null, owner: null, tick: 0, beating: false, hallN: 0, hallUp: false, practising: false };
+  const hostBtn = $('host'), leaveBtn = $('leave'), linkEl = $('link');
+
+  function beat() {
+    if (session.beating || !session.mode) return;
+    session.beating = true;
+    callResult('race', 'Tick', '').then(function () { session.beating = false; });
+  }
+  function practise() {
+    session.practising = true;
+    callResult('race', 'Practice', myName());
+  }
+  function openHall() {
+    if (session.hallUp || !runtimeUp() || !nameLive('race')) return;
+    if (!session.practising && !session.mode) practise();
+    session.hallN = 0;
+    if (!runTemplate('ChessProvider/scripts/chess_hall.etcs', { n: 0, name: myName(), hub: hubUrl() }, '')) return;
+    session.hallUp = true;
+    log('[etcs] listing the hall at ' + hubUrl() + '/hall as ' + myName() + '\n');
+  }
+  function hostRace() {
+    if (session.mode || !session.hallUp) return;
+    session.n += 1; session.mode = 'hosting'; session.id = mintId(); session.owner = myName();
+    if (!runTemplate('KartProvider/scripts/kart_host.etcs', { n: session.n, name: myName(), id: session.id, hub: hubUrl() },
+                     'race=race hall=halllist' + session.hallN)) { session.mode = null; return; }
+    session.tick = setInterval(beat, 1000);
+    linkEl.textContent = linkFor(session.id, session.owner); linkEl.classList.remove('hidden');
+    hostBtn.classList.add('hidden'); leaveBtn.classList.remove('hidden');
+    log('[etcs] your race is open: ' + linkFor(session.id, session.owner) + '\n', 'ok');
+    canvas.focus();
+  }
+  function joinRace(id, owner) {
+    if (session.mode) return;
+    session.n += 1; session.mode = 'joined'; session.id = id; session.owner = owner;
+    if (!runTemplate('KartProvider/scripts/kart_join.etcs', { n: session.n, name: myName(), id: id, owner: owner, hub: hubUrl() },
+                     'race=race')) { session.mode = null; return; }
+    session.tick = setInterval(beat, 1000);
+    hostBtn.classList.add('hidden'); leaveBtn.classList.remove('hidden');
+    log('[etcs] in ' + owner + "'s race as " + myName() + '\n', 'ok');
+    canvas.focus();
+  }
+  function leaveRace() {
+    if (!session.mode) return;
+    // Launched with the names handed in, as host and join are: a `run` line
+    // of a later root script cannot name the boot's globals.
+    if (session.mode === 'hosting') runTemplate('KartProvider/scripts/kart_close.etcs', {}, 'race=race room=room' + session.n);
+    else                            runTemplate('KartProvider/scripts/kart_leave.etcs', {}, 'race=race peer=peer' + session.n);
+    clearInterval(session.tick); session.tick = 0;
+    session.mode = null; session.id = null; session.owner = null;
+    linkEl.classList.add('hidden'); hostBtn.classList.remove('hidden'); leaveBtn.classList.add('hidden');
+    setTimeout(practise, 300);
+  }
+  function linkFor(id, owner) { return window.location.origin + window.location.pathname + '?s=' + id + '&owner=' + encodeURIComponent(owner); }
+  hostBtn.addEventListener('click', hostRace);
+  leaveBtn.addEventListener('click', leaveRace);
+  linkEl.addEventListener('click', function () {
+    navigator.clipboard.writeText(linkEl.textContent).then(function () {
+      linkEl.classList.add('copied'); setTimeout(function () { linkEl.classList.remove('copied'); }, 1200);
+    }).catch(function () {});
+  });
+  // The keys are the window's (GLFW listens on the page): a click on the
+  // track is how you say you are driving rather than typing your name.
+  canvas.addEventListener('mousedown', function () { canvas.focus(); });
+
+  // ── what the page shows, polled ───────────────────────────────────────────
+  const turnEl = $('turn'), seatsEl = $('seats'), noteEl = $('note'), standEl = $('standings'), hallEl = $('hall');
+  let shownStand = '', shownHall = '', polling = false;
+  function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+  async function poll() {
+    if (polling || !runtimeUp() || !nameLive('race')) return;
+    polling = true;
+    try {
+      const st = await callResult('race', 'Status', '');
+      if (st) {
+        sceneUp = true;
+        const p = st.trim().split(/\s+/);   // tick seq mode me slot
+        const mode = p[2], slot = parseInt(p[4], 10);
+        turnEl.textContent = mode === 'host' ? 'hosting a race' : mode === 'guest' ? 'in ' + session.owner + "'s race"
+                           : mode === 'practice' ? 'practising, alone' : '—';
+        seatsEl.textContent = slot >= 0 ? 'you drive kart ' + (slot + 1) : (session.mode ? 'watching -- no kart free' : '');
+      }
+      const note = await callResult('race', 'Note', '');
+      if (note != null) noteEl.textContent = note;
+      const stand = await callResult('race', 'Standings', '');
+      if (stand != null && stand !== shownStand) { shownStand = stand; renderStandings(stand); }
+      if (session.hallUp) {
+        const list = await callResult('hall' + session.hallN, 'List', '');
+        if (list != null && list !== shownHall) { shownHall = list; renderHall(list); }
+      }
+    } finally { polling = false; }
+  }
+  // "<slot> <driver> <laps> <last> <best> <speed>" per kart with a driver.
+  function renderStandings(text) {
+    standEl.innerHTML = '';
+    const rows = text.split('\n').map(function (l) { return l.trim().split(/\s+/); }).filter(function (p) { return p.length >= 6; });
+    rows.sort(function (a, b) { return (parseInt(b[2], 10) - parseInt(a[2], 10)) || (parseFloat(a[4]) || 1e9) - (parseFloat(b[4]) || 1e9); });
+    const head = document.createElement('tr');
+    head.innerHTML = '<td class="key">kart</td><td>laps</td><td>last</td><td>best</td>';
+    if (rows.length) standEl.appendChild(head);
+    for (const p of rows) {
+      const tr = document.createElement('tr');
+      const you = p[1] === myName() ? ' (you)' : '';
+      tr.innerHTML = '<td class="key">' + esc((parseInt(p[0], 10) + 1) + ' ' + p[1] + you) + '</td><td>' + esc(p[2])
+                   + '</td><td>' + esc(p[3]) + '</td><td>' + esc(p[4]) + '</td>';
+      standEl.appendChild(tr);
+    }
+    $('no-standings').classList.toggle('hidden', rows.length > 0);
+  }
+  // "<name> kart <id> <drivers> <karts>" per race. Mine is marked; a race with
+  // a kart free is a join.
+  function renderHall(list) {
+    hallEl.innerHTML = '';
+    let n = 0;
+    for (const line of list.split('\n')) {
+      const p = line.trim().split(/\s+/);
+      if (p.length < 5 || p[1] !== 'kart') continue;
+      const [name, , id, drivers, karts] = p;
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td class="key">' + esc(name + "'s race") + '</td><td>' + esc(drivers + '/' + karts) + '</td>';
+      const td = document.createElement('td');
+      if (name === myName()) td.textContent = 'you';
+      else if (!session.mode) {
+        const btn = document.createElement('button');
+        btn.textContent = parseInt(drivers, 10) < parseInt(karts, 10) ? 'join' : 'watch';
+        btn.onclick = function () { joinRace(id, name); };
+        td.appendChild(btn);
+      }
+      tr.appendChild(td); hallEl.appendChild(tr); n++;
+    }
+    $('no-hall').classList.toggle('hidden', n > 0);
+    landFromQuery(list);
+  }
+  // What the address asked for, once the hall can answer it: ?s=<id>&owner=
+  // joins that race; ?quick=1 joins the first with a kart free, or hosts one;
+  // ?host=1 hosts one.
+  let landed = false;
+  function landFromQuery(list) {
+    if (landed || session.mode) return;
+    const s = QS.get('s'), owner = QS.get('owner');
+    if (s && owner) { landed = true; joinRace(s, owner); return; }
+    const rows = list.split('\n').map(function (l) { return l.trim().split(/\s+/); })
+                     .filter(function (p) { return p.length >= 5 && p[1] === 'kart'; });
+    if (QS.get('quick') === '1') {
+      landed = true;
+      const r = rows.find(function (p) { return p[0] !== myName() && parseInt(p[3], 10) < parseInt(p[4], 10); });
+      if (r) joinRace(r[2], r[0]); else hostRace();
+      return;
+    }
+    if (QS.get('host') === '1') { landed = true; hostRace(); }
+  }
+  // An empty hall answers nothing (renderHall runs on a change), so an
+  // address that hosts when there is nothing to join waits a few seconds for
+  // the hall's first listing before deciding there is none.
+  let hallSince = 0;
+  function startPolling() {
+    setInterval(function () {
+      if (!session.hallUp) openHall();
+      else if (!hallSince) hallSince = Date.now();
+      else if (!landed && Date.now() - hallSince > 8000) landFromQuery(shownHall);
+      poll();
+    }, 500);
+  }
+
+  // ── the include list, the base, the boot (PaintProvider's page, the same) ──
+  function normalizeWasmList(raw) {
+    let arr = [];
+    if (Array.isArray(raw)) arr = raw; else if (raw && Array.isArray(raw.modules)) arr = raw.modules; else if (raw && Array.isArray(raw.wasm)) arr = raw.wasm;
+    return arr.map(function (x) {
+      x = String(x).trim(); if (!x) return null;
+      if (!/\.wasm$/i.test(x)) x += '.wasm';
+      x = x.replace(/^\.\//, '');
+      if (/^etcs(\.wasm)?$/i.test(x) || /worker/i.test(x)) return null;
+      return x;
+    }).filter(Boolean);
+  }
+  let man_module_count = 0;
+  async function fetchManifest() {
+    const r = await fetch('modules.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('modules.json HTTP ' + r.status + ' -- required (no fallback list)');
+    const j = await r.json();
+    const wasm = normalizeWasmList(j);
+    if (!wasm.length) throw new Error('modules.json names no modules');
+    const strip = function (s) { return String(s).trim().replace(/^\.\//, ''); };
+    const scripts = (j && Array.isArray(j.scripts) ? j.scripts : []).map(strip).filter(Boolean);
+    const boot = (j && j.boot) ? strip(j.boot) : '';
+    const glue = (j && j.glue) ? strip(j.glue) : '';
+    const base = (j && j.base) ? String(j.base).trim() : '';
+    log('[etcs] modules.json -> ' + wasm.join(', ') + '\n');
+    if (scripts.length) log('[etcs] scripts -> ' + scripts.join(', ') + '\n');
+    man_module_count = wasm.length;
+    return { wasm: wasm, scripts: scripts, boot: boot, glue: glue, base: base };
+  }
+  const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
+  function checkStaged(name, kind, buf) {
+    if (kind === 'module') {
+      const ok = buf.byteLength >= 4 && WASM_MAGIC.every(function (b, i) { return buf[i] === b; });
+      if (!ok) throw new Error(name + ' is not a WebAssembly module -- the server answered 200 with something else');
+      return;
+    }
+    let i = 0;
+    while (i < buf.byteLength && (buf[i] === 32 || buf[i] === 9 || buf[i] === 10 || buf[i] === 13)) i++;
+    if (i < buf.byteLength && buf[i] === 0x3c)
+      throw new Error(name + ' is markup, not an .etcs script -- check what kart_mounts.etcs mounts at that path (FileHtmlPage::ListPaths in the server log)');
+  }
+  let workerDeathExplained = false;
+  function explainWorkerDeath(t) {
+    if (workerDeathExplained || !/worker sent an error|could not load dynamic lib|ASM_CONSTS is undefined/.test(t)) return;
+    workerDeathExplained = true;
+    log('[etcs] A Worker died. This is browser memory, not the wasm heap: each Worker re-instantiates every open module, '
+      + 'so the cost is workers x modules (' + (man_module_count || '?') + ' here). Any "index out of bounds" after this line is the consequence.\n', 'err');
+  }
+  const WASM_BASE_CANDIDATES = ['/wasm/', './', 'https://anticurrententropy.com/wasm/'];
+  let wasm_base = null, wasm_probe = null;
+  function joinBase(base, name) { return (base === './') ? name : base.replace(/\/*$/, '/') + name; }
+  async function resolveWasmBase(declared, firstModule) {
+    const candidates = declared ? [declared] : WASM_BASE_CANDIDATES, tried = [];
+    for (const base of candidates) {
+      const url = joinBase(base, firstModule);
+      try {
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) { tried.push(base + ' HTTP ' + r.status); continue; }
+        const buf = new Uint8Array(await r.arrayBuffer());
+        checkStaged(firstModule, 'module', buf);
+        wasm_base = base; wasm_probe = { name: firstModule, buf: buf };
+        log('[etcs] wasm base -> ' + base + '\n', 'ok');
+        return base;
+      } catch (e) { tried.push(base + ' ' + (e && e.message ? e.message : e)); }
+    }
+    throw new Error('no wasm base serves ' + firstModule + ' -- tried ' + tried.join('; '));
+  }
+  async function fetchAll(names, kind, base) {
+    const out = {};
+    for (const name of names) {
+      if (wasm_probe && wasm_probe.name === name) { out[name] = wasm_probe.buf; continue; }
+      setStatus('fetch ' + name);
+      const url = base ? joinBase(base, name) : name;
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('fetch ' + url + ' failed HTTP ' + r.status);
+      const buf = new Uint8Array(await r.arrayBuffer());
+      if (!buf.byteLength) throw new Error(url + ' is empty');
+      checkStaged(name, kind, buf);
+      out[name] = buf;
+      log('[etcs] staged ' + name + ' (' + buf.byteLength + ' bytes)\n');
+    }
+    return out;
+  }
+  function loadGlue(src) {
+    return new Promise(function (resolve, reject) {
+      const s = document.createElement('script'); s.src = src; s.async = true;
+      s.onload = resolve; s.onerror = reject; document.body.appendChild(s);
+    });
+  }
+  async function boot() {
+    setStatus('fetching…');
+    const man = await fetchManifest();
+    setStatus('locating runtime…');
+    await resolveWasmBase(man.base, man.wasm[0]);
+    const blobs = Object.assign({}, await fetchAll(man.wasm, 'module', wasm_base), await fetchAll(man.scripts, 'script', null));
+    if (man.boot && !blobs[man.boot]) throw new Error('modules.json boot="' + man.boot + '" is not in its scripts list');
+    var Module = {
+      canvas: canvas,
+      // argv[1] is the boot script: main() runs it and falls through to the
+      // navigator, so the window and its pumps are up before the first prompt.
+      arguments: man.boot ? [man.boot] : [],
+      print: function (t) { window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n')); },
+      printErr: function (t) { log(t + (String(t).endsWith('\n') ? '' : '\n'), 'err'); explainWorkerDeath(String(t)); },
+      dynamicLibraries: [],
+      locateFile: function (path) { return joinBase(wasm_base, path); },
+      preRun: [function () {
+        try {
+          for (const name of Object.keys(blobs)) {
+            const slash = name.lastIndexOf('/');
+            if (slash > 0) { try { FS.mkdirTree(name.slice(0, slash)); } catch (e) {} }
+            try { FS.writeFile(name, blobs[name]); }
+            catch (e) { FS.createDataFile('/', name.replace(/^\.\//, ''), blobs[name], true, true, true); }
+          }
+          log('[etcs] MEMFS preload complete (' + Object.keys(blobs).length + ' files)\n');
+        } catch (e) { log('[etcs] preRun FS error: ' + e + '\n', 'err'); }
+      }],
+      onRuntimeInitialized: function () {
+        setStatus('runtime ready', 'ok');
+        runtimeIsUp = true;
+        startShellDrain();
+        startPolling();
+        log('[etcs] runtime initialized; boot script: ' + (man.boot || '(none)') + '\n', 'ok');
+        if (shellReady) toShell({ etcs: 'enable', enabled: true });
+      },
+      onAbort: function (r) { setStatus('aborted', 'err'); log('[abort] ' + r + '\n', 'err'); if (shellReady) toShell({ etcs: 'enable', enabled: false }); }
+    };
+    window.Module = Module;
+    if (man.glue) { setStatus('loading ' + man.glue + '…'); await loadGlue(joinBase(wasm_base, man.glue)); }
+    else { try { await loadGlue(joinBase(wasm_base, 'etcs.js')); } catch (_) { await loadGlue(joinBase(wasm_base, 'etcs')); } }
+  }
+
+  // The boot throbber, page-side (PaintProvider's page has the measurement:
+  // the runtime's first frame lands seconds after main() starts).
+  function bootThrobber() {
+    const el = $('bootthrob'); if (!el) return;
+    const g = el.getContext('2d'); if (!g) { el.remove(); return; }
+    const RING = el.width, DOTS = 12, TAIL = 0.45, STEP = 5.4 / 360;
+    const HEAD = [0.35, 0.55, 0.95], TAILC = [0.58, 0.40, 0.95];
+    const cx = RING / 2, cy = RING / 2, dotR = RING * 0.08, orbit = RING * 0.5 - dotR - RING / 24;
+    let phase = 0, stopped = false;
+    g.font = '600 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    function frame() {
+      if (stopped) return;
+      g.clearRect(0, 0, el.width, el.height);
+      g.fillStyle = 'rgba(240, 227, 199, 0.95)'; g.fillText('ETCS', cx + 1, cy + 2);
+      for (let i = 0; i < DOTS; i++) {
+        const at = i / DOTS; let d = phase - at; d = d - Math.floor(d); if (d > 0.5) d = 1 - d;
+        let t = 1 - (d / TAIL); if (t < 0) t = 0; t = t * t;
+        const a = 0.14 + (1 - 0.14) * t, c = HEAD.map(function (h, k) { return Math.round(255 * (TAILC[k] + (h - TAILC[k]) * t)); });
+        const ang = at * Math.PI * 2 - Math.PI / 2;
+        g.beginPath(); g.arc(cx + orbit * Math.cos(ang), cy + orbit * Math.sin(ang), dotR, 0, Math.PI * 2);
+        g.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a.toFixed(3) + ')'; g.fill();
+      }
+      phase = (phase + STEP) % 1; requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+    // Not by reading the canvas, as the chess page does: a 2D context asked
+    // for before the runtime's WebGPU one takes the canvas from the device.
+    // The track is up when the race first answers (poll).
+    const p = setInterval(function () {
+      if (!sceneUp) return;
+      stopped = true; clearInterval(p); el.remove(); log('[etcs] the track is up\n');
+    }, 200);
+  }
+  bootThrobber();
+  boot().catch(function (e) { setStatus('boot failed', 'err'); log('[etcs] boot: ' + e + '\n', 'err'); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+#!/usr/bin/env etcs
+
+# KART, IN A BROWSER: the track, the pool of karts and the race, on the page
+# served by ETCS (index.html beside this). The page names you, then practises,
+# hosts or joins through the race (KartProvider/scripts/kart_host.etcs,
+# kart_join.etcs) -- this file only builds what every one of those starts from,
+# the same on every runtime that will share a race.
+#
+# The substrate is RenderProvider's 3D page's: no main.Run (the browser's loop
+# is the page's), the camera composed directly with a Device child so the
+# scene goes to the page's WebGPU device.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS kart)
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+
+spawn RenderProvider::Camera3D eye
+eye.Create(1024, 768)
+eye.SetPosition(0, 0)
+eye.SetOrder(1)
+eye.SetBackground(0.50, 0.68, 0.88, 1.0)
+eye.SetLens(60.0, 0.1, 400.0)
+eye.spawn(RenderProvider::Device dev)
+dev.Create(@gpu)
+
+spawn RenderProvider::Scene3D world
+world.Create(1.0, 1.0, 1.0)
+world.SetVisible(0)
+eye.SetScene(@world)
+
+# The race, named here so the page and the terminal reach it (race.Standings(),
+# race.Status()); the course builds the track and hands it the karts.
+spawn KartProvider::KartRace race
+race.Create()
+run KartProvider/scripts/kart_course.etcs anchor=world race=race
+run KartProvider/scripts/kart_play.etcs race=race world=world eye=eye
+
+view.Clear(0.02, 0.02, 0.03, 1.0)
+view.Compose(@eye)
+detach RenderProvider/scripts/render_frames.etcs view=view
+detach KartProvider/scripts/kart_keys.etcs window=main race=race

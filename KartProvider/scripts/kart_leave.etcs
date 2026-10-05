@@ -1,0 +1,10 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# ── LEAVE A RACE JOINED ──────────────────────────────────────────────────────
+#     run KartProvider/scripts/kart_leave.etcs race=<KartRace> peer=<Peer>
+# The kart goes with the link: presence is withdrawn with it, and the host
+# puts the kart back in the pit (a `leave` line of the record).
+requires race [KartRace]
+requires peer [Peer]
+race.Leave()
+peer.Close()

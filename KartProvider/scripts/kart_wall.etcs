@@ -1,0 +1,6 @@
+#!/usr/bin/env etcs
+# A wall of the track: brick red, anchored, solid. `run kart_wall.etcs part=<Scene3D>`
+requires part [Drawable3D]
+part.SetColor(0.62, 0.22, 0.18, 1.0)
+part.SetAnchored(1)
+part.SetSolid(0.4, 0.0)

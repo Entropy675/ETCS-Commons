@@ -1,0 +1,28 @@
+#!/usr/bin/env etcs
+# THE RACE ON A CAMERA: the card, how to drive, and the race bound to the eye
+# it steers (behind this runtime's own kart) -- the same for a window and a page.
+#   run KartProvider/scripts/kart_play.etcs race=race world=world eye=eye
+requires race [KartRace]
+requires world [Drawable3D]
+requires eye [Camera]
+
+eye.spawn(RenderProvider::TextLabel card)
+card.Create(20)
+card.SetText(kart)
+card.SetPosition(16, 16)
+card.SetColor(1.0, 1.0, 0.85, 1.0)
+card.SetBackground(0.0, 0.0, 0.0, 0.45)
+card.SetPadding(6)
+card.SetOrder(11)
+eye.spawn(RenderProvider::TextLabel howto)
+howto.Create(16)
+howto.SetText(W: go / S: brake, reverse / A D: steer)
+howto.SetPosition(16, 724)
+howto.SetColor(0.75, 0.9, 0.8, 1.0)
+howto.SetBackground(0.0, 0.0, 0.0, 0.35)
+howto.SetPadding(4)
+howto.SetOrder(11)
+
+race.BindWorld(@world)
+race.BindCamera(@eye)
+race.BindCard(@card)

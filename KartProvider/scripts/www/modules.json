@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "THE INCLUDE LIST for the kart page: what it loads, in order, and nothing else.",
+    "KartProvider after RenderProvider (the race drives RenderProvider's nodes by their verbs);",
+    "NetworkProvider for the race between runtimes (the record, the proposals, presence, the hall);",
+    "ShellProvider last so the navigator comes up in the embedded terminal."
+  ],
+  "modules": [
+    "WindowProvider.wasm",
+    "RenderProvider.wasm",
+    "KartProvider.wasm",
+    "NetworkProvider.wasm",
+    "ShellProvider.wasm"
+  ],
+  "_scripts": [
+    "Staged into the browser's filesystem under these names before main() runs, each also",
+    "answering over HTTP (kart_mounts.etcs). A script's name is its OS path. The hall's two",
+    "scripts are chess's: the hall is the site's name server for every game, listed the same way."
+  ],
+  "scripts": [
+    "boot_kart.etcs",
+    "KartProvider/scripts/kart_course.etcs",
+    "KartProvider/scripts/kart_wall.etcs",
+    "KartProvider/scripts/kart_car.etcs",
+    "KartProvider/scripts/kart_wheel.etcs",
+    "KartProvider/scripts/kart_play.etcs",
+    "KartProvider/scripts/kart_keys.etcs",
+    "KartProvider/scripts/kart_host.etcs",
+    "KartProvider/scripts/kart_join.etcs",
+    "KartProvider/scripts/kart_leave.etcs",
+    "KartProvider/scripts/kart_close.etcs",
+    "KartProvider/scripts/kart_judge.etcs",
+    "KartProvider/scripts/kart_follow.etcs",
+    "KartProvider/scripts/kart_emit.etcs",
+    "KartProvider/scripts/kart_watch.etcs",
+    "ChessProvider/scripts/chess_hall.etcs",
+    "ChessProvider/scripts/chess_mirror.etcs",
+    "RenderProvider/scripts/render_frames.etcs"
+  ],
+  "boot": "boot_kart.etcs",
+  "_glue": [
+    "The emscripten loader output, STAGED AS .js (ChessProvider's modules.json on why)."
+  ],
+  "glue": "etcs.js"
+}

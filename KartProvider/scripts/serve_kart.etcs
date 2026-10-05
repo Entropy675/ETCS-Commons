@@ -1,0 +1,37 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE KART PAGE, served by ETCS, with a hub to race over and a hall to find a
+# race in.
+#
+#     ./bin/etcs modules/KartProvider/scripts/serve_kart.etcs
+#     then open https://localhost:8445/ -- in two tabs, one hosting
+#
+# Build first: ace wasm make all, then ace wasm make loader etcs. On the site
+# (scripts/site_apps.etcs) the page is /kart/ and the hall is the one the
+# chess service runs; here the hall is this server's own.
+
+spawn NetworkProvider::HttpServer web
+web.SetPort(8445)
+web.EnableTLS(/tmp/etcs-cert.pem /tmp/etcs-key.pem)
+web.AddHeader(Cross-Origin-Opener-Policy same-origin)
+web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
+
+web.spawn(NetworkProvider::FileHtmlPage tree)
+web.spawn(NetworkProvider::LinkHub links)
+tree.SetDefaultExtension(.html)
+tree.MountTree(wasm ACE_ROOT/bin/wasm)
+tree.MountTree(favicon ACE_ROOT/scripts/www/favicon)
+run kart_mounts.etcs tree=tree
+tree.ListPaths()
+
+web.Start()
+web.IsStarted()
+
+# The hall: a Lobby every host lists its race in, published on the hub as
+# `hall` -- what ChessProvider/scripts/chess_service.etcs opens on the site.
+spawn NetworkProvider::Lobby hall_list
+spawn NetworkProvider::Room hall
+hall.SetName(hall)
+hall.Publish(hall @hall_list Advertise Withdraw Watch)
+hall.Host(@links hall)
