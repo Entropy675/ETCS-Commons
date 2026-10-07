@@ -800,11 +800,10 @@ DEFINE_WORK_FUNC(Peer, Delete) { (void)ctx; (void)data; self.Delete(); }
 // Bind <export name> [<peer rid> | <room rid> <guest>]
 DEFINE_WORK_FUNC(Remote, Bind)
 {
-    (void)ctx;
     std::string name, guest;
     ETCS::RID peer = 0;
     data >> name >> peer >> guest;
-    const bool ok = self.Bind(name, peer, guest);
+    const bool ok = self.Bind(name, peer, guest, &ctx);
     data.reset(); data << ok;
 }
 DEFINE_WORK_FUNC(Remote, Unbind) { (void)ctx; (void)data; self.Unbind(); }

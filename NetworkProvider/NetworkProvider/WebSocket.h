@@ -159,13 +159,19 @@ struct Url
 // first frame says what the channel is for, and whatever follows it belongs
 // to the MirrorBuffer that takes the fd over next. A MirrorBuffer reads in
 // chunks, so it cannot be the one to read that header.
+// No deadline: a wait that lasts as long as the socket does -- until it is
+// ready, closes or fails, or `stop` is raised. For what the far side answers
+// when it gets to it (a hello, a host coming for a guest): whether it is
+// still there is the transport's to say (WsEnd's pings), not a clock's.
+constexpr int kLive = -1;
+
 inline bool wait_fd(int fd, short ev, int timeout_ms, const std::atomic<bool>* stop = nullptr)
 {
-    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
     while (true)
     {
         if (stop && stop->load(std::memory_order_acquire)) return false;
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+        const auto left = timeout_ms < 0 ? 100 : std::chrono::duration_cast<std::chrono::milliseconds>(
             end - std::chrono::steady_clock::now()).count();
         if (left <= 0) return false;
         pollfd p{ fd, ev, 0 };
@@ -836,10 +842,11 @@ inline int link_dial(const std::string& url, bool insecure, std::string& err)
     });
     if (fd < 0 || rc < 0) { err = "socket/connect failed for " + full; if (fd >= 0) ::close(fd); return -1; }
     // Open, or failed: SOCKFS reports a refused or closed WebSocket as
-    // HUP/ERR on poll, and writable once it is open.
+    // HUP/ERR on poll, and writable once it is open -- and it does so when
+    // this tab's main thread gets to it, so a busy tab opens late: waited for
+    // as long as the socket lives (kLive), not a clock's guess.
     pollfd p{ fd, POLLOUT, 0 };
-    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (std::chrono::steady_clock::now() < end)
+    while (true)
     {
         p.revents = 0;
         if (::poll(&p, 1, 100) > 0) break;

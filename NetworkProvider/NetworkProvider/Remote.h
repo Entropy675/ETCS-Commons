@@ -45,7 +45,11 @@ public:
     Remote()  = default;
     ~Remote() { Unbind(); }
 
-    bool Bind(const std::string& name, ETCS::RID peer_rid, const std::string& guest = "")
+    // `asker`: the context the Bind verb runs in -- interrupting it stops
+    // the wait for the far side's answer, which otherwise lasts as long as
+    // the link does (Edge.h, Pending).
+    bool Bind(const std::string& name, ETCS::RID peer_rid, const std::string& guest = "",
+              const ETCS::SignalContext* asker = nullptr)
     {
         ETCS::Entity* surface = getParent();
         if (!surface) { ETCS_LOG("Remote", "Bind: no parent -- spawn this under the surface."); return false; }
@@ -69,7 +73,7 @@ public:
         const std::string guard  = ETCS::MirrorBuffer::manifestOf(surface, ETCS::WireScope::Socket);
         std::string why, state;
         ETCS::RID far = 0;
-        if (!edge->bind(name, module, tag, hash, guard, far, state, why))
+        if (!edge->bind(name, module, tag, hash, guard, far, state, why, asker))
         {
             ETCS_LOG("Remote", "Bind '" << name << "' refused: " << why);
             return false;
@@ -100,19 +104,19 @@ public:
     }
 
     // --- IWireRemote --------------------------------------------------------
-    bool RemoteWorkConcrete(const ETCS::Buffer& action, ETCS::Buffer& data, const ETCS::SignalContext&) override
+    bool RemoteWorkConcrete(const ETCS::Buffer& action, ETCS::Buffer& data, const ETCS::SignalContext& ctx) override
     {
         auto edge = link();
         if (!edge || !surface_) { data.reset(); return false; }
         const std::string conj = surface_->getSourceTag().toString() + "." + action.toString();
         std::string why;
         if (edge->work(far_rid_, surface_->actionHash(ETCS::Buffer(conj.c_str())), action.toString(),
-                       data, surface_, why)) return true;
+                       data, surface_, why, &ctx)) return true;
         ETCS_LOG("Remote", name_ << "." << action.toString() << " refused: " << why);
         return false;
     }
     int RemoteStreamConcrete(const ETCS::Buffer& action, const ETCS::Buffer& config, bool produces,
-                             const ETCS::SignalContext&) override
+                             const ETCS::SignalContext& ctx) override
     {
         auto edge = link();
         if (!edge || !surface_) return -1;
@@ -120,7 +124,7 @@ public:
         std::string why;
         const int fd = edge->openStream(name_, action.toString(), config.toString(), produces,
                                         surface_->actionHash(ETCS::Buffer(conj.c_str())),
-                                        ETCS::MirrorBuffer::manifestOf(surface_, ETCS::WireScope::Socket), why);
+                                        ETCS::MirrorBuffer::manifestOf(surface_, ETCS::WireScope::Socket), why, &ctx);
         if (fd < 0) ETCS_LOG("Remote", name_ << "." << action.toString() << " stream refused: " << why);
         return fd;
     }

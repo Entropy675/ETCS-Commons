@@ -57,7 +57,8 @@
  * differ only in who dialled.
  *
  * Requests from the far side run on the edge's reader, in arrival order --
- * a verb holds the edge until it answers, as a local verb holds its caller.
+ * a verb holds the edge until it answers, as a local verb holds its caller,
+ * and the asker waits for that answer for as long as the link lives (Pending).
  * A stream's bytes are handed to a per-channel writer, so a slow consumer
  * delays only its own channel until 4 MiB are queued for it.
  */
@@ -131,7 +132,19 @@ private:
     std::atomic<int> live_{ 0 };
 };
 
-// Request/answer matching for whichever side asks.
+/*
+ * Request/answer matching for whichever side asks.
+ *
+ * AN ANSWER IS WAITED FOR AS LONG AS THE LINK LIVES. Whether the far side is
+ * still there is the transport's to say (WsEnd: 35 s without a byte from it
+ * closes the link, and the close wakes every wait here); how long it takes to
+ * answer is not. A far side that is busy answers late, not never -- a browser
+ * tab moves its socket's bytes only when its main thread runs -- and a
+ * wall-clock deadline here was a guess at what the transport already knows:
+ * under load it ran out on a bind the far side had answered, and the surface
+ * was never bound. A remote verb now holds its caller as a local one does,
+ * until the answer, the link's close, or the asker being interrupted.
+ */
 class Pending
 {
 public:
@@ -151,11 +164,18 @@ public:
         it->second.done = true;
         cv_.notify_all();
     }
-    bool wait(uint32_t id, std::string& body, int timeout_ms)
+    // `asker`, if given, is looked at between slices: an interrupted asker
+    // stops waiting, and an answer that comes after is dropped (answer()).
+    bool wait(uint32_t id, std::string& body, const ETCS::SignalContext* asker)
     {
         std::unique_lock<std::mutex> lock(mu_);
-        cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&]
-            { auto it = slots_.find(id); return it == slots_.end() || it->second.done || closed_; });
+        while (true)
+        {
+            auto it = slots_.find(id);
+            if (it == slots_.end() || it->second.done || closed_) break;
+            if (asker && (asker->isInterrupted() || asker->isTerminated())) break;
+            cv_.wait_for(lock, std::chrono::milliseconds(kSliceMs));
+        }
         auto it = slots_.find(id);
         const bool ok = it != slots_.end() && it->second.done;
         if (ok) body = std::move(it->second.body);
@@ -164,6 +184,7 @@ public:
     }
     void close() { std::lock_guard<std::mutex> lock(mu_); closed_ = true; cv_.notify_all(); }
 private:
+    static constexpr int kSliceMs = 100;   // how soon an interrupted asker is noticed
     struct Slot { bool done = false; std::string body; };
     std::mutex               mu_;
     std::condition_variable  cv_;
@@ -275,11 +296,15 @@ private:
 // Exact frames on the bare socket (etcs_ws::send_frame/recv_frame): nothing
 // may be read past them, the pair takes the socket over next.
 // 'W' <name> welcomes; 'N' <reason> refuses (a name already linked here).
+// The dialler waits for its welcome as long as the socket lives: a host
+// reached through a hub comes for a guest when it gets to it (LinkHub), and
+// answers then. The accepting side keeps its deadline -- the guest's hello is
+// sent on connecting, so only a guest that says nothing runs it out.
 inline bool hello_dial(int fd, const std::string& my_name, std::string& far_name, std::string* why = nullptr)
 {
     std::string w;
     if (!etcs_ws::send_frame(fd, Writer().u8('H').u8(2).str(my_name).s)
-        || !etcs_ws::recv_frame(fd, w, 10000) || w.empty()) return false;
+        || !etcs_ws::recv_frame(fd, w, etcs_ws::kLive) || w.empty()) return false;
     Reader r(w, 1);
     if (w[0] == 'N') { if (why) *why = r.str(); return false; }
     if (w[0] != 'W') return false;
@@ -308,7 +333,6 @@ class Edge
 public:
     static constexpr size_t kChunk     = 3072;             // bytes of a channel per 'D' frame
     static constexpr size_t kQueueCap  = 4u << 20;         // queued for one slow consumer
-    static constexpr int    kAnswerMs  = 15000;
 
     Edge(int fd, ETCS::MemoryArena& arena, bool dialer, std::string far_name, Exports* exports)
         : fd_(fd), dialer_(dialer), far_name_(std::move(far_name)), exports_(exports),
@@ -351,15 +375,18 @@ public:
 
     // ── Asking the far side ─────────────────────────────────────────────────
 
+    // Each ask waits for its answer as long as the link lives (Pending), or
+    // until `asker` is interrupted.
+    //
     // `state`: what the far node says a reflection of it should show
     // (ontology/Environmental.h), packed; empty when it claims no such thing.
     bool bind(const std::string& name, const std::string& module, const std::string& tag,
               uint64_t tag_hash, const std::string& manifest, ETCS::RID& far, std::string& state,
-              std::string& why)
+              std::string& why, const ETCS::SignalContext* asker = nullptr)
     {
         std::string body;
-        if (!ask('B', Writer().str(name).str(module).str(tag).u64(tag_hash).str(manifest).s, body))
-        { why = "no answer from " + far_name_; return false; }
+        if (!ask('B', Writer().str(name).str(module).str(tag).u64(tag_hash).str(manifest).s, body, asker))
+        { why = unanswered(); return false; }
         Reader r(body);
         if (r.num<uint8_t>() != 1) { why = r.str(); return false; }
         far   = r.num<uint64_t>();
@@ -369,14 +396,14 @@ public:
 
     // `owner`'s network-scope stages wrap the payload and unwrap the answer.
     bool work(ETCS::RID far, uint64_t hash, const std::string& verb, ETCS::Buffer& data,
-              ETCS::Entity* owner, std::string& why)
+              ETCS::Entity* owner, std::string& why, const ETCS::SignalContext* asker = nullptr)
     {
         ETCS::MBuffer wire;
         if (data.written) wire.writeRaw(data.buf, data.written);
         wrap(owner, wire);
         std::string body;
-        if (!ask('C', Writer().u64(far).u64(hash).str(verb).raw(wire.buf, wire.written).s, body) || body.empty())
-        { why = "no answer from " + far_name_; data.reset(); return false; }
+        if (!ask('C', Writer().u64(far).u64(hash).str(verb).raw(wire.buf, wire.written).s, body, asker) || body.empty())
+        { why = unanswered(); data.reset(); return false; }
         if (body[0] != 1) { why = body.substr(1); data.reset(); return false; }
         ETCS::MBuffer ans;
         if (body.size() > 1) ans.writeRaw(body.data() + 1, body.size() - 1);
@@ -394,7 +421,8 @@ public:
      * goes on it (Entity::consumeFrom / produceOnto). -1 and `why` if refused.
      */
     int openStream(const std::string& name, const std::string& verb, const std::string& config,
-                   bool far_produces, uint64_t hash, const std::string& manifest, std::string& why)
+                   bool far_produces, uint64_t hash, const std::string& manifest, std::string& why,
+                   const ETCS::SignalContext* asker = nullptr)
     {
         if (!isOpen()) { why = "the link is closed"; return -1; }
         int p[2];
@@ -408,10 +436,10 @@ public:
 
         std::string body;
         const bool asked = ask('O', Writer().u32(ch).str(name).str(verb).str(config)
-                                   .u8(far_produces ? 1 : 0).u64(hash).str(manifest).s, body);
+                                   .u8(far_produces ? 1 : 0).u64(hash).str(manifest).s, body, asker);
         if (!asked || body.empty() || body[0] != 1)
         {
-            why = !asked ? "no answer from " + far_name_ : body.size() > 1 ? body.substr(1) : "refused";
+            why = !asked ? unanswered() : body.size() > 1 ? body.substr(1) : "refused";
             dropChannel(ch);
             ::close(mux); ::close(mine);
             return -1;
@@ -450,12 +478,19 @@ private:
         std::lock_guard<std::mutex> lock(send_mu_);
         return !stop_.load() && out_.writeMessage(msg);
     }
-    bool ask(char op, const std::string& body, std::string& answer)
+    bool ask(char op, const std::string& body, std::string& answer, const ETCS::SignalContext* asker)
     {
         if (!isOpen()) return false;
         const uint32_t id = pending_.open();
         if (!send(Writer().u8(static_cast<uint8_t>(op)).u32(id).s + body)) return false;
-        return pending_.wait(id, answer, kAnswerMs);
+        return pending_.wait(id, answer, asker);
+    }
+    // Why an ask came back empty: there is no waiting out a live link, so
+    // it closed, or the asker stopped asking.
+    std::string unanswered() const
+    {
+        return isOpen() ? "the asker was interrupted before " + far_name_ + " answered"
+                        : "the link with " + far_name_ + " closed before it answered";
     }
     void reply(char op, uint32_t id, const std::string& body)
     { send(Writer().u8(static_cast<uint8_t>(op)).u32(id).s + body); }

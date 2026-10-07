@@ -37,7 +37,10 @@
  *   so the host stays the one place its session is ordered, which is what
  *   the old HTTP room could not be.
  *
- * A parked guest waits 10 s for its host to come for it.
+ * A parked guest waits for its host to come for it as long as both are
+ * there -- its own socket open, the host's control link up -- not on a
+ * clock: a host in a busy browser tab comes late, not never. A guest that
+ * hangs up while parked is let go; a room holds at most kParkedMax waiting.
  */
 class LinkHub : public DeletableBase<LinkHub>
 {
@@ -157,9 +160,9 @@ private:
 #if !defined(__EMSCRIPTEN__)
     struct Parked
     {
-        std::shared_ptr<etcs_ws::WsEnd>       ws;
-        std::chrono::steady_clock::time_point until;
+        std::shared_ptr<etcs_ws::WsEnd> ws;
     };
+    static constexpr size_t kParkedMax = 32;
 #endif
     struct Slot
     {
@@ -185,9 +188,11 @@ private:
             if (!local)
             {
                 // Park it and ask the host to come for it.
+                reapLocked();
+                if (it->second.pending.size() >= kParkedMax) return;
                 char hex[17];
                 snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(etcs_link::random_token()));
-                it->second.pending[hex] = Parked{ ws, std::chrono::steady_clock::now() + std::chrono::seconds(10) };
+                it->second.pending[hex] = Parked{ ws };
                 if (!etcs_ws::send_frame(it->second.ctl_fd, std::string("open ") + hex))
                     it->second.pending.erase(hex);
                 return;
@@ -241,12 +246,16 @@ private:
         etcs_ws::pump(*guest, *ws, stop_);
     }
 
+    // A parked guest that hung up (its socket closed or failed) is let go.
     void reapLocked()
     {
-        const auto now = std::chrono::steady_clock::now();
         for (auto& [n, s] : rooms_)
             for (auto it = s.pending.begin(); it != s.pending.end(); )
-                it = it->second.until < now ? s.pending.erase(it) : std::next(it);
+            {
+                pollfd p{ it->second.ws->fd(), static_cast<short>(POLLRDHUP), 0 };
+                const bool gone = ::poll(&p, 1, 0) > 0 && (p.revents & (POLLRDHUP | POLLHUP | POLLERR | POLLNVAL));
+                it = gone ? s.pending.erase(it) : std::next(it);
+            }
     }
 #else
     void reapLocked() {}
