@@ -1,0 +1,33 @@
+#!/usr/bin/env etcs
+# PILLARS: eight square pillars on a grid -- cover to break a line of fire,
+# corners to wait behind. Flat.
+#   run kart_map_pillars.etcs battle=<KartBattle>
+# AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
+requires battle [KartBattle]
+battle.AddMap(pillars)
+
+battle.AddBlock(-14.0, -14.0, 3.0, 3.0, 2.5, 0.0)
+battle.AddBlock(0.0, -14.0, 3.0, 3.0, 2.5, 0.0)
+battle.AddBlock(14.0, -14.0, 3.0, 3.0, 2.5, 0.0)
+battle.AddBlock(-14.0, 0.0, 3.0, 3.0, 2.5, 0.0)
+battle.AddBlock(14.0, 0.0, 3.0, 3.0, 2.5, 0.0)
+battle.AddBlock(-14.0, 14.0, 3.0, 3.0, 2.5, 0.0)
+battle.AddBlock(0.0, 14.0, 3.0, 3.0, 2.5, 0.0)
+battle.AddBlock(14.0, 14.0, 3.0, 3.0, 2.5, 0.0)
+
+battle.AddSpawn(-26.0, -26.0)
+battle.AddSpawn(26.0, 26.0)
+battle.AddSpawn(26.0, -26.0)
+battle.AddSpawn(-26.0, 26.0)
+battle.AddSpawn(0.0, -26.0)
+battle.AddSpawn(0.0, 26.0)
+battle.AddSpawn(26.0, 0.0)
+battle.AddSpawn(-26.0, 0.0)
+
+battle.AddPickup(0.0, 0.0)
+battle.AddPickup(7.0, 7.0)
+battle.AddPickup(-7.0, 7.0)
+battle.AddPickup(7.0, -7.0)
+battle.AddPickup(-7.0, -7.0)
+battle.AddPickup(-21.0, 7.0)

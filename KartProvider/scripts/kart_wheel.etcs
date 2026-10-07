@@ -1,6 +1,6 @@
 #!/usr/bin/env etcs
 # A wheel of a kart: a tyre on its side, dark, held, hidden until its kart is
-# on the grid. `run kart_wheel.etcs wheel=<Scene3D> tyre=<Mesh>`
+# in the arena. `run kart_wheel.etcs wheel=<Scene3D> tyre=<Mesh>`
 requires wheel [Drawable3D]
 requires tyre [Mesh]
 wheel.Create(0.46, 0.24, 0.46)

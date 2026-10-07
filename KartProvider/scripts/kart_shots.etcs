@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# Eight shots to draw. `run kart_shots.etcs world=<Scene3D> battle=<KartBattle>`
+requires world [Drawable3D]
+requires battle [KartBattle]
+run kart_shot.etcs world=world battle=battle
+run kart_shot.etcs world=world battle=battle
+run kart_shot.etcs world=world battle=battle
+run kart_shot.etcs world=world battle=battle
+run kart_shot.etcs world=world battle=battle
+run kart_shot.etcs world=world battle=battle
+run kart_shot.etcs world=world battle=battle
+run kart_shot.etcs world=world battle=battle

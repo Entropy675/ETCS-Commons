@@ -1,0 +1,72 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE ARENA: a walled square, the maps to set inside it, and the pools the
+# battle draws from -- all Scene3D, in the anchor's space.
+#
+#   run KartProvider/scripts/kart_arena.etcs anchor=world battle=battle
+#
+# What makes it an arena is two statements of the Causal family
+# (ontology/etcs_causal_constraints.md §12-§13) and one of RenderProvider's:
+#
+#   the walls and the maps' blocks are solid   anchored: the karts bump them,
+#                                              and a shot stops on them
+#   the ground is not                          a map's ramps and hills are a
+#                                              height the battle keeps each
+#                                              kart at (KartArena.h)
+#   the karts are solid                        spheres to everything, drawn
+#                                              as a body on four wheels
+#   the world is driven                        SetDriven: only the battle steps
+#                                              it, from its record -- never a
+#                                              picture, so every runtime's copy
+#                                              is the same world
+#
+# No field: the battle is the karts' gravity, on the ground it knows. A map is
+# data (kart_map_*.etcs) and the battle draws the one in play with the pools
+# made here (KartBattle::mapLocked), so a change of map is a line of the
+# record, not a script -- and a map made from a seed is the same everywhere.
+# Parts are run by bare name (a script's own folder first: the same path in a
+# window and on a page).
+
+requires anchor [Drawable3D]
+requires battle [KartBattle]
+
+anchor.SetSpace(500.0)
+anchor.SetDriven(1)
+
+# ── the ground: not solid, a picture of where to drive ─────────────────────
+anchor.spawn(RenderProvider::Scene3D ground)
+ground.Create(72.0, 0.1, 72.0)
+ground.SetPosition(0.0, -0.05, 0.0)
+ground.SetColor(0.30, 0.31, 0.33, 1.0)
+ground.SetAnchored(1)
+
+# ── the walls: 64 by 64 inside, the same for every map, too tall to jump ───
+anchor.spawn(RenderProvider::Scene3D wall_n)
+wall_n.Create(66.0, 3.0, 1.0)
+wall_n.SetPosition(0.0, 1.5, 32.5)
+anchor.spawn(RenderProvider::Scene3D wall_s)
+wall_s.Create(66.0, 3.0, 1.0)
+wall_s.SetPosition(0.0, 1.5, -32.5)
+anchor.spawn(RenderProvider::Scene3D wall_e)
+wall_e.Create(1.0, 3.0, 66.0)
+wall_e.SetPosition(32.5, 1.5, 0.0)
+anchor.spawn(RenderProvider::Scene3D wall_w)
+wall_w.Create(1.0, 3.0, 66.0)
+wall_w.SetPosition(-32.5, 1.5, 0.0)
+run kart_wall.etcs part=wall_n battle=battle
+run kart_wall.etcs part=wall_s battle=battle
+run kart_wall.etcs part=wall_e battle=battle
+run kart_wall.etcs part=wall_w battle=battle
+
+# ── the maps, in their order: the first is out when a session starts ───────
+run kart_map_bowl.etcs battle=battle
+run kart_map_pillars.etcs battle=battle
+run kart_map_crossroads.etcs battle=battle
+run kart_map_hills.etcs battle=battle
+run kart_map_skatepark.etcs battle=battle
+battle.AddRandomMap(random)
+
+# ── the pools, then the first map out ──────────────────────────────────────
+run kart_pool.etcs world=anchor battle=battle
+battle.Ready()

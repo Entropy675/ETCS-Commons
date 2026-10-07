@@ -1,0 +1,56 @@
+#!/usr/bin/env etcs
+# THE POOLS: everything the battle shows and hides as the record goes -- eight
+# karts; the blocks, slabs and domes a map is drawn with; the power-up boxes,
+# the shots in the air and the bursts. Each is the battle's from the moment it
+# is made, held, and solid to nothing but the karts' bodies and the blocks
+# (KartBattle.h).
+#   run kart_pool.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+
+# One tyre for all thirty-two wheels, one ball for every burst and hill.
+spawn RenderProvider::Mesh tyre
+tyre.Create()
+tyre.Cylinder(14)
+spawn RenderProvider::Mesh ball
+ball.Create()
+ball.Sphere(12)
+
+run kart_car.etcs world=world battle=battle tyre=tyre
+run kart_car.etcs world=world battle=battle tyre=tyre
+run kart_car.etcs world=world battle=battle tyre=tyre
+run kart_car.etcs world=world battle=battle tyre=tyre
+run kart_car.etcs world=world battle=battle tyre=tyre
+run kart_car.etcs world=world battle=battle tyre=tyre
+run kart_car.etcs world=world battle=battle tyre=tyre
+run kart_car.etcs world=world battle=battle tyre=tyre
+
+# The map in play: sixteen blocks, eighteen slabs (a ramp takes up to
+# three), six domes.
+run kart_blocks.etcs world=world battle=battle
+run kart_blocks.etcs world=world battle=battle
+run kart_slabs.etcs world=world battle=battle
+run kart_slabs.etcs world=world battle=battle
+run kart_slabs.etcs world=world battle=battle
+run kart_dome.etcs world=world battle=battle ball=ball
+run kart_dome.etcs world=world battle=battle ball=ball
+run kart_dome.etcs world=world battle=battle ball=ball
+run kart_dome.etcs world=world battle=battle ball=ball
+run kart_dome.etcs world=world battle=battle ball=ball
+run kart_dome.etcs world=world battle=battle ball=ball
+
+# As many boxes as the busiest map has spots.
+run kart_pickup.etcs world=world battle=battle
+run kart_pickup.etcs world=world battle=battle
+run kart_pickup.etcs world=world battle=battle
+run kart_pickup.etcs world=world battle=battle
+run kart_pickup.etcs world=world battle=battle
+run kart_pickup.etcs world=world battle=battle
+
+# Sixteen shots drawn at once (more fly, undrawn) and four bursts.
+run kart_shots.etcs world=world battle=battle
+run kart_shots.etcs world=world battle=battle
+run kart_blast.etcs world=world battle=battle ball=ball
+run kart_blast.etcs world=world battle=battle ball=ball
+run kart_blast.etcs world=world battle=battle ball=ball
+run kart_blast.etcs world=world battle=battle ball=ball

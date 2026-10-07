@@ -1,5 +1,5 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
-# The proposals into the judge: `detach kart_judge.etcs src=<Ledger> dst=<KartRace>`
-requires dst [KartRace]
+# The proposals into the judge: `detach kart_judge.etcs src=<Ledger> dst=<KartBattle>`
+requires dst [KartBattle]
 src.Follow(0) -> dst.Judge()

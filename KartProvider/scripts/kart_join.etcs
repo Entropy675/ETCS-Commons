@@ -1,12 +1,12 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# ── JOIN A RACE ──────────────────────────────────────────────────────────────
+# ── JOIN A BATTLE ────────────────────────────────────────────────────────────
 #
 # A TEMPLATE, like kart_host.etcs: {{n}}, {{name}}, {{id}}, {{hub}} and
-# {{owner}} (the host's name) are the page's to fill, `race` is handed in. One
+# {{owner}} (the host's name) are the page's to fill, `battle` is handed in. One
 # link to the host (Peer) and a surface of each thing it published
-# (ontology/Remote.h). This race FOLLOWS: its keys go to the host's proposals,
+# (ontology/Remote.h). This battle FOLLOWS: its keys go to the host's proposals,
 # and its world moves only as the record comes back.
 
 spawn NetworkProvider::Peer peer{{n}}
@@ -25,9 +25,9 @@ spawn NetworkProvider::Lobby presence{{n}}
 presence{{n}}.spawn(NetworkProvider::Remote rpresence{{n}})
 rpresence{{n}}.Bind(presence @peer{{n}})
 
-requires race [KartRace]
-race.Join(@presence{{n}} {{name}} {{owner}})
+requires battle [KartBattle]
+battle.Join(@presence{{n}} {{name}} {{owner}})
 
-detach KartProvider/scripts/kart_follow.etcs src=record{{n}} dst=race
-detach KartProvider/scripts/kart_emit.etcs src=race dst=proposals{{n}}
-detach KartProvider/scripts/kart_watch.etcs src=presence{{n}} dst=race
+detach KartProvider/scripts/kart_follow.etcs src=record{{n}} dst=battle
+detach KartProvider/scripts/kart_emit.etcs src=battle dst=proposals{{n}}
+detach KartProvider/scripts/kart_watch.etcs src=presence{{n}} dst=battle

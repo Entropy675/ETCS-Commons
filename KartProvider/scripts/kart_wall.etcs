@@ -1,6 +1,9 @@
 #!/usr/bin/env etcs
-# A wall of the track: brick red, anchored, solid. `run kart_wall.etcs part=<Scene3D>`
+# A wall of the arena, on every map: brick red, anchored, solid, the battle's.
+#   run kart_wall.etcs part=<Scene3D> battle=<KartBattle>
 requires part [Drawable3D]
+requires battle [KartBattle]
 part.SetColor(0.62, 0.22, 0.18, 1.0)
 part.SetAnchored(1)
 part.SetSolid(0.4, 0.0)
+battle.AddWall(@part)

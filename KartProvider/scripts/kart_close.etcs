@@ -1,10 +1,10 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
-# ── CLOSE A RACE HOSTED ──────────────────────────────────────────────────────
-#     run KartProvider/scripts/kart_close.etcs race=<KartRace> room=<Room>
-# The hall entry is withdrawn (KartRace::Leave), and the room goes with its
-# links: every guest's record ends, which is how they learn the race is over.
-requires race [KartRace]
+# ── CLOSE A BATTLE HOSTED ────────────────────────────────────────────────────
+#     run KartProvider/scripts/kart_close.etcs battle=<KartBattle> room=<Room>
+# The hall entry is withdrawn (KartBattle::Leave), and the room goes with its
+# links: every guest's record ends, which is how they learn the battle is over.
+requires battle [KartBattle]
 requires room [Room]
-race.Leave()
+battle.Leave()
 room.Delete()

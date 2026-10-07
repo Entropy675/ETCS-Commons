@@ -1,7 +1,7 @@
 #ifndef KARTPROVIDER_CONTRACT__
 
 // OS invariant: one concrete type, no platform split.
-#include "KartProvider/KartRace.h"
+#include "KartProvider/KartBattle.h"
 
 #define KARTPROVIDER_CONTRACT__
 

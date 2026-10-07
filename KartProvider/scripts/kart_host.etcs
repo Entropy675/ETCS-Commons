@@ -1,18 +1,19 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# ── HOST A RACE ──────────────────────────────────────────────────────────────
+# ── HOST A BATTLE ────────────────────────────────────────────────────────────
 #
 # A TEMPLATE, as ChessProvider's chess_host.etcs is: the page fills in {{n}}
-# (this race's number, keeping its names its own), {{name}} (this runtime's name
-# in the race), {{id}} (the race's id, what the link carries) and {{hub}} (the
-# site's LinkHub), and runs it with `race` and `hall` handed in -- the hall
-# being the site's name server as this runtime sees it, where the race is
-# listed as `kart {{id}}` with its drivers for as long as this link lasts.
+# (this battle's number, keeping its names its own), {{name}} (this runtime's
+# name in the battle), {{id}} (the battle's id, what the link carries) and
+# {{hub}} (the site's LinkHub), and runs it with `battle` and `hall` handed in
+# -- the hall being the site's name server as this runtime sees it, where the
+# battle is listed as `kart {{id}}` with its drivers for as long as this link
+# lasts.
 #
-# THE RECORD IS HERE and this race judges it: a guest's line lands in
+# THE RECORD IS HERE and this battle judges it: a guest's line lands in
 # `proposals` (authored by the link it came over), the judge takes it, and
-# every guest follows `record` -- the tick lines among them (KartRace.h).
+# every guest follows `record` -- the tick lines among them (KartBattle.h).
 
 spawn NetworkProvider::Ledger record{{n}}
 record{{n}}.Author({{name}})
@@ -27,13 +28,13 @@ room{{n}}.Publish(record @record{{n}} Head Since Follow)
 room{{n}}.Publish(proposals @proposals{{n}} Take)
 room{{n}}.Publish(presence @presence{{n}} Advertise Withdraw Watch)
 
-requires race [KartRace]
+requires battle [KartBattle]
 requires hall [Lobby]
-race.Host(@record{{n}} @proposals{{n}} @presence{{n}} {{name}} @hall {{id}})
+battle.Host(@record{{n}} @proposals{{n}} @presence{{n}} {{name}} @hall {{id}})
 
 # The judge and the roster: each a detached script, since a stream line runs
 # until the stream ends.
-detach KartProvider/scripts/kart_judge.etcs src=proposals{{n}} dst=race
-detach KartProvider/scripts/kart_watch.etcs src=presence{{n}} dst=race
+detach KartProvider/scripts/kart_judge.etcs src=proposals{{n}} dst=battle
+detach KartProvider/scripts/kart_watch.etcs src=presence{{n}} dst=battle
 
 room{{n}}.HostVia({{hub}}/{{id}})

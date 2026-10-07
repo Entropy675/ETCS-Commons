@@ -1,5 +1,5 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
-# The presence listing into the race: `detach kart_watch.etcs src=<Lobby> dst=<KartRace>`
-requires dst [KartRace]
+# The presence listing into the battle: `detach kart_watch.etcs src=<Lobby> dst=<KartBattle>`
+requires dst [KartBattle]
 src.Watch() -> dst.Roster()

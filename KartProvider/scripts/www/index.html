@@ -20,12 +20,13 @@
                  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     body { overflow-y: auto; }
     /*
-     * THE TRACK IS THE RUNTIME'S. The canvas is the window's surface
+     * THE ARENA IS THE RUNTIME'S. The canvas is the window's surface
      * (boot_kart.etcs: a Window, a Surface, a camera on the world), drawn and
      * driven entirely on that side -- GLFW owns the canvas and its keys reach
-     * KartRace through the window's key stream; this page never learns where
+     * KartBattle through the window's key stream; this page never learns where
      * a kart is. What is HTML here is what a window has no DOM for: the hall,
-     * the standings and the buttons that host, join and leave.
+     * the scores, the host's settings and the buttons that host, join and
+     * leave. The same scores and settings are on the canvas too, under Tab.
      */
     #layout { display: grid; grid-template-rows: auto 1fr auto; min-height: 100%; }
     header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -54,7 +55,12 @@
     button[disabled] { opacity: .5; cursor: default; }
     .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     #turn { color: var(--sel); }
-    #seats, #note { font-size: 12px; color: var(--dim); }
+    #seats, #note, #round { font-size: 12px; color: var(--dim); }
+    #round.playing { color: var(--light); }
+    select { font: inherit; font-size: 12px; background: var(--bg); color: var(--light); border: 1px solid var(--line); }
+    select[disabled] { opacity: .5; }
+    tr.you td { color: var(--light); }
+    td.out { color: var(--dim); }
     #note { color: #c9975a; min-height: 1.3em; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     td { padding: 2px 4px; border-bottom: 1px solid var(--line); vertical-align: middle; }
@@ -75,7 +81,7 @@
   <header>
     <a class="brand" href="/kart/" target="_top">ETCS KART</a>
     <label for="name" style="color:var(--dim);font-size:12px">you are</label>
-    <input id="name" spellcheck="false" title="your name in a race -- what the hall lists and the record is authored as">
+    <input id="name" spellcheck="false" title="your name in a battle -- what the hall lists and the record is authored as">
     <span class="spacer"></span>
     <span id="status">loading…</span>
   </header>
@@ -88,33 +94,53 @@
 
     <aside>
       <section>
-        <h3>The race</h3>
+        <h3>The battle</h3>
         <div id="turn">—</div>
         <div id="seats"></div>
+        <div id="round">—</div>
         <div id="note"></div>
         <div class="row" style="margin-top:6px">
-          <button id="host" class="primary" title="host a race of your own, listed in the hall">host a race</button>
-          <button id="leave" class="hidden" title="leave this race">leave</button>
+          <button id="host" class="primary" title="host a battle of your own, listed in the hall">host a battle</button>
+          <button id="leave" class="hidden" title="leave this battle">leave</button>
         </div>
-        <div id="link" class="hidden" title="click to copy the link to this race"></div>
+        <div id="link" class="hidden" title="click to copy the link to this battle"></div>
       </section>
 
       <section>
-        <h3>Standings</h3>
-        <table><tbody id="standings"></tbody></table>
-        <div id="no-standings" class="empty">nobody on the track</div>
+        <h3 id="scores-title">Scores</h3>
+        <table><tbody id="scores"></tbody></table>
+        <div id="no-scores" class="empty">nobody in the arena</div>
+      </section>
+
+      <section>
+        <h3>Lobby: the next round</h3>
+        <div class="row">
+          <select id="map" title="the map the next round is on (out at once, in the lobby)"></select>
+          <select id="length" title="how long a round lasts">
+            <option value="60">1:00</option><option value="120">2:00</option>
+            <option value="180">3:00</option><option value="300">5:00</option>
+          </select>
+          <button id="reroll" class="hidden" title="a new layout for the map made from a seed">new layout</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="start" class="primary" title="start a round: the scores to nothing, everyone respawned, the settings locked">start the round</button>
+          <button id="abandon" class="hidden" title="end this round now: back to the lobby, its scores discarded">abandon the round</button>
+        </div>
+        <div id="who-sets" class="keys" style="margin-top:4px"></div>
       </section>
 
       <section>
         <h3>The hall</h3>
         <table><tbody id="hall"></tbody></table>
-        <div id="no-hall" class="empty">nobody is racing yet — host one</div>
+        <div id="no-hall" class="empty">nobody is battling yet — host one</div>
       </section>
 
       <section>
-        <h3>Driving</h3>
-        <div class="keys"><b>W</b> go &nbsp; <b>S</b> brake, reverse &nbsp; <b>A</b> <b>D</b> steer — the wheels turn, the kart follows them.
-        Click the track first so it has the keys.</div>
+        <h3>Playing</h3>
+        <div class="keys"><b>W</b> go &nbsp; <b>S</b> brake, reverse &nbsp; <b>A</b> <b>D</b> steer &nbsp; <b>Space</b> fire
+        &nbsp; <b>Tab</b> scores. Drive over a gold box for a weapon; ramps throw you, hills slow you going up.
+        In the lobby the host's arrows move the menu and <b>Enter</b> starts; in a round the host's <b>Esc</b>
+        abandons it. Click the arena first so it has the keys.</div>
       </section>
     </aside>
   </div>
@@ -238,7 +264,7 @@
     const n = nameEl.value.trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
     if (!n) { nameEl.value = myName(); return; }
     keepName(n); nameEl.value = n;
-    log('[etcs] you are ' + n + ' from the next race on\n', 'ok');
+    log('[etcs] you are ' + n + ' from the next battle on\n', 'ok');
   });
   function mintId() {
     const b = new Uint8Array(8); window.crypto.getRandomValues(b);
@@ -250,7 +276,7 @@
    * staged script read out of the runtime's filesystem, every {{field}}
    * replaced, written under a fresh name and pushed to the shell as a line.
    * `path` is the script's staged name (its OS path); `inject` hands the
-   * boot's globals in (race=race ...), which a later root script cannot name.
+   * boot's globals in (battle=battle ...), which a later root script cannot name.
    */
   let templateSeq = 0;
   function runTemplate(path, fields, inject) {
@@ -270,118 +296,195 @@
   //
   // THE TEMPLATES THE OS RUNS: hosting is kart_host.etcs filled in, joining
   // is kart_join.etcs, and the hall is the site's -- chess_hall.etcs, run once
-  // when the runtime is up and mirrored here. Out of a race, the race is your
-  // own: practice, alone on the track.
+  // when the runtime is up and mirrored here. Out of a battle, the arena is
+  // your own: practice, alone.
   const session = { n: 0, mode: null, id: null, owner: null, tick: 0, beating: false, hallN: 0, hallUp: false, practising: false };
   const hostBtn = $('host'), leaveBtn = $('leave'), linkEl = $('link');
 
   function beat() {
     if (session.beating || !session.mode) return;
     session.beating = true;
-    callResult('race', 'Tick', '').then(function () { session.beating = false; });
+    callResult('battle', 'Tick', '').then(function () { session.beating = false; });
   }
   function practise() {
     session.practising = true;
-    callResult('race', 'Practice', myName());
+    callResult('battle', 'Practice', myName());
   }
   function openHall() {
-    if (session.hallUp || !runtimeUp() || !nameLive('race')) return;
+    if (session.hallUp || !runtimeUp() || !nameLive('battle')) return;
     if (!session.practising && !session.mode) practise();
     session.hallN = 0;
     if (!runTemplate('ChessProvider/scripts/chess_hall.etcs', { n: 0, name: myName(), hub: hubUrl() }, '')) return;
     session.hallUp = true;
     log('[etcs] listing the hall at ' + hubUrl() + '/hall as ' + myName() + '\n');
   }
-  function hostRace() {
+  function hostBattle() {
     if (session.mode || !session.hallUp) return;
     session.n += 1; session.mode = 'hosting'; session.id = mintId(); session.owner = myName();
     if (!runTemplate('KartProvider/scripts/kart_host.etcs', { n: session.n, name: myName(), id: session.id, hub: hubUrl() },
-                     'race=race hall=halllist' + session.hallN)) { session.mode = null; return; }
+                     'battle=battle hall=halllist' + session.hallN)) { session.mode = null; return; }
     session.tick = setInterval(beat, 1000);
     linkEl.textContent = linkFor(session.id, session.owner); linkEl.classList.remove('hidden');
     hostBtn.classList.add('hidden'); leaveBtn.classList.remove('hidden');
-    log('[etcs] your race is open: ' + linkFor(session.id, session.owner) + '\n', 'ok');
+    log('[etcs] your battle is open: ' + linkFor(session.id, session.owner) + '\n', 'ok');
     canvas.focus();
   }
-  function joinRace(id, owner) {
+  function joinBattle(id, owner) {
     if (session.mode) return;
     session.n += 1; session.mode = 'joined'; session.id = id; session.owner = owner;
     if (!runTemplate('KartProvider/scripts/kart_join.etcs', { n: session.n, name: myName(), id: id, owner: owner, hub: hubUrl() },
-                     'race=race')) { session.mode = null; return; }
+                     'battle=battle')) { session.mode = null; return; }
     session.tick = setInterval(beat, 1000);
     hostBtn.classList.add('hidden'); leaveBtn.classList.remove('hidden');
-    log('[etcs] in ' + owner + "'s race as " + myName() + '\n', 'ok');
+    log('[etcs] in ' + owner + "'s battle as " + myName() + '\n', 'ok');
     canvas.focus();
   }
-  function leaveRace() {
+  function leaveBattle() {
     if (!session.mode) return;
     // Launched with the names handed in, as host and join are: a `run` line
     // of a later root script cannot name the boot's globals.
-    if (session.mode === 'hosting') runTemplate('KartProvider/scripts/kart_close.etcs', {}, 'race=race room=room' + session.n);
-    else                            runTemplate('KartProvider/scripts/kart_leave.etcs', {}, 'race=race peer=peer' + session.n);
+    if (session.mode === 'hosting') runTemplate('KartProvider/scripts/kart_close.etcs', {}, 'battle=battle room=room' + session.n);
+    else                            runTemplate('KartProvider/scripts/kart_leave.etcs', {}, 'battle=battle peer=peer' + session.n);
     clearInterval(session.tick); session.tick = 0;
     session.mode = null; session.id = null; session.owner = null;
     linkEl.classList.add('hidden'); hostBtn.classList.remove('hidden'); leaveBtn.classList.add('hidden');
     setTimeout(practise, 300);
   }
   function linkFor(id, owner) { return window.location.origin + window.location.pathname + '?s=' + id + '&owner=' + encodeURIComponent(owner); }
-  hostBtn.addEventListener('click', hostRace);
-  leaveBtn.addEventListener('click', leaveRace);
+  hostBtn.addEventListener('click', hostBattle);
+  leaveBtn.addEventListener('click', leaveBattle);
   linkEl.addEventListener('click', function () {
     navigator.clipboard.writeText(linkEl.textContent).then(function () {
       linkEl.classList.add('copied'); setTimeout(function () { linkEl.classList.remove('copied'); }, 1200);
     }).catch(function () {});
   });
   // The keys are the window's (GLFW listens on the page): a click on the
-  // track is how you say you are driving rather than typing your name.
+  // arena is how you say you are driving rather than typing your name.
   canvas.addEventListener('mousedown', function () { canvas.focus(); });
+  // Tab holds the board up, Space fires and the arrows move the lobby's menu:
+  // none of them may move the focus off the arena or scroll the page (the
+  // window still hears them all).
+  const KEEP = { 'Tab': 1, ' ': 1, 'ArrowUp': 1, 'ArrowDown': 1, 'ArrowLeft': 1, 'ArrowRight': 1 };
+  canvas.addEventListener('keydown', function (ev) { if (KEEP[ev.key]) ev.preventDefault(); });
 
   // ── what the page shows, polled ───────────────────────────────────────────
-  const turnEl = $('turn'), seatsEl = $('seats'), noteEl = $('note'), standEl = $('standings'), hallEl = $('hall');
-  let shownStand = '', shownHall = '', polling = false;
+  const turnEl = $('turn'), seatsEl = $('seats'), roundEl = $('round'), noteEl = $('note'), scoresEl = $('scores'), hallEl = $('hall');
+  const mapEl = $('map'), lengthEl = $('length'), startBtn = $('start'), whoSetsEl = $('who-sets');
+  const abandonBtn = $('abandon'), rerollBtn = $('reroll');
+  let shownScores = '', shownHall = '', shownMaps = '', polling = false, judging = false;
   function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+  function clock(secs) { return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'); }
   async function poll() {
-    if (polling || !runtimeUp() || !nameLive('race')) return;
+    if (polling || !runtimeUp() || !nameLive('battle')) return;
     polling = true;
     try {
-      const st = await callResult('race', 'Status', '');
+      const st = await callResult('battle', 'Status', '');
       if (st) {
         sceneUp = true;
-        const p = st.trim().split(/\s+/);   // tick seq mode me slot
-        const mode = p[2], slot = parseInt(p[4], 10);
-        turnEl.textContent = mode === 'host' ? 'hosting a race' : mode === 'guest' ? 'in ' + session.owner + "'s race"
+        // tick seq mode me slot phase left map secs layout
+        const p = st.trim().split(/\s+/);
+        const mode = p[2], slot = parseInt(p[4], 10), phase = p[5], left = parseInt(p[6], 10);
+        turnEl.textContent = mode === 'host' ? 'hosting a battle' : mode === 'guest' ? 'in ' + session.owner + "'s battle"
                            : mode === 'practice' ? 'practising, alone' : '—';
         seatsEl.textContent = slot >= 0 ? 'you drive kart ' + (slot + 1) : (session.mode ? 'watching -- no kart free' : '');
+        roundEl.textContent = phase === 'playing' ? 'round on ' + p[7] + ' -- ' + clock(left) + ' left'
+                            : phase === 'results' ? 'round over on ' + p[7] : 'lobby -- next: ' + p[7] + ', ' + clock(parseInt(p[8], 10));
+        roundEl.className = phase === 'playing' ? 'playing' : '';
+        renderSettings(mode === 'host' || mode === 'practice', phase, p[7], p[8], p[9] !== '0');
+        $('scores-title').textContent = phase === 'lobby' ? 'Last round' : 'Scores';
       }
-      const note = await callResult('race', 'Note', '');
+      const note = await callResult('battle', 'Note', '');
       if (note != null) noteEl.textContent = note;
-      const stand = await callResult('race', 'Standings', '');
-      if (stand != null && stand !== shownStand) { shownStand = stand; renderStandings(stand); }
+      const scores = await callResult('battle', 'Scores', '');
+      if (scores != null && scores !== shownScores) { shownScores = scores; renderScores(scores); }
+      // Every poll, not once: a page asks before its boot has made every map.
+      const maps = await callResult('battle', 'Maps', '');
+      if (maps && maps !== shownMaps) { shownMaps = maps; renderMaps(maps); }
       if (session.hallUp) {
         const list = await callResult('hall' + session.hallN, 'List', '');
         if (list != null && list !== shownHall) { shownHall = list; renderHall(list); }
       }
     } finally { polling = false; }
   }
-  // "<slot> <driver> <laps> <last> <best> <speed>" per kart with a driver.
-  function renderStandings(text) {
-    standEl.innerHTML = '';
-    const rows = text.split('\n').map(function (l) { return l.trim().split(/\s+/); }).filter(function (p) { return p.length >= 6; });
-    rows.sort(function (a, b) { return (parseInt(b[2], 10) - parseInt(a[2], 10)) || (parseFloat(a[4]) || 1e9) - (parseFloat(b[4]) || 1e9); });
+
+  // "<slot> <driver> <elims> <deaths> <hp> <weapon> <ammo> <alive|out>" per
+  // driver, already ranked by the battle (most eliminations, then fewest deaths).
+  function renderScores(text) {
+    scoresEl.innerHTML = '';
+    const rows = text.split('\n').map(function (l) { return l.trim().split(/\s+/); }).filter(function (p) { return p.length >= 8; });
     const head = document.createElement('tr');
-    head.innerHTML = '<td class="key">kart</td><td>laps</td><td>last</td><td>best</td>';
-    if (rows.length) standEl.appendChild(head);
+    head.innerHTML = '<td class="key">kart</td><td>elims</td><td>deaths</td><td>hp</td><td>weapon</td>';
+    if (rows.length) scoresEl.appendChild(head);
     for (const p of rows) {
       const tr = document.createElement('tr');
-      const you = p[1] === myName() ? ' (you)' : '';
-      tr.innerHTML = '<td class="key">' + esc((parseInt(p[0], 10) + 1) + ' ' + p[1] + you) + '</td><td>' + esc(p[2])
-                   + '</td><td>' + esc(p[3]) + '</td><td>' + esc(p[4]) + '</td>';
-      standEl.appendChild(tr);
+      const you = p[1] === myName();
+      if (you) tr.className = 'you';
+      const hp = p[7] === 'out' ? 'out' : (parseInt(p[4], 10) / 10).toFixed(1);
+      const arm = p[5] === '-' ? '' : p[5] + ' x' + p[6];
+      tr.innerHTML = '<td class="key">' + esc((parseInt(p[0], 10) + 1) + ' ' + p[1] + (you ? ' (you)' : '')) + '</td><td>' + esc(p[2])
+                   + '</td><td>' + esc(p[3]) + '</td><td' + (p[7] === 'out' ? ' class="out"' : '') + '>' + esc(hp)
+                   + '</td><td>' + esc(arm) + '</td>';
+      scoresEl.appendChild(tr);
     }
-    $('no-standings').classList.toggle('hidden', rows.length > 0);
+    $('no-scores').classList.toggle('hidden', rows.length > 0);
   }
-  // "<name> kart <id> <drivers> <karts>" per race. Mine is marked; a race with
-  // a kart free is a join.
+  /*
+   * THE LOBBY'S SETTINGS: the host's (or yours alone, practising), each a line
+   * of the record (`config`, `round`, `abandon`), so a guest sees them change
+   * and cannot change them -- and nobody can while a round runs: they are
+   * locked until it is completed or abandoned. A select being used is not
+   * overwritten by a poll.
+   */
+  function renderMaps(text) {
+    const keep = mapEl.value;
+    mapEl.innerHTML = '';
+    for (const m of text.split('\n').map(function (l) { return l.trim(); }).filter(Boolean)) {
+      const o = document.createElement('option'); o.value = m; o.textContent = m; mapEl.appendChild(o);
+    }
+    if (keep) mapEl.value = keep;
+  }
+  function renderSettings(judge, phase, next, secs, seeded) {
+    judging = judge;
+    const open = judge && phase === 'lobby';
+    mapEl.disabled = lengthEl.disabled = startBtn.disabled = rerollBtn.disabled = !open;
+    rerollBtn.classList.toggle('hidden', !seeded);
+    startBtn.classList.toggle('hidden', phase !== 'lobby');
+    abandonBtn.classList.toggle('hidden', !(judge && phase === 'playing'));
+    whoSetsEl.textContent = phase !== 'lobby' ? 'locked until the round is over' : judge ? 'yours to set' : 'the host sets them';
+    if (document.activeElement !== mapEl && next && mapEl.value !== next) mapEl.value = next;
+    if (document.activeElement !== lengthEl && secs) {
+      if (!Array.from(lengthEl.options).some(function (o) { return o.value === secs; })) {
+        const o = document.createElement('option'); o.value = secs; o.textContent = clock(parseInt(secs, 10)); lengthEl.appendChild(o);
+      }
+      lengthEl.value = secs;
+    }
+  }
+  function configure() {
+    if (!judging || !mapEl.value) return;
+    callResult('battle', 'Configure', mapEl.value + ' ' + lengthEl.value).then(function (r) {
+      if (r !== 'ok') log('[etcs] the settings were refused\n', 'err');
+    });
+    canvas.focus();
+  }
+  mapEl.addEventListener('change', configure);
+  lengthEl.addEventListener('change', configure);
+  startBtn.addEventListener('click', function () {
+    if (!judging) return;
+    callResult('battle', 'StartRound', '');
+    canvas.focus();
+  });
+  abandonBtn.addEventListener('click', function () {
+    if (!judging) return;
+    callResult('battle', 'Abandon', '');
+    canvas.focus();
+  });
+  rerollBtn.addEventListener('click', function () {
+    if (!judging) return;
+    callResult('battle', 'Reroll', '');
+    canvas.focus();
+  });
+  // "<name> kart <id> <drivers> <karts>" per battle. Mine is marked; a battle
+  // with a kart free is a join.
   function renderHall(list) {
     hallEl.innerHTML = '';
     let n = 0;
@@ -390,13 +493,13 @@
       if (p.length < 5 || p[1] !== 'kart') continue;
       const [name, , id, drivers, karts] = p;
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td class="key">' + esc(name + "'s race") + '</td><td>' + esc(drivers + '/' + karts) + '</td>';
+      tr.innerHTML = '<td class="key">' + esc(name + "'s battle") + '</td><td>' + esc(drivers + '/' + karts) + '</td>';
       const td = document.createElement('td');
       if (name === myName()) td.textContent = 'you';
       else if (!session.mode) {
         const btn = document.createElement('button');
         btn.textContent = parseInt(drivers, 10) < parseInt(karts, 10) ? 'join' : 'watch';
-        btn.onclick = function () { joinRace(id, name); };
+        btn.onclick = function () { joinBattle(id, name); };
         td.appendChild(btn);
       }
       tr.appendChild(td); hallEl.appendChild(tr); n++;
@@ -405,22 +508,22 @@
     landFromQuery(list);
   }
   // What the address asked for, once the hall can answer it: ?s=<id>&owner=
-  // joins that race; ?quick=1 joins the first with a kart free, or hosts one;
+  // joins that battle; ?quick=1 joins the first with a kart free, or hosts one;
   // ?host=1 hosts one.
   let landed = false;
   function landFromQuery(list) {
     if (landed || session.mode) return;
     const s = QS.get('s'), owner = QS.get('owner');
-    if (s && owner) { landed = true; joinRace(s, owner); return; }
+    if (s && owner) { landed = true; joinBattle(s, owner); return; }
     const rows = list.split('\n').map(function (l) { return l.trim().split(/\s+/); })
                      .filter(function (p) { return p.length >= 5 && p[1] === 'kart'; });
     if (QS.get('quick') === '1') {
       landed = true;
       const r = rows.find(function (p) { return p[0] !== myName() && parseInt(p[3], 10) < parseInt(p[4], 10); });
-      if (r) joinRace(r[2], r[0]); else hostRace();
+      if (r) joinBattle(r[2], r[0]); else hostBattle();
       return;
     }
-    if (QS.get('host') === '1') { landed = true; hostRace(); }
+    if (QS.get('host') === '1') { landed = true; hostBattle(); }
   }
   // An empty hall answers nothing (renderHall runs on a change), so an
   // address that hosts when there is nothing to join waits a few seconds for
@@ -593,10 +696,10 @@
     requestAnimationFrame(frame);
     // Not by reading the canvas, as the chess page does: a 2D context asked
     // for before the runtime's WebGPU one takes the canvas from the device.
-    // The track is up when the race first answers (poll).
+    // The arena is up when the battle first answers (poll).
     const p = setInterval(function () {
       if (!sceneUp) return;
-      stopped = true; clearInterval(p); el.remove(); log('[etcs] the track is up\n');
+      stopped = true; clearInterval(p); el.remove(); log('[etcs] the arena is up\n');
     }, 200);
   }
   bootThrobber();

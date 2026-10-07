@@ -1,10 +1,10 @@
 #!/usr/bin/env etcs
 
-# KART, IN A BROWSER: the track, the pool of karts and the race, on the page
-# served by ETCS (index.html beside this). The page names you, then practises,
-# hosts or joins through the race (KartProvider/scripts/kart_host.etcs,
-# kart_join.etcs) -- this file only builds what every one of those starts from,
-# the same on every runtime that will share a race.
+# KART, IN A BROWSER: the arena, its maps, the pool of karts and the battle, on
+# the page served by ETCS (index.html beside this). The page names you, then
+# practises, hosts or joins through the battle (KartProvider/scripts/
+# kart_host.etcs, kart_join.etcs) -- this file only builds what every one of
+# those starts from, the same on every runtime that will share a battle.
 #
 # The substrate is RenderProvider's 3D page's: no main.Run (the browser's loop
 # is the page's), the camera composed directly with a Device child so the
@@ -31,14 +31,15 @@ world.Create(1.0, 1.0, 1.0)
 world.SetVisible(0)
 eye.SetScene(@world)
 
-# The race, named here so the page and the terminal reach it (race.Standings(),
-# race.Status()); the course builds the track and hands it the karts.
-spawn KartProvider::KartRace race
-race.Create()
-run KartProvider/scripts/kart_course.etcs anchor=world race=race
-run KartProvider/scripts/kart_play.etcs race=race world=world eye=eye
+# The battle, named here so the page and the terminal reach it
+# (battle.Scores(), battle.Status()); the arena builds the walls, the maps and
+# the pool and hands them over.
+spawn KartProvider::KartBattle battle
+battle.Create()
+run KartProvider/scripts/kart_arena.etcs anchor=world battle=battle
+run KartProvider/scripts/kart_play.etcs battle=battle world=world eye=eye
 
 view.Clear(0.02, 0.02, 0.03, 1.0)
 view.Compose(@eye)
 detach RenderProvider/scripts/render_frames.etcs view=view
-detach KartProvider/scripts/kart_keys.etcs window=main race=race
+detach KartProvider/scripts/kart_keys.etcs window=main battle=battle

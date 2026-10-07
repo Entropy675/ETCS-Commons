@@ -1,0 +1,9 @@
+#!/usr/bin/env etcs
+# A shot to draw: the battle sizes and colours it for what was fired.
+#   run kart_shot.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Scene3D shot)
+shot.Create(0.3, 0.3, 0.3)
+shot.SetAnchored(1)
+battle.AddShotNode(@shot)

@@ -1,0 +1,8 @@
+#!/usr/bin/env etcs
+# Four rows of the board, in order. `run kart_board.etcs eye=<Camera> battle=<KartBattle>`
+requires eye [Camera]
+requires battle [KartBattle]
+run kart_board_row.etcs eye=eye battle=battle
+run kart_board_row.etcs eye=eye battle=battle
+run kart_board_row.etcs eye=eye battle=battle
+run kart_board_row.etcs eye=eye battle=battle

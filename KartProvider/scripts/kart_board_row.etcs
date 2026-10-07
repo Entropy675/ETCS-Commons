@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# A row of the board: the battle places it and writes it.
+#   run kart_board_row.etcs eye=<Camera> battle=<KartBattle>
+requires eye [Camera]
+requires battle [KartBattle]
+eye.spawn(RenderProvider::TextLabel row)
+row.Create(16)
+row.SetColor(1.0, 1.0, 0.92, 1.0)
+row.SetBackground(0.0, 0.0, 0.0, 0.62)
+row.SetPadding(4)
+row.SetOrder(12)
+battle.AddBoardRow(@row)

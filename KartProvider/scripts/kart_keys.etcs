@@ -1,8 +1,9 @@
 #!/usr/bin/env etcs
-# The key edge -- W/S the pedal, A/D the wheel -- and the window's event pump
+# The key edge -- W/S the pedal, A/D the wheel, Space the trigger, Tab the
+# board -- and the window's event pump
 # (GolfProvider/scripts/golf_keys.etcs on why it has to exist).
 # Detached: a stream edge blocks the thread that states it.
-#   detach KartProvider/scripts/kart_keys.etcs window=main race=race
+#   detach KartProvider/scripts/kart_keys.etcs window=main battle=battle
 requires window [Window]
-requires race [KartRace]
-window.ProduceEvents() -> race.ConsumeKeys()
+requires battle [KartBattle]
+window.ProduceEvents() -> battle.ConsumeKeys()

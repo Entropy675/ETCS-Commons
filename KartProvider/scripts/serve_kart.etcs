@@ -1,8 +1,8 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# THE KART PAGE, served by ETCS, with a hub to race over and a hall to find a
-# race in.
+# THE KART PAGE, served by ETCS, with a hub to battle over and a hall to find a
+# battle in.
 #
 #     ./bin/etcs modules/KartProvider/scripts/serve_kart.etcs
 #     then open https://localhost:8445/ -- in two tabs, one hosting
@@ -28,7 +28,7 @@ tree.ListPaths()
 web.Start()
 web.IsStarted()
 
-# The hall: a Lobby every host lists its race in, published on the hub as
+# The hall: a Lobby every host lists its battle in, published on the hub as
 # `hall` -- what ChessProvider/scripts/chess_service.etcs opens on the site.
 spawn NetworkProvider::Lobby hall_list
 spawn NetworkProvider::Room hall

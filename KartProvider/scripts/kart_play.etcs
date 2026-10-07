@@ -1,8 +1,9 @@
 #!/usr/bin/env etcs
-# THE RACE ON A CAMERA: the card, how to drive, and the race bound to the eye
-# it steers (behind this runtime's own kart) -- the same for a window and a page.
-#   run KartProvider/scripts/kart_play.etcs race=race world=world eye=eye
-requires race [KartRace]
+# THE BATTLE ON A CAMERA: the card, how to play, the lobby's menu and the
+# board Tab holds up, and the battle bound to the eye it steers (behind this
+# runtime's own kart) -- the same for a window and a page.
+#   run KartProvider/scripts/kart_play.etcs battle=battle world=world eye=eye
+requires battle [KartBattle]
 requires world [Drawable3D]
 requires eye [Camera]
 
@@ -16,13 +17,20 @@ card.SetPadding(6)
 card.SetOrder(11)
 eye.spawn(RenderProvider::TextLabel howto)
 howto.Create(16)
-howto.SetText(W: go / S: brake, reverse / A D: steer)
+howto.SetText(W go / S brake / A D steer / Space fire / Tab scores / Esc abandon (host))
 howto.SetPosition(16, 724)
 howto.SetColor(0.75, 0.9, 0.8, 1.0)
 howto.SetBackground(0.0, 0.0, 0.0, 0.35)
 howto.SetPadding(4)
 howto.SetOrder(11)
 
-race.BindWorld(@world)
-race.BindCamera(@eye)
-race.BindCard(@card)
+# The lobby's menu and the round's board: sixteen rows, the menu up between
+# rounds, the board while Tab is held and in a round's results.
+run kart_board.etcs eye=eye battle=battle
+run kart_board.etcs eye=eye battle=battle
+run kart_board.etcs eye=eye battle=battle
+run kart_board.etcs eye=eye battle=battle
+
+battle.BindWorld(@world)
+battle.BindCamera(@eye)
+battle.BindCard(@card)

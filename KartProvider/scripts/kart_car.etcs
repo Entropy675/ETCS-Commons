@@ -1,12 +1,13 @@
 #!/usr/bin/env etcs
 # One kart of the pool: a body to look at, a solid sphere to everything else,
-# no drag of its own (the race's tyres and pedal are its drag), and four
-# wheels -- drawn, held, solid to nothing; the race puts them at the body's
-# corners after every step and turns the front two with the wheel. Handed to
-# the race, which colours the body and puts it all in the pit.
-#   run kart_car.etcs world=<Scene3D> race=<KartRace> tyre=<Mesh>
+# no drag of its own (the battle's tyres and pedal are its drag), four wheels
+# and an HP bar -- drawn, held, solid to nothing. The battle puts the wheels at
+# the body's corners after every step (the front two turned with the wheel)
+# and the bar over the kart, turned to this runtime's eye. Handed to the
+# battle, which colours the body and puts it all in the pit.
+#   run kart_car.etcs world=<Scene3D> battle=<KartBattle> tyre=<Mesh>
 requires world [Drawable3D]
-requires race [KartRace]
+requires battle [KartBattle]
 requires tyre [Mesh]
 world.spawn(RenderProvider::Scene3D kart)
 kart.Create(1.1, 0.4, 2.0)
@@ -21,4 +22,15 @@ run kart_wheel.etcs wheel=fl tyre=tyre
 run kart_wheel.etcs wheel=fr tyre=tyre
 run kart_wheel.etcs wheel=rl tyre=tyre
 run kart_wheel.etcs wheel=rr tyre=tyre
-race.AddKart(@kart @fl @fr @rl @rr)
+# The bar: a dark back, and a fill the battle sizes to the kart's health.
+world.spawn(RenderProvider::Scene3D bar)
+bar.Create(1.8, 0.28, 0.06)
+bar.SetColor(0.05, 0.05, 0.06, 1.0)
+bar.SetAnchored(1)
+bar.SetVisible(0)
+world.spawn(RenderProvider::Scene3D fill)
+fill.Create(1.7, 0.2, 0.1)
+fill.SetColor(0.25, 0.85, 0.3, 1.0)
+fill.SetAnchored(1)
+fill.SetVisible(0)
+battle.AddKart(@kart @fl @fr @rl @rr @bar @fill)
