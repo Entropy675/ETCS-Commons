@@ -226,11 +226,15 @@
     const p = __pending.get(handle); if (!p) return;
     __pending.delete(handle); p.resolve(ok ? text : null);
   };
+  // An answer that never comes is no answer after a while: the poll waits on
+  // these, and one lost would stop it for good.
+  const CALL_WAIT_MS = 10000;
   function callResult(name, work, args) {
     if (!runtimeUp()) return Promise.resolve(null);
     const handle = __seq++;
     return new Promise(function (resolve) {
       __pending.set(handle, { resolve: resolve });
+      setTimeout(function () { if (__pending.delete(handle)) resolve(null); }, CALL_WAIT_MS);
       window.Module.ccall('etcs_web_call_async', null, ['number', 'string', 'string', 'string'], [handle, name, work, args == null ? '' : args]);
     });
   }

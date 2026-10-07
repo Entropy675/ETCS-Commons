@@ -250,6 +250,7 @@ public:
         std::string me;
         {
             std::lock_guard<std::mutex> g(m_mu);
+            ++m_gen;   // the streams of the session going end with it (below)
             if (m_me.empty()) return;
             if (m_session && m_judge) { hall = m_hall; me = m_me; }
             m_me.clear(); m_owner.clear(); m_judge = false; m_session = false;
@@ -322,55 +323,73 @@ public:
     }
 
     // ── the streams ──────────────────────────────────────────────────────
+    //
+    // EACH STREAM IS ITS SESSION'S. A stream takes the session's number when
+    // it starts (a template detaches it after Host or Join), and is stale once
+    // the battle is in another: a guest's emitter left over from a link that
+    // went would otherwise take the next session's first line -- its `join`
+    // -- and write it to the closed link, and a follower would feed an old
+    // record into the new battle. A stale stream is told so, and ends.
 
-    bool nextEmit(std::string& out)
+    uint64_t Generation() { std::lock_guard<std::mutex> g(m_mu); return m_gen; }
+
+    // A line for the host, or nothing yet; false (and `stale`) once the
+    // session is another's.
+    bool nextEmit(uint64_t gen, std::string& out, bool& stale)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (m_outbox.empty()) return false;
+        stale = gen != m_gen;
+        if (stale || m_outbox.empty()) return false;
         out = std::move(m_outbox.front());
         m_outbox.pop_front();
         return true;
     }
-    // A line of the record, followed: "<seq> <author> <line>".
-    void Absorb(const std::string& msg)
+    // A line of the record, followed: "<seq> <author> <line>". False once
+    // the session is another's.
+    bool Absorb(uint64_t gen, const std::string& msg)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (m_judge || msg.compare(0, 2, "~ ") == 0) return;
+        if (gen != m_gen) return false;
+        if (m_judge || msg.compare(0, 2, "~ ") == 0) return true;
         uint64_t seq = 0; std::string author, line;
-        if (!parseLine(msg, seq, author, line)) return;
+        if (!parseLine(msg, seq, author, line)) return true;
         if (!applyLocked(author, line) && line.compare(0, 4, "tick") != 0)
             ETCS_LOG("KartBattle", "line " << seq << " (" << author << " " << line << ") refused here -- this battle is not the record's.");
         m_seq = seq + 1;
+        return true;
     }
     // The record ended under a guest still in the battle: the host closed it
     // (or its link went). The world stays where the last line left it.
-    void RecordEnded()
+    void RecordEnded(uint64_t gen)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (m_session && !m_judge) noteLocked("the battle is over -- " + m_owner + " closed it");
+        if (gen == m_gen && m_session && !m_judge) noteLocked("the battle is over -- " + m_owner + " closed it");
     }
     // A proposal, judged: applied as its author and recorded if taken. A
     // guest proposes its own seat and its own controls, nothing else.
-    void JudgeLine(const std::string& msg)
+    bool JudgeLine(uint64_t gen, const std::string& msg)
     {
         ETCS::RID proposals = 0; uint64_t seq = 0;
         {
             std::lock_guard<std::mutex> g(m_mu);
-            if (!m_judge || !m_session || msg.compare(0, 2, "~ ") == 0) return;
+            if (gen != m_gen) return false;
+            if (!m_judge || !m_session || msg.compare(0, 2, "~ ") == 0) return true;
             std::string author, line;
-            if (!parseLine(msg, seq, author, line) || author.empty()) return;
+            if (!parseLine(msg, seq, author, line) || author.empty()) return true;
             if (line == "join" || line.compare(0, 6, "drive ") == 0) takeLocked(author, line);
             proposals = m_proposals;
         }
         if (Record_* p = recordOf(proposals)) p->Checkpoint(seq + 1);
+        return true;
     }
     // The presence listing, whole, on every change: arrivals and departures,
     // a departed driver's kart back to the pit (the host's line), and this
     // battle's snapshots against the host's.
-    void Roster(const std::string& listing)
+    bool Roster(uint64_t gen, const std::string& listing)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (!m_session) return;
+        if (gen != m_gen) return false;
+        if (!m_session) return true;
         std::map<std::string, std::pair<uint64_t, std::string>> now;
         std::istringstream in(listing);
         std::string row;
@@ -401,6 +420,7 @@ public:
                     noteLocked("the battle differs from the host's at tick " + std::to_string(t));
                 }
         }
+        return true;
     }
 
     /*
@@ -1946,7 +1966,8 @@ private:
     std::vector<int64_t> m_blast_until;
     std::vector<BoardRow> m_board;
 
-    // The session.
+    // The session, and its number (the streams'; Leave moves it on).
+    uint64_t    m_gen = 0;
     std::string m_me, m_owner, m_id;
     bool        m_judge = false, m_session = false;
     ETCS::RID   m_record = 0, m_proposals = 0, m_presence = 0, m_hall = 0;

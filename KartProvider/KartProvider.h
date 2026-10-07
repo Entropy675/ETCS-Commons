@@ -129,15 +129,25 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, Run, (uint32_t, ticks)) { (void)ctx; self.Run
 DEFINE_WORK_FUNC(KartBattle, Note)      { (void)ctx; data.reset(); data.writeString(self.Note().c_str()); }
 DEFINE_WORK_FUNC(KartBattle, Delete)    { (void)ctx; (void)data; data.writeString(self.Delete() ? "deleted" : "FAILED"); }
 
+// The session's streams: each ends with its session (KartBattle.h, "each
+// stream is its session's"), as well as when its other end goes.
+//
 // battle.Emit() -> proposals.Take() -- a guest's lines, for as long as the
-// session lasts. Ends when the reader goes.
+// session lasts.
 DEFINE_STREAM_FUNC_PRODUCE_STANDING(KartBattle, Emit)
 {
     (void)data;
+    const uint64_t gen = self.Generation();
     std::string line;
+    bool stale = false;
     while (!ctx.isInterrupted() && !ctx.isTerminated() && !stream.readerGone())
     {
-        if (!self.nextEmit(line)) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
+        if (!self.nextEmit(gen, line, stale))
+        {
+            if (stale) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
         if (!stream.writeMessage(line)) break;
     }
 }
@@ -145,24 +155,30 @@ DEFINE_STREAM_FUNC_PRODUCE_STANDING(KartBattle, Emit)
 DEFINE_STREAM_FUNC_CONSUME(KartBattle, Absorb)
 {
     (void)data;
+    const uint64_t gen = self.Generation();
     std::string m;
-    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20)) self.Absorb(m);
+    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20))
+        if (!self.Absorb(gen, m)) return;
     ETCS_LOG("KartBattle", "Absorb: the record ended.");
-    self.RecordEnded();
+    self.RecordEnded(gen);
 }
 // proposals.Follow(0) -> battle.Judge() -- the host judging every line proposed.
 DEFINE_STREAM_FUNC_CONSUME(KartBattle, Judge)
 {
     (void)data;
+    const uint64_t gen = self.Generation();
     std::string m;
-    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20)) self.JudgeLine(m);
+    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20))
+        if (!self.JudgeLine(gen, m)) return;
 }
 // presence.Watch() -> battle.Roster() -- the listing, whole, on every change.
 DEFINE_STREAM_FUNC_CONSUME(KartBattle, Roster)
 {
     (void)data;
+    const uint64_t gen = self.Generation();
     std::string listing;
-    while (!ctx.isInterrupted() && stream.readMessage(listing)) self.Roster(listing);
+    while (!ctx.isInterrupted() && stream.readMessage(listing))
+        if (!self.Roster(gen, listing)) return;
 }
 // main.ProduceEvents() -> battle.ConsumeKeys() -- the keyboard, and the window's
 // pump (golf_keys.etcs on why the key edge has to exist).
