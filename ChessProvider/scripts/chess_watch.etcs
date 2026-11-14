@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# The presence listing into the share: `detach chess_watch.etcs src=<Lobby> dst=<ChessShare>`
+requires dst [ChessShare]
+src.Watch() -> dst.Roster()

@@ -1,0 +1,34 @@
+#!/usr/bin/env etcs
+# SKATEPARK: two jumps facing the same way down the middle, a raised deck
+# with a ramp at each end on either side, and four low walls -- speed, air,
+# and the high ground.
+#   run kart_map_skatepark.etcs battle=<KartBattle>
+# AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
+requires battle [KartBattle]
+battle.AddMap(skatepark)
+
+battle.AddRamp(0.0, -14.0, 0.0, 4.0, 6.0, 0.0, 0.0, 1.5)
+battle.AddRamp(0.0, 14.0, 0.0, 4.0, 6.0, 0.0, 0.0, 1.5)
+battle.AddRamp(-17.0, 0.0, 0.0, 5.0, 5.0, 6.0, 5.0, 2.0)
+battle.AddRamp(17.0, 0.0, 0.0, 5.0, 5.0, 6.0, 5.0, 2.0)
+battle.AddBlock(12.0, 24.0, 5.0, 3.0, 3.0, 0.0)
+battle.AddBlock(-12.0, 24.0, 5.0, 3.0, 3.0, 0.0)
+battle.AddBlock(12.0, -24.0, 5.0, 3.0, 3.0, 0.0)
+battle.AddBlock(-12.0, -24.0, 5.0, 3.0, 3.0, 0.0)
+
+battle.AddSpawn(0.0, -27.0)
+battle.AddSpawn(0.0, 27.0)
+battle.AddSpawn(-27.0, 0.0)
+battle.AddSpawn(27.0, 0.0)
+battle.AddSpawn(-24.0, -14.0)
+battle.AddSpawn(24.0, 14.0)
+battle.AddSpawn(24.0, -14.0)
+battle.AddSpawn(-24.0, 14.0)
+
+battle.AddPickup(0.0, 0.0)
+battle.AddPickup(-17.0, 0.0)
+battle.AddPickup(17.0, 0.0)
+battle.AddPickup(0.0, -22.0)
+battle.AddPickup(0.0, 22.0)
+battle.AddPickup(-8.0, 0.0)

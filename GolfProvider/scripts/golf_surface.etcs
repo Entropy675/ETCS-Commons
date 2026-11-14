@@ -1,0 +1,7 @@
+#!/usr/bin/env etcs
+# The green's material: solid, held in place, a little give and a slow roll.
+#   run GolfProvider/scripts/golf_surface.etcs part=<a Scene3D>
+requires part [Drawable3D]
+part.SetColor(0.22, 0.62, 0.28, 1.0)
+part.SetAnchored(1)
+part.SetSolid(0.3, 0.1)

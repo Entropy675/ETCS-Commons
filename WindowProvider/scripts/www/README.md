@@ -148,9 +148,9 @@ patch this page came with:
 
 Build. There is no copy step any more:
 
-    ace make loader etcs EMSCRIPTEN=1
-    ace make module WindowProvider EMSCRIPTEN=1
-    ace make module ShellProvider  EMSCRIPTEN=1
+    ace wasm make module WindowProvider
+    ace wasm make module ShellProvider
+    ace wasm make loader etcs
 
 Every web artifact lands in `bin/wasm/` (`WASM_DIR` in ETCS's Makefile,
 `ARTIFACT_DIR` in the generated `loaders/Makefile`), `serve_web.etcs` mounts that
@@ -435,14 +435,15 @@ Preflight works here too, and is the fastest way to find out what a scene needs:
 
 ## What is not solved here
 
-**3D does not draw on this surface, and it is not meant to yet.** `CanvasSurface`
-is `PixelsBase`: it owns host bytes and presents them with `putImageData`.
-`Scene3D`/`Camera3D` draw through the device path (`RenderableBase`), which on
-the desktop is Vulkan and in the browser would be a WebGPU or WebGL context --
-and a canvas has exactly ONE context for its lifetime, so that is a different
-surface type on a different canvas rather than an addition to this one. The 2D
-half is what is finished; `PixelsBase` and `RenderableBase` are mutually
-exclusive under `Raster_` for exactly this reason.
+**The surface is a host raster, and a device when the page has one.** The
+window surface (`RenderProvider/OS/HostSurface.h`) owns host bytes and presents
+them with `putImageData`; with a `RenderProvider::Device` under it (which
+`view.Create(@gpu)` spawns when the page has WebGPU) it records instead and draws
+each frame through WebGPU. A canvas has exactly ONE context for its lifetime and
+this one's is 2D, so the device draws into a second canvas laid exactly over it,
+`<id>-gpu`, with `pointer-events: none` -- input still lands on the canvas GLFW
+listens to (`OS/WebGpuJs.h`). No WebGPU, or a lost device, and the surface is back
+on the host the next frame; nothing in a script changes either way.
 
 **A navigator script that SPAWNS can trap while the frame pump is live.** A
 spawn-free script (`polygon_draw.etcs`) runs repeatedly and cleanly against a

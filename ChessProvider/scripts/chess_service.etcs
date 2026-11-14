@@ -1,0 +1,37 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── THE SITE'S TWO CHESS SERVICES ────────────────────────────────────────────
+#
+#     run ChessProvider/scripts/chess_service.etcs links=<LinkHub>
+#
+# THE HALL is the name server: a Lobby, published in a Room hosted on the
+# site's hub as `hall` (/link/hall). Everyone playing links to it and lists
+# it (chess_hall.etcs); a person hosting a game advertises it there with its
+# seats (ChessShare::Tick), and the entry goes when their link does. That is
+# all a casual game needs of the site -- two people find each other here and
+# play on one of their runtimes, the site judging nothing.
+#
+# THE RANKED TABLES are games this runtime hosts and judges itself: each one
+# the same six entities a person's table is (chess_host.etcs, read as a
+# script), with a board that holds no seat -- the ACE server as one more
+# observer, in front of the record. They are advertised in the hall as
+# `ranked <table>`; a table's seats are taken by whoever links to it and
+# moves; the outcome is the judge's (ChessGame::outcomeLocked); and the table
+# is reset for the next two once they have gone (ChessShare::roster).
+#
+# Two tables, one line each (chess_ranked_table.etcs names them table1,
+# table2, ... as they are made). The hall is a service of its own and stays
+# up with no tables at all.
+
+requires links [LinkHub]
+
+spawn NetworkProvider::Lobby hall_list
+spawn NetworkProvider::Room hall
+hall.SetName(hall)
+hall.Publish(hall @hall_list Advertise Withdraw Watch)
+hall.Host(@links hall)
+
+# ── the tables ───────────────────────────────────────────────────────────────
+run ChessProvider/scripts/chess_ranked_table.etcs links=links hall=hall_list
+run ChessProvider/scripts/chess_ranked_table.etcs links=links hall=hall_list

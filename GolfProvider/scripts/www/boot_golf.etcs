@@ -1,0 +1,48 @@
+#!/usr/bin/env etcs
+
+# GOLF, IN A BROWSER: one hole, the same course and game the window runs
+# (../golf.etcs), on the page served by ETCS:
+#
+#     ./bin/etcs modules/GolfProvider/scripts/serve_golf.etcs
+#     then open https://localhost:8443/
+#
+# Drag the ball back to aim -- the arrow is the shot, opposite the drag -- and
+# let go to putt. Drag anywhere else to walk the camera round the ball; the
+# wheel brings it in and out. The camera's pitch is the loft.
+#
+# What differs from the window is the substrate, as on RenderProvider's 3D page:
+# no main.Run (the browser's loop is the page's), and the camera composed
+# directly so the scene goes to the page's WebGPU device (its Device child),
+# drawing on the host when there is none.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+spawn WindowProvider::Window main
+main.Create(1024, 768, ETCS golf)
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+
+spawn RenderProvider::Camera3D eye
+eye.Create(1024, 768)
+eye.SetPosition(0, 0)
+eye.SetOrder(1)
+eye.SetBackground(0.45, 0.62, 0.85, 1.0)
+eye.SetLens(55.0, 0.05, 300.0)
+eye.spawn(RenderProvider::Device dev)
+dev.Create(@gpu)
+
+spawn RenderProvider::Scene3D world
+world.Create(1.0, 1.0, 1.0)
+world.SetVisible(0)
+eye.SetScene(@world)
+
+# The game, named here so the terminal can reach it (game.Strokes(),
+# game.Reset()); the course builds the hole and hands it its pieces.
+spawn GolfProvider::GolfGame game
+run GolfProvider/scripts/golf_course.etcs anchor=world eye=eye game=game
+
+view.Clear(0.02, 0.02, 0.03, 1.0)
+view.Compose(@eye)
+detach RenderProvider/scripts/render_frames.etcs view=view
+detach GolfProvider/scripts/golf_pointer.etcs window=main game=game
+detach GolfProvider/scripts/golf_keys.etcs window=main game=game

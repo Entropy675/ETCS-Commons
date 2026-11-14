@@ -1,0 +1,45 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# GOLF, IN A WINDOW. One hole: drag the ball back to aim, let go to putt.
+#
+#     ./bin/etcs modules/GolfProvider/scripts/golf.etcs
+#
+# The same course and the same game the page runs (www/boot_golf.etcs); what
+# differs is the substrate: a window that runs its own loop, and a compositor
+# the camera draws into on the host.
+
+spawn RenderProvider::Instance gpu
+gpu.Create()
+spawn WindowProvider::Window main
+main.Create(1024, 768, 'ETCS golf')
+main.spawn(RenderProvider::Surface view)
+view.Create(@gpu)
+
+spawn RenderProvider::CompositeDrawable2D stage
+stage.Create(1024, 768)
+stage.SetPosition(0, 0)
+stage.SetBackground(0.04, 0.05, 0.08, 1.0)
+stage.spawn(RenderProvider::Camera3D eye)
+eye.Create(1024, 768)
+eye.SetPosition(0, 0)
+eye.SetOrder(1)
+eye.SetBackground(0.45, 0.62, 0.85, 1.0)
+eye.SetLens(55.0, 0.05, 300.0)
+
+spawn RenderProvider::Scene3D world
+world.Create(1.0, 1.0, 1.0)
+world.SetVisible(0)
+eye.SetScene(@world)
+
+# The game, named here so the terminal can reach it (game.Strokes(),
+# game.Reset()); the course builds the hole and hands it its pieces.
+spawn GolfProvider::GolfGame game
+run GolfProvider/scripts/golf_course.etcs anchor=world eye=eye game=game
+
+view.Clear(0.02, 0.02, 0.03, 1.0)
+view.Compose(@stage)
+detach RenderProvider/scripts/render_frames.etcs view=view
+detach GolfProvider/scripts/golf_pointer.etcs window=main game=game
+detach GolfProvider/scripts/golf_keys.etcs window=main game=game
+detach GolfProvider/scripts/golf_window.etcs main=main gpu=gpu view=view

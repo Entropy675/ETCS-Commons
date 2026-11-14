@@ -1,5 +1,5 @@
-#ifndef PICOHTTPPARSER_H__
-#define PICOHTTPPARSER_H__
+#ifndef NETWORKPROVIDER_PICOHTTPPARSER_H__
+#define NETWORKPROVIDER_PICOHTTPPARSER_H__
 
 #include "../../../ontology.h"
 #include <iostream>

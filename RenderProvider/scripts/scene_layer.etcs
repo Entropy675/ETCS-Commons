@@ -26,10 +26,11 @@ note.DrawRect(10, 10, 200, 30, 0.95, 0.95, 0.90, 1.0)
 
 # WHY THE WHOLE SCENE IS RESTATED, and not just the new layer.
 #
-# A surface's composition is RETAINED until it is presented, and the first
-# draw call after a present starts a NEW one (VulkanSurface::
-# beginCompositionIfPresented). So a lone Blit here would not add a layer to
-# the picture -- it would REPLACE the picture with one layer. An edit batch is
+# A surface's composition is RETAINED from one Clear to the next: Clear starts
+# a new picture and every draw after it appends (OS/HostSurface.h). So this
+# batch opens with a Clear and restates everything under the new layer --
+# without it the Blit would pile onto whatever was drawn last, and with a
+# Clear but only the new layer it would REPLACE the picture. An edit batch is
 # a whole composition, always.
 #
 # That is the honest shape of a scene that lives in a script rather than in

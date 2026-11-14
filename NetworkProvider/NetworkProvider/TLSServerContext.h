@@ -1,5 +1,5 @@
-#ifndef TLSSERVERCONTEXT_H__
-#define TLSSERVERCONTEXT_H__
+#ifndef NETWORKPROVIDER_TLSSERVERCONTEXT_H__
+#define NETWORKPROVIDER_TLSSERVERCONTEXT_H__
 #include "../../../ontology.h"
 #include "TLSServerConfig.h"
 #include <cstring>
@@ -270,4 +270,4 @@ private:
     std::shared_ptr<TLSServerConfig> conf_;
 };
 
-#endif // TLSSERVERCONTEXT_H__
+#endif // NETWORKPROVIDER_TLSSERVERCONTEXT_H__

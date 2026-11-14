@@ -1,0 +1,145 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE COURSE: one hole, stated in the anchor's space. Everything here is a
+# Scene3D, and what makes it a course is three statements of the Causal family
+# (ontology/etcs_causal_constraints.md §11-§13):
+#
+#   the anchor's space has a field     anchor.SetGravity -- everything inside
+#                                      falls, the ball included
+#   the green, the walls are solid     SetSolid, and anchored: places, not
+#                                      things; the ball is solid and free
+#   the cup is a space of its own      a container under the gap, with its own
+#                                      floor INSIDE it; a ball that drops in
+#                                      fits its space and fit takes it in --
+#                                      which is what holed means
+#
+# The green is four slabs around a square gap, so the hole is a real hole: a
+# slow ball drops in, a fast one rides over the lip or hits the far side.
+#
+#   run GolfProvider/scripts/golf_course.etcs anchor=world eye=eye game=game
+#
+# A script's names are its own, so the course hands its pieces to the game
+# itself, at the end (golf_play.etcs): the ball, the cup, the arrow. Its parts
+# are run by bare name: a script's own folder is looked in first, and that is
+# the one path the same in a window and on a page, where #IMPORT's ACE_ROOT
+# names the build machine's tree.
+
+requires anchor [Drawable3D]
+requires eye [Camera]
+requires game [GolfGame]
+
+anchor.SetGravity(0.0, -9.8, 0.0)
+anchor.SetSpace(500.0)
+
+# ── the green: 8 wide, from z = -2 to z = 26, top at y = 0, with a 0.7 square
+#    gap about the hole at (0, 0, 22) ────────────────────────────────────────
+anchor.spawn(RenderProvider::Scene3D green_s)
+green_s.Create(8.0, 0.5, 23.65)
+green_s.SetPosition(0.0, -0.25, 9.825)
+anchor.spawn(RenderProvider::Scene3D green_n)
+green_n.Create(8.0, 0.5, 3.65)
+green_n.SetPosition(0.0, -0.25, 24.175)
+anchor.spawn(RenderProvider::Scene3D green_w)
+green_w.Create(3.65, 0.5, 0.7)
+green_w.SetPosition(-2.175, -0.25, 22.0)
+anchor.spawn(RenderProvider::Scene3D green_e)
+green_e.Create(3.65, 0.5, 0.7)
+green_e.SetPosition(2.175, -0.25, 22.0)
+run golf_surface.etcs part=green_s
+run golf_surface.etcs part=green_n
+run golf_surface.etcs part=green_w
+run golf_surface.etcs part=green_e
+
+# ── the walls: bumpers half a unit high, bouncier than the green ───────────
+anchor.spawn(RenderProvider::Scene3D wall_w)
+wall_w.Create(0.3, 0.5, 28.6)
+wall_w.SetPosition(-4.15, 0.25, 12.0)
+anchor.spawn(RenderProvider::Scene3D wall_e)
+wall_e.Create(0.3, 0.5, 28.6)
+wall_e.SetPosition(4.15, 0.25, 12.0)
+anchor.spawn(RenderProvider::Scene3D wall_n)
+wall_n.Create(8.0, 0.5, 0.3)
+wall_n.SetPosition(0.0, 0.25, 26.15)
+anchor.spawn(RenderProvider::Scene3D wall_s)
+wall_s.Create(8.0, 0.5, 0.3)
+wall_s.SetPosition(0.0, 0.25, -2.15)
+run golf_wall.etcs part=wall_w
+run golf_wall.etcs part=wall_e
+run golf_wall.etcs part=wall_n
+run golf_wall.etcs part=wall_s
+
+# ── in the way: a block to play around, and a ridge to play over ───────────
+anchor.spawn(RenderProvider::Scene3D block)
+block.Create(1.6, 0.5, 1.6)
+block.SetPosition(1.4, 0.25, 11.0)
+run golf_wall.etcs part=block
+anchor.spawn(RenderProvider::Scene3D ridge)
+ridge.Create(5.0, 0.3, 1.2)
+ridge.SetPosition(-1.2, -0.05, 16.0)
+ridge.Orient(1.0, 0.0, 0.0, 12.0)
+run golf_surface.etcs part=ridge
+
+# ── the cup: a container under the gap, its own floor inside it ────────────
+#
+# Its space reaches 0.6 about its centre: the floor fits in it (or fit would
+# move the floor out on the first step), and a ball fits only once it is down
+# in the hole -- at the lip it is still on the green.
+anchor.spawn(RenderProvider::Scene3D cup)
+cup.Create(0.7, 0.6, 0.7)
+cup.SetPosition(0.0, -0.75, 22.0)
+cup.SetVisible(0)
+cup.SetAnchored(1)
+cup.SetSpace(0.6)
+cup.spawn(RenderProvider::Scene3D cup_floor)
+cup_floor.Create(0.7, 0.1, 0.7)
+cup_floor.SetPosition(0.0, -0.1, 0.0)
+cup_floor.SetColor(0.05, 0.05, 0.06, 1.0)
+cup_floor.SetAnchored(1)
+cup_floor.SetSolid(0.1, 0.6)
+
+# ── the flag: drawn, not solid -- the ball passes it (a solid meets only
+#    solids) ──────────────────────────────────────────────────────────────────
+anchor.spawn(RenderProvider::Scene3D pole)
+pole.Create(0.05, 2.2, 0.05)
+pole.SetPosition(0.3, 1.1, 22.0)
+pole.SetColor(0.92, 0.92, 0.9, 1.0)
+pole.SetAnchored(1)
+anchor.spawn(RenderProvider::Scene3D flag)
+flag.Create(0.6, 0.35, 0.03)
+flag.SetPosition(0.6, 2.0, 22.0)
+flag.SetColor(0.9, 0.15, 0.12, 1.0)
+flag.SetAnchored(1)
+
+# ── the tee: a mark, not solid ─────────────────────────────────────────────
+anchor.spawn(RenderProvider::Scene3D tee)
+tee.Create(0.6, 0.02, 0.6)
+tee.SetPosition(0.0, 0.01, 0.0)
+tee.SetColor(0.85, 0.85, 0.8, 1.0)
+tee.SetAnchored(1)
+
+# ── the ball: a sphere, solid and free ─────────────────────────────────────
+spawn RenderProvider::Mesh ball_shape
+ball_shape.Create()
+ball_shape.Sphere(12)
+anchor.spawn(RenderProvider::Scene3D ball)
+ball.Create(0.3, 0.3, 0.3)
+ball.SetMesh(@ball_shape)
+ball.SetShape(sphere)
+ball.SetSolid(0.45, 0.1)
+ball.SetDamping(0.05)
+ball.SetColor(0.97, 0.97, 0.95, 1.0)
+ball.SetPosition(0.0, 0.15, 0.0)
+
+# ── the arrow a pull draws: not solid, held in place, hidden until a pull ───
+spawn RenderProvider::Mesh arrow_shape
+arrow_shape.Create()
+arrow_shape.Arrow(0.3, 0.3)
+anchor.spawn(RenderProvider::Scene3D arrow)
+arrow.Create(0.15, 1.0, 0.15)
+arrow.SetMesh(@arrow_shape)
+arrow.SetAnchored(1)
+arrow.SetVisible(0)
+
+# ── the game on it ──────────────────────────────────────────────────────────
+run golf_play.etcs game=game world=anchor eye=eye ball=ball cup=cup arrow=arrow

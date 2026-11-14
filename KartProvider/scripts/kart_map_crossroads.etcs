@@ -1,0 +1,31 @@
+#!/usr/bin/env etcs
+# CROSSROADS: four city blocks -- a cross of roads through the middle and a
+# ring road round the outside, the corners blind. Flat.
+#   run kart_map_crossroads.etcs battle=<KartBattle>
+# AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
+requires battle [KartBattle]
+battle.AddMap(crossroads)
+
+battle.AddBlock(15.0, 15.0, 14.0, 14.0, 2.0, 0.0)
+battle.AddBlock(-15.0, 15.0, 14.0, 14.0, 2.0, 0.0)
+battle.AddBlock(15.0, -15.0, 14.0, 14.0, 2.0, 0.0)
+battle.AddBlock(-15.0, -15.0, 14.0, 14.0, 2.0, 0.0)
+
+# On the roads, each facing the middle down its road: the corners face a
+# block, so none is a spawn.
+battle.AddSpawn(0.0, -27.0)
+battle.AddSpawn(0.0, 27.0)
+battle.AddSpawn(-27.0, 0.0)
+battle.AddSpawn(27.0, 0.0)
+battle.AddSpawn(0.0, -12.0)
+battle.AddSpawn(0.0, 12.0)
+battle.AddSpawn(-12.0, 0.0)
+battle.AddSpawn(12.0, 0.0)
+
+battle.AddPickup(0.0, 0.0)
+battle.AddPickup(15.0, 0.0)
+battle.AddPickup(-15.0, 0.0)
+battle.AddPickup(0.0, 15.0)
+battle.AddPickup(0.0, -15.0)
+battle.AddPickup(27.0, 15.0)

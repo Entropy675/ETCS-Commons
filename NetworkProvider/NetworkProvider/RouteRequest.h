@@ -1,5 +1,5 @@
-#ifndef ROUTEREQUEST_H__
-#define ROUTEREQUEST_H__
+#ifndef NETWORKPROVIDER_ROUTEREQUEST_H__
+#define NETWORKPROVIDER_ROUTEREQUEST_H__
 #include "../../../ontology.h"
 #include <cstring>
 #include <string>

@@ -1,0 +1,25 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+spawn PaintProvider::PaintDocument doc
+doc.Create(64, 48)
+spawn PaintProvider::PaintShare share
+share.Attach(@doc 0 0)
+spawn NetworkProvider::Peer peer
+peer.SetName({{name}})
+peer.Connect(ws://127.0.0.1:8457/link/hosty)
+spawn NetworkProvider::Ledger mail
+peer.Publish(mail @mail)
+spawn NetworkProvider::Ledger record
+record.spawn(NetworkProvider::Remote rrecord)
+rrecord.Bind(record @peer)
+spawn NetworkProvider::Ledger intake
+intake.spawn(NetworkProvider::Seal seal)
+intake.spawn(NetworkProvider::Remote rintake)
+rintake.Bind(intake @peer)
+spawn NetworkProvider::Lobby presence
+presence.spawn(NetworkProvider::Remote rpresence)
+rpresence.Bind(presence @peer)
+share.Join(@record @intake @seal @presence @peer {{name}})
+detach PaintProvider/scripts/paint_follow.etcs src=record dst=doc
+detach PaintProvider/scripts/paint_watch.etcs src=presence dst=share
+detach PaintProvider/scripts/paint_mail.etcs src=mail dst=share

@@ -1,5 +1,5 @@
-#ifndef FILEHTMLPAGE_H__
-#define FILEHTMLPAGE_H__
+#ifndef NETWORKPROVIDER_FILEHTMLPAGE_H__
+#define NETWORKPROVIDER_FILEHTMLPAGE_H__
 #include "../../../ontology.h"
 #include "StaticHtmlPage.h"
 #include <string>
@@ -756,4 +756,4 @@ private:
     }
 };
 
-#endif // FILEHTMLPAGE_H__
+#endif // NETWORKPROVIDER_FILEHTMLPAGE_H__

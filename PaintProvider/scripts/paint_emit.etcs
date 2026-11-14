@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# What a page makes, into a record: `detach paint_emit.etcs src=<PaintDocument> dst=<Ledger>`
+requires src [PaintDocument]
+src.Emit() -> dst.Take()

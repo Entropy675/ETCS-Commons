@@ -1,8 +1,9 @@
-#ifndef CAMERA3D_H__
-#define CAMERA3D_H__
+#ifndef RENDERPROVIDER_CAMERA3D_H__
+#define RENDERPROVIDER_CAMERA3D_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
+#include "SceneSink.h"
 
 #include <cmath>
 #include <cstdint>
@@ -49,18 +50,63 @@
 class Camera3D : public CameraBase<Camera3D>,
                  public PixelsBase<Camera3D>,
                  public ClippableBase<Camera3D>,
-                 public DeletableBase<Camera3D>
+                 public DeletableBase<Camera3D>,
+                 public SceneSink
 {
 public:
     WIRE_TYPE_IDENTITY(Camera3D);
 
     // --- Orderable_ (required by Surface, which Drawable refines) ---
     int32_t m_order = 0;
-    bool operator<(const Camera3D& o) const { return m_order < o.m_order; }
+    // Hidden loses every comparison; then the stated order.
+    bool operator<(const Camera3D& o) const
+    { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
-    Camera3D()  = default;
+    // The sink is reached by name (RenderProvider/SceneSink.h), the way a family is,
+    // so the scene never casts a Camera_ to this type.
+    Camera3D()
+    {
+        this->registerInterfacePointer(ETCS::Buffer(RP_SCENE_SINK),
+                                       static_cast<void*>(static_cast<SceneSink*>(this)));
+    }
     ~Camera3D() = default;
+
+    // ── SceneSink: the device projection, collected ──────────────────────
+    //
+    // A scene projecting on the device path lands here as ops rather than
+    // pixels (Scene3D::ProjectConcrete). The surface this camera is blitted
+    // into takes the recording once per projection (TakeScene) and the
+    // device draws it into a texture keyed by this camera's RID; a still
+    // scene is not re-taken and costs the device nothing, like a layer that
+    // did not move.
+    void BeginScene(const float view[16], const float proj[16]) override
+    {
+        std::lock_guard<std::mutex> lk(m_scene_mtx);
+        m_scene_rec.meshes.clear();
+        m_scene_rec.target = getRID();
+        m_scene_rec.w = m_w; m_scene_rec.h = m_h;
+        m_scene_rec.clear = { m_bg[0], m_bg[1], m_bg[2], m_bg[3] };
+        for (int i = 0; i < 16; ++i) { m_scene_rec.view[i] = view[i]; m_scene_rec.proj[i] = proj[i]; }
+        m_scene_fresh = true;
+    }
+    void AddMesh(const DeviceMeshOp& op) override
+    {
+        std::lock_guard<std::mutex> lk(m_scene_mtx);
+        m_scene_rec.meshes.push_back(op);
+    }
+    bool TakeScene(DeviceScene& out) override
+    {
+        std::lock_guard<std::mutex> lk(m_scene_mtx);
+        if (!m_scene_fresh) return false;
+        m_scene_fresh = false;
+        // Handed over, not copied.
+        out.meshes.swap(m_scene_rec.meshes);
+        m_scene_rec.meshes.clear();
+        out.target = m_scene_rec.target; out.w = m_scene_rec.w; out.h = m_scene_rec.h; out.clear = m_scene_rec.clear;
+        for (int i = 0; i < 16; ++i) { out.view[i] = m_scene_rec.view[i]; out.proj[i] = m_scene_rec.proj[i]; }
+        return true;
+    }
 
     bool Create(uint32_t w, uint32_t h)
     {
@@ -127,7 +173,7 @@ public:
     void SetBackground(float r, float g, float b, float a)
     {
         m_bg[0] = r; m_bg[1] = g; m_bg[2] = b; m_bg[3] = a;
-        markPath();
+        restate();
     }
 
     // Pose and lens go in together (ontology/Camera.h on why), so the two
@@ -154,14 +200,14 @@ public:
     void SetViewConcrete(ViewFrustum view) override
     {
         m_view = view;
-        markPath();              // a moved eye is a different image
+        restate();               // a moved eye is a different image
     }
     ViewFrustum GetViewConcrete() override { return m_view; }
 
     void SetSceneConcrete(ETCS::RID scene) override
     {
         m_scene = scene;
-        markPath();
+        restate();
     }
     ETCS::RID GetSceneConcrete() override { return m_scene; }
 
@@ -200,6 +246,11 @@ public:
 
     bool DeviceProjectionRequestedConcrete() const override { return m_want_device; }
 
+    // Asked of the destination at every draw (DrawIntoConcrete): a surface
+    // drawing on the host cannot take a scene, so this camera projects on
+    // the host into it (ontology/Camera.h, RenderProvider/SceneSink.h).
+    bool DeviceProjectionLandsConcrete() const override { return m_scene_lands; }
+
     bool RenderConcrete() override
     {
         if (m_scene == 0) return false;
@@ -220,7 +271,7 @@ public:
          * camera records and replays like every other op -- because in that
          * mode there is no buffer to clear, and Clear on a retained op list
          * means "a new composition starts here" exactly as it does for
-         * PolygonDrawable2D and VulkanSurface.
+         * PolygonDrawable2D and a window surface on a device.
          */
         if (this->DeviceProjection()) Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
         else                          ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
@@ -252,7 +303,7 @@ public:
      * TWO SINKS, ONE SET OF VERBS. On the host these rasterise into the
      * camera's own buffer, which is what they have always done. Through a
      * device they RECORD, and DrawInto replays them onto the destination --
-     * the same retained model PolygonDrawable2D and VulkanSurface both use,
+     * the same retained model PolygonDrawable2D and a device-drawn window use,
      * for the reason PolygonDrawable2D states: "the thread that decides what
      * to draw is not the thread that draws it".
      *
@@ -322,8 +373,8 @@ public:
      * The recording, for device mode only. One flat list in call order,
      * because that IS the composition -- a layered picture is drawn
      * back-to-front and the order calls arrive in is the order they must be
-     * replayed in, which is the same reason VulkanSurface keeps ONE
-     * m_pendingDraws rather than three lists.
+     * replayed in, which is the same reason a window surface keeps ONE
+     * recording rather than three lists (OS/HostSurface.h).
      *
      * Coordinates are the camera's own; the destination offset is added at
      * replay. Clear carries no rect: it means the whole frame, whose size is
@@ -351,7 +402,21 @@ public:
         // walk that draws it, so the mark it leaves is consumed by this
         // frame's own upload and there is nothing left to schedule the next
         // frame with. Asking is what closes that loop, and it costs a load.
-        if (TakeObserved(getRID()) || sceneInMotion() || anyChildNeedsFrame())
+        /*
+         * WHERE THE PICTURE LANDS, asked now: the surface underneath is on
+         * its device or not THIS frame (HostSurface chooses at each
+         * Present), and the projection below branches on the answer. A
+         * change of answer is a change of what this camera produces, so it
+         * re-renders on the spot rather than showing the other mode's
+         * leftovers for a frame.
+         */
+        bool lands = false;
+        if (void* t = dst->getInterfacePointer(ETCS::Buffer(RP_SCENE_TAKER)))
+            lands = static_cast<SceneTaker*>(t)->TakesScenes();
+        const bool relanded = (lands != m_scene_lands);
+        m_scene_lands = lands;
+
+        if (relanded || TakeObserved(getRID()) || sceneInMotion() || anyChildNeedsFrame())
         {
             // No self-clear: Render's writes mark with origin=this, so my own
             // edge is skipped at the source rather than cleared afterwards.
@@ -366,10 +431,10 @@ public:
          * visible difference between the two modes.
          *
          * The host frame is a buffer, so it reaches the destination the way
-         * every buffer does -- one Blit, which on a VulkanSurface is an upload
+         * every buffer does -- one Blit, which on a device-drawn window is an upload
          * and a textured quad. The device frame was never a buffer: it is the
          * spans the projection produced, replayed onto the destination as its
-         * own draws, so on a VulkanSurface they become device rects and the
+         * own draws, so on a device-drawn window they become device rects and the
          * frame is produced without host pixels existing at any point.
          *
          * Replayed under the lock, into a local copy: the frame edge runs on
@@ -377,17 +442,23 @@ public:
          */
         if (this->DeviceProjection())
         {
+            /*
+             * THE PROJECTION IS A BLIT OF THIS CAMERA. The surface underneath
+             * sees a device-path camera and takes its scene (HostSurface's
+             * Blit) rather than its host pixels, and the device draws the
+             * scene into a texture that this blit then samples -- so the 3D
+             * view composes exactly as a layer does, at this plane's place
+             * in the tree. What was recorded as rects -- the 2D children
+             * drawn over the frame -- follows, on top, in the camera's own
+             * space, as before.
+             */
+            dst->Blit(this, base.x + m_x, base.y + m_y, m_w, m_h, 1.0f);
             std::vector<Op> ops;
             { std::lock_guard<std::mutex> lk(m_ops_mtx); ops = m_ops; }
             for (const Op& o : ops)
-            {
-                if (o.kind == Op::Kind::Clear)
-                    dst->DrawRect(base.x + m_x, base.y + m_y, m_w, m_h,
-                                  o.c[0], o.c[1], o.c[2], o.c[3]);
-                else
+                if (o.kind == Op::Kind::Rect)
                     dst->DrawRect(base.x + m_x + o.x, base.y + m_y + o.y, o.w, o.h,
                                   o.c[0], o.c[1], o.c[2], o.c[3]);
-            }
             return;
         }
 
@@ -469,6 +540,11 @@ private:
     // leaves a stale view inside a clean parent, which is blitted, correctly,
     // forever. The walk lives in ontology/Observable.h.
     void markPath() { etcs_mark_observed(this); }
+    // What the picture is made FROM changed (the eye, the sky, the scene): the
+    // same marks, and this camera's own self edge with them, which a mark from
+    // itself leaves alone -- DrawInto renders on that edge, so without it a
+    // still scene under a turned eye blits the old picture.
+    void restate() { etcs_mark_restated(this); }
 
     // Seeded from the live values on first stage, so a MoveTo alone does not
     // drag a stale size along with it. Called under m_pending_mtx.
@@ -547,6 +623,11 @@ private:
     bool               m_want_device = true;
     std::vector<Op>    m_ops;
     mutable std::mutex m_ops_mtx;
+    // The scene, as the device draws it; fresh until the surface takes it.
+    DeviceScene        m_scene_rec;
+    bool               m_scene_fresh = false;
+    bool               m_scene_lands = true;    // DeviceProjectionLands, asked at each draw
+    mutable std::mutex m_scene_mtx;
     uint64_t  m_renders = 0;
 };
 

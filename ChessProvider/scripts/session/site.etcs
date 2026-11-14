@@ -1,0 +1,9 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# The site, for the session test: a hub on 8458 and the two chess services on
+# it -- what run_website.etcs does for the site, minus its pages.
+spawn NetworkProvider::HttpServer web
+web.SetPort(8458)
+web.spawn(NetworkProvider::LinkHub links)
+web.Start()
+run ChessProvider/scripts/chess_service.etcs links=links

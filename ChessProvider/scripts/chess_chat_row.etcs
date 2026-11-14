@@ -1,0 +1,18 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# One row of the conversation, in a pane, handed to the table -- which puts
+# it under the row before (ChessTable::ChatRow), so this script has no number
+# and is run once per row:
+#
+#     run ChessProvider/scripts/chess_chat_row.etcs pane=<CompositeDrawable2D> table=<ChessTable>
+
+requires pane [CompositeDrawable2D]
+requires table [ChessTable]
+
+pane.spawn(RenderProvider::TextLabel row)
+row.Create()
+row.SetSize(8)
+row.SetColor(0.86, 0.84, 0.76, 1.0)
+row.SetOrder(41)
+table.ChatRow(@row)

@@ -1,5 +1,5 @@
-#ifndef FORUMSELF_H__
-#define FORUMSELF_H__
+#ifndef FORUMWEBSITEPROVIDER_FORUMSELF_H__
+#define FORUMWEBSITEPROVIDER_FORUMSELF_H__
 #include "ForumThread.h"
 
 class ForumNode;
@@ -162,4 +162,4 @@ private:
     std::vector<std::pair<std::string, ForumThread*>> edges_;
 };
 
-#endif // FORUMSELF_H__
+#endif // FORUMWEBSITEPROVIDER_FORUMSELF_H__

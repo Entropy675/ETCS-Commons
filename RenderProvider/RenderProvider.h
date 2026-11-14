@@ -10,24 +10,26 @@
 #include <string>
 #include <thread>
 
-// RenderProvider -- Vulkan, three tags:
+// RenderProvider -- the surfaces, and the device they can draw through:
 //
-//   Instance     -- the VkInstance/device/queue/command pool. Flat (no
-//                   ontology supertype but Deletable): there is one Vulkan
-//                   backend, and nothing addresses "an instance"
-//                   generically.
-//   Surface      -- the window-bound presentable surface
-//                   [Surface + Presentable + Resizable]. Spawned as a
-//                   CHILD of a WindowProvider::Window; reaches its parent
-//                   through the generic interface-pointer surface, never
-//                   through a compile-time dependency on WindowProvider.
+//   Instance     -- the GPU: Vulkan natively, WebGPU in a browser. Flat (no
+//                   ontology supertype but Deletable); nothing addresses "an
+//                   instance" generically.
+//   Device       -- "this entity can reach that Instance", as a child of the
+//                   entity. Attaching one is the switch (ontology/Device.h).
+//   Surface      -- the window surface [Surface + Pixels + Presentable +
+//                   Resizable]: a host raster on every platform, drawing and
+//                   presenting through the device while a ready Device is
+//                   under it (OS/HostSurface.h). Spawned as a CHILD of a
+//                   WindowProvider::Window; reaches its parent through the
+//                   generic interface-pointer surface, never through a
+//                   compile-time dependency on WindowProvider.
 //   ImageSurface -- an offscreen CPU-backed surface
 //                   [Surface + Pixels + Resizable]. A layer.
 //
-// The pair is the point: both answer Clear/DrawRect/Blit, one composites
-// on the CPU into its own bytes and the other uploads and draws on the
-// GPU, and a caller composing a layer stack writes the same calls either
-// way. That is the surface PintaProvider projects onto.
+// Every surface answers Clear/DrawRect/Blit, and a caller composing a layer
+// stack writes the same calls whether the window under it rasterises on the
+// CPU or records for the GPU. That is the surface PaintProvider projects onto.
 //
 // Deliberately absent, all flagged rather than forgotten:
 //   - validation layers (VulkanInstance::Create's own comment)
@@ -86,14 +88,19 @@ DEFINE_WORK_FUNC(Device, Delete)
 
 // ── Surface (window-bound, presentable) ──────────────────────────────────
 
-// Create <instance_rid> [<shader_dir>] -- the RID is parsed off the raw
-// buffer rather than declared as a typed field, matching HttpServer's own
-// AddHandler/AddRoute convention (NetworkProvider.h) for taking a
-// script-supplied @name. shader_dir defaults to "shaders/", resolved
-// relative to the process cwd exactly like FileHtmlPage::LoadFromDisk's
-// path -- nothing in this codebase locates a module's own install
-// directory yet, and inventing that mechanism here would be a bigger
-// change than this milestone warrants.
+/*
+ * Create [<instance_rid> [<shader_dir>]] -- the host raster needs neither. An
+ * Instance given here is the old spelling of attaching a device, kept because
+ * every script before devices were children says it: the surface comes up on
+ * the host, and a Device child naming that Instance is spawned under it, so
+ * the switch is the same child a script would have spawned itself
+ * (RenderProvider/Device.h). An Instance that failed to come up spawns
+ * nothing, and the window is simply on the host.
+ *
+ * The RID is parsed off the raw buffer rather than declared as a typed field,
+ * matching HttpServer's own AddRoute convention for a script-supplied @name.
+ * shader_dir overrides where the Vulkan backend looks for its SPIR-V.
+ */
 DEFINE_WORK_FUNC(Surface, Create)
 {
     (void)ctx;
@@ -102,29 +109,42 @@ DEFINE_WORK_FUNC(Surface, Create)
     data >> instance_rid;
     data >> shader_dir;
 
-    if (instance_rid == 0)
+    if (!self.Create(shader_dir))
     {
-        ETCS_LOG("Surface::Create", "no Instance RID given -- spawn a RenderProvider::Instance, "
-                                     "call Create on it, and pass it here.");
-        return;
-    }
-
-    // Resolved through this module's own "Instance" tag list rather than a
-    // family aggregate: Instance is flat by design, so its tag list IS the
-    // only place it appears.
-    ETCS::Entity* raw = rp_resolve_tag("Instance", instance_rid);
-    if (!raw)
-    {
-        ETCS_LOG("Surface::Create", "RID:" << instance_rid << " is not a RenderProvider::Instance.");
-        return;
-    }
-    // getTrueType(), not a static_cast off Entity*: Entity is a VIRTUAL
-    // base here, so a direct downcast from it is ill-formed -- this is the
-    // same recovery route the work-func trampolines themselves use.
-    Instance* instance = static_cast<Instance*>(raw->getTrueType());
-
-    if (!self.Create(instance, shader_dir))
         ETCS_LOG("Surface::Create", "surface bring-up failed.");
+        return;
+    }
+    if (instance_rid == 0) return;
+
+    // Resolved through this module's own "Instance" tag list: Instance is
+    // flat by design, so its tag list is the only place it appears.
+    // getTrueType(), not a static_cast off Entity* -- Entity is a virtual base.
+    ETCS::Entity* raw = rp_resolve_tag("Instance", instance_rid);
+    Instance* instance = raw ? static_cast<Instance*>(raw->getTrueType()) : nullptr;
+    if (!instance || !instance->Usable())
+    {
+        ETCS_LOG("Surface::Create", "RID:" << instance_rid << " is not a usable RenderProvider::Instance "
+                 "-- this surface stays on the host.");
+        return;
+    }
+    Device* dev = self.addTag<Device>();
+    if (!dev || !dev->Create(instance_rid))
+        ETCS_LOG("Surface::Create", "could not attach a Device for RID:" << instance_rid
+                 << " -- this surface stays on the host.");
+}
+
+/*
+ * UseDevice 0|1 -- the standing preference: 1 (the default) draws through a
+ * ready Device child whenever there is one, 0 keeps this surface on the host
+ * with the device still attached. The camera's SetDeviceProjection, for a
+ * window.
+ */
+DEFINE_WORK_FUNC_TYPED(Surface, UseDevice, (uint32_t, on))
+{
+    (void)ctx;
+    self.UseDevice(on != 0);
+    ETCS_LOG("Surface::UseDevice", (on ? "a ready Device child is used from the next frame."
+                                       : "held on the host from the next frame."));
 }
 
 /*
@@ -133,9 +153,9 @@ DEFINE_WORK_FUNC(Surface, Create)
  * One session, several surfaces, several destinations: in the browser the name is
  * a canvas element's id and a page may hold as many as it likes, which is what
  * makes a toolbar strip beside the main view possible at all
- * (CanvasSurface::SetTarget explains why this belongs to the surface and not to
- * the window). The device backend has one target per swapchain and says so
- * (VulkanSurface::SetTarget) rather than storing a name nothing reads.
+ * (HostSurface::SetTarget explains why this belongs to the surface and not to
+ * the window). A native window has one output and says so rather than storing
+ * a name nothing reads.
  */
 DEFINE_WORK_FUNC_TYPED(Surface, SetTarget, (std::string, element_id))
 {
@@ -147,7 +167,7 @@ DEFINE_WORK_FUNC_TYPED(Surface, SetTarget, (std::string, element_id))
  * An explicit size, which a surface following its window does not have. Stating
  * one makes this surface a REGION of the page rather than the whole frame, and on
  * the browser backend it also stops the follow -- being told and following cannot
- * both be live (CanvasSurface::ResizeTo).
+ * both be live (HostSurface::ResizeTo).
  */
 DEFINE_WORK_FUNC_TYPED(Surface, ResizeTo, (uint32_t, w), (uint32_t, h))
 {
@@ -188,7 +208,7 @@ DEFINE_WORK_FUNC_TYPED(Surface, Blit, (ETCS::RID, source), (int32_t, x), (int32_
 // Compose <drawable_rid> -- bind a Drawable root that the frame edge re-walks
 // every tick, instead of replaying whatever the script last drew. Zero unbinds
 // and returns the surface to the retained model. See
-// VulkanSurface::SetComposeRoot for why a tree that moves needs the other one.
+// HostSurface::SetComposeRoot for why a tree that moves needs the other one.
 DEFINE_WORK_FUNC_TYPED(Surface, Compose, (ETCS::RID, root))
 {
     (void)ctx;
@@ -222,13 +242,13 @@ DEFINE_WORK_FUNC(Surface, Delete)
 // argument: a standing produce body never returns its pool worker, so a pair
 // gives the pool a minimum size). Every queue-touching call happens on one
 // thread, which is the real invariant; it is whichever thread drives the
-// family. Splitting the Vulkan work instead -- acquire on one thread, submit
+// family. Splitting the device work instead -- acquire on one thread, submit
 // on another -- puts two threads on one VkQueue and one VkSwapchainKHR, both
 // of which the application must externally synchronise, and buys nothing.
 //
 // Draws arrive from whatever thread calls Clear/DrawRect/Blit -- the script's
 // -- so the surface's own state is mutex-guarded and Present works off a
-// snapshot. See VulkanSurface::PresentConcrete.
+// snapshot. See HostSurface::PresentConcrete.
 // Default pacing, in milliseconds, when the stream config says nothing.
 // ~60Hz, a placeholder for asking the swapchain about its present mode,
 // which is where real pacing belongs.
@@ -771,32 +791,59 @@ DEFINE_WORK_FUNC(Scene3D, Look)
              "nothing accumulates and nothing drifts.");
 }
 
+// The rows, as the integers they are, shown as decimals -- the state, not a
+// rendering of it. Hash is what two runtimes compare.
 DEFINE_WORK_FUNC(Scene3D, Order)
 {
     (void)data; (void)ctx;
+    std::lock_guard<std::recursive_mutex> lk(self.TreeMutex());   // one state of the rows (Causal.h, Order4)
     const OrderVector& o = self.Order4();
+    const OrderVector& e = self.LastEmission();
     ETCS_LOG("Scene3D::Order",
-             "row0 (" << o.x << ", " << o.y << ", " << o.z << ", RID:" << o.rid << ")  "
-             "row1 (" << o.ox << ", " << o.oy << ", " << o.oz << ", E=" << o.energy << ")  "
-             "kinetic=" << o.KineticEnergy() << " heat=" << o.Heat()
-             << " fraction=" << o.KineticFraction()
+             "row0 (" << o.x.ToDouble() << ", " << o.y.ToDouble() << ", " << o.z.ToDouble() << ", id:" << std::hex << o.id << std::dec << ")  "
+             "row1 (" << o.ox.ToDouble() << ", " << o.oy.ToDouble() << ", " << o.oz.ToDouble() << ", E=" << o.energy.ToDouble() << ")  "
+             "kinetic=" << o.KineticEnergy().ToDouble() << " heat=" << o.Heat().ToDouble()
+             << " fraction=" << o.KineticFraction().ToDouble()
              << "  emissivity=" << self.Emissivity()
              << " shed-to-environment=" << self.EmittedToEnvironment()
-             << "\n    row2 pivot (" << o.fx << ", " << o.fy << ", " << o.fz
-             << ", r=" << o.radius << ")  "
+             << "\n    row2 pivot (" << o.fx.ToDouble() << ", " << o.fy.ToDouble() << ", " << o.fz.ToDouble()
+             << ", r=" << o.radius.ToDouble() << ")  "
              << (o.IsAggregate() ? "aggregate" : "leaf")
-             << "   row3 axis (" << o.sx << ", " << o.sy << ", " << o.sz
-             << ", theta=" << o.theta << ")"
+             << "   row3 spinor (" << o.qx.ToDouble() << ", " << o.qy.ToDouble() << ", " << o.qz.ToDouble()
+             << ", w=" << o.qw.ToDouble() << ")"
              << "\n    causal-ticks=" << self.CausalTicks()
-             << "\n    last crossing: row0 (" << self.LastEmission().x << ", "
-             << self.LastEmission().y << ", " << self.LastEmission().z
-             << ", RID:" << self.LastEmission().rid << ")  row1 ("
-             << self.LastEmission().ox << ", " << self.LastEmission().oy << ", "
-             << self.LastEmission().oz << ", E=" << self.LastEmission().energy << ")"
-             << "  heat=" << self.LastEmission().Heat()
-             << " interval=" << self.LastEmission().interval
-             << " uncertainty=" << std::hex << self.LastEmission().uncertainty
-             << std::dec);
+             << "  hash=" << std::hex << self.Hash() << std::dec
+             << "\n    last crossing: row0 (" << e.x.ToDouble() << ", " << e.y.ToDouble() << ", " << e.z.ToDouble()
+             << ", id:" << std::hex << e.id << std::dec << ")  E=" << e.energy.ToDouble()
+             << " interval=" << e.interval.ToDouble()
+             << " uncertainty=" << std::hex << e.uncertainty << std::dec);
+}
+
+// Run <ticks> <dt_ms> -- the driver: that many interactions of that span, on
+// this node and everything under it, with no clock read (Scene3D::Run). A
+// headless run is this instead of being looked at. The wall time is in the
+// line because the rate is the point of running headless: simulated seconds
+// per real second is the number a script tunes by.
+DEFINE_WORK_FUNC_TYPED(Scene3D, Run, (uint32_t, ticks), (uint32_t, dt_ms))
+{
+    (void)ctx;
+    const auto t0 = std::chrono::steady_clock::now();
+    self.Run(ticks, Fixed::FromInt(dt_ms) / Fixed::FromInt(1000));
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const double simulated_s = static_cast<double>(ticks) * dt_ms / 1000.0;
+    ETCS_LOG("Scene3D::Run", ticks << " x " << dt_ms << " ms in " << ms << " ms ("
+             << (ms > 0.0 ? simulated_s * 1000.0 / ms : 0.0) << "x real time); causal-ticks="
+             << self.CausalTicks() << " hash=" << std::hex << self.Hash() << std::dec);
+}
+
+// Hash -- the subtree's rows as one number, in the answer and the log.
+DEFINE_WORK_FUNC(Scene3D, Hash)
+{
+    (void)ctx;
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(self.Hash()));
+    ETCS_LOG("Scene3D::Hash", hex);
+    data.writeString(hex);
 }
 
 // How fast this node sheds heat into whatever contains it, per second. Drag
@@ -808,10 +855,98 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetEmissivity, (float, per_sec))
     self.SetEmissivity(per_sec);
 }
 
+// The room inside this node, as a radius: a node whose reach lies inside it
+// is in it, and moves in and out of it as it fits (ontology/Causal.h). Zero,
+// the default, is solid -- it holds nothing by fit.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSpace, (float, radius))
+{
+    (void)ctx;
+    self.SetSpace(radius);
+}
+
+// THE SPACE'S PARAMETERS AND THE SOLID (ontology/Causal.h,
+// ontology/etcs_causal_constraints.md §12-§13). The field everything inside
+// this node falls along, stated -- zero included -- or taken back to inherit
+// the field this node is in.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetGravity, (float, gx), (float, gy), (float, gz))
+{
+    (void)ctx;
+    self.SetGravity(gx, gy, gz);
+}
+DEFINE_WORK_FUNC(Scene3D, InheritGravity)
+{
+    (void)data; (void)ctx;
+    self.InheritGravity();
+}
+// Meets other solids by its shape: the normal motion kept on a bounce, and the
+// share of the load that rubs, both in [0,1].
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSolid, (float, restitution), (float, friction))
+{
+    (void)ctx;
+    self.SetSolid(restitution, friction);
+}
+// Held where it is: a place rather than a thing -- a green, a wall, a cup.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetAnchored, (int32_t, on))
+{
+    (void)ctx;
+    self.SetAnchored(on != 0);
+}
+// SetDriven <0|1> -- stepped by its driver (Run) alone; a projection only reads it.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetDriven, (int32_t, on))
+{
+    (void)ctx;
+    self.SetDriven(on != 0);
+}
+// sphere, box, plane or off.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetShape, (std::string, kind))
+{
+    (void)ctx;
+    if (!self.SetShape(kind)) ETCS_LOG("Scene3D::SetShape", "'" << kind << "' is not a shape: sphere, box, plane or off.");
+}
+// The facing, outright: about an axis by degrees, or with the node's up along
+// a direction.
+DEFINE_WORK_FUNC_TYPED(Scene3D, Orient, (float, ax), (float, ay), (float, az), (float, degrees))
+{
+    (void)ctx;
+    self.Orient(ax, ay, az, degrees);
+}
+DEFINE_WORK_FUNC_TYPED(Scene3D, Aim, (float, dx), (float, dy), (float, dz))
+{
+    (void)ctx;
+    self.Aim(dx, dy, dz);
+}
+
+// Take a Causal node in, keeping where it is in the world. The line a replay
+// writes for a move the step made (Entity::moveTo), and a script's own way to
+// put something somewhere; fitness has the last word at the next step.
+DEFINE_WORK_FUNC_TYPED(Scene3D, Contain, (ETCS::RID, member))
+{
+    (void)ctx;
+    Causal_* m = ETCS::resolve_in_family<Causal_>("Causal", member);
+    if (!m) { ETCS_LOG("Scene3D::Contain", "RID:" << member << " does not resolve as a Causal entity."); return; }
+    if (!self.Contain(m))
+        ETCS_LOG("Scene3D::Contain", "RID:" << member << " cannot move here (not movable, another module's, or this is inside it).");
+}
+
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetVisible, (int32_t, on))
 {
     (void)ctx;
     self.SetVisible(on != 0);
+}
+
+// The shape this node is drawn with, on either path: a Mesh by RID, or 0
+// for the node's own box. Presentational only -- the rows and the extent
+// are the physics either way.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetMesh, (ETCS::RID, mesh))
+{
+    (void)ctx;
+    ETCS::Entity* e = mesh ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), mesh) : nullptr;
+    if (mesh != 0 && (!e || e->getSourceTag() != ETCS::Buffer("Mesh")))
+    {
+        ETCS_LOG("Scene3D::SetMesh", "RID:" << mesh << " does not resolve as a Mesh.");
+        return;
+    }
+    self.SetMesh(mesh);
 }
 
 // Project into a camera on demand -- the same verb the frame path calls, so a
@@ -1068,6 +1203,8 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, Draw, (ETCS::RID, target))
     self.DrawInto(dst);
     ETCS_LOG("Camera3D::Draw", "renders so far: " << self.Renders());
 }
+// How many projections this camera has driven: whether a draw re-rendered.
+DEFINE_WORK_FUNC(Camera3D, Renders) { (void)ctx; data.reset(); data.writeString(std::to_string(self.Renders()).c_str()); }
 
 DEFINE_WORK_FUNC_TYPED(Camera3D, Clear,
                        (float, r), (float, g), (float, b), (float, a))
@@ -1100,6 +1237,77 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, Blit, (ETCS::RID, source),
 }
 
 DEFINE_WORK_FUNC(Camera3D, Delete)
+{
+    (void)data; (void)ctx;
+    self.DeleteConcrete();
+}
+
+// ── Mesh ─────────────────────────────────────────────────────────────────
+//
+// Geometry a scene node can be drawn with on the device (Mesh.h). Not in the
+// scene tree: a mesh is spawned anywhere and named by RID from Scene3D.SetMesh,
+// so one shape serves any number of nodes and the device holds it once.
+
+DEFINE_WORK_FUNC(Mesh, Create)
+{
+    (void)data; (void)ctx;
+    self.Create();
+}
+
+DEFINE_WORK_FUNC(Mesh, Clear)
+{
+    (void)data; (void)ctx;
+    self.Clear();
+}
+
+// The unit cube -- what a node without a mesh gets anyway, here so a script
+// can start from it and reshape.
+DEFINE_WORK_FUNC(Mesh, Box)
+{
+    (void)data; (void)ctx;
+    self.Box();
+    ETCS_LOG("Mesh::Box", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
+}
+
+// A sphere in the unit box, `segments` bands pole to pole.
+DEFINE_WORK_FUNC_TYPED(Mesh, Sphere, (uint32_t, segments))
+{
+    (void)ctx;
+    self.Sphere(segments);
+    ETCS_LOG("Mesh::Sphere", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
+}
+// A cylinder along +y in the unit box, `segments` sides.
+DEFINE_WORK_FUNC_TYPED(Mesh, Cylinder, (uint32_t, segments))
+{
+    (void)ctx;
+    self.Cylinder(segments);
+    ETCS_LOG("Mesh::Cylinder", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
+}
+// An arrow along +y in the unit box: the shaft's width, and the head's share
+// of the length (both fractions of the box).
+DEFINE_WORK_FUNC_TYPED(Mesh, Arrow, (float, shaft_width), (float, head))
+{
+    (void)ctx;
+    self.Arrow(shaft_width, head);
+    ETCS_LOG("Mesh::Arrow", self.VertexCount() << " vertices, " << self.TriangleCount() << " triangles");
+}
+
+DEFINE_WORK_FUNC_TYPED(Mesh, AddVertex, (float, x), (float, y), (float, z),
+                       (float, nx), (float, ny), (float, nz))
+{
+    (void)ctx;
+    ETCS_LOG("Mesh::AddVertex", "index " << self.AddVertex(x, y, z, nx, ny, nz));
+}
+
+DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_t, c))
+{
+    (void)ctx;
+    if (!self.AddTriangle(a, b, c))
+        ETCS_LOG("Mesh::AddTriangle", "(" << a << "," << b << "," << c << ") names a vertex past "
+                 << self.VertexCount());
+}
+
+DEFINE_WORK_FUNC(Mesh, Delete)
 {
     (void)data; (void)ctx;
     self.DeleteConcrete();

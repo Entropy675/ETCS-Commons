@@ -3,30 +3,31 @@
 // Every tag here is BASIC except Scene3D, whose input edge is a stream
 // consumer (see its block). Surface included: its frame pump is a work function
 // a script detaches, not a stream pair -- see the Surface block below.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D TextLabel Throbber")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D Mesh TextLabel Throbber")
 
-// The Vulkan instance/device/queue/command pool. Spawn one, Create it,
-// hand its RID to every Surface.
+// The GPU -- Vulkan natively, WebGPU in a browser. Spawn one, Create it, and
+// name it from a Device under whatever should use it.
 ETCS_TAG_BLOCK_BASIC(Instance,
     Create, Delete)
 
-// The device capability attachment: spawn one under a Camera and point it at
-// an Instance, and that camera can project through the GPU. Presence is the
-// capability (ontology/Device.h) -- there is always a CPU, so only the
-// addition needs saying.
+// The device capability attachment: spawn one under a Camera or a Surface and
+// point it at an Instance, and that entity works through the GPU while the
+// device is ready. Presence is the capability (ontology/Device.h) -- there is
+// always a CPU, so only the addition needs saying.
 ETCS_TAG_BLOCK_BASIC(Device,
     Create, Delete)
 
-// The window-bound presentable surface: spawn it as a Window's child.
-// Clear/DrawRect/Blit accumulate in call order and are RETAINED until
-// something composes a new frame; Present is the only call that touches the
-// GPU queue, and RunFrames is that same Present driven by a clock.
+// The window surface: spawn it as a Window's child. A host raster, and the
+// device's while a ready Device is under it (UseDevice says whether to use
+// one). Clear/DrawRect/Blit accumulate in call order and are RETAINED until
+// something composes a new frame; Present hands the frame to the window, and
+// RunFrames is that same Present driven by a clock.
 //
 // BASIC: presenting is a step on the Presentable family
 // (ontology/PresentableBase.h) and RunFrames is an ordinary work function a
 // script detaches, so this tag has no stream, no ring and no pool occupant.
 ETCS_TAG_BLOCK_BASIC(Surface,
-    Create, SetTarget, ResizeTo, Clear, DrawRect, Blit, Compose, Present,
+    Create, SetTarget, ResizeTo, UseDevice, Clear, DrawRect, Blit, Compose, Present,
     Delete, RunDemo, RunFrames)
 
 // An offscreen CPU-backed surface -- a layer. Same drawing verbs, no
@@ -60,7 +61,8 @@ ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
 // what a window is.
 ETCS_TAG_BLOCK_HYBRID(Scene3D,
     (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetSensitivity,
-     Impulse, Halt, Order, Look, SetEmissivity, SetVisible, Project, DepthAt, Delete),
+     Impulse, Halt, Order, Run, Hash, Look, SetEmissivity, SetSpace, Contain, SetVisible, SetMesh, Project, DepthAt, Delete,
+     SetGravity, InheritGravity, SetSolid, SetAnchored, SetShape, Orient, Aim, SetDriven),
     (ConsumeInput, ConsumeLook))
 
 // The camera: a Drawable2D that owns pixels, filled by a scene rather than by
@@ -70,7 +72,13 @@ ETCS_TAG_BLOCK_HYBRID(Scene3D,
 ETCS_TAG_BLOCK_BASIC(Camera3D,
     Create, SetPosition, SetOrder, SetBackground, MoveTo, ResizeTo,
     LookAt, SetLens, SetScene, SetDeviceProjection,
-    Render, Draw, Clear, DrawRect, Blit, Delete)
+    Render, Draw, Clear, DrawRect, Blit, Delete, Renders)
+
+// Geometry: a shape a Scene3D node names by RID (Scene3D.SetMesh). Spawned
+// anywhere, shared by every node that names it; sent to the device once,
+// and rasterised from the same triangles on the host.
+ETCS_TAG_BLOCK_BASIC(Mesh,
+    Create, Clear, Box, AddVertex, AddTriangle, Delete, Sphere, Arrow, Cylinder)
 
 // Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of
 // whatever it labels and needs no drawing code at the call site. Its font is

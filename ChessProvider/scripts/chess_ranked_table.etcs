@@ -1,0 +1,35 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── A TABLE THE SITE HOSTS ───────────────────────────────────────────────────
+#
+#     run ChessProvider/scripts/chess_ranked_table.etcs links=<LinkHub> hall=<Lobby>
+#
+# The six entities a person's table is (chess_host.etcs, read as a script),
+# with this runtime's board judging and no seat of its own: the ACE server as
+# one more observer, in front of the record. Run once per table; the names
+# here are this run's, and the table's NAME -- what the record is authored
+# as, what the room is called on the hub, what the hall lists it under -- is
+# given by the share (ChessShare::Serve), since a `run` line binds names to
+# entities and carries no word.
+
+requires links [LinkHub]
+requires hall [Lobby]
+
+spawn ChessProvider::ChessGame game
+spawn ChessProvider::ChessShare share
+share.Attach(@game)
+
+spawn NetworkProvider::Ledger record
+spawn NetworkProvider::Ledger proposals
+spawn NetworkProvider::Lobby presence
+
+spawn NetworkProvider::Room room
+room.Publish(record @record Head Since Follow)
+room.Publish(proposals @proposals Take)
+room.Publish(presence @presence Advertise Withdraw Watch)
+
+detach ChessProvider/scripts/chess_judge.etcs src=proposals dst=share
+detach ChessProvider/scripts/chess_watch.etcs src=presence dst=share
+
+share.Serve(@record @proposals @presence @room @links @hall)

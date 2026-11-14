@@ -6,7 +6,7 @@
   <title>ETCS Web Shell</title>
   <style>
     :root {
-      /* Palette from chess.html (ACE Chess) so shell / window share the same surface. */
+      /* Palette from ChessProvider's chess-classic.html (ACE Chess) so shell / window share the same surface. */
       --light: #e8e2d5; --dark: #7a8a6f; --sel: #c9b458; --ink: #1c1c1a;
       --bg: #14150f; --panel: #1b1c14; --line: #3b3d31; --dim: #8d907c;
       /* Aliases used by the existing rules */
@@ -55,6 +55,7 @@
       padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
       margin: -0.75rem -0.75rem 0; /* bleed to edges of #layout padding */
     }
+    header .head-right { display: flex; align-items: center; gap: 8px; }
     header .brand {
       color: var(--accent); font-size: 14px; font-weight: bold;
       letter-spacing: .12em; text-decoration: none;
@@ -74,6 +75,36 @@
     #term .err { color: var(--err); }
     #term .sys { color: var(--muted); }
     #term .ok { color: var(--ok); }
+    /*
+     * OUTPUT PANE COLLAPSE -- especially for the embedded (iframe) role on a
+     * host page that only has a short strip for this view. The transcript
+     * keeps one line of height; the input row stays fully usable. Parent pages
+     * may listen for { etcs: 'term-collapse', collapsed } to resize the frame.
+     */
+    header .term-collapse {
+      font: inherit; font-size: 11px; color: var(--muted); background: transparent;
+      border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px;
+      cursor: pointer; letter-spacing: 0.04em;
+    }
+    header .term-collapse:hover { color: var(--accent); border-color: var(--accent); }
+    body.term-collapsed #term {
+      flex: 0 0 auto;
+      max-height: calc(1.45em + 0.4rem);
+      padding: 0.2rem 0.5rem;
+      overflow: hidden;
+    }
+    body.term-collapsed #menu { display: none !important; }
+    body.term-collapsed #layout { gap: 0.35rem; padding: 0.35rem; }
+    /*
+     * Collapsed, the one line comes first and the header becomes its footer:
+     * embedded under a canvas, the output sits right against it. The input row
+     * stays after the header, below what the host's short strip shows.
+     */
+    body.term-collapsed #term { order: -1; }
+    body.term-collapsed header {
+      padding: 4px 10px; margin: 0 -0.35rem;
+      border-bottom: 0; border-top: 1px solid var(--line);
+    }
     #input-row {
       display: flex; gap: 0.5rem; align-items: center;
       border: 1px solid var(--border);
@@ -138,7 +169,12 @@
   <div id="layout">
     <header>
       <a class="brand" href="/" target="_top">ETCS Shell</a>
-      <span id="status">loading…</span>
+      <span class="head-right">
+        <button type="button" class="term-collapse" id="termcollapse"
+                title="collapse or expand the output pane" aria-expanded="true"
+                aria-controls="term">collapse</button>
+        <span id="status">loading…</span>
+      </span>
     </header>
     <canvas id="canvas" width="600" height="400"></canvas>
     <div id="term" aria-live="polite"></div>
@@ -443,6 +479,36 @@
     try { window.parent.postMessage(msg, window.location.origin); } catch (_) {}
   }
 
+  /*
+   * Collapse the scrollback to a single line. Useful standalone; essential when
+   * this page is the host's terminal strip and the canvas needs the rest.
+   * sessionStorage keeps the choice for the frame path (standalone vs embed).
+   */
+  const collapseBtn = document.getElementById('termcollapse');
+  const COLLAPSE_KEY = 'etcs-shell-term-collapsed:' + (EMBEDDED ? 'embed' : 'solo');
+  function setTermCollapsed(on, announce) {
+    document.body.classList.toggle('term-collapsed', !!on);
+    if (collapseBtn) {
+      collapseBtn.textContent = on ? 'expand' : 'collapse';
+      collapseBtn.setAttribute('aria-expanded', on ? 'false' : 'true');
+    }
+    try { sessionStorage.setItem(COLLAPSE_KEY, on ? '1' : '0'); } catch (_) {}
+    if (announce !== false) parentPost({ etcs: 'term-collapse', collapsed: !!on });
+    if (!on) {
+      try { term.scrollTop = term.scrollHeight; } catch (_) {}
+    }
+  }
+  if (collapseBtn) {
+    let start = false;
+    try { start = sessionStorage.getItem(COLLAPSE_KEY) === '1'; } catch (_) {}
+    // Embedded hosts often want the strip short on first paint; user can expand.
+    if (EMBEDDED && sessionStorage.getItem(COLLAPSE_KEY) == null) start = true;
+    setTermCollapsed(start, false);
+    collapseBtn.addEventListener('click', function () {
+      setTermCollapsed(!document.body.classList.contains('term-collapsed'));
+    });
+  }
+
   if (EMBEDDED) {
     // The canvas belongs to the host page in this role. Leaving a second one
     // here would give "#canvas" two answers in two documents.
@@ -650,6 +716,25 @@
     });
   }
 
+  /*
+   * WRITING /persist BACK. IDBFS does not write through; the C++ side says when
+   * (window.etcsPersist, after the store writes), coalesced, and a closing tab
+   * flushes once more.
+   */
+  let persistTimer = 0;
+  function persistNow(why) {
+    const fs = (typeof FS !== 'undefined') ? FS : (window.Module && window.Module.FS);
+    if (!fs || !fs.syncfs) return;
+    fs.syncfs(false, function (err) {
+      if (err) append('[etcs] /persist: write to IndexedDB failed (' + why + '): ' + err + '\n', 'err');
+    });
+  }
+  window.etcsPersist = function (why) {
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(function () { persistNow(why || 'requested'); }, 250);
+  };
+  window.addEventListener('pagehide', function () { persistNow('pagehide'); });
+
   async function boot() {
     setStatus('fetching modules…');
     const names = await resolveWasmNames();
@@ -685,6 +770,24 @@
           append('[etcs] MEMFS preload complete\n', 'sys');
         } catch (e) {
           append('[etcs] preRun FS error: ' + e + '\n', 'err');
+        }
+        /*
+         * /persist OUTLIVES THE TAB: IDBFS, pulled from IndexedDB before main()
+         * runs -- the loader's store (Persistence, DatabaseProvider) lives there,
+         * so a reload is offered the scene it left ("Continue where you left
+         * off?"). Held on a run dependency: a store opened before its file
+         * arrives would be a fresh one written over it.
+         */
+        try {
+          FS.mkdir('/persist');
+          FS.mount(IDBFS, {}, '/persist');
+          Module.addRunDependency('etcs-persist');
+          FS.syncfs(true, function (err) {
+            if (err) append('[etcs] /persist: could not read IndexedDB: ' + err + '\n', 'err');
+            Module.removeRunDependency('etcs-persist');
+          });
+        } catch (e) {
+          append('[etcs] /persist: IDBFS unavailable (' + e + ') -- nothing outlives this tab\n', 'err');
         }
       }],
       onRuntimeInitialized: function () {
@@ -759,6 +862,8 @@
     // the runtime printed before this frame finished loading.
     append('[etcs] terminal attached to the host page runtime\n', 'sys');
     parentPost({ etcs: 'view-ready' });
+    parentPost({ etcs: 'term-collapse',
+                 collapsed: document.body.classList.contains('term-collapsed') });
   } else {
     boot().catch(function (e) {
       setStatus('boot failed');

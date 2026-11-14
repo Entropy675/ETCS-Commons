@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# A block of the pool: stone, anchored, solid -- the battle sizes and places it
+# for the map in play, and keeps it far below while no map needs it.
+#   run kart_block.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Scene3D block)
+block.Create(1.0, 1.0, 1.0)
+block.SetColor(0.55, 0.53, 0.48, 1.0)
+block.SetAnchored(1)
+block.SetSolid(0.4, 0.0)
+battle.AddBlockNode(@block)

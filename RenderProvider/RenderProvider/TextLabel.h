@@ -1,5 +1,5 @@
-#ifndef TEXTLABEL_H__
-#define TEXTLABEL_H__
+#ifndef RENDERPROVIDER_TEXTLABEL_H__
+#define RENDERPROVIDER_TEXTLABEL_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
@@ -46,7 +46,9 @@ public:
 
     // --- Orderable_ (required by Surface, which Drawable refines) ---
     int32_t m_order = 0;
-    bool operator<(const TextLabel& o) const { return m_order < o.m_order; }
+    // Hidden loses every comparison; then the stated order.
+    bool operator<(const TextLabel& o) const
+    { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
     TextLabel()  = default;
@@ -142,13 +144,13 @@ public:
      * ordering fixes.
      *
      * The Surface path stays as the fallback because it is not redundant: a
-     * window's swapchain surface owns no host-addressable bytes at all
-     * (Renderable, not Pixels), and drawing a label onto one is an ordinary
-     * thing to want.
+     * window surface drawing through a device has host bytes that are not its
+     * picture (etcs_direct_pixels, ontology/Pixels.h), and drawing a label
+     * onto one is an ordinary thing to want.
      */
         const uint32_t scale = size_px ? (size_px / CELL_H ? size_px / CELL_H : 1) : m_scale;
 
-        if (Pixels_* px = ETCS::resolve_in_family<Pixels_>("Pixels", target))
+        if (Pixels_* px = etcs_direct_pixels(ETCS::resolve_in_family<Pixels_>("Pixels", target)))
         {
             drawRunPixels(px, text, x, y, scale, r, g, b, a);
             return MeasureTextConcrete(text, font, size_px);
@@ -226,8 +228,7 @@ public:
      * there are no bytes to write.
      */
         etcs_observed_batch run(static_cast<ETCS::Entity*>(dst));
-        Pixels_* dpx = static_cast<Pixels_*>(
-            dst->getInterfacePointer(ETCS::Buffer("Pixels")));
+        Pixels_* dpx = etcs_direct_pixels(static_cast<ETCS::Entity*>(dst));
 
         if (m_bg[3] > 0.0f)
         {
@@ -332,7 +333,8 @@ private:
  * loop emits one DrawRect per unbroken run of set bits, so a capital I is two
  * rects rather than fourteen and a full frame counter is a few dozen calls
  * instead of hundreds. That matters because these land in a retained
- * composition (VulkanSurface) where every rect is a draw command.
+ * composition (a window surface on a device) where every rect is a draw
+ * command.
  */
     /*
  * THE SAME RUN, WRITTEN STRAIGHT INTO A BUFFER.

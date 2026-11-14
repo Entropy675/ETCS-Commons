@@ -1,5 +1,5 @@
-#ifndef LINUXTERMINAL_H__
-#define LINUXTERMINAL_H__
+#ifndef SHELLPROVIDER_LINUXTERMINAL_H__
+#define SHELLPROVIDER_LINUXTERMINAL_H__
 
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -438,4 +438,4 @@ inline bool attach(const std::string& path, ETCS::SignalContext sig)
 
 } // namespace lsh
 
-#endif // LINUXTERMINAL_H__
+#endif // SHELLPROVIDER_LINUXTERMINAL_H__

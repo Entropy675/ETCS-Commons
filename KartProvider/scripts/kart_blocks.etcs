@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# Eight blocks of the pool. `run kart_blocks.etcs world=<Scene3D> battle=<KartBattle>`
+requires world [Drawable3D]
+requires battle [KartBattle]
+run kart_block.etcs world=world battle=battle
+run kart_block.etcs world=world battle=battle
+run kart_block.etcs world=world battle=battle
+run kart_block.etcs world=world battle=battle
+run kart_block.etcs world=world battle=battle
+run kart_block.etcs world=world battle=battle
+run kart_block.etcs world=world battle=battle
+run kart_block.etcs world=world battle=battle

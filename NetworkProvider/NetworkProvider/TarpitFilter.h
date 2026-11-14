@@ -1,5 +1,5 @@
-#ifndef TARPITFILTER_H__
-#define TARPITFILTER_H__
+#ifndef NETWORKPROVIDER_TARPITFILTER_H__
+#define NETWORKPROVIDER_TARPITFILTER_H__
 #include <algorithm>
 #include <cctype>
 #include <iterator>
@@ -28,7 +28,7 @@
 // of a scan ("wp-content/plugins/x/wp-load.php", ".env.bak", a nested
 // ".git/config") without having to enumerate every path a scanner actually
 // tries. Every default pattern below was checked against this site's own
-// real paths (/, /chess.html, /forum.html, /forum/<mount>/..., navigation
+// real paths (/, /chess/, /chess-classic, /forum.html, /forum/<mount>/..., /paint/, navigation
 // under /whitepaper.html and /philosophy.html, /favicon/*) and none of
 // them collide. Deliberately excludes .well-known/ -- that prefix is where
 // legitimate clients (ACME certificate renewal, a security researcher
@@ -105,4 +105,4 @@ private:
     std::vector<std::string> patterns_;
 };
 
-#endif // TARPITFILTER_H__
+#endif // NETWORKPROVIDER_TARPITFILTER_H__

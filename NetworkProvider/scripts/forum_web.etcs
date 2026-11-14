@@ -6,7 +6,8 @@
 #     detach NetworkProvider/scripts/forum_web.etcs forum=<ForumNode>
 #
 # Onto the server named `web` -- the site's when a site script has one, or a
-# bare one on 8080. The page (forum.html) is the site's to serve.
+# bare one on 8080. The page is the forum module's
+# (ForumWebsiteProvider/scripts/www/forum.html), and the site mounts it.
 #
 # NO PAGES, for the reason chess_web.etcs gives: loading ./www into the site's
 # `tree` from here re-read the site's own directory relative to wherever the

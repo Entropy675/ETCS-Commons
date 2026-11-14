@@ -1,0 +1,11 @@
+#!/usr/bin/env etcs
+# A slab of the ground, of the pool: a ramp's slope or its top, drawn only --
+# the ground is the battle's height (KartArena.h), not a solid.
+#   run kart_slab.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Scene3D slab)
+slab.Create(1.0, 1.0, 1.0)
+slab.SetColor(0.72, 0.52, 0.30, 1.0)
+slab.SetAnchored(1)
+battle.AddSlabNode(@slab)

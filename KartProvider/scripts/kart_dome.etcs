@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# A dome of the pool: a hill, grass, drawn only -- its ground is the battle's.
+#   run kart_dome.etcs world=<Scene3D> battle=<KartBattle> ball=<Mesh>
+requires world [Drawable3D]
+requires battle [KartBattle]
+requires ball [Mesh]
+world.spawn(RenderProvider::Scene3D dome)
+dome.Create(1.0, 1.0, 1.0)
+dome.SetMesh(@ball)
+dome.SetColor(0.33, 0.52, 0.27, 1.0)
+dome.SetAnchored(1)
+battle.AddDomeNode(@dome)

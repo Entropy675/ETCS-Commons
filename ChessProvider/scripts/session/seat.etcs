@@ -1,0 +1,8 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A seat without a window: the game and the share the boot makes
+# (www/boot_chess.etcs), and nothing to draw them on. The templates the page
+# fills are run against these two names, as the page runs them.
+spawn ChessProvider::ChessGame game
+spawn ChessProvider::ChessShare share
+share.Attach(@game)

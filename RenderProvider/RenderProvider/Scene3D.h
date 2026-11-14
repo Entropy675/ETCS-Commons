@@ -1,13 +1,16 @@
-#ifndef SCENE3D_H__
-#define SCENE3D_H__
+#ifndef RENDERPROVIDER_SCENE3D_H__
+#define RENDERPROVIDER_SCENE3D_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
+#include "SceneSink.h"
+#include "Mesh.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <memory>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -52,10 +55,11 @@
 // cleared on an up. It is deliberately a bitset rather than a "current
 // direction", because holding W and A is two facts, not a third one, and a
 // consumer that stored the resultant could not answer which key released.
-// The stream edge writes it; StepFromHeld reads it and integrates. See
+// The stream edge writes it; stepOver reads it and integrates. See
 // RenderProvider.h's ConsumeInput for the edge itself.
 // ---------------------------------------------------------------------------
 class Scene3D : public Drawable3DBase<Scene3D>,
+                public CausalBase<Scene3D>,
                 public DeletableBase<Scene3D>,
                 public LifecycleBase<Scene3D>
 {
@@ -64,16 +68,83 @@ public:
 
     // --- Orderable_ (required by Surface, which Drawable refines) ---
     int32_t m_order = 0;
-    bool operator<(const Scene3D& o) const { return m_order < o.m_order; }
+    // Hidden loses every comparison; then the stated order.
+    bool operator<(const Scene3D& o) const
+    { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
-    Scene3D()  = default;
+    // WHAT A VERB SETS IS A VALUE ON THE TAG SURFACE: speed, damping,
+    // colour, order, sensitivity (and the family's emissivity, CausalBase),
+    // each through the funnel under its own flag, so the record keeps the
+    // verb, a replay sets it again and a store keeps what it says. The
+    // members below are the working copies the step and the picture read,
+    // and onValue is their one writer -- a verb, a replay and a restore all
+    // land there. Mass has no verb: it is what a box is, a constant.
+    Scene3D() = default;
+    void onValue(const ETCS::Buffer& key, const std::string* value) override
+    {
+        int64_t w[4];
+        const std::string_view k(key.c_str());
+        if (k == "speed" || k == "damping")
+        {
+            const bool speed = (k == "speed");
+            if (!readWords(value, w, 1)) w[0] = (speed ? kSpeed : kDamping).raw;
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the step reads these under it
+            (speed ? m_speed : m_damping) = Fixed::FromRaw(w[0]);
+        }
+        else if (k == "color")
+        {
+            if (!readWords(value, w, 4)) { for (int i = 0; i < 4; ++i) m_color[i] = kColor[i]; }
+            else for (int i = 0; i < 4; ++i) m_color[i] = Fixed::FromRaw(w[i]).ToFloat();
+            markViewersDirty();
+        }
+        else if (k == "order")
+        {
+            m_order = readWords(value, w, 1) ? static_cast<int32_t>(w[0]) : 0;
+            Reorder(); markViewersDirty();
+        }
+        else if (k == "driven")
+        {
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the projection reads it under it
+            m_driven = value != nullptr;
+        }
+        else if (k == "sensitivity")
+            m_sens_scale = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : kSensitivity;
+        else if (k == "solid")
+        {
+            CausalBase<Scene3D>::onValue(key, value);
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+            reachLocked();   // a sphere reaches its radius, a box its corners
+        }
+        else CausalBase<Scene3D>::onValue(key, value);
+    }
     ~Scene3D() = default;
 
-    // The centre, read out of row 0. Every reader below goes through this
-    // rather than holding its own copy -- one position, one writer.
-    Point3D Pos() const { return Point3D{ m_ov.x, m_ov.y, m_ov.z }; }
-    const OrderVector& Order4() const { return m_ov; }
+    // ── the solid (CausalBase, ontology/Causal.h) ─────────────────────────
+    //
+    // A node is a box by its extent until SetShape says otherwise; a sphere
+    // is the largest half extent about the centre, which is how a ball made
+    // with Create(d, d, d) and drawn with a sphere mesh is the sphere it
+    // looks like.
+    CausalSolid::Shape DefaultShapeConcrete() const override { return CausalSolid::Box; }
+    void ExtentConcrete(Fixed& hx, Fixed& hy, Fixed& hz) const override
+    {
+        hx = Fixed::From(m_half.x); hy = Fixed::From(m_half.y); hz = Fixed::From(m_half.z);
+    }
+
+    // The centre, read out of row 0 -- the rows are the family's (CausalBase),
+    // and every reader below goes through them rather than a copy: one
+    // position, one writer. The float is the picture's.
+    Point3D Pos() const { return Point3D{ Order4().x.ToFloat(), Order4().y.ToFloat(), Order4().z.ToFloat() }; }
+
+    // Row 2's reach, from the extent and the shape: a sphere's radius is its
+    // largest half extent; anything else reaches its box's corners.
+    void reachLocked()
+    {
+        const Fixed hx = Fixed::From(m_half.x), hy = Fixed::From(m_half.y), hz = Fixed::From(m_half.z);
+        Rows().radius = Solid().shape == CausalSolid::Sphere ? Fixed::Max(hx, Fixed::Max(hy, hz))
+                                                             : Fixed::Length(hx, hy, hz);
+    }
 
     // A box centred on its own origin, so SetPosition places the CENTRE --
     // which is what a script means by "put the cube here", and what keeps
@@ -87,14 +158,15 @@ public:
             return false;
         }
         m_half = Point3D{ w * 0.5f, h * 0.5f, d * 0.5f };
-        // Row 0's fourth slot: identity is a coordinate, so it is filled in
-        // where the point starts existing rather than derived at each read.
-        m_ov.rid = getRID();
+        // Row 0's fourth slot, the identity, is the family base's to fill
+        // (CausalBase::refreshIdentityLocked): the state hash, not the RID.
         // Row 2's fourth slot. A box is not a point -- it is already an
         // aggregate over the volume it occupies -- so its reach is its own
         // bounding sphere, and it is an aggregate from the moment it exists.
         // Only a node with no extent is a leaf here.
-        m_ov.radius = std::sqrt(m_half.x * m_half.x + m_half.y * m_half.y + m_half.z * m_half.z);
+        // Causal, so computed on the causal side: the extent's numbers cross
+        // the boundary once, here, and the reach is their Fixed length.
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); reachLocked(); }
         this->addTag("active");
         /*
  * The symmetric half of ReleaseConcrete's, and needed for the same reason: a
@@ -112,53 +184,94 @@ public:
 
     // A teleport, and deliberately not a motion: it moves the point without
     // touching what the point is carrying (OrderVector::PlaceAt).
+    // Every writer of the rows outside a step takes the tree's lock, as the
+    // step does (CausalBase): a script's verb and a frame's step land whole.
     void SetPosition(float x, float y, float z)
     {
-        m_ov.PlaceAt(x, y, z);
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().PlaceAt(Fixed::From(x), Fixed::From(y), Fixed::From(z)); }
         markViewersDirty();
     }
     void Move(float dx, float dy, float dz)
     {
-        m_ov.PlaceAt(m_ov.x + dx, m_ov.y + dy, m_ov.z + dz);
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+          Rows().PlaceAt(Order4().x + Fixed::From(dx), Order4().y + Fixed::From(dy), Order4().z + Fixed::From(dz)); }
         markViewersDirty();
     }
 
-    // Energy in and energy out, exposed because they are the primitive the
-    // input edge drives and the only honest way to script a push.
+    // The push a script makes, at the boundary: floats in, Fixed on the rows.
+    // The family's Fixed form stays reachable beside it (a Causal container
+    // pushing a member speaks Fixed).
+    using CausalBase<Scene3D>::Impulse;
     void Impulse(float dx, float dy, float dz, float joules)
     {
-        m_ov.Impulse(dx, dy, dz, joules);
+        CausalBase<Scene3D>::Impulse(Fixed::From(dx), Fixed::From(dy), Fixed::From(dz), Fixed::From(joules));
+        markViewersDirty();   // a push on a settled view is the next frame's motion
     }
-    void Halt() { m_ov.Rest(); }
 
-    // How fast heat leaves this point into whatever contains it, per second.
-    // Zero means a perfect insulator, which is a legitimate thing to be and
-    // the reason this is not hardcoded: a scene root modelling open air and a
-    // sealed box in it are the same class with different numbers.
-    void SetEmissivity(float per_sec)
+    // The space's field (CausalBase::SetGravity): what everything inside falls
+    // along, in scene units per second squared.
+    void SetGravity(float gx, float gy, float gz)
     {
-        if (per_sec >= 0.0f) m_emissivity = per_sec;
+        CausalBase<Scene3D>::SetGravity(Fixed::From(gx), Fixed::From(gy), Fixed::From(gz));
     }
-    float Emissivity() const { return m_emissivity; }
-    float EmittedToEnvironment() const { return m_emitted_out; }
-
-    // THIS NODE'S OWN CLOCK: the number of entropy emissions it has committed.
-    // Not a diagnostic counter -- it is the entity's local time, emitted
-    // rather than received (ontology/OrderVector.h). A node holding still with
-    // nothing left to shed stops ticking, which is the right answer for a
-    // thing to which nothing is happening.
-    uint64_t CausalTicks() const { return m_ticks; }
-
-    // The most recent crossing, as the OrderVector it is. What a guard nesting
-    // a generator capture inside this node's emission would read -- reserved,
-    // and readable from the shell today (Scene3D.Order).
-    const OrderVector& LastEmission() const { return m_last_emission; }
-    void SetColor(float r, float g, float b, float a)
+    void SetSolid(float restitution, float friction)
     {
-        m_color[0] = r; m_color[1] = g; m_color[2] = b; m_color[3] = a;
+        CausalBase<Scene3D>::SetSolid(Fixed::From(restitution), Fixed::From(friction));
+    }
+    // "sphere", "box", "plane" (a half-space: solid below the plane through
+    // the centre, facing the node's up) or "off". False for anything else.
+    bool SetShape(const std::string& kind)
+    {
+        CausalSolid::Shape s;
+        if      (kind == "sphere") s = CausalSolid::Sphere;
+        else if (kind == "box")    s = CausalSolid::Box;
+        else if (kind == "plane")  s = CausalSolid::HalfSpace;
+        else if (kind == "off")    s = CausalSolid::Off;
+        else return false;
+        CausalBase<Scene3D>::SetShape(s);
+        return true;
+    }
+    // Which way the node faces (row 3), outright: about an axis by an angle,
+    // or with its up along a direction. A teleport of the facing, as
+    // SetPosition is of the place.
+    void Orient(float ax, float ay, float az, float degrees)
+    {
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+          Rows().Orient(Fixed::From(ax), Fixed::From(ay), Fixed::From(az), Fixed::From(degrees * 3.14159265358979 / 180.0)); }
         markViewersDirty();
     }
-    void SetOrder(int32_t z) { m_order = z; Reorder(); markViewersDirty(); }
+    void Aim(float dx, float dy, float dz)
+    {
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Aim(Fixed::From(dx), Fixed::From(dy), Fixed::From(dz)); }
+        markViewersDirty();
+    }
+    void Halt() { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
+    /*
+     * STEPPED BY ITS DRIVER ALONE (the value behind "driven"): a projection
+     * reads this tree and changes nothing -- no observed step, no look. For a
+     * world several runtimes replay from one record (a race), where the only
+     * steps are the record's (Run, Interact(dt)) and a picture taken at a
+     * different moment on each runtime must not move anything: the wall clock
+     * and each runtime's own eye are the two things they do not share.
+     */
+    void SetDriven(bool on)
+    {
+        if (!on) { this->removeTag(ETCS::Buffer("driven")); return; }
+        std::string v;
+        ETCS::Entity::putWord(v, 1);
+        this->addTag("driven", v);
+    }
+    void SetEmissivity(float per_sec) { CausalBase<Scene3D>::SetEmissivity(Fixed::From(per_sec)); }
+    // The room inside this node, as a radius about its position: what fits
+    // in it is in it (Causal.h). Zero, the default, is solid.
+    void SetSpace(float radius) { CausalBase<Scene3D>::SetSpace(Fixed::From(radius)); }
+    float Emissivity() const { return CausalBase<Scene3D>::Emissivity().ToFloat(); }
+    float EmittedToEnvironment() const { return EmittedOut().ToFloat(); }
+    void SetColor(float r, float g, float b, float a)
+    {
+        this->addTag("color", words({ Fixed::From(r).raw, Fixed::From(g).raw, Fixed::From(b).raw, Fixed::From(a).raw }));
+    }
+    void SetOrder(int32_t z) { this->addTag("order", words({ z })); }
 
     // Terminal speed, in scene units per SECOND -- not per tick. The right
     // value is a property of the scene's scale, which the script knows and
@@ -166,26 +279,32 @@ public:
     // often the input edge happens to run.
     void SetSpeed(float units_per_sec)
     {
-        if (units_per_sec > 0.0f) m_speed = units_per_sec;
+        if (units_per_sec > 0.0f) this->addTag("speed", words({ Fixed::From(units_per_sec).raw }));
     }
-    float Speed() const { return m_speed; }
+    float Speed() const { return m_speed.ToFloat(); }
 
     // How fast motion bleeds off, per second. It sets BOTH halves of the feel
     // at once and that is not a coincidence: with a fixed terminal speed, the
     // acceleration needed to reach it is speed * damping, so one number gives
     // you the coast and the responsiveness together. High damping is crisp and
-    // stops dead; low damping drifts.
+    // stops dead; low damping drifts. Zero is no drag at all: a body whose
+    // drag is somebody else's to apply (a kart's, KartProvider's race).
     void SetDamping(float per_sec)
     {
-        if (per_sec > 0.0f) m_damping = per_sec;
+        if (per_sec >= 0.0f) this->addTag("damping", words({ Fixed::From(per_sec).raw }));
     }
-    float Damping() const { return m_damping; }
+    float Damping() const { return m_damping.ToFloat(); }
 
-    // Whether this node is drawn at all. A node with no extent still has
-    // children, and turning one off is how a script hides a subtree without
-    // destroying it -- the children's coordinates stay relative to a box
-    // that is still there.
-    void SetVisible(bool on) { m_visible = on; markViewersDirty(); }
+    // Whether this node's own box is drawn. Its children still are, and
+    // their coordinates stay relative to a box that is still there -- how a
+    // script draws a group with no box of its own. The Drawable "hidden"
+    // flag, so it is on the surface like every other presence, rather than a
+    // private bool beside it (DrawableBase::SetHidden).
+    void SetVisible(bool on) { SetHidden(!on); markViewersDirty(); }
+    // The shape this node is drawn with (a Mesh, by RID); 0 is its box. Both
+    // paths draw it: the device from the geometry sent once, the host from
+    // the same triangles (rasterMesh).
+    void SetMesh(ETCS::RID mesh) { m_mesh = mesh; markViewersDirty(); }
 
     // ── the held-key bitset ──────────────────────────────────────────────
     //
@@ -297,7 +416,7 @@ public:
  * conflated while the rate was derived from tan(fov/2), and separating them is
  * why changing SetLens no longer changes how far a movement turns you.
  */
-    void SetSensitivity(float span)  { if (span  > 0.0f) m_sens_scale = span; }
+    void SetSensitivity(float span)  { if (span  > 0.0f) this->addTag("sensitivity", words({ Fixed::From(span).raw })); }
 
     // The look's state, as the two angles it actually is. Reported rather than
     // inferred: the previous limit was a rejection test on a rotated vector's
@@ -353,7 +472,8 @@ public:
     {
         return m_motion.load(std::memory_order_relaxed) != 0
             || m_look_dirty.load(std::memory_order_relaxed)
-            || m_ov.KineticEnergy() > 0.0f;
+            || Order4().KineticEnergy().IsPositive()
+            || Moving();   // a member in flight: a ball rolling on a still green
     }
 
     /*
@@ -370,8 +490,7 @@ public:
  * It also closes the loop that keeps frames coming. Moving marks the viewers
  * dirty, which is what makes the next frame render, which advances the motion
  * again; when the keys are released and the velocity decays to rest,
- * StepFromHeld stops returning true, nothing is marked, and the whole
- * pipeline goes quiet on its own. No idle spin anywhere, and no thread whose
+ * stepOver stops marking, and the whole pipeline goes quiet on its own. No idle spin anywhere, and no thread whose
  * job is to ask whether anything happened.
  */
     /*
@@ -391,16 +510,36 @@ public:
  * guarantees (ontology/OrderVector.h). Queries like DepthFor deliberately do
  * NOT interact: asking how far away something is should not warm the room.
  */
+    using CausalBase<Scene3D>::Interact;    // the driver's form, beside the observed one
     void Interact()
     {
-        commitEntropy();
-        AdvanceForObserver();
-        for (Scene3D* kid : ownChildren()) kid->Interact();
+        // THE OBSERVED INTERACTION IS THE FAMILY'S, with the two spans an
+        // observer measures (two ceilings; the reasoning is on the clocks
+        // below) handed in as the Fixed values the rows will see -- the whole of what the wall clock contributed, and what
+        // CausalBase puts on the tape so an observed history replays. The
+        // hop under it is the driver's hop: commit, step, members, contacts.
+        // Under the tree's lock, as the driver's interaction is: a Run on a
+        // script's thread and a frame observing at the same time take turns
+        // on the tree rather than interleaving inside a step.
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+        const Fixed commit = Fixed::From(static_cast<double>(m_entropy_clock.Take()) * 0.001);
+        const Fixed step   = Fixed::From(static_cast<double>(m_motion_clock.Take())  * 0.001);
+        InteractObserved(commit, step);   // a first observation has nothing behind it: both zero, nothing happens
     }
+
+    // The family's step: what a held key pushes with and what drag takes,
+    // then the rows advance (CausalBase::AdvanceConcrete).
+    void AdvanceConcrete(Fixed dt) override { stepOver(dt); }
+    Fixed MassConcrete() const override { return m_mass; }
+
+    // The driver and the hash are the family's; named here so the verbs and
+    // the header's readers find them beside the observed path.
+    using CausalBase<Scene3D>::Run;
+    uint64_t Hash() { return CausalHash(); }
 
     /*
  * NOT Animated_, AND THAT IS A CLAIM RATHER THAN AN OVERSIGHT. The family
- * (ontology/Animated.h) is for a thing a driver advances; these two steps are
+ * (ontology/Animated.h) is for a thing a driver advances; these steps are
  * charged for by being LOOKED AT -- see Interact above -- so a frame edge
  * stepping this node whether or not a camera is on it would be a different
  * model, not the same one wired up more neatly. What the family and this node
@@ -411,14 +550,10 @@ public:
  * refuses to believe in more than a tenth of a second of unobserved movement;
  * the entropy ledger will credit a whole second of unobserved cooling, because
  * a box does not stop being warm while nobody is looking at it and a scene
- * does stop being thrown across the map. Both numbers are now where the
- * difference is visible, instead of in a comment claiming they matched.
+ * does stop being thrown across the map. Both numbers are on the clocks
+ * below, where the difference is visible, and both spans go to the family
+ * (CausalBase::InteractObserved) as the two inputs they are.
  */
-    void AdvanceForObserver()
-    {
-        const float dt = static_cast<float>(m_motion_clock.Take()) * 0.001f;
-        if (dt > 0.0f) StepFromHeld(dt);   // the first observation has nothing behind it
-    }
 
     /*
  * THE ONE THING THAT CROSSES THREADS, and the reason it is not the bitset
@@ -472,9 +607,9 @@ public:
  * steps per axis makes every diagonal 1.41x faster, which is invisible in a
  * screenshot and immediately obvious to anyone holding two keys.
  */
-    bool StepFromHeld(float dt)
+    bool stepOver(Fixed sdt)
     {
-        if (!(dt > 0.0f)) return false;
+        if (!sdt.IsPositive()) return false;
 
         /*
      * THE SCENE MOVES OPPOSITE THE VIEWER, and that sign is the whole of
@@ -494,74 +629,84 @@ public:
      * control does and the reason Q/E exist for the axis it leaves out.
      */
         const uint32_t bits = m_motion.load(std::memory_order_relaxed);
-        float fwd_in = 0.0f, right_in = 0.0f, up_in = 0.0f;
-        if (bits & MOVE_FWD) fwd_in   += 1.0f;
-        if (bits & MOVE_BCK) fwd_in   -= 1.0f;
-        if (bits & MOVE_RGT) right_in += 1.0f;
-        if (bits & MOVE_LFT) right_in -= 1.0f;
-        if (bits & MOVE_UP)  up_in    += 1.0f;
-        if (bits & MOVE_DWN) up_in    -= 1.0f;
+        int fwd_in = 0, right_in = 0, up_in = 0;
+        if (bits & MOVE_FWD) fwd_in   += 1;
+        if (bits & MOVE_BCK) fwd_in   -= 1;
+        if (bits & MOVE_RGT) right_in += 1;
+        if (bits & MOVE_LFT) right_in -= 1;
+        if (bits & MOVE_UP)  up_in    += 1;
+        if (bits & MOVE_DWN) up_in    -= 1;
 
-        // The viewer's GROUND frame: the current facing (row 3 applied to the
-        // reference forward) flattened onto the horizontal plane, and right =
-        // up x forward, the same handedness buildView uses.
-        //
-        // Flattened rather than used whole, which is the pitch exclusion made
-        // concrete: looking up should aim the view, not lift the feet. When
-        // the facing is near-vertical the horizontal part vanishes and the
-        // last usable frame is kept, so walking while staring at the sky is
-        // still walking somewhere.
-        float fx = m_ref_fwd.x, fyv = m_ref_fwd.y, fz = m_ref_fwd.z;
-        m_ov.RotateVector(fx, fyv, fz);
-        const float fl = std::sqrt(fx * fx + fz * fz);
-        if (fl > 1e-4f) { fx /= fl; fz /= fl; m_ground_fx = fx; m_ground_fz = fz; }
-        else            { fx = m_ground_fx;   fz = m_ground_fz; }
-        const float rx = fz, rz = -fx;
-
-        float dx = -(fx * fwd_in + rx * right_in);
-        float dy = -up_in;
-        float dz = -(fz * fwd_in + rz * right_in);
-
-        const float mag = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (mag > 0.0f)
+        bool pushing = false;
+        if (fwd_in != 0 || right_in != 0 || up_in != 0)
         {
-            /*
-     * The impulse that lands exactly on SetSpeed's terminal and no higher.
-     *
-     * Kinetic energy at the terminal speed is 1/2 m v_max^2, and drag takes
-     * a fraction (1 - exp(-k dt)) ~ k dt of it away each tick, so an
-     * impulse of 1/2 m v_max^2 * k * dt is what replaces exactly what drag
-     * removes at that speed -- the fixed point of the two operations, which
-     * is what a terminal speed IS.
-     */
-            const float joules = 0.5f * m_mass * m_speed * m_speed * m_damping * dt;
-            m_ov.Impulse(dx, dy, dz, joules);
+            // The viewer's GROUND frame: the current facing (row 3 applied to
+            // the reference forward) flattened onto the horizontal plane, and
+            // right = up x forward, the same handedness buildView uses.
+            //
+            // Flattened rather than used whole, which is the pitch exclusion
+            // made concrete: looking up should aim the view, not lift the
+            // feet. When the facing is near-vertical the horizontal part
+            // vanishes and the last usable frame is kept, so walking while
+            // staring at the sky is still walking somewhere. Only read while
+            // a key is down: a coasting node does not need to know where
+            // forward is.
+            Fixed fx = Fixed::From(m_ref_fwd.x), fyv = Fixed::From(m_ref_fwd.y), fz = Fixed::From(m_ref_fwd.z);
+            Order4().RotateVector(fx, fyv, fz);
+            const Fixed fl = Fixed::Length(fx, Fixed::Zero(), fz);
+            if (fl > Fixed::From(1e-4)) { fx /= fl; fz /= fl; m_ground_fx = fx; m_ground_fz = fz; }
+            else                        { fx = m_ground_fx;   fz = m_ground_fz; }
+            const Fixed rx = fz, rz = -fx;
+
+            const Fixed F = Fixed::FromInt(fwd_in), R = Fixed::FromInt(right_in), U = Fixed::FromInt(up_in);
+            const Fixed dx = -(fx * F + rx * R);
+            const Fixed dy = -U;
+            const Fixed dz = -(fz * F + rz * R);
+
+            pushing = !dx.IsZero() || !dy.IsZero() || !dz.IsZero();
+            if (pushing)
+            {
+                /*
+         * The impulse that lands exactly on SetSpeed's terminal and no higher:
+         * kinetic energy at the terminal speed is 1/2 m v_max^2, and drag takes
+         * (1 - exp(-k dt)) ~ k dt of it each tick, so 1/2 m v_max^2 * k * dt
+         * replaces exactly what drag removes -- the fixed point of the two
+         * operations, which is what a terminal speed IS.
+         */
+                const Fixed joules = Fixed::Half() * m_mass * m_speed * m_speed * m_damping * sdt;
+                Rows().Impulse(dx, dy, dz, joules);
+            }
         }
 
         // Drag is a TRANSFER, not a subtraction: kinetic goes down, E stays,
         // and the difference is heat by definition (ontology/OrderVector.h).
-        // So the energy this scene has spent being pushed around is still on
-        // the point and readable, rather than having quietly left the model.
-        m_ov.Dissipate(std::exp(-m_damping * dt));
-
-        // Below this the point is not coasting, it is dithering the last ulps
-        // of a decaying float forever -- and every one of those ticks would
-        // mark a camera dirty and re-project a frame identical to the last.
-        // Coming to rest is what lets a released key actually settle, and it
-        // is a real state change rather than a threshold hack: all of the
-        // remaining kinetic energy becomes heat.
-        float vx, vy, vz;
-        m_ov.Velocity(m_mass, vx, vy, vz);
-        const float v2   = vx * vx + vy * vy + vz * vz;
-        const float rest = m_speed * 1e-3f;
-        if (mag == 0.0f && v2 < rest * rest)
+        // exp(-k dt) rather than v -= v*k*dt: the exact form is stable for
+        // any measured dt, and it is Fixed's own exp, so the same on every
+        // platform. A function of (damping, dt) alone, so a driver stepping
+        // at one rate pays the series once and reads it back after.
+        if (sdt != m_drag_dt || m_damping != m_drag_damping)
         {
-            m_ov.Rest();
+            m_drag_dt = sdt; m_drag_damping = m_damping;
+            m_drag_factor = (-(m_damping * sdt)).Exp();
+        }
+        Rows().Dissipate(m_drag_factor);
+
+        // Below this the point is not coasting, it is dithering the last bits
+        // of a decaying number forever, and every tick would re-project an
+        // identical frame. Coming to rest is a real state change: all of the
+        // remaining kinetic energy becomes heat.
+        Fixed vx, vy, vz;
+        Order4().Velocity(m_mass, vx, vy, vz);
+        const Fixed v2   = vx * vx + vy * vy + vz * vz;
+        const Fixed rest = m_speed * Fixed::From(1e-3);
+        if (!pushing && v2 < rest * rest)
+        {
+            Rows().Rest();
             return false;
         }
-        if (v2 == 0.0f) return false;
+        if (v2.IsZero()) return false;
 
-        m_ov.Advance(dt, m_mass);
+        Rows().AdvanceBy(vx, vy, vz, sdt);   // the velocity just read: one reading, not two
         markViewersDirty();
         return true;
     }
@@ -589,6 +734,7 @@ public:
     // only sort that says anything about what is actually in front.
     DepthSpan DepthForConcrete(Camera_* camera) override
     {
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // one state of the rows (Causal.h, Order4)
         View v;
         if (!buildView(camera, v)) return DepthSpan{-1.0f, -1.0f};
 
@@ -647,8 +793,10 @@ public:
  */
     Drawable2D_* ProjectConcrete(Camera_* camera) override
     {
-        applyLookTo(camera);
-        Interact();
+        // The whole projection under the tree's lock: the picture is of one
+        // state, not of rows a Run on another thread is halfway through.
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+        if (!m_driven) { applyLookTo(camera); Interact(); }   // a driven tree is only read (SetDriven)
 
         View v;
         if (!buildView(camera, v)) return nullptr;
@@ -673,9 +821,9 @@ public:
  * future provider registers under Surface, with no branch here for which one
  * it got". Every Camera_ IS a Surface_, so the camera itself is that
  * destination, and what it does with a DrawRect is its own business:
- * GpuCamera3D records it and replays it onto whatever it is drawn into, so on
- * a VulkanSurface the frame is produced by the device and never exists as host
- * pixels at all.
+ * a camera with a Device records it and replays it onto whatever it is drawn
+ * into, so on a window surface drawing through a device the frame is produced
+ * by the device and never exists as host pixels at all.
  *
  * DEPTH STAYS HERE EITHER WAY. m_depth is the scene's, not the camera's --
  * DepthAt and DepthFor are answered off it (Drawable3D.h: the three
@@ -697,6 +845,24 @@ public:
  * mid-flight lands here as a quiet fall back to the buffer the camera never
  * gave up.
  */
+        // A camera on the device path that can take a scene gets the scene
+        // and not a raster: the device draws it (RenderProvider/SceneSink.h). A device
+        // camera that cannot -- another provider's -- still gets the runs.
+        if (camera->DeviceProjection())
+            if (void* raw = camera->getInterfacePointer(ETCS::Buffer(RP_SCENE_SINK)))
+            {
+                std::vector<Node> nodes;
+                collectSubtree(Point3D{0,0,0}, nodes);
+                coverRows();
+                projectToDevice(static_cast<SceneSink*>(raw), v, nodes);
+                m_depth_cam = 0;            // no host picture: DepthAt says so
+                this->Observe(camera->getRID());
+                etcs_mark_observed(camera);
+                ++m_projections;
+                { const auto aliens = foreignChildren(); for (Drawable3D_* alien : *aliens) alien->Project(camera); }
+                return cameraPlane(camera);
+            }
+
         Sink sink;
         if (camera->DeviceProjection()) sink.dst = cameraSurface(camera);
         else                            sink.px  = cameraPixels(camera);
@@ -722,8 +888,14 @@ public:
 
         std::vector<Node> nodes;
         collectSubtree(Point3D{0,0,0}, nodes);
-        coverSubtree(nodes);
-        for (const Node& n : nodes) rasterBox(sink, v, n);
+        coverRows();
+        for (const Node& n : nodes)
+        {
+            // The same picture the device makes: a node's Mesh with its
+            // triangles, the box otherwise, both placed by T*R*S.
+            if (const Mesh* mesh = n.mesh ? meshOf(n.mesh) : nullptr) rasterMesh(sink, v, n, *mesh);
+            else                                                        rasterBox(sink, v, n);
+        }
 
         // The camera now holds an image of me, so it is an observer of me in
         // the literal sense -- registered here rather than in a setter, so a
@@ -737,8 +909,7 @@ public:
         // another module has its own geometry this walk cannot read, so it
         // is asked to project itself. It gets the same camera and therefore
         // lands in the same pixels, but it brings its own occlusion.
-        for (Drawable3D_* alien : foreignChildren())
-            alien->Project(camera);
+        { const auto aliens = foreignChildren(); for (Drawable3D_* alien : *aliens) alien->Project(camera); }
 
         return cameraPlane(camera);
     }
@@ -814,7 +985,7 @@ public:
         markViewersDirty();
         { std::vector<uint64_t> cams; ObserverRids(cams);
           for (uint64_t c : cams) Unobserve(c); }
-        m_ov.Rest();
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
         ClearHeld();
     }
 
@@ -832,9 +1003,11 @@ private:
     // A box flattened out of the tree: absolute centre, half-extent, colour.
     struct Node
     {
-        Point3D pos;
-        Point3D half;
-        float   color[4];
+        Point3D   pos;
+        Point3D   half;
+        float     color[4];
+        Matrix4   rot;        // the node's own row 3, for the device (the host draws boxes axis-aligned)
+        ETCS::RID mesh;       // 0: the unit box, scaled to the extent
     };
 
     // The camera's pose and lens, resolved once per projection into the form
@@ -967,19 +1140,79 @@ private:
     // A child's position is stated relative to its parent's CENTRE, which is
     // the 3D reading of Drawable2D's parent-relative rule, and is why one
     // translation at the root relocates everything below it.
-    void collectSubtree(Point3D origin, std::vector<Node>& out)
+    void collectSubtree(Point3D origin, std::vector<Node>& out, bool root = true)
     {
-        const Point3D abs{ origin.x + m_ov.x, origin.y + m_ov.y, origin.z + m_ov.z };
-        if (m_visible)
+        const Point3D p = Pos();
+        const Point3D abs{ origin.x + p.x, origin.y + p.y, origin.z + p.z };
+        if (!Hidden())
         {
             Node n;
             n.pos  = abs;
             n.half = m_half;
             n.color[0] = m_color[0]; n.color[1] = m_color[1];
             n.color[2] = m_color[2]; n.color[3] = m_color[3];
+            // A node's row 3 is its facing -- except the projection root's,
+            // which the look control writes to aim the camera (applyLookTo):
+            // that one is the viewer's, not the box's. The root by being the
+            // root, not by being drawn first: under a hidden root the first
+            // node drawn is a child, and its facing is its own.
+            n.rot  = root ? Matrix4::Identity() : Order4().ToMatrix4();
+            n.rot.at(0,3) = n.rot.at(1,3) = n.rot.at(2,3) = 0.0f;
+            n.mesh = m_mesh;
             out.push_back(n);
         }
-        for (Scene3D* kid : ownChildren()) kid->collectSubtree(abs, out);
+        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out, false); }
+    }
+
+    /*
+     * THE DEVICE PROJECTION: the same subtree, as one op per node, handed to
+     * the camera (RenderProvider/SceneSink.h) for the device to draw with its own depth
+     * buffer. Nothing is rasterised here, so DepthAt has no picture to answer
+     * from on this path (it says so); DepthFor, over corners, still does.
+     *
+     * The matrices are the picture's floats, built from the rows at this
+     * boundary and nowhere else: view from the camera's basis (the same basis
+     * toView uses), projection with depth to [0,1] and y up, model as
+     * translate * rotate * scale -- the OrderVector's own 4x4 with the extent
+     * on it. Column-major, as both devices take them.
+     */
+    void projectToDevice(SceneSink* sink, const View& v, const std::vector<Node>& nodes)
+    {
+        float view[16], proj[16];
+        // Rows right/up/fwd as the columns of the transpose: column-major.
+        view[0] = v.right.x; view[4] = v.right.y; view[8]  = v.right.z; view[12] = -(v.right.x*v.eye.x + v.right.y*v.eye.y + v.right.z*v.eye.z);
+        view[1] = v.up.x;    view[5] = v.up.y;    view[9]  = v.up.z;    view[13] = -(v.up.x*v.eye.x    + v.up.y*v.eye.y    + v.up.z*v.eye.z);
+        view[2] = v.fwd.x;   view[6] = v.fwd.y;   view[10] = v.fwd.z;   view[14] = -(v.fwd.x*v.eye.x   + v.fwd.y*v.eye.y   + v.fwd.z*v.eye.z);
+        view[3] = 0.0f;      view[7] = 0.0f;      view[11] = 0.0f;      view[15] = 1.0f;
+        for (float& f : proj) f = 0.0f;
+        const float n = v.near_p, f = v.far_p;
+        proj[0]  = 1.0f / (v.tan_half * v.aspect);
+        proj[5]  = 1.0f / v.tan_half;
+        proj[10] = f / (f - n);
+        proj[11] = 1.0f;
+        proj[14] = -(n * f) / (f - n);
+        sink->BeginScene(view, proj);
+
+        for (const Node& nd : nodes)
+        {
+            DeviceMeshOp op;
+            op.mesh = nd.mesh;
+            // A mesh is in unit space like the box is; the extent is the size
+            // of either, so a shape swapped in stands where the box stood.
+            const float sx = nd.half.x * 2.0f;
+            const float sy = nd.half.y * 2.0f;
+            const float sz = nd.half.z * 2.0f;
+            // model = T * R * S, column-major: column c is R's column c scaled.
+            for (int c = 0; c < 3; ++c)
+            {
+                const float sc = c == 0 ? sx : c == 1 ? sy : sz;
+                for (int r = 0; r < 3; ++r) op.model[c * 4 + r] = nd.rot.at(r, c) * sc;
+                op.model[c * 4 + 3] = 0.0f;
+            }
+            op.model[12] = nd.pos.x; op.model[13] = nd.pos.y; op.model[14] = nd.pos.z; op.model[15] = 1.0f;
+            for (int i = 0; i < 4; ++i) op.color[i] = nd.color[i];
+            sink->AddMesh(op);
+        }
     }
 
     // Children of this module's own 3D leaf, which are the ones whose
@@ -987,21 +1220,33 @@ private:
     // the family pointer says "a 3D node", it does not say "one of mine",
     // and reading another module's fields off a family pointer is exactly
     // the mistake the interface-pointer discipline exists to prevent.
-    std::vector<Scene3D*> ownChildren()
+    //
+    // BOTH LISTS ARE KEPT against this entity's hash epoch, the way
+    // CausalBase keeps its Causal children: the typed-child lists move only
+    // through funnels that bump it, and a projection walks every node of the
+    // subtree three times a frame (collect, cover, interact) -- six typed
+    // walks and six allocations per node per frame, for lists that change
+    // when a script spawns something.
+    // Snapshots go out, shared: a walker (the frame edge, a script's Project)
+    // iterates a list nobody rebuilds under it, for one reference count --
+    // the shape CausalBase::causalChildren has.
+    using OwnKids     = std::shared_ptr<const std::vector<Scene3D*>>;
+    using ForeignKids = std::shared_ptr<const std::vector<Drawable3D_*>>;
+    OwnKids     ownChildren()     { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); refreshKids(); return m_own_kids; }
+    ForeignKids foreignChildren() { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); refreshKids(); return m_foreign_kids; }
+    void refreshKids()
     {
-        std::vector<Scene3D*> out;
+        const uint32_t epoch = hashEpoch();
+        if (m_own_kids && epoch == m_kids_epoch) return;
+        auto own = std::make_shared<std::vector<Scene3D*>>();
+        auto foreign = std::make_shared<std::vector<Drawable3D_*>>();
         for (ETCS::Entity* e : drawable3DChildren())
-            if (isOwnLeaf(e)) out.push_back(static_cast<Scene3D*>(e->getTrueType()));
-        return out;
-    }
-    std::vector<Drawable3D_*> foreignChildren()
-    {
-        std::vector<Drawable3D_*> out;
-        for (ETCS::Entity* e : drawable3DChildren())
-            if (!isOwnLeaf(e))
-                out.push_back(static_cast<Drawable3D_*>(
-                    e->getInterfacePointer(ETCS::Buffer("Drawable3D"))));
-        return out;
+        {
+            if (isOwnLeaf(e)) own->push_back(static_cast<Scene3D*>(e->getTrueType()));
+            else foreign->push_back(static_cast<Drawable3D_*>(e->getInterfacePointer(ETCS::Buffer("Drawable3D"))));
+        }
+        m_own_kids = std::move(own); m_foreign_kids = std::move(foreign);
+        m_kids_epoch = epoch;
     }
     static bool isOwnLeaf(ETCS::Entity* e)
     {
@@ -1010,13 +1255,14 @@ private:
     std::vector<ETCS::Entity*> drawable3DChildren()
     {
         std::vector<ETCS::Entity*> out;
-        std::vector<std::pair<ETCS::Buffer, ETCS::RID>> kids;
-        getOrderedTypedChildren(kids);
-        for (const auto& entry : kids)
+        std::vector<ETCS::Entity::ChildRef> kids;   // no tag copied per child
+        getOrderedTypedChildRefs(kids);
+        static const ETCS::Buffer kDrawable3D("Drawable3D");
+        for (const auto& [tag, rid] : kids)
         {
-            ETCS::Entity* child = getTypedChild(entry.first, entry.second);
+            ETCS::Entity* child = getTypedChild(*tag, rid);
             if (!child) continue;
-            if (!child->getInterfacePointer(ETCS::Buffer("Drawable3D"))) continue;
+            if (!child->getInterfacePointer(kDrawable3D)) continue;
             out.push_back(child);
         }
         return out;
@@ -1063,10 +1309,13 @@ private:
                 markPixelPath(c);
     }
 
-    // Mark a camera and every observer above it (ontology/Observable.h). Taken
-    // as Entity because the chain crosses families: a camera's parent is a
-    // compositor, whose parent may be anything at all.
-    static void markPixelPath(ETCS::Entity* node) { etcs_mark_observed(node); }
+    // Mark a camera and every observer above it (ontology/Observable.h).
+    // Restated rather than observed: the camera's picture is derived from this
+    // scene, so its own self edge is set too, or a camera on a still scene
+    // never re-renders a box that moved. Taken as Entity because the chain
+    // crosses families: a camera's parent is a compositor, whose parent may
+    // be anything at all.
+    static void markPixelPath(ETCS::Entity* node) { etcs_mark_restated(node); }
 
     // ── geometry helpers ─────────────────────────────────────────────────
 
@@ -1083,11 +1332,29 @@ private:
         v.x /= len; v.y /= len; v.z /= len;
         return true;
     }
+    // A point of the node's unit space -- the box's corner, a mesh's vertex
+    // -- placed in the scene: scaled by the extent, turned by row 3,
+    // carried to the position. T * R * S, exactly the model matrix the
+    // device is handed (projectToDevice).
+    static Point3D place(const Node& n, float ux, float uy, float uz)
+    {
+        const float sx = ux * n.half.x * 2.0f, sy = uy * n.half.y * 2.0f, sz = uz * n.half.z * 2.0f;
+        return Point3D{ n.pos.x + n.rot.at(0,0) * sx + n.rot.at(0,1) * sy + n.rot.at(0,2) * sz,
+                        n.pos.y + n.rot.at(1,0) * sx + n.rot.at(1,1) * sy + n.rot.at(1,2) * sz,
+                        n.pos.z + n.rot.at(2,0) * sx + n.rot.at(2,1) * sy + n.rot.at(2,2) * sz };
+    }
     static Point3D corner(const Node& n, int i)
     {
-        return Point3D{ n.pos.x + ((i & 1) ? n.half.x : -n.half.x),
-                        n.pos.y + ((i & 2) ? n.half.y : -n.half.y),
-                        n.pos.z + ((i & 4) ? n.half.z : -n.half.z) };
+        return place(n, (i & 1) ? 0.5f : -0.5f, (i & 2) ? 0.5f : -0.5f, (i & 4) ? 0.5f : -0.5f);
+    }
+
+    // The Mesh a node names, by RID and tag -- the way the surface finds it
+    // to send to the device (HostSurface::sendMeshes). Not a family.
+    static const Mesh* meshOf(ETCS::RID rid)
+    {
+        ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
+        if (!e || e->getSourceTag() != ETCS::Buffer("Mesh")) return nullptr;
+        return static_cast<const Mesh*>(e->getTrueType());
     }
 
     // A point in the camera's own frame: x right, y up, z straight ahead.
@@ -1193,6 +1460,39 @@ private:
         }
     }
 
+    /*
+     * A node's Mesh, triangle by triangle, through the same clip and fill the
+     * box takes. Lit as the device lights it (shaders/mesh.frag): one fixed
+     * lamp in the scene, 0.45 ambient and 0.55 of the normal's cosine, with
+     * the triangle's stated normal turned by the node's row 3 -- so a shape
+     * reads the same on the host and through the device. The box keeps its
+     * six fixed shades: that is the picture every scene has always had.
+     */
+    void rasterMesh(const Sink& sink, const View& v, const Node& n, const Mesh& mesh)
+    {
+        const std::vector<float>&    vb = mesh.Vertices();
+        const std::vector<uint32_t>& ib = mesh.Indices();
+        static const float lx = 0.4f / 1.0028f, ly = 0.8f / 1.0028f, lz = 0.45f / 1.0028f;   // normalised (0.4, 0.8, 0.45)
+        for (size_t t = 0; t + 2 < ib.size(); t += 3)
+        {
+            const uint32_t a = ib[t], b = ib[t + 1], c = ib[t + 2];
+            if ((a + 1) * 6 > vb.size() || (b + 1) * 6 > vb.size() || (c + 1) * 6 > vb.size()) continue;
+            const Point3D pa = toView(v, place(n, vb[a * 6], vb[a * 6 + 1], vb[a * 6 + 2]));
+            const Point3D pb = toView(v, place(n, vb[b * 6], vb[b * 6 + 1], vb[b * 6 + 2]));
+            const Point3D pc = toView(v, place(n, vb[c * 6], vb[c * 6 + 1], vb[c * 6 + 2]));
+            // The normal: the first vertex's, through the rotation alone.
+            const float nx0 = vb[a * 6 + 3], ny0 = vb[a * 6 + 4], nz0 = vb[a * 6 + 5];
+            const float nx = n.rot.at(0,0) * nx0 + n.rot.at(0,1) * ny0 + n.rot.at(0,2) * nz0;
+            const float ny = n.rot.at(1,0) * nx0 + n.rot.at(1,1) * ny0 + n.rot.at(1,2) * nz0;
+            const float nz = n.rot.at(2,0) * nx0 + n.rot.at(2,1) * ny0 + n.rot.at(2,2) * nz0;
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            const float cosl = len > 0.0f ? (nx * lx + ny * ly + nz * lz) / len : 0.0f;
+            const float lit  = 0.45f + 0.55f * (cosl > 0.0f ? cosl : 0.0f);
+            const float col[4] = { n.color[0] * lit, n.color[1] * lit, n.color[2] * lit, n.color[3] };
+            clipAndFill(sink, v, pa, pb, pc, col);
+        }
+    }
+
     // Clip in view space, project what survives, fan it. The two steps are
     // separate because they answer different questions and only one of them
     // can be done after the divide -- see clipNear.
@@ -1290,71 +1590,6 @@ private:
             }
             flush();   // the line ended while a run was still open
         }
-    }
-
-    /*
- * Commit every joule of entropy owed since this node's last interaction,
- * into the node that CONTAINS it.
- *
- * The environment of a point is its parent, and heat crossing that boundary
- * is the only energy transfer in this model that is not caused by something
- * doing work: a warm box in a cold room warms the room by being in it. The
- * parent absorbs exactly what the child emits -- one number, moved -- so
- * energy is conserved across the boundary rather than approximately tracked
- * on both sides of it.
- *
- * AT THE ROOT THE HEAT LEAVES THE MODEL, and that is stated rather than
- * hidden: there is no parent, so the emission is counted into a running
- * total and dropped. A scene root emitting into a world this system does not
- * represent is exactly what an open system is, and the counter is what makes
- * the leak an observable quantity instead of a silent non-conservation.
- */
-    void commitEntropy()
-    {
-        // A whole second of unobserved cooling is credible where a whole second
-        // of unobserved motion is not -- see AdvanceForObserver on why these two
-        // ceilings differ, and ontology/StepClock.h on why a ceiling at all.
-        const float dt = static_cast<float>(m_entropy_clock.Take()) * 0.001f;
-        if (!(dt > 0.0f)) return;   // the first interaction has nothing behind it
-
-        // The EVENT, and it is an OrderVector like any other: where it left,
-        // whose boundary it crossed, how much energy, all of it unordered
-        // (ontology/OrderVector.h). Kept as the node's last crossing so a
-        // guard capturing a generator during this step has it to read.
-        const OrderVector e = m_ov.EmitEvent(m_ov.EmissionOver(dt, m_emissivity), dt);
-        if (!(e.energy > 0.0f)) return;
-        m_last_emission = e;
-
-        // The emitter keeps its own step's meta: the span it just settled and
-        // the uncertainty of the crossing it just made. Not a copy of the
-        // emission -- the emission is what LEFT, these are the current state
-        // of the thing that emitted it, and they are what an entity is asked
-        // for when something wants to know where its causality is now.
-        m_ov.interval    = e.interval;
-        m_ov.uncertainty = e.uncertainty;
-
-        // The tick. Counted on emissions that ACTUALLY happened, never on
-        // interactions that found nothing owed -- a node with no heat to shed
-        // has had no time pass for it, and incrementing here anyway would make
-        // this a count of how often somebody looked, which is the observer's
-        // clock and not this node's.
-        ++m_ticks;
-
-        // The whole vector moves: heat lands as heat, and anything ordered it
-        // carried would land as an impulse. One transfer, no conversion.
-        if (Scene3D* env = ownParent()) env->m_ov.Absorb(e);
-        else                            m_emitted_out += e.energy;
-    }
-
-    // The containing node, when there is one of this module's own leaves
-    // above -- the environment a point emits into. A foreign 3D parent is not
-    // one: this module cannot put heat into a representation it cannot read,
-    // and pretending otherwise would be inventing the number.
-    Scene3D* ownParent()
-    {
-        ETCS::Entity* p = getParent();
-        if (!p || !isOwnLeaf(p)) return nullptr;
-        return static_cast<Scene3D*>(p->getTrueType());
     }
 
     /*
@@ -1467,8 +1702,9 @@ private:
             // Row 2: what the look turns about is the eye, in the scene's
             // frame -- a first-person look is a rotation about the viewer, and
             // that is exactly what a pivot is for.
-            m_ov.SetPivot(v.position.x - m_ov.x, v.position.y - m_ov.y, v.position.z - m_ov.z);
-            m_ov.Orient(0.0f, 0.0f, 0.0f, 0.0f);
+            { std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+              Rows().SetPivot(Fixed::From(v.position.x) - Order4().x, Fixed::From(v.position.y) - Order4().y, Fixed::From(v.position.z) - Order4().z);
+              Rows().Orient(Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), Fixed::Zero()); }
             m_yaw = 0.0f;
             // The view's elevation, which at seeding is the reference's. Yaw
             // has no such absolute zero worth naming -- it is a circle -- so
@@ -1531,17 +1767,22 @@ private:
         // Written this way the identity is exact: the view's elevation comes
         // out as m_pitch, whatever the reference was.
         const float pitch_rot = m_ref_elev - m_pitch;
-        m_ov.Orient(0.0f, 0.0f, 0.0f, 0.0f);
-        if (pitch_rot != 0.0f)
-            m_ov.RotateBy(m_ref_right.x, m_ref_right.y, m_ref_right.z, pitch_rot);
-        if (m_yaw != 0.0f)
-            m_ov.RotateBy(0.0f, 1.0f, 0.0f, m_yaw);
-
-        float fx2 = m_ref_fwd.x, fy2 = m_ref_fwd.y, fz2 = m_ref_fwd.z;
-        m_ov.RotateVector(fx2, fy2, fz2);
-        v.look_at = Point3D{ v.position.x + fx2 * dist,
-                             v.position.y + fy2 * dist,
-                             v.position.z + fz2 * dist };
+        // The look's two angles cross into the rows here: the mouse is an
+        // input like a key, and row 3 is causal state -- so the angles are
+        // taken as Fixed and the spinor is composed by Fixed's own series.
+        Fixed fx2 = Fixed::From(m_ref_fwd.x), fy2 = Fixed::From(m_ref_fwd.y), fz2 = Fixed::From(m_ref_fwd.z);
+        {
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+            Rows().Orient(Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
+            if (pitch_rot != 0.0f)
+                Rows().RotateBy(Fixed::From(m_ref_right.x), Fixed::From(m_ref_right.y), Fixed::From(m_ref_right.z), Fixed::From(pitch_rot));
+            if (m_yaw != 0.0f)
+                Rows().RotateBy(Fixed::Zero(), Fixed::One(), Fixed::Zero(), Fixed::From(m_yaw));
+            Order4().RotateVector(fx2, fy2, fz2);
+        }
+        v.look_at = Point3D{ v.position.x + fx2.ToFloat() * dist,
+                             v.position.y + fy2.ToFloat() * dist,
+                             v.position.z + fz2.ToFloat() * dist };
         camera->SetView(v);
 
         // The frame's extent is what the mapping is stated against, and it can
@@ -1654,19 +1895,33 @@ private:
  * and OrderVector::GapTo between two scenes is a one-comparison proof that
  * nothing in either could have touched anything in the other.
  */
-    void coverSubtree(const std::vector<Node>& nodes)
+    // FROM THE ROWS, NOT FROM THE PICTURE: the members' positions are the
+    // rows summed down the tree in Fixed, never the floats the projection
+    // made of them, because the reach lands in row 2 and row 2 is hashed.
+    // The half-extent is the one float that enters, crossed once -- it is
+    // the size a script stated at Create.
+    void coverRows()
     {
-        if (nodes.empty()) { m_ov.radius = 0.0f; return; }
         std::vector<OrderVector> parts;
-        parts.reserve(nodes.size());
-        for (const Node& n : nodes)
+        gatherParts(Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), parts);
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+        Rows().Cover(parts.data(), parts.size());
+    }
+    void gatherParts(Fixed ox, Fixed oy, Fixed oz, std::vector<OrderVector>& out)
+    {
+        Fixed ax, ay, az;
+        {
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // one whole position, not a mid-step one
+            ax = ox + Order4().x; ay = oy + Order4().y; az = oz + Order4().z;
+        }
+        if (!Hidden())
         {
             OrderVector p;
-            p.x = n.pos.x; p.y = n.pos.y; p.z = n.pos.z;
-            p.radius = std::sqrt(n.half.x * n.half.x + n.half.y * n.half.y + n.half.z * n.half.z);
-            parts.push_back(p);
+            p.x = ax; p.y = ay; p.z = az;
+            p.radius = Fixed::Length(Fixed::From(m_half.x), Fixed::From(m_half.y), Fixed::From(m_half.z));
+            out.push_back(p);
         }
-        m_ov.Cover(parts.data(), parts.size());
+        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->gatherParts(ax, ay, az, out); }
     }
 
     // Reduce the wide bitset to the six bits the projection reads. Called on
@@ -1695,20 +1950,45 @@ private:
     // Not a copy of it and not kept in step with it -- there is one position
     // here, and the motion integrator writes the same three floats the
     // projection reads (ontology/OrderVector.h).
-    OrderVector m_ov;
     Point3D m_half{0.5f, 0.5f, 0.5f};
-    float   m_color[4] = {0.8f, 0.8f, 0.85f, 1.0f};
-    bool    m_visible  = true;
-    float   m_speed    = 6.0f;    // terminal, scene units per second
-    float   m_damping  = 8.0f;    // kinetic -> heat, per second
-    float   m_mass     = 1.0f;
+    // A value's words (Entity::putWord), and back: false when there is no
+    // value or it is not `n` words -- the caller's default then applies.
+    static std::string words(std::initializer_list<int64_t> ws)
+    {
+        std::string v;
+        for (int64_t x : ws) ETCS::Entity::putWord(v, x);
+        return v;
+    }
+    static bool readWords(const std::string* v, int64_t* out, size_t n)
+    {
+        if (!v || v->size() != 8 * n) return false;
+        size_t at = 0;
+        for (size_t i = 0; i < n; ++i) ETCS::Entity::getWord(*v, at, out[i]);
+        return true;
+    }
+
+    ETCS::RID m_mesh = 0;
+    static constexpr float kColor[4] = {0.8f, 0.8f, 0.85f, 1.0f};
+    float   m_color[4] = {kColor[0], kColor[1], kColor[2], kColor[3]};
+    // Causal: they decide what an impulse is and how motion decays, so they
+    // are Fixed and cross from a script's floats once, in their setters.
+    static inline const Fixed kSpeed   = Fixed::FromInt(6);
+    static inline const Fixed kDamping = Fixed::FromInt(8);
+    Fixed   m_speed    = kSpeed;      // terminal, scene units per second
+    Fixed   m_damping  = kDamping;    // kinetic -> heat, per second
+    Fixed   m_mass     = Fixed::One();
+    Fixed   m_drag_dt, m_drag_damping, m_drag_factor;   // exp(-k dt) for the last (k, dt) seen
+
+    OwnKids     m_own_kids;        // the child lists at m_kids_epoch (refreshKids)
+    ForeignKids m_foreign_kids;
+    uint32_t                  m_kids_epoch = 0;
 
     ETCS::TBuffer<NUM_KEYS / 8> m_held;   // one bit per key in the spectrum
     std::atomic<uint32_t>       m_motion{0};   // the six bits that cross threads
 
     // The look. Atomics for the same reason the motion bits are: written by
     // the input edge, read by the projection, on different threads. The
-    // ORIENTATION itself is not here -- it is row 3 of m_ov, where an angle
+    // ORIENTATION itself is not here -- it is row 3 of the rows (Order4), where an angle
     // belongs; these are only the deltas waiting to be folded into it.
     // Where the pointer is, in the camera frame's own pixels. Written by the
     // input edge, read by the frame thread. Relaxed on both sides: the two
@@ -1723,6 +2003,7 @@ private:
     std::atomic<bool>  m_ptr_seen{false};
     std::atomic<bool>  m_look_dirty{false};
     bool               m_look_seeded = false;
+    bool               m_driven = false;    // "driven": stepped by its driver alone (SetDriven)
     Point3D            m_ref_fwd{0.0f, 0.0f, 1.0f};   // what row 3 rotates FROM
     Point3D            m_ref_right{1.0f, 0.0f, 0.0f}; // and what pitch turns about
 
@@ -1743,8 +2024,8 @@ private:
     uint32_t           m_frame_w    = 0;
     uint32_t           m_frame_h    = 0;
 
-    float              m_ground_fx  = 0.0f;   // last usable horizontal facing
-    float              m_ground_fz  = 1.0f;
+    Fixed              m_ground_fx;                 // last usable horizontal facing
+    Fixed              m_ground_fz  = Fixed::One();
     /*
  * ONE view pixel of scene movement per pixel of pointer movement.
  *
@@ -1777,23 +2058,20 @@ private:
  * through. Decoupling them is a one-line change if the wasted vertical band
  * turns out to matter more than the uniformity.
  */
-    float              m_sens_scale = 2.0f;
+    static constexpr float kSensitivity = 2.0f;
+    float              m_sens_scale = kSensitivity;
     // The seeded direction's elevation. Frame-thread only, written once at
     // seeding -- see applyLookTo's seeding block for what it is for.
     float              m_ref_elev   = 0.0f;
 
     // Motion: a tenth of a second is the most unobserved movement this will
-    // believe in. See AdvanceForObserver.
+    // believe in. See Interact().
     StepClock                             m_motion_clock{ 100.0 };
 
     // The entropy ledger: the interval this node was last charged for, how fast
     // it sheds heat, and what has left the model entirely through the root. A
     // full second, deliberately unequal to the motion ceiling above it.
     StepClock                             m_entropy_clock{ 1000.0 };
-    float                                 m_emissivity  = 0.5f;
-    float                                 m_emitted_out = 0.0f;
-    uint64_t                              m_ticks       = 0;
-    OrderVector                           m_last_emission{};
 
     std::vector<float>     m_depth;
     uint32_t               m_depth_w   = 0;

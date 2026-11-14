@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# The key channel, on its own thread: the window's keys go to the table,
+# which types them into its line while the bars are in (ChessTable::Key).
+#
+#     detach ChessProvider/scripts/chess_keys.etcs window=<Window> table=<ChessTable>
+
+requires window [Window]
+requires table [ChessTable]
+
+window.ProduceEvents() -> table.ConsumeKeys()

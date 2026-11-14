@@ -1,0 +1,433 @@
+#ifndef DATABASEPROVIDER_STORE_H__
+#define DATABASEPROVIDER_STORE_H__
+#include "../../../ontology.h"
+#include "../sqlite/sqlite3.h"
+#include "Wal.h"
+
+#include <cerrno>
+#include <cstdio>
+#include <ctime>
+#include <fcntl.h>
+#include <mutex>
+#include <random>
+#include <string>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vector>
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
+
+/*
+ * THE PERSISTENCE DATABASE -- the one store every Persistence child writes
+ * to (Persistence.h), in the place this runtime keeps what outlives it
+ * (ETCS::etcs_store_dir): `persistence.db` beside `loader.key`.
+ *
+ * NOT AN ENTITY. It is the local frame's own disk, not a node in the graph:
+ * a Database in the scene would be part of what the scene hashes and
+ * rebuilds, and the store cannot be something it restores.
+ *
+ * THE KEY IS THIS LOADER'S, and never leaves it: 32 random bytes made on
+ * first use, readable only by its owner. Everything written here is MACed
+ * with it (HMAC-SHA256), and a record whose MAC does not verify is not
+ * read -- a scene is this loader's own, and a store carried to another
+ * loader, or edited by hand, rebuilds nothing. `keyid` (the first 16 hex
+ * of the key's SHA-256) is part of every key, so two loaders sharing a
+ * directory keep separate scenes.
+ *
+ * TWO TABLES:
+ *   records  (keyid, type, hash, ord) -> tags, script, kv, mac
+ *            One per Environmental entity: its Module:Tag, the RID-free
+ *            merkle hash of its surface (Entity::getHash), and among
+ *            entities with both of those equal, the order they were made in
+ *            -- emergent, never a stored RID. `kv` is what its script
+ *            cannot say (ontology/Environmental.h).
+ *   scenes   (keyid, name) -> at, script, roots, mac
+ *            The whole: the script that rebuilds every persisted root, and
+ *            each root's name and type. Written when either changes.
+ *   root_states (keyid, scene, name) -> hash, mac
+ *            Each root's state hash, which a resume checks itself against:
+ *            its own row, because it moves on every save that anything
+ *            under the root does, and the scene row does not.
+ *
+ * In a browser the directory is IDBFS (/persist), which the page must mount
+ * and pull before main() runs; after a write the page is asked to push it
+ * back (window.etcsPersist), exactly as the sqlite leaf does.
+ */
+class PersistenceStore
+{
+public:
+    struct Record
+    {
+        std::string type, hash;
+        int         ord = 0;
+        std::string tags, script, kv;
+    };
+
+    // Leaked on purpose: the watcher that writes here may still be running
+    // while the process exits (Persistence.h).
+    static PersistenceStore& get()
+    {
+        static PersistenceStore* s = new PersistenceStore();
+        return *s;
+    }
+
+    bool ready()
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        return openLocked();
+    }
+    std::string dir() const { return dir_; }
+    std::string keyid()
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        return openLocked() ? keyid_ : std::string();
+    }
+
+    bool putRecord(const Record& r)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        return openLocked() && putRecordLocked(r);
+    }
+
+    /*
+     * ONE SAVE, ONE TRANSACTION: the records that changed, the ones whose
+     * entity is gone, and the scene that names them land together or not at
+     * all. Autocommit made each record its own transaction -- a journal write
+     * and a sync apiece, the whole cost of a save -- and let a crash leave new
+     * records under the old scene. `scene` null: the records only.
+     */
+    struct Key { std::string type, hash; int ord = 0; };
+    struct SceneRow { std::string name, script, roots; };
+    using RootState = std::pair<std::string, std::string>;   // root name, state hash
+    // `states`: the roots whose state hash moved. With a scene row, the
+    // scene's states are replaced whole (a root may have gone with it).
+    bool putSave(const std::vector<const Record*>& changed, const std::vector<Key>& gone, const SceneRow* scene,
+                 const std::string& scene_name, const std::vector<RootState>& states)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!openLocked()) return false;
+        if (sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) return false;
+        bool ok = true;
+        for (const Record* r : changed) ok = ok && putRecordLocked(*r);
+        for (const Key& k : gone)       ok = ok && dropRecordLocked(k);
+        if (scene) ok = ok && putSceneLocked(scene->name, scene->script, scene->roots) && dropStatesLocked(scene_name);
+        for (const RootState& st : states) ok = ok && putStateLocked(scene_name, st.first, st.second);
+        if (!ok) { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); return false; }
+        return sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK;
+    }
+    // Every record key this loader has, for a run's first save to find what
+    // an earlier run left behind.
+    std::vector<Key> recordKeys()
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::vector<Key> out;
+        if (!openLocked()) return out;
+        sqlite3_stmt* st = prepare("SELECT type,hash,ord FROM records WHERE keyid=?");
+        if (!st) return out;
+        bindText(st, 1, keyid_);
+        while (sqlite3_step(st) == SQLITE_ROW) out.push_back({ column(st, 0), column(st, 1), sqlite3_column_int(st, 2) });
+        sqlite3_finalize(st);
+        return out;
+    }
+
+    // A scene's root state hashes, verified; a row that does not verify is left out.
+    std::vector<RootState> getStates(const std::string& scene)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::vector<RootState> out;
+        if (!openLocked()) return out;
+        sqlite3_stmt* st = prepare("SELECT name,hash,mac FROM root_states WHERE keyid=? AND scene=?");
+        if (!st) return out;
+        bindText(st, 1, keyid_); bindText(st, 2, scene);
+        while (sqlite3_step(st) == SQLITE_ROW)
+        {
+            std::string name = column(st, 0), hash = column(st, 1);
+            if (column(st, 2) == macOf({ "H", keyid_, scene, name, hash })) out.emplace_back(std::move(name), std::move(hash));
+        }
+        sqlite3_finalize(st);
+        return out;
+    }
+
+    // False with `why` when there is none, or it is not this loader's.
+    bool getRecord(const std::string& type, const std::string& hash, int ord, Record& out, std::string& why)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!openLocked()) { why = "no store"; return false; }
+        sqlite3_stmt* st = prepare("SELECT tags,script,kv,mac FROM records WHERE keyid=? AND type=? AND hash=? AND ord=?");
+        if (!st) { why = "store unreadable"; return false; }
+        bindText(st, 1, keyid_); bindText(st, 2, type); bindText(st, 3, hash);
+        sqlite3_bind_int(st, 4, ord);
+        bool found = false;
+        std::string mac;
+        if (sqlite3_step(st) == SQLITE_ROW)
+        {
+            found      = true;
+            out.type   = type; out.hash = hash; out.ord = ord;
+            out.tags   = column(st, 0);
+            out.script = column(st, 1);
+            out.kv     = column(st, 2);
+            mac        = column(st, 3);
+        }
+        sqlite3_finalize(st);
+        if (!found) { why = "no record"; return false; }
+        if (mac != macOf({ "R", keyid_, type, hash, std::to_string(ord), out.tags, out.script, out.kv }))
+        { why = "the record's MAC does not verify -- not this loader's, or altered"; return false; }
+        return true;
+    }
+
+    bool putScene(const std::string& name, const std::string& script, const std::string& roots)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        return openLocked() && putSceneLocked(name, script, roots);
+    }
+
+    bool getScene(const std::string& name, std::string& script, std::string& roots, long long& at, std::string& why)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!openLocked()) { why = "no store"; return false; }
+        sqlite3_stmt* st = prepare("SELECT at,script,roots,mac FROM scenes WHERE keyid=? AND name=?");
+        if (!st) { why = "store unreadable"; return false; }
+        bindText(st, 1, keyid_); bindText(st, 2, name);
+        bool found = false;
+        std::string ats, mac;
+        if (sqlite3_step(st) == SQLITE_ROW)
+        {
+            found  = true;
+            ats    = column(st, 0);
+            script = column(st, 1);
+            roots  = column(st, 2);
+            mac    = column(st, 3);
+        }
+        sqlite3_finalize(st);
+        if (!found) { why = "no scene '" + name + "'"; return false; }
+        if (mac != macOf({ "S", keyid_, name, ats, script, roots }))
+        { why = "scene '" + name + "' does not verify -- not this loader's, or altered"; return false; }
+        at = std::atoll(ats.c_str());
+        return true;
+    }
+
+    void forgetScene(const std::string& name)
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!openLocked()) return;
+        sqlite3_stmt* st = prepare("DELETE FROM scenes WHERE keyid=? AND name=?");
+        if (!st) return;
+        bindText(st, 1, keyid_); bindText(st, 2, name);
+        sqlite3_step(st);
+        sqlite3_finalize(st);
+        dropStatesLocked(name);
+    }
+
+    // In a browser, push what was written to IndexedDB.
+    void flush()
+    {
+#if defined(__EMSCRIPTEN__)
+        MAIN_THREAD_EM_ASM({
+            if (typeof window !== 'undefined' && typeof window.etcsPersist === 'function')
+                window.etcsPersist('persistence');
+        });
+#endif
+    }
+
+    // Plain files beside the database: the loader reads these without sqlite.
+    bool writeFile(const std::string& name, const std::string& body)
+    {
+        if (!ready()) return false;
+        const std::string path = dir_ + "/" + name, tmp = path + ".tmp";
+        FILE* f = std::fopen(tmp.c_str(), "wb");
+        if (!f) return false;
+        const bool ok = std::fwrite(body.data(), 1, body.size(), f) == body.size();
+        std::fclose(f);
+        return ok && std::rename(tmp.c_str(), path.c_str()) == 0;
+    }
+    void removeFile(const std::string& name) { if (ready()) std::remove((dir_ + "/" + name).c_str()); }
+
+private:
+    PersistenceStore() : dir_(ETCS::etcs_store_dir()) {}
+
+    bool openLocked()
+    {
+        if (db_) return true;
+        if (failed_) return false;
+        failed_ = true;                                   // until proven otherwise
+        if (!makeDirs(dir_)) { ETCS_LOG("Persistence", "store: cannot create " << dir_); return false; }
+        if (!loadKey())      { ETCS_LOG("Persistence", "store: no loader key in " << dir_); return false; }
+        const std::string path = dir_ + "/persistence.db";
+        if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK)
+        {
+            ETCS_LOG("Persistence", "store: cannot open " << path);
+            sqlite3_close(db_); db_ = nullptr;
+            return false;
+        }
+        if (!etcs_sqlite_wal(db_)) ETCS_LOG("Persistence", "store: not in WAL mode; every commit syncs.");
+        const char* schema =
+            "CREATE TABLE IF NOT EXISTS records(keyid TEXT, type TEXT, hash TEXT, ord INTEGER,"
+            " tags TEXT, script TEXT, kv BLOB, mac TEXT, PRIMARY KEY(keyid,type,hash,ord));"
+            "CREATE TABLE IF NOT EXISTS scenes(keyid TEXT, name TEXT, at TEXT, script TEXT,"
+            " roots TEXT, mac TEXT, PRIMARY KEY(keyid,name));"
+            "CREATE TABLE IF NOT EXISTS root_states(keyid TEXT, scene TEXT, name TEXT, hash TEXT,"
+            " mac TEXT, PRIMARY KEY(keyid,scene,name));";
+        if (sqlite3_exec(db_, schema, nullptr, nullptr, nullptr) != SQLITE_OK)
+        {
+            ETCS_LOG("Persistence", "store: schema: " << sqlite3_errmsg(db_));
+            sqlite3_close(db_); db_ = nullptr;
+            return false;
+        }
+        failed_ = false;
+        return true;
+    }
+
+    static bool makeDirs(const std::string& d)
+    {
+        for (size_t at = 1; at <= d.size(); ++at)
+        {
+            if (at != d.size() && d[at] != '/') continue;
+            const std::string part = d.substr(0, at);
+            if (::mkdir(part.c_str(), 0700) != 0 && errno != EEXIST) return false;
+        }
+        return true;
+    }
+
+    // Made once, 0600, and read on every start after.
+    bool loadKey()
+    {
+        const std::string path = dir_ + "/loader.key";
+        if (FILE* f = std::fopen(path.c_str(), "rb"))
+        {
+            char b[64];
+            const size_t n = std::fread(b, 1, sizeof b, f);
+            std::fclose(f);
+            if (n < 32) return false;
+            key_.assign(b, n);
+        }
+        else
+        {
+            std::random_device rd;
+            std::string k;
+            while (k.size() < 32) { const uint32_t v = rd(); k.append(reinterpret_cast<const char*>(&v), 4); }
+            const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+            if (fd < 0) return false;
+            const bool ok = ::write(fd, k.data(), k.size()) == static_cast<ssize_t>(k.size());
+            ::close(fd);
+            if (!ok) return false;
+            key_ = k;
+        }
+        unsigned char d[32];
+        picohash_ctx_t ctx;
+        picohash_init_sha256(&ctx);
+        picohash_update(&ctx, key_.data(), key_.size());
+        picohash_final(&ctx, d);
+        keyid_ = hex(d, 8);
+        return true;
+    }
+
+    // Fields length-prefixed, so no two different tuples MAC the same bytes.
+    std::string macOf(std::initializer_list<std::string> fields) const
+    {
+        picohash_ctx_t ctx;
+        picohash_init_hmac(&ctx, picohash_init_sha256, key_.data(), key_.size());
+        for (const std::string& f : fields)
+        {
+            const uint32_t n = static_cast<uint32_t>(f.size());
+            picohash_update(&ctx, &n, 4);
+            picohash_update(&ctx, f.data(), f.size());
+        }
+        unsigned char d[32];
+        picohash_final(&ctx, d);
+        return hex(d, 32);
+    }
+
+    static std::string hex(const unsigned char* d, size_t n)
+    {
+        static const char* x = "0123456789abcdef";
+        std::string s;
+        for (size_t i = 0; i < n; ++i) { s += x[d[i] >> 4]; s += x[d[i] & 15]; }
+        return s;
+    }
+    // The writes a save repeats, prepared once and reset per use.
+    bool putRecordLocked(const Record& r)
+    {
+        const std::string mac = macOf({ "R", keyid_, r.type, r.hash, std::to_string(r.ord), r.tags, r.script, r.kv });
+        sqlite3_stmt* st = cached(put_rec_, "INSERT OR REPLACE INTO records(keyid,type,hash,ord,tags,script,kv,mac)"
+                                            " VALUES(?,?,?,?,?,?,?,?)");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, r.type); bindText(st, 3, r.hash);
+        sqlite3_bind_int(st, 4, r.ord);
+        bindText(st, 5, r.tags); bindText(st, 6, r.script);
+        sqlite3_bind_blob(st, 7, r.kv.data(), static_cast<int>(r.kv.size()), SQLITE_TRANSIENT);
+        bindText(st, 8, mac);
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    bool dropRecordLocked(const Key& k)
+    {
+        sqlite3_stmt* st = cached(drop_rec_, "DELETE FROM records WHERE keyid=? AND type=? AND hash=? AND ord=?");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, k.type); bindText(st, 3, k.hash);
+        sqlite3_bind_int(st, 4, k.ord);
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    bool putSceneLocked(const std::string& name, const std::string& script, const std::string& roots)
+    {
+        const std::string at  = std::to_string(static_cast<long long>(std::time(nullptr)));
+        const std::string mac = macOf({ "S", keyid_, name, at, script, roots });
+        sqlite3_stmt* st = cached(put_scene_, "INSERT OR REPLACE INTO scenes(keyid,name,at,script,roots,mac) VALUES(?,?,?,?,?,?)");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, name); bindText(st, 3, at);
+        bindText(st, 4, script); bindText(st, 5, roots); bindText(st, 6, mac);
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    bool putStateLocked(const std::string& scene, const std::string& name, const std::string& hash)
+    {
+        sqlite3_stmt* st = cached(put_state_, "INSERT OR REPLACE INTO root_states(keyid,scene,name,hash,mac) VALUES(?,?,?,?,?)");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, scene); bindText(st, 3, name); bindText(st, 4, hash);
+        bindText(st, 5, macOf({ "H", keyid_, scene, name, hash }));
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    bool dropStatesLocked(const std::string& scene)
+    {
+        sqlite3_stmt* st = cached(drop_states_, "DELETE FROM root_states WHERE keyid=? AND scene=?");
+        if (!st) return false;
+        bindText(st, 1, keyid_); bindText(st, 2, scene);
+        return sqlite3_step(st) == SQLITE_DONE;
+    }
+    sqlite3_stmt* cached(sqlite3_stmt*& slot, const char* sql)
+    {
+        if (!slot) slot = prepare(sql);
+        else { sqlite3_reset(slot); sqlite3_clear_bindings(slot); }
+        return slot;
+    }
+
+    sqlite3_stmt* prepare(const char* sql)
+    {
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK)
+        {
+            ETCS_LOG("Persistence", "store: " << sqlite3_errmsg(db_));
+            return nullptr;
+        }
+        return st;
+    }
+    static void bindText(sqlite3_stmt* st, int i, const std::string& v)
+    { sqlite3_bind_text(st, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT); }
+    static std::string column(sqlite3_stmt* st, int i)
+    {
+        const void* p = sqlite3_column_blob(st, i);
+        const int   n = sqlite3_column_bytes(st, i);
+        return p && n > 0 ? std::string(static_cast<const char*>(p), static_cast<size_t>(n)) : std::string();
+    }
+
+    std::mutex  mu_;
+    std::string dir_, key_, keyid_;
+    sqlite3*    db_     = nullptr;
+    bool        failed_ = false;
+    sqlite3_stmt* put_rec_ = nullptr;     // cached(): leaked with the store, like the handle
+    sqlite3_stmt* drop_rec_ = nullptr;
+    sqlite3_stmt* put_scene_ = nullptr;
+    sqlite3_stmt* put_state_ = nullptr;
+    sqlite3_stmt* drop_states_ = nullptr;
+};
+
+#endif // DATABASEPROVIDER_STORE_H__

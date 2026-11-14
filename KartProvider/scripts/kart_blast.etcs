@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# A burst to draw: an orange ball the battle sizes to the burst's reach.
+#   run kart_blast.etcs world=<Scene3D> battle=<KartBattle> ball=<Mesh>
+requires world [Drawable3D]
+requires battle [KartBattle]
+requires ball [Mesh]
+world.spawn(RenderProvider::Scene3D blast)
+blast.Create(1.0, 1.0, 1.0)
+blast.SetMesh(@ball)
+blast.SetColor(1.0, 0.55, 0.12, 1.0)
+blast.SetAnchored(1)
+battle.AddBlastNode(@blast)

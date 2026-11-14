@@ -1,0 +1,62 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE SEAT WITHOUT A WINDOW: a board of 64px (8 a square) and a table on
+# it, clicked by verb. A window's pointer stream would deliver the same
+# presses (ChessTable::ConsumePointer), so what this shows is the whole path
+# from a press to a move, minus GLFW.
+#
+#     ./bin/etcs modules/ChessProvider/scripts/chess_table_smoke.etcs
+#
+# Squares are 8px: e2 is the fifth file, seventh row from the top, so its
+# centre is (36, 52); e4 is (36, 36). The second click on a square clears the
+# pick; a click on an own piece re-picks; a move the engine refuses leaves
+# the board and says so in Report.
+
+spawn ChessProvider::ChessGame game
+spawn ChessProvider::ChessBoard board
+board.Create(64)
+board.Bind(@game)
+spawn ChessProvider::ChessTable table
+table.Create()
+table.BindGame(@game)
+table.BindBoard(@board)
+
+board.SquareAt(36 52)
+board.SquareAt(0 0)
+board.SquareAt(63 63)
+
+# e2, picked.
+table.Click(36 52)
+table.Report()
+# e2 again: cleared.
+table.Click(36 52)
+table.Report()
+# e2 then e4: a move.
+table.Click(36 52)
+table.Click(36 36)
+game.Fen()
+# Black's turn: a click on a white piece picks nothing.
+table.Click(36 44)
+table.Report()
+# e7 to e5.
+table.Click(36 12)
+table.Click(36 28)
+game.Fen()
+# A knight cannot go there: refused, nothing changes, Report says why.
+table.Click(52 60)
+table.Click(52 44)
+table.Report()
+game.Fen()
+
+# The line: typed, sent as a word; a slash makes a verb.
+table.Type(hello there)
+table.Submit()
+table.Type(/resign)
+table.Submit()
+game.Tail(12)
+game.Status(white)
+
+# Flipped, the same point is the other corner.
+board.SetFlip(1)
+board.SquareAt(0 0)

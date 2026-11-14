@@ -23,7 +23,8 @@ static inline ETCS::Entity* rp_resolve_tag(const char* tag, ETCS::RID rid)
 // Device -- "this entity can reach that GPU".
 //
 // [Device + Deletable]. A capability attachment, and deliberately not the GPU
-// itself: RenderProvider::Instance is the Vulkan device, one per process, and
+// itself: RenderProvider::Instance is the device -- Vulkan natively, WebGPU in
+// a browser -- one per process, and
 // making a camera's capability a SECOND Instance would build a second device
 // to express a relationship. So this names an existing one by RID and answers
 // for it.
@@ -43,10 +44,17 @@ static inline ETCS::Entity* rp_resolve_tag(const char* tag, ETCS::RID rid)
 // at the Instance is how the relation gets INTO the tree, which is where every
 // other relation in this system lives.
 //
-//     eye.spawn(RenderProvider::Device dev)
+//     eye.spawn(RenderProvider::Device dev)      # a camera projects through it
 //     dev.Create(@gpu)
-//     eye.SetDeviceProjection(1)
 //
+//     view.spawn(RenderProvider::Device dev)     # a window surface draws and
+//     dev.Create(@gpu)                           # presents through it
+//
+// Either way ATTACHING IS THE SWITCH, and a failed attach is not an error the
+// script has to handle: there is always a CPU, so whatever owns a Device that
+// is not ready keeps working on the host, and switches the frame it becomes
+// ready (a browser's device arrives asynchronously). No line is conditional
+// (doc/etcs_specification.md); the graph is.
 // BY RID, RESOLVED AT THE POINT OF USE, like every other cross-entity
 // reference here: an Instance deleted out from under this one makes
 // DeviceReady() false and the camera falls back to the host, which is exactly
@@ -61,6 +69,9 @@ public:
     Device()  = default;
     ~Device() = default;
 
+    // True when the Instance can still become (or already is) a device: a
+    // browser's is requested asynchronously, so pending counts. False means
+    // the owner stays on the host for good -- not that anything broke.
     bool Create(ETCS::RID instance)
     {
         if (instance == 0)
@@ -70,13 +81,18 @@ public:
         }
         m_instance = instance;
         this->addTag("active");
-        return DeviceReadyConcrete();
+        Instance* vi = resolve();
+        return vi && vi->Usable();
     }
+
+    // The Instance this names, resolved now -- what a window surface builds its
+    // device backend against (OS/HostSurface.h). Null once it is gone.
+    Instance* ResolveInstance() const { return resolve(); }
 
     // ── Device_ dispatch ──────────────────────────────────────────────────
 
     // Whatever this platform's Instance calls its device -- the VkDevice on the
-    // Vulkan backend, the canvas identity in the browser. The value is never
+    // Vulkan backend, the instance's identity once WebGPU answered. The value is never
     // interpreted, only compared: a Renderable on the same device answers the
     // same key, and that equality is the whole of what a key is for
     // (ontology/Renderable.h).

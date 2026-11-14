@@ -1,5 +1,5 @@
-#ifndef VULKAN_INSTANCE_H__
-#define VULKAN_INSTANCE_H__
+#ifndef RENDERPROVIDER_VULKANINSTANCE_H__
+#define RENDERPROVIDER_VULKANINSTANCE_H__
 
 #include "../../../ontology.h"
 #include "VulkanPlatform.h"
@@ -93,6 +93,10 @@ public:
     }
 
     bool IsActive() const { return this->hasTag("active"); }
+
+    // A Device naming this can draw -- Vulkan's device exists by the end of
+    // Create or never, so this is IsActive (the WebGPU one can be pending).
+    bool Usable() const { return m_device != VK_NULL_HANDLE; }
 
     // Every allocation in this module goes through here rather than each
     // surface re-enumerating the device's memory types: the physical

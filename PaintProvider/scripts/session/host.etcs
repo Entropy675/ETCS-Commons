@@ -1,0 +1,28 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+ensure NetworkProvider::HttpServer web
+web.SetPort(8457)
+web.spawn(NetworkProvider::LinkHub links)
+web.Start()
+spawn PaintProvider::PaintDocument doc
+doc.Create(800, 600)
+doc.NewLayer()
+doc.ImportImage(ACE_ROOT/scripts/www/favicon/apple-touch-icon.png)
+spawn PaintProvider::PaintShare share
+share.Attach(@doc 0 0)
+spawn NetworkProvider::Ledger record
+record.Author(hosty)
+spawn NetworkProvider::Ledger intake
+intake.spawn(NetworkProvider::Seal seal)
+intake.Feed(@record)
+spawn NetworkProvider::Lobby presence
+spawn NetworkProvider::Room room
+room.SetName(hosty)
+room.Publish(record @record Head Since Follow)
+room.Publish(intake @intake)
+room.Publish(presence @presence Advertise Withdraw Watch)
+share.Host(@record @intake @seal @presence @room hosty)
+detach PaintProvider/scripts/paint_emit.etcs src=doc dst=record
+detach PaintProvider/scripts/paint_follow.etcs src=record dst=doc
+detach PaintProvider/scripts/paint_watch.etcs src=presence dst=share
+room.Host(@links hosty)

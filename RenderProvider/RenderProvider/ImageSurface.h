@@ -28,9 +28,10 @@
 //     compose and verify a layer stack without any C++ at all.
 //
 // Compositing a stack is Blit in layer order, either into another
-// ImageSurface (CPU, this file) or straight onto the window's
-// VulkanSurface (GPU upload, OS/VulkanSurface.h). Same call either way --
-// which one you get depends only on which surface you call it on.
+// ImageSurface (CPU, this file) or straight onto the window's surface
+// (OS/HostSurface.h -- a host composite, or a texture upload when it draws
+// through a device). Same call either way -- which one you get depends only
+// on which surface you call it on.
 class ImageSurface : public SurfaceBase<ImageSurface>,
                       public PixelsBase<ImageSurface>,
                       public DeletableBase<ImageSurface>

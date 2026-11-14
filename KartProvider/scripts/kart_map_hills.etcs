@@ -1,0 +1,31 @@
+#!/usr/bin/env etcs
+# HILLS: four rolling hills with a box on every top, and two jumps across the
+# middle -- what you can see over is what can see you.
+#   run kart_map_hills.etcs battle=<KartBattle>
+# AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
+requires battle [KartBattle]
+battle.AddMap(hills)
+
+battle.AddHill(-11.0, -9.0, 9.0, 1.8)
+battle.AddHill(13.0, 7.0, 9.0, 2.0)
+battle.AddHill(-9.0, 15.0, 7.0, 1.4)
+battle.AddHill(11.0, -15.0, 7.0, 1.3)
+battle.AddRamp(-20.0, 2.0, 90.0, 4.0, 6.0, 0.0, 0.0, 1.4)
+battle.AddRamp(20.0, -2.0, 270.0, 4.0, 6.0, 0.0, 0.0, 1.4)
+
+battle.AddSpawn(0.0, -26.0)
+battle.AddSpawn(0.0, 26.0)
+battle.AddSpawn(-26.0, 0.0)
+battle.AddSpawn(26.0, 0.0)
+battle.AddSpawn(18.0, -18.0)
+battle.AddSpawn(-18.0, 18.0)
+battle.AddSpawn(18.0, 18.0)
+battle.AddSpawn(-18.0, -18.0)
+
+battle.AddPickup(0.0, 0.0)
+battle.AddPickup(-11.0, -9.0)
+battle.AddPickup(13.0, 7.0)
+battle.AddPickup(-9.0, 15.0)
+battle.AddPickup(11.0, -15.0)
+battle.AddPickup(0.0, -14.0)

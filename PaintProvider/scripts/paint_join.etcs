@@ -1,0 +1,39 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── JOIN A SHARED CANVAS ─────────────────────────────────────────────────────
+#
+# A TEMPLATE, like paint_host.etcs: {{n}}, {{name}}, {{id}} and {{hub}} are the
+# page's to fill, and `share` and `doc` are handed in as it is run. Read as a script, this is what a session is on a guest's
+# side: one link to the host (Peer), and a local surface of each thing the
+# host published -- the same types as the host's, bound through the link
+# (ontology/Remote.h). A reader from the start; a writer once the host posts
+# the key to this page's mailbox (paint_grant.etcs, PaintShare::mail).
+
+spawn NetworkProvider::Peer peer{{n}}
+peer{{n}}.SetName({{name}})
+peer{{n}}.Connect({{hub}}/{{id}})
+
+# The mailbox: this page's own, published on its own link, so what the host
+# puts in it nobody else reads.
+spawn NetworkProvider::Ledger mail{{n}}
+peer{{n}}.Publish(mail @mail{{n}})
+
+spawn NetworkProvider::Ledger record{{n}}
+record{{n}}.spawn(NetworkProvider::Remote rrecord{{n}})
+rrecord{{n}}.Bind(record @peer{{n}})
+
+spawn NetworkProvider::Ledger intake{{n}}
+intake{{n}}.spawn(NetworkProvider::Seal seal{{n}})
+intake{{n}}.spawn(NetworkProvider::Remote rintake{{n}})
+rintake{{n}}.Bind(intake @peer{{n}})
+
+spawn NetworkProvider::Lobby presence{{n}}
+presence{{n}}.spawn(NetworkProvider::Remote rpresence{{n}})
+rpresence{{n}}.Bind(presence @peer{{n}})
+
+share.Join(@record{{n}} @intake{{n}} @seal{{n}} @presence{{n}} @peer{{n}} {{name}})
+
+detach PaintProvider/scripts/paint_follow.etcs src=record{{n}} dst=doc
+detach PaintProvider/scripts/paint_watch.etcs src=presence{{n}} dst=share
+detach PaintProvider/scripts/paint_mail.etcs src=mail{{n}} dst=share

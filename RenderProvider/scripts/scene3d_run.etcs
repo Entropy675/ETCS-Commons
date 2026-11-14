@@ -1,0 +1,36 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE LOGIC WITHOUT THE PICTURE: a scene stepped by the driver, no camera, no
+# window, no frame -- and a hash of its rows at the end that is the same
+# number on every machine, which is what the fixed-point rows are for
+# (ontology/Fixed.h, ontology/OrderVector.h).
+#
+#     ./bin/etcs modules/RenderProvider/scripts/scene3d_run.etcs
+#
+# Run the same file in a browser (a page served by ETCS, any that loads
+# RenderProvider) and compare the hash Scene3D.Hash prints. The numbers here
+# are the ones a script would give a scene: a floor, two boxes with pushes in
+# different directions, a thousand steps of 16 ms.
+
+spawn RenderProvider::Scene3D world
+world.Create(40, 1, 40)
+world.SetEmissivity(0.2)
+
+world.spawn(RenderProvider::Scene3D a)
+a.Create(1, 1, 1)
+a.SetPosition(-3, 1, 0)
+a.SetDamping(2)
+a.Impulse(1, 0, 0.5, 12)
+
+world.spawn(RenderProvider::Scene3D b)
+b.Create(2, 2, 2)
+b.SetPosition(3, 1.5, -2)
+b.SetDamping(4)
+b.SetEmissivity(1.5)
+b.Impulse(-1, 0.25, 0, 30)
+
+world.Run(1000, 16)
+a.Order()
+b.Order()
+world.Hash()

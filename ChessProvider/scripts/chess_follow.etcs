@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# The record into a board, from its start: `detach chess_follow.etcs src=<Ledger> dst=<ChessGame>`
+requires dst [ChessGame]
+src.Follow(0) -> dst.Absorb()

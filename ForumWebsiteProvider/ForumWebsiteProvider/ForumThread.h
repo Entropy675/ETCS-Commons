@@ -1,5 +1,5 @@
-#ifndef FORUMTHREAD_H__
-#define FORUMTHREAD_H__
+#ifndef FORUMWEBSITEPROVIDER_FORUMTHREAD_H__
+#define FORUMWEBSITEPROVIDER_FORUMTHREAD_H__
 #include "../../../ontology.h"
 
 #include <vector>
@@ -694,5 +694,5 @@ private:
     std::unordered_map<std::string, Clock::time_point> readers_;   // token -> heartbeat
 };
 
-#endif // FORUMTHREAD_H__
+#endif // FORUMWEBSITEPROVIDER_FORUMTHREAD_H__
 

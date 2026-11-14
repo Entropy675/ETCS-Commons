@@ -1,0 +1,3 @@
+share.Leave()
+room.Delete()
+record.Delete()

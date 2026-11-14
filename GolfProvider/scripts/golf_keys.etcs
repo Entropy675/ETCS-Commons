@@ -1,0 +1,9 @@
+#!/usr/bin/env etcs
+# The key edge -- and the window's event pump: ProduceEvents is what polls the
+# window, so without this edge no press reaches the pointer edge either. R puts
+# the ball back on the tee and clears the card.
+# Detached: a stream edge blocks the thread that states it.
+#   detach GolfProvider/scripts/golf_keys.etcs window=main game=game
+requires window [Window]
+requires game [GolfGame]
+window.ProduceEvents() -> game.ConsumeKeys()

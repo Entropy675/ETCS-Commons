@@ -34,9 +34,6 @@
 // terminal a caller of the executor, which is the arrangement this module
 // exists to undo.
 
-#include "../../ETCS.h"
-#include "module_hashes.h"
-
 /*
  * ONE Shell, AND THE FORK IS ONE LEVEL DOWN.
  *
@@ -47,7 +44,7 @@
  * reason two names existed.
  *
  * The thing that actually has backends is the TERMINAL -- raw mode, line
- * editing, history, completion -- so the selection moved there (Shell.h) and
+ * editing, history, completion -- so the selection moved there (ShellProvider/Shell.h) and
  * the contract name needs no indirection at all: `Shell` is the class. What a
  * script names is still the causal role, "the thing that runs my scripts", and
  * it is still the same name on every platform; there is simply no longer a
@@ -58,6 +55,10 @@
  * That information did not go away -- it moved to where the backend is. A
  * frame in lsh::read_line names the terminal, which is the half that differs.
  */
-#include "Shell.h"
+#include "ShellProvider/Shell.h"
+
+// auto generated hashes of headers:
+#include "../../ETCS.h"
+#include "module_hashes.h"
 
 #endif // SHELLPROVIDER_CONTRACT__

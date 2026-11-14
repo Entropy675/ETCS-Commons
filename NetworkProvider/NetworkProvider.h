@@ -5,39 +5,9 @@
 #include "../../ontology.h"
 #include "Contract_NetworkProvider.h"
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
-
-// ---------------------------------------------------------------------------
-// Internal helper — allocates a SharedPage from the module-local arena and
-// creates a Pipe pair. Used for in-module producer/consumer chains that drive
-// ParseConcrete directly, not through the entity call() interface.
-// Lifetime of the page is bounded to the calling function's frame.
-// ---------------------------------------------------------------------------
-struct LocalPipePair
-{
-    ETCS::MirrorBuffer  producer;
-    ETCS::MirrorBuffer  consumer;
-    ETCS::SharedPage*   page = nullptr;
-
-    explicit LocalPipePair(const ETCS::SignalContext& ctx)
-    {
-        producer.bindContext(ctx);
-        consumer.bindContext(ctx);
-        page = ETCS::SharedPage::allocate(ETCS::MemoryArena::getInstance(), 0);
-        ETCS::MirrorBuffer::makePair<ETCS::StrategyPipe, ETCS::SharedPage>(
-            producer, consumer, page, 0, 0);
-    }
-
-    ~LocalPipePair()
-    {
-        ETCS::MirrorBuffer::teardownPair<ETCS::StrategyPipe, ETCS::SharedPage>(
-            producer, consumer, page);
-    }
-
-    LocalPipePair(const LocalPipePair&)            = delete;
-    LocalPipePair& operator=(const LocalPipePair&) = delete;
-};
 
 // ===========================================================================
 // HttpServer — the root-level type. Config plus Start/Stop, per its own
@@ -300,19 +270,20 @@ DEFINE_WORK_FUNC(HttpServer, ListPaths)
     (void)ctx; (void)data;
     ETCS_LOG("HttpServer::ListPaths", "Paths served by RID:" << self.getRID() << ":");
 
-    std::vector<std::pair<ETCS::Buffer, ETCS::RID>> children;
-    self.getTypedChildren(children);
+    std::vector<ETCS::Entity::ChildRef> children;
+    self.getTypedChildRefs(children);
+    static const ETCS::Buffer kHtmlPage("HtmlPage"), kFileHtmlPage("FileHtmlPage");
     for (auto& [tag, rid] : children)
     {
-        ETCS::Entity* child = self.getTypedChild(tag, rid);
+        ETCS::Entity* child = self.getTypedChild(*tag, rid);
         if (!child) continue;
-        if (!child->getInterfacePointer(ETCS::Buffer("HtmlPage"))) continue;
+        if (!child->getInterfacePointer(kHtmlPage)) continue;
 
-        ETCS_LOG("HttpServer::ListPaths", "  [" << tag.toString() << " RID:" << rid << "]");
+        ETCS_LOG("HttpServer::ListPaths", "  [" << tag->toString() << " RID:" << rid << "]");
         // FileHtmlPage is the only page type that enumerates; a static page
         // answers three fixed paths and has nothing to walk.
         //
-        // Tag comparison, not dynamic_cast: getTypedChildren already handed
+        // Tag comparison, not dynamic_cast: getTypedChildRefs already handed
         // back the tag alongside the RID, and in this runtime the tag IS the
         // type -- so the concrete type is established before the pointer is,
         // and asking RTTI to re-derive it would be re-deciding something the
@@ -320,7 +291,7 @@ DEFINE_WORK_FUNC(HttpServer, ListPaths)
         // most-derived address, which is what makes the static_cast correct
         // under this family's virtual Entity inheritance where a plain
         // downcast would not be.
-        if (tag == ETCS::Buffer("FileHtmlPage"))
+        if (*tag == kFileHtmlPage)
         {
             FileHtmlPage* tree = static_cast<FileHtmlPage*>(child->getTrueType());
             for (const std::string& path : tree->ListAllPaths())
@@ -419,6 +390,14 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
         // here only names the request in a log line or takes a filename off
         // the end, for which either spelling reads the same.
         const std::string& path = req.target;
+
+        // A WebSocket for a LinkHub leaves the request/response cycle here:
+        // the hub's pump owns this connection -- and the entry reference --
+        // until the socket ends (LinkHub::Upgrade). Anything it declines is
+        // answered below as an ordinary request, which for an upgrade under
+        // the hub's prefix is the 404 of a room nobody hosts.
+        if (LinkHub* hub = self.FindLinkHub(req))
+            if (hub->Upgrade(c, self.GetManager(), req)) { entry.disarm(); return; }
 
         // Routes first, pages second. A route is a live entity answering a
         // path; a page is stored content. route_body must outlive the send
@@ -712,6 +691,275 @@ DEFINE_WORK_FUNC(HttpServer, Serve)
     ReadUntilParsed(conn, &self, ctx,
         [on_request](SocketConnectionState* c) { (*on_request)(c); });
 }
+// ===========================================================================
+// Links between runtimes -- LinkHub (server), Room (host), Peer (guest),
+// Remote (the child that makes its parent a surface of a far node). Each
+// verb answers ok/!ok in `data`; the reasons are logged where they arise.
+// ===========================================================================
+
+DEFINE_WORK_FUNC(LinkHub, SetPrefix)
+{
+    (void)ctx;
+    std::string prefix;
+    data >> prefix;
+    self.SetPrefix(prefix);
+}
+DEFINE_WORK_FUNC(LinkHub, Info)   { (void)ctx; (void)data; self.Info(); }
+DEFINE_WORK_FUNC(LinkHub, Delete) { (void)ctx; (void)data; self.Delete(); }
+
+// Publish <name> <rid> -- what a guest may bind a surface to, by name.
+// Publish <name> <rid> -- what a guest may bind a surface to, by name.
+// Publish <name> <rid> [<verb>...] -- reachable by that name; only those verbs, if listed.
+DEFINE_WORK_FUNC(Room, Publish)
+{
+    (void)ctx;
+    std::string name, verb;
+    ETCS::RID rid = 0;
+    data >> name >> rid;
+    std::set<std::string> verbs;
+    while (data.read_offset < data.written) { data >> verb; if (!verb.empty()) verbs.insert(verb); }
+    const bool ok = self.Publish(name, rid, std::move(verbs));
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Room, Unpublish)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Unpublish(name);
+    data.reset(); data << ok;
+}
+// SetName <name> -- what guests see this room as.
+DEFINE_WORK_FUNC(Room, SetName) { (void)ctx; std::string n; data >> n; self.SetName(n); }
+// Host <hub rid> <room name> -- guests of <room name> on that hub come here.
+DEFINE_WORK_FUNC(Room, Host)
+{
+    (void)ctx;
+    ETCS::RID hub_rid = 0;
+    std::string name;
+    data >> hub_rid >> name;
+    ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), hub_rid);
+    const bool ok = e && e->getSourceTag().toString() == "LinkHub"
+                 && static_cast<LinkHub*>(e->getTrueType())->HostLocal(name, self.getRID());
+    if (!ok) ETCS_LOG("Room::Host", "RID:" << hub_rid << " is not a LinkHub that can host '" << name << "'.");
+    data.reset(); data << ok;
+}
+// HostVia <wss://site/link/room> [insecure] -- host through a hub elsewhere.
+DEFINE_WORK_FUNC(Room, HostVia)
+{
+    (void)ctx;
+    std::string url, flag;
+    data >> url >> flag;
+    const bool ok = self.HostVia(url, flag == "insecure");
+    data.reset(); data << ok;
+}
+// Drop <guest> -- ends that guest's link.
+DEFINE_WORK_FUNC(Room, Drop)
+{
+    (void)ctx;
+    std::string guest;
+    data >> guest;
+    const bool ok = self.Drop(guest);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Room, Info)   { (void)ctx; (void)data; self.Info(); }
+DEFINE_WORK_FUNC(Room, Delete) { (void)ctx; (void)data; self.Delete(); }
+
+// Connect <ws[s]://site/link/room> [insecure]
+DEFINE_WORK_FUNC(Peer, Connect)
+{
+    (void)ctx;
+    std::string url, flag;
+    data >> url >> flag;
+    const bool ok = self.Connect(url, flag == "insecure");
+    data.reset(); data << ok;
+}
+// SetName <name> -- what the far side's Record authors and Directory lists this link as.
+DEFINE_WORK_FUNC(Peer, SetName) { (void)ctx; std::string n; data >> n; self.SetName(n); }
+DEFINE_WORK_FUNC(Peer, Publish)
+{
+    (void)ctx;
+    std::string name;
+    ETCS::RID rid = 0;
+    data >> name >> rid;
+    const bool ok = self.Publish(name, rid);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Peer, Unpublish)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Unpublish(name);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Peer, Close)  { (void)ctx; (void)data; self.Close(); }
+DEFINE_WORK_FUNC(Peer, Info)   { (void)ctx; (void)data; self.Info(); }
+DEFINE_WORK_FUNC(Peer, Delete) { (void)ctx; (void)data; self.Delete(); }
+
+// Bind <export name> [<peer rid> | <room rid> <guest>]
+DEFINE_WORK_FUNC(Remote, Bind)
+{
+    std::string name, guest;
+    ETCS::RID peer = 0;
+    data >> name >> peer >> guest;
+    const bool ok = self.Bind(name, peer, guest, &ctx);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Remote, Unbind) { (void)ctx; (void)data; self.Unbind(); }
+DEFINE_WORK_FUNC(Remote, Info)   { (void)ctx; (void)data; self.Info(); }
+DEFINE_WORK_FUNC(Remote, Delete) { (void)ctx; (void)data; self.Delete(); }
+
+// Key <secret> -- what this seal marks frames with and demands of them.
+DEFINE_WORK_FUNC(Seal, Key)    { (void)ctx; std::string k; data >> k; self.Key(k); data.reset(); }
+DEFINE_WORK_FUNC(Seal, Delete) { (void)ctx; (void)data; self.Delete(); }
+
+// Advertise <name> <kind> <info...> -- answered ok/!ok.
+DEFINE_WORK_FUNC(Lobby, Advertise)
+{
+    (void)ctx;
+    std::string name, kind;
+    data >> name >> kind;
+    std::string info = data.restAsString();
+    while (!info.empty() && info.front() == ' ') info.erase(0, 1);
+    const bool ok = self.Advertise(name, kind, info);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Lobby, Withdraw)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Withdraw(name);
+    data.reset(); data << ok;
+}
+// List [<kind>] -- as much of the listing as one answer holds; Entries
+// streams all of it.
+DEFINE_WORK_FUNC(Lobby, List)
+{
+    (void)ctx;
+    std::string kind;
+    data >> kind;
+    std::string all = self.Listing(kind);
+    if (all.size() >= ETCS::Buffer::bufsize) all.resize(ETCS::Buffer::bufsize - 4), all += "...";
+    data.reset();
+    data.write(all.c_str());
+}
+DEFINE_WORK_FUNC(Lobby, Delete) { (void)ctx; (void)data; self.Delete(); }
+// Watch() -> x.Consume -- the whole listing as one message, now and on every change.
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(Lobby, Watch)
+{
+    (void)data;
+    uint64_t seen = 0;
+    std::string listing;
+    const auto gone = [&stream]() { return stream.readerGone(); };
+    while (self.waitListing(seen, listing, ctx, gone))
+        if (!stream.writeMessage(listing)) break;
+}
+// x.Watch() -> here.Mirror() -- this lobby is a copy of that listing.
+DEFINE_STREAM_FUNC_CONSUME(Lobby, Mirror)
+{
+    (void)data;
+    std::string listing;
+    size_t n = 0;
+    while (!ctx.isInterrupted() && stream.readMessage(listing)) { self.adopt(listing); ++n; }
+    ETCS_LOG("Lobby", "Mirror: " << n << " listing(s)");
+}
+// Entries(<kind>) -> x.Consume -- one frame per entry.
+DEFINE_STREAM_FUNC_PRODUCE(Lobby, Entries)
+{
+    (void)data;
+    const std::string all = self.Listing(stream.getConfig().restAsString());
+    size_t at = 0;
+    while (at < all.size() && !ctx.isInterrupted())
+    {
+        const size_t nl = all.find('\n', at);
+        const std::string line = all.substr(at, nl - at);
+        at = (nl == std::string::npos) ? all.size() : nl + 1;
+        ETCS::Buffer f;
+        f.writeString(line.substr(0, ETCS::Buffer::bufsize - 1).c_str());
+        if (!stream.writeRaw(f)) break;
+    }
+}
+
+// Append <line...> -- answered with the line's number, or nothing if refused.
+DEFINE_WORK_FUNC(Ledger, Append)
+{
+    (void)ctx;
+    const std::string line = data.restAsString();
+    const uint64_t seq = self.Append("", line);
+    data.reset();
+    if (seq != UINT64_MAX) data << seq;
+}
+DEFINE_WORK_FUNC(Ledger, Head)   { (void)ctx; const std::string h = self.Head(); data.reset(); data.write(h.c_str()); }
+DEFINE_WORK_FUNC(Ledger, Since)
+{
+    (void)ctx;
+    uint64_t seq = 0;
+    data >> seq;
+    // Room left in the answer for its header and a restart line.
+    const std::string s = self.Since(seq, ETCS::Buffer::bufsize - 1 - 96);
+    data.reset(); data.write(s.c_str());
+}
+// Checkpoint <seq> -- the lines before <seq> are dropped (ontology/Record.h).
+DEFINE_WORK_FUNC(Ledger, Checkpoint)
+{
+    (void)ctx;
+    uint64_t seq = 0;
+    data >> seq;
+    const bool ok = self.Checkpoint(seq);
+    data.reset();
+    data << ok;
+}
+// Author <name> -- what local appends are authored as (a link's are the link's).
+DEFINE_WORK_FUNC(Ledger, Author) { (void)ctx; std::string n; data >> n; self.Author(n); data.reset(); }
+// Feed <rid> -- appends to this ledger go to that record instead.
+DEFINE_WORK_FUNC(Ledger, Feed)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Feed(rid);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Ledger, Delete) { (void)ctx; (void)data; self.Delete(); }
+// Follow(<seq>) -> x.Consume -- every line from <seq>, then each as it is
+// appended, for as long as the consumer reads. One message per line, led by
+// a restart whenever the follower is behind a checkpoint (Ledger::waitLine).
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(Ledger, Follow)
+{
+    (void)data;
+    uint64_t seq = 0;
+    { ETCS::Buffer cfg = stream.getConfig(); cfg >> seq; }
+    // A follower that left is noticed while waiting (readerGone), not only
+    // at the next line, which may never come.
+    std::string line;
+    const auto gone = [&stream]() { return stream.readerGone(); };
+    while (self.waitLine(seq, line, ctx, gone))
+        if (!stream.writeMessage(line)) break;
+}
+// x.Produce -> copy.Mirror() -- appends another ledger's lines as they were.
+DEFINE_STREAM_FUNC_CONSUME(Ledger, Mirror)
+{
+    (void)data;
+    std::string m;
+    size_t n = 0, refused = 0;
+    while (!ctx.isInterrupted() && stream.readMessage(m, Ledger::kLine + 64))
+        if (self.appendExact(m)) ++n; else ++refused;
+    ETCS_LOG("Ledger", "Mirror: " << n << " line(s)" << (refused ? ", " + std::to_string(refused) + " out of order" : std::string()));
+}
+// x.Produce -> book.Take() -- each message appended as a line, authored as
+// Append authors it: by the link it came over, if it came over one.
+DEFINE_STREAM_FUNC_CONSUME(Ledger, Take)
+{
+    (void)data;
+    std::string m;
+    size_t n = 0, refused = 0;
+    while (!ctx.isInterrupted() && stream.readMessage(m, Ledger::kLine))
+        if (self.Append("", m) != UINT64_MAX) ++n; else ++refused;
+    if (refused) ETCS_LOG("Ledger", "Take: " << n << " line(s), " << refused << " refused");
+}
+
 // ===========================================================================
 // ConnectionManager — the Gate_. All four actions forward to the concrete
 // surface; the accept chain itself is internal (ConnectionManager.h).

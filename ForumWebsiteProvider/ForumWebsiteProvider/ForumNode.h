@@ -1,5 +1,5 @@
-#ifndef FORUMNODE_H__
-#define FORUMNODE_H__
+#ifndef FORUMWEBSITEPROVIDER_FORUMNODE_H__
+#define FORUMWEBSITEPROVIDER_FORUMNODE_H__
 #include "ForumSelf.h"
 #include <mutex>
 
@@ -962,4 +962,4 @@ inline ETCS::DispatchResult ForumStream::on_event(ForumState&,
     return { ETCS::DispatchKind::Drop, nullptr };
 }
 
-#endif // FORUMNODE_H__
+#endif // FORUMWEBSITEPROVIDER_FORUMNODE_H__

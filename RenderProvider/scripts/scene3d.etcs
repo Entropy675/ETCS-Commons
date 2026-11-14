@@ -54,6 +54,13 @@ tower_far.SetColor(0.40, 0.55, 0.90, 1.0)
 # space -- so it is at the tower's top, not at the world's. Move the tower and
 # the cap goes with it; move the anchor and all of it goes. Same contract the
 # gem has with the diamond in scene_emblem.etcs.
+#
+# NESTED BECAUSE IT FITS: what holds a Causal thing is what it fits in
+# (ontology/Causal.h), and a box is solid unless it says otherwise -- so the
+# tower provides the room its cap sits in (2.2 up, plus the cap's own reach,
+# is inside 4). Without it the cap would be handed up to the anchor at the
+# first step, to the same place in the world.
+tower_near.SetSpace(4.0)
 tower_near.spawn(RenderProvider::Scene3D cap)
 cap.Create(2.2, 0.4, 2.2)
 cap.SetPosition(0.0, 2.2, 0.0)
@@ -66,3 +73,39 @@ anchor.spawn(RenderProvider::Scene3D block)
 block.Create(2.0, 2.0, 2.0)
 block.SetPosition(0.6, -0.5, 2.0)
 block.SetColor(0.75, 0.45, 0.85, 1.0)
+
+# A shape that is not a box: a pyramid, as a Mesh the node names by RID,
+# drawn with this geometry scaled to the node's extent on either path --
+# the mesh is presentational, the rows and the extent are the physics
+# (Scene3D.SetMesh). A vertex per corner per face so each face has its own
+# normal.
+spawn RenderProvider::Mesh pyramid
+pyramid.Create()
+pyramid.AddVertex(-0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
+pyramid.AddVertex( 0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
+pyramid.AddVertex( 0.5, -0.5,  0.5,  0.0, -1.0, 0.0)
+pyramid.AddVertex(-0.5, -0.5,  0.5,  0.0, -1.0, 0.0)
+pyramid.AddTriangle(0, 2, 1)
+pyramid.AddTriangle(0, 3, 2)
+pyramid.AddVertex(-0.5, -0.5, -0.5,  0.0, 0.447, -0.894)
+pyramid.AddVertex( 0.5, -0.5, -0.5,  0.0, 0.447, -0.894)
+pyramid.AddVertex( 0.0,  0.5,  0.0,  0.0, 0.447, -0.894)
+pyramid.AddTriangle(4, 5, 6)
+pyramid.AddVertex( 0.5, -0.5, -0.5,  0.894, 0.447, 0.0)
+pyramid.AddVertex( 0.5, -0.5,  0.5,  0.894, 0.447, 0.0)
+pyramid.AddVertex( 0.0,  0.5,  0.0,  0.894, 0.447, 0.0)
+pyramid.AddTriangle(7, 8, 9)
+pyramid.AddVertex( 0.5, -0.5,  0.5,  0.0, 0.447, 0.894)
+pyramid.AddVertex(-0.5, -0.5,  0.5,  0.0, 0.447, 0.894)
+pyramid.AddVertex( 0.0,  0.5,  0.0,  0.0, 0.447, 0.894)
+pyramid.AddTriangle(10, 11, 12)
+pyramid.AddVertex(-0.5, -0.5,  0.5, -0.894, 0.447, 0.0)
+pyramid.AddVertex(-0.5, -0.5, -0.5, -0.894, 0.447, 0.0)
+pyramid.AddVertex( 0.0,  0.5,  0.0, -0.894, 0.447, 0.0)
+pyramid.AddTriangle(13, 14, 15)
+
+anchor.spawn(RenderProvider::Scene3D spire)
+spire.Create(2.4, 3.0, 2.4)
+spire.SetPosition(-1.5, -1.25, 9.0)
+spire.SetColor(0.90, 0.60, 0.25, 1.0)
+spire.SetMesh(@pyramid)

@@ -1,0 +1,11 @@
+#!/usr/bin/env etcs
+# A power-up box: gold, tipped on a corner, turning where it waits.
+#   run kart_pickup.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Scene3D box)
+box.Create(0.8, 0.8, 0.8)
+box.SetColor(0.98, 0.78, 0.15, 1.0)
+box.Orient(1.0, 0.0, 1.0, 45.0)
+box.SetAnchored(1)
+battle.AddPickupNode(@box)

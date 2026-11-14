@@ -1,5 +1,5 @@
-#ifndef TLSSERVERCONFIG_H__
-#define TLSSERVERCONFIG_H__
+#ifndef NETWORKPROVIDER_TLSSERVERCONFIG_H__
+#define NETWORKPROVIDER_TLSSERVERCONFIG_H__
 #include "../../../ontology.h"
 #include <iostream>
 #include <cstring>
@@ -157,4 +157,4 @@ private:
     bool                     ready_ = false;
 };
 
-#endif // TLSSERVERCONFIG_H__
+#endif // NETWORKPROVIDER_TLSSERVERCONFIG_H__

@@ -1,0 +1,17 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── LEAVE A GAME JOINED ──────────────────────────────────────────────────────
+#
+#     run ChessProvider/scripts/chess_leave.etcs share=<ChessShare> peer=<Peer>
+#
+# The peer is the one chess_join.etcs made (peer<n>). The seat is given up
+# and the link closes: presence is withdrawn with it, so the host releases
+# the seat (a `leave` line of the record), and the record, the proposals and
+# the roster streams all end on their own, the way a closed tab ends them.
+
+requires share [ChessShare]
+requires peer [Peer]
+
+share.Leave()
+peer.Close()

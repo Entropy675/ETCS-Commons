@@ -15,10 +15,7 @@
 // paragraph in a README, and makes the module handable to someone else intact
 // -- which is easier to do to a provider than to a file wedged inside one.
 
-#include "../../ETCS.h"
-#include "module_hashes.h"
-
-#include "Clayout.h"
+#include "LayoutProvider/Clayout.h"
 
 /*
  * THE CONTRACT NAME IS `Layout`. The implementation is `Clayout`.
@@ -49,5 +46,9 @@
  * catalog and every script key on.
  */
 typedef Clayout Layout;
+
+// auto generated hashes of headers:
+#include "../../ETCS.h"
+#include "module_hashes.h"
 
 #endif // LAYOUTPROVIDER_CONTRACT__

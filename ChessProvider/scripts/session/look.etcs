@@ -1,0 +1,10 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# What a board says of itself, filled in for {{name}}: the beat the page
+# sends once a second, then its hash, its status, the record's history, and
+# who it sees.
+share.Tick()
+game.Hash()
+game.Status({{name}})
+game.History(0)
+share.Who()

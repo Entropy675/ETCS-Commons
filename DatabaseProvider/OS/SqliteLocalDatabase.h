@@ -1,8 +1,9 @@
-#ifndef SQLITE_LOCALDATABASE_H__
-#define SQLITE_LOCALDATABASE_H__
+#ifndef DATABASEPROVIDER_SQLITELOCALDATABASE_H__
+#define DATABASEPROVIDER_SQLITELOCALDATABASE_H__
 
 #include "../../../ontology.h"
 #include "../sqlite/sqlite3.h"
+#include "../DatabaseProvider/Wal.h"
 #include <iostream>
 
 #if defined(__EMSCRIPTEN__)
@@ -63,6 +64,7 @@ class SqliteLocalDatabase :
         if (rc == SQLITE_OK) 
         {
             connected = true;
+            if (!etcs_sqlite_wal((sqlite3*)db)) ETCS_LOG("Not in WAL mode: " << dbPath.c_str());
             ETCS_LOG("Connection established to: " << dbPath.c_str());
         } 
         else 

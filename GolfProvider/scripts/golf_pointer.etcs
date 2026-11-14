@@ -1,0 +1,7 @@
+#!/usr/bin/env etcs
+# The pointer edge: presses, drags, releases and the wheel, into the game.
+# Detached: a stream edge blocks the thread that states it.
+#   detach GolfProvider/scripts/golf_pointer.etcs window=main game=game
+requires window [Window]
+requires game [GolfGame]
+window.ProducePointer() -> game.ConsumePointer()

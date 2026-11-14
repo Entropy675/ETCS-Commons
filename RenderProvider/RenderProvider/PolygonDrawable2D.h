@@ -1,5 +1,5 @@
-#ifndef POLYGONDRAWABLE2D_H__
-#define POLYGONDRAWABLE2D_H__
+#ifndef RENDERPROVIDER_POLYGONDRAWABLE2D_H__
+#define RENDERPROVIDER_POLYGONDRAWABLE2D_H__
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
@@ -64,7 +64,9 @@ public:
     // from it (ontology/OrderableBase.h), and this is also what orders this
     // polygon among its siblings in the parent's typed-children list.
     int32_t m_order = 0;
-    bool operator<(const PolygonDrawable2D& o) const { return m_order < o.m_order; }
+    // Hidden loses every comparison; then the stated order.
+    bool operator<(const PolygonDrawable2D& o) const
+    { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
 
     // The cross-type ordering, for a parent whose children are of several
     // concrete types -- see Drawable.h's note on why that is a scalar
@@ -180,8 +182,9 @@ public:
     //
     // A polygon has no pixels, so these RETAIN rather than rasterise, and
     // DrawIntoConcrete replays them clipped to the shape. Same retained model
-    // VulkanSurface uses, for the same reason: the thread that decides what
-    // to draw is not the thread that draws it.
+    // a window surface on a device uses (OS/HostSurface.h), for the same
+    // reason: the thread that decides what to draw is not the thread that
+    // draws it.
 
     void ClearConcrete(float r, float g, float b, float a) override
     {

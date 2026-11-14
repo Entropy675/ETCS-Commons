@@ -1,0 +1,3 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+detach PaintProvider/scripts/paint_emit.etcs src=doc dst=intake
