@@ -1,0 +1,25 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# What a model is made in: the container its parts are children of, the shapes
+# they can be drawn as, and the pool. Run, not inlined, so its names are its
+# own -- two models in one runtime (a test, a second page) do not take each
+# other's `parts`.
+#   run PaintProvider/scripts/paint_model_world.etcs world=<Scene3D> model=<PaintModeler>
+#
+# The container has no box of its own and is never moved: a part's position is
+# stated from its centre, and it is what an export writes (PaintModeler.Export),
+# so a file has the model in it and nothing of the room around it.
+requires world [Drawable3D]
+requires model [PaintModeler]
+world.spawn(RenderProvider::Scene3D parts)
+parts.Create(1.0, 1.0, 1.0)
+parts.SetVisible(0)
+model.BindWorld(@parts)
+run paint_model_shapes.etcs model=model
+# The pool: forty-eight parts. More is this line again.
+run paint_model_parts.etcs world=parts model=model
+run paint_model_parts.etcs world=parts model=model
+run paint_model_parts.etcs world=parts model=model
+run paint_model_parts.etcs world=parts model=model
+run paint_model_parts.etcs world=parts model=model
+run paint_model_parts.etcs world=parts model=model

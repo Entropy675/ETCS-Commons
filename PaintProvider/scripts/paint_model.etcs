@@ -1,0 +1,136 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE PAGE'S 3D HALF: a model, a camera on it, and a hand (PaintModeler).
+#
+#     run PaintProvider/scripts/paint_model.etcs paper=<Drawable2D> layers=<Drawable2D> canvas=<PaintSurface>
+#         input=<PaintInput> palette=<PaintPalette> brush=<PaintTool> layout=<Layout> menu=<Drawable2D>
+#
+# The page stays one page. The camera is a Drawable2D that owns pixels
+# (RenderProvider/Camera3D.h), so it goes in the tree where the picture is and
+# the switch is which of the two is shown: `model.Toggle()`, from the menu's
+# last row, hides one set of nodes and shows the other (PaintModeler::AddPane).
+# The bar under the page is left alone on purpose -- a part is painted with the
+# page's brush, so its swatches and its wheel choose the colour in both modes.
+#
+# WHAT IS NOT A PART is made here and is the script's: the floor, the three
+# arrows, the camera. What IS one is a node of the pool, under a container of
+# its own (paint_model_world.etcs) -- and that container is what an export
+# writes, so a file has the model in it and nothing of the room it was made in.
+
+requires paper   [Drawable2D]
+requires layers  [Drawable2D]
+requires canvas  [PaintSurface]
+requires input   [PaintInput]
+requires palette [PaintPalette]
+requires brush   [PaintTool]
+requires layout  [Layout]
+requires menu    [Drawable2D]
+
+# ── the pane, INSIDE the page's own ──────────────────────────────────────────
+#
+# A child of the page's pane rather than a sibling, for the layout's sake: a
+# box is placed relative to its layout parent (LayoutProvider/Clayout.h), and
+# the page's pane is what the window's size already arrives at. So this pane
+# fills it at any size by being declared under it, and nothing new follows the
+# window. Order 5 puts it over the picture; it covers the pane whole.
+#
+# The page's pane is RETAINED, so what is composed over it stays in its raster
+# after this is hidden -- which is why the modeller is handed the canvas
+# (BindSurface) and draws the page again when the model closes.
+#
+# A compositor around the camera because hiding is a compositor's verb and not
+# a camera's (RenderProvider.cc's tag blocks), and because the tools need a
+# parent that is not the picture.
+paper.spawn(RenderProvider::CompositeDrawable2D pane3d)
+pane3d.Create(952, 632)
+pane3d.SetPosition(0, 0)
+pane3d.SetOrder(5)
+pane3d.SetBackground(0.10, 0.11, 0.14, 1.0)
+pane3d.SetHidden(1)
+
+pane3d.spawn(RenderProvider::Camera3D eye)
+eye.Create(952, 632)
+eye.SetPosition(0, 0)
+eye.SetOrder(1)
+eye.SetBackground(0.16, 0.18, 0.22, 1.0)
+eye.SetLens(50.0, 0.05, 600.0)
+
+# ── the room ─────────────────────────────────────────────────────────────────
+#
+# DRIVEN (Scene3D::SetDriven): a picture of this world steps nothing in it.
+# Nothing here moves but by a line, and a part left where a drag put it must
+# not be somewhere else the next frame.
+spawn RenderProvider::Scene3D world
+world.Create(1.0, 1.0, 1.0)
+world.SetVisible(0)
+world.SetDriven(1)
+eye.SetScene(@world)
+
+# The ground a new part stands on: y = 0 is its top (PaintModeler::addAtLocked).
+world.spawn(RenderProvider::Scene3D floor)
+floor.Create(24.0, 0.04, 24.0)
+floor.SetPosition(0.0, -0.02, 0.0)
+floor.SetColor(0.30, 0.32, 0.36, 1.0)
+
+# ── the hand ─────────────────────────────────────────────────────────────────
+spawn PaintProvider::PaintModeler model
+model.Create()
+model.BindCamera(@eye)
+model.BindTool(@brush)
+model.BindSurface(@canvas)
+model.SetOrbit(11.0, 35.0, 28.0)
+model.LookAt(0.0, 0.5, 0.0)
+
+run paint_model_world.etcs world=world model=model
+
+# The axes on the selected part: x red, y green, z blue. Siblings of the model,
+# not parts of it -- the modeller sizes, aims and shows them and nothing else.
+spawn RenderProvider::Mesh axis_shape
+axis_shape.Create()
+axis_shape.Arrow(0.35, 0.3)
+
+world.spawn(RenderProvider::Scene3D axis_x)
+axis_x.Create(0.1, 1.0, 0.1)
+axis_x.SetColor(0.90, 0.30, 0.28, 1.0)
+axis_x.SetMesh(@axis_shape)
+model.BindAxis(0, @axis_x)
+
+world.spawn(RenderProvider::Scene3D axis_y)
+axis_y.Create(0.1, 1.0, 0.1)
+axis_y.SetColor(0.35, 0.80, 0.40, 1.0)
+axis_y.SetMesh(@axis_shape)
+model.BindAxis(1, @axis_y)
+
+world.spawn(RenderProvider::Scene3D axis_z)
+axis_z.Create(0.1, 1.0, 0.1)
+axis_z.SetColor(0.35, 0.50, 0.95, 1.0)
+axis_z.SetMesh(@axis_shape)
+model.BindAxis(2, @axis_z)
+
+# ── the two modes ────────────────────────────────────────────────────────────
+#
+# Shown with the model: its pane. Hidden with it: the layer window, which is
+# the document's and would lie over the camera.
+model.AddPane(3, @pane3d)
+model.AddPane(2, @layers)
+
+# A hit on the camera is the modeller's, as a hit on the canvas is the tool's;
+# the wheel, the keys, undo and redo follow while the model is open.
+input.BindModeler(@model, @eye)
+
+layout.AddBox(@pane3d, @paper, 1, 0.0, 1, 0.0)
+layout.AddBox(@eye, @pane3d, 1, 0.0, 1, 0.0)
+
+run paint_model_tools.etcs pane=pane3d palette=palette model=model
+
+# ── the switch, as the canvas menu's last row ────────────────────────────────
+menu.spawn(RenderProvider::TextLabel menu_model)
+menu_model.Create(8)
+menu_model.SetPosition(8, 414)
+menu_model.SetPadding(5)
+menu_model.SetColor(0.106, 0.110, 0.078, 1.0)
+menu_model.SetBackground(0.79, 0.71, 0.35, 1.0)
+menu_model.SetText(3d model  /  2d page)
+menu_model.SetOrder(2)
+palette.AddCall(@menu_model, @model, PaintModeler.Toggle)

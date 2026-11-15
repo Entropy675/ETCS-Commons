@@ -4,6 +4,7 @@
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
 #include "SceneSink.h"
+#include "SceneExport.h"
 #include "Mesh.h"
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -110,6 +112,18 @@ public:
         }
         else if (k == "sensitivity")
             m_sens_scale = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : kSensitivity;
+        else if (k == "extent")
+        {
+            // Half extents. The reach is theirs (row 2), so it moves with them.
+            const bool has = readWords(value, w, 3);
+            {
+                std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the step and the projection read it under it
+                m_half = has ? Point3D{ Fixed::FromRaw(w[0]).ToFloat(), Fixed::FromRaw(w[1]).ToFloat(), Fixed::FromRaw(w[2]).ToFloat() }
+                             : Point3D{ 0.5f, 0.5f, 0.5f };
+                reachLocked();
+            }
+            markViewersDirty();
+        }
         else if (k == "solid")
         {
             CausalBase<Scene3D>::onValue(key, value);
@@ -157,7 +171,11 @@ public:
                      << w << "x" << h << "x" << d << ").");
             return false;
         }
-        m_half = Point3D{ w * 0.5f, h * 0.5f, d * 0.5f };
+        // THE EXTENT IS A VALUE, like the colour: set through the funnel, so
+        // the record keeps the verb that sized the box, a store keeps the
+        // size, and another module reads it off the surface (valueOf). Half
+        // extents, as Fixed words; onValue is the one writer of m_half.
+        //
         // Row 0's fourth slot, the identity, is the family base's to fill
         // (CausalBase::refreshIdentityLocked): the state hash, not the RID.
         // Row 2's fourth slot. A box is not a point -- it is already an
@@ -165,8 +183,9 @@ public:
         // bounding sphere, and it is an aggregate from the moment it exists.
         // Only a node with no extent is a leaf here.
         // Causal, so computed on the causal side: the extent's numbers cross
-        // the boundary once, here, and the reach is their Fixed length.
-        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); reachLocked(); }
+        // the boundary once, here, and the reach is their Fixed length
+        // (onValue, "extent").
+        this->addTag("extent", words({ Fixed::From(w * 0.5f).raw, Fixed::From(h * 0.5f).raw, Fixed::From(d * 0.5f).raw }));
         this->addTag("active");
         /*
  * The symmetric half of ReleaseConcrete's, and needed for the same reason: a
@@ -305,6 +324,47 @@ public:
     // paths draw it: the device from the geometry sent once, the host from
     // the same triangles (rasterMesh).
     void SetMesh(ETCS::RID mesh) { m_mesh = mesh; markViewersDirty(); }
+
+    /*
+     * THIS SUBTREE AS A FILE (SceneExport.h): .obj with its .mtl, .stl or
+     * .glb, by the path's ending. The same walk a projection makes, so what
+     * is written is what is drawn -- a hidden node's own box is not, its
+     * children are, and a foreign Drawable3D child owns geometry this module
+     * cannot read. Positions are from THIS node's centre: where the model
+     * stands in a larger scene is not in the file.
+     */
+    bool Export(const std::string& path, uint32_t& parts, uint64_t& triangles, std::string& why)
+    {
+        std::vector<Node> nodes;
+        std::map<ETCS::RID, std::pair<std::vector<float>, std::vector<uint32_t>>> shapes;
+        {
+            // One state of the tree, and the geometry copied under it.
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+            const Point3D p = Pos();
+            collectSubtree(Point3D{ -p.x, -p.y, -p.z }, nodes);
+            for (Node& n : nodes)
+            {
+                const Mesh* mesh = n.mesh ? meshOf(n.mesh) : nullptr;
+                if (!mesh) n.mesh = 0;                 // no mesh, or one that is gone: its box
+                if (shapes.count(n.mesh)) continue;
+                auto& shape = shapes[n.mesh];
+                if (mesh) { shape.first = mesh->Vertices(); shape.second = mesh->Indices(); }
+                else device_unit_box(shape.first, shape.second);
+            }
+        }
+        std::vector<SceneExportPart> out(nodes.size());
+        for (size_t i = 0; i < nodes.size(); ++i)
+        {
+            const auto& shape = shapes[nodes[i].mesh];
+            out[i].geometry = nodes[i].mesh;
+            modelOf(nodes[i], out[i].model);
+            for (int k = 0; k < 4; ++k) out[i].color[k] = nodes[i].color[k];
+            out[i].vertices = &shape.first;
+            out[i].indices  = &shape.second;
+        }
+        parts = static_cast<uint32_t>(out.size());
+        return scene_export(path, out, triangles, why);
+    }
 
     // ── the held-key bitset ──────────────────────────────────────────────
     //
@@ -1197,22 +1257,24 @@ private:
         {
             DeviceMeshOp op;
             op.mesh = nd.mesh;
-            // A mesh is in unit space like the box is; the extent is the size
-            // of either, so a shape swapped in stands where the box stood.
-            const float sx = nd.half.x * 2.0f;
-            const float sy = nd.half.y * 2.0f;
-            const float sz = nd.half.z * 2.0f;
-            // model = T * R * S, column-major: column c is R's column c scaled.
-            for (int c = 0; c < 3; ++c)
-            {
-                const float sc = c == 0 ? sx : c == 1 ? sy : sz;
-                for (int r = 0; r < 3; ++r) op.model[c * 4 + r] = nd.rot.at(r, c) * sc;
-                op.model[c * 4 + 3] = 0.0f;
-            }
-            op.model[12] = nd.pos.x; op.model[13] = nd.pos.y; op.model[14] = nd.pos.z; op.model[15] = 1.0f;
+            modelOf(nd, op.model);
             for (int i = 0; i < 4; ++i) op.color[i] = nd.color[i];
             sink->AddMesh(op);
         }
+    }
+
+    // A node's model matrix: T * R * S, column-major -- column c is R's
+    // column c scaled. A mesh is in unit space like the box is; the extent is
+    // the size of either, so a shape swapped in stands where the box stood.
+    static void modelOf(const Node& nd, float model[16])
+    {
+        const float s[3] = { nd.half.x * 2.0f, nd.half.y * 2.0f, nd.half.z * 2.0f };
+        for (int c = 0; c < 3; ++c)
+        {
+            for (int r = 0; r < 3; ++r) model[c * 4 + r] = nd.rot.at(r, c) * s[c];
+            model[c * 4 + 3] = 0.0f;
+        }
+        model[12] = nd.pos.x; model[13] = nd.pos.y; model[14] = nd.pos.z; model[15] = 1.0f;
     }
 
     // Children of this module's own 3D leaf, which are the ones whose

@@ -739,7 +739,7 @@ gear_word.SetOrder(21)
 # until opened, for the reason wheel_pane is. Not retained: its contents are
 # nodes (paint_menu.etcs) and the compositor draws them from the tree.
 sheet_root.spawn(RenderProvider::CompositeDrawable2D menu_pane)
-menu_pane.Create(200, 414)
+menu_pane.Create(200, 440)
 menu_pane.SetPosition(4, 18)
 menu_pane.SetOrder(29)
 menu_pane.SetBackground(0.106, 0.110, 0.078, 0.96)
@@ -907,6 +907,15 @@ layout.AddBox(@bar, @sheet_root, 1, 0.0, 2, 64.0)
 # stated earlier this line is silently dropped and the bar lays its cells out
 # vertically, sixteen four-pixel strips in a 64px bar.
 layout.SetDirection(@bar, 0)
+
+# ── the page's 3D half ───────────────────────────────────────────────────────
+#
+# A model, a camera on it and its tools, in the page's own pane and hidden
+# until the menu's last row asks for it (paint_model.etcs; that row is why the
+# menu's pane is 440 tall and not 414). BEFORE the solve: its pane and its
+# camera are boxes under the page's, so the same pass that sizes the page sizes
+# them, here and at every resize after.
+run PaintProvider/scripts/paint_model.etcs paper=paper_pane layers=layers_pane canvas=canvas input=input palette=palette brush=brush layout=layout menu=menu_pane
 
 layout.Solve()
 layout.FollowResize(@main)

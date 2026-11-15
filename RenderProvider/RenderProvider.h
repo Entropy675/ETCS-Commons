@@ -949,6 +949,32 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetMesh, (ETCS::RID, mesh))
     self.SetMesh(mesh);
 }
 
+// Export <path> -- this subtree as a file: .obj (+ .mtl), .stl or .glb by the
+// path's ending (Scene3D::Export). The path is the rest of the line; a quoted
+// one is unquoted. Answers "<parts> <triangles>", or "refused: <why>".
+DEFINE_WORK_FUNC(Scene3D, Export)
+{
+    (void)ctx;
+    std::string path = data.restAsString();
+    const char* ws = " \t\r\n";
+    const size_t a = path.find_first_not_of(ws);
+    path = a == std::string::npos ? std::string() : path.substr(a, path.find_last_not_of(ws) - a + 1);
+    if (path.size() >= 2 && (path.front() == '\'' || path.front() == '"') && path.back() == path.front())
+        path = path.substr(1, path.size() - 2);
+    uint32_t parts = 0; uint64_t triangles = 0;
+    std::string why;
+    data.reset();
+    if (path.empty()) why = "Export needs a path";
+    if (!why.empty() || !self.Export(path, parts, triangles, why))
+    {
+        ETCS_LOG("Scene3D::Export", "refused: " << why);
+        data.writeString(("refused: " + why).c_str());
+        return;
+    }
+    ETCS_LOG("Scene3D::Export", path << ": " << parts << " part(s), " << triangles << " triangle(s)");
+    data.writeString((std::to_string(parts) + " " + std::to_string(triangles)).c_str());
+}
+
 // Project into a camera on demand -- the same verb the frame path calls, so a
 // script can force one view without a frame edge running at all. Useful in the
 // shell: move the scene, Render, look at it.

@@ -1,0 +1,11 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A part of the pool: a Scene3D under the model's world, hidden until a line
+# adds it -- the modeller sizes, places, turns, colours and shapes it then
+# (PaintProvider/PaintModeler.h), as KartBattle does a block of its arena.
+#   run paint_model_part.etcs world=<Scene3D> model=<PaintModeler>
+requires world [Drawable3D]
+requires model [PaintModeler]
+world.spawn(RenderProvider::Scene3D part)
+part.Create(1.0, 1.0, 1.0)
+model.AddPart(@part)

@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# The record into a model, from its first line: `detach paint_model_follow.etcs src=<Ledger> dst=<PaintModeler>`
+requires dst [PaintModeler]
+src.Follow(0) -> dst.Absorb()

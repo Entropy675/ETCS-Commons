@@ -1,0 +1,272 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE MODEL'S TOOLS: a column of words down the left of the 3D pane.
+#
+#     run PaintProvider/scripts/paint_model_tools.etcs pane=<Drawable2D> palette=<PaintPalette> model=<PaintModeler>
+#
+# The canvas menu's bargain (paint_menu.etcs): the LOOK is here and the MEANING
+# is a verb. Every control is a TextLabel with a ground, bound with AddCall
+# (node, target, Tag.Action, args), so what a press does is written beside the
+# thing pressed and PaintModeler never learns it has buttons. A label is its
+# own plate here -- one node a control, so one binding.
+#
+# Coordinates are the pane's own. Order 10: over the camera, which is order 1,
+# so a press on a word is the word's and anywhere else is the model's.
+#
+# The colours are the ruler's (paint_menu.etcs has the argument). What a part
+# is painted with is not here at all: it is the page's brush, so the swatches
+# and the wheel on the bar below already choose it.
+
+requires pane    [Drawable2D]
+requires palette [PaintPalette]
+requires model   [PaintModeler]
+
+# ── back to the page ─────────────────────────────────────────────────────────
+pane.spawn(RenderProvider::TextLabel m3_back)
+m3_back.Create(16)
+m3_back.SetPosition(8, 8)
+m3_back.SetPadding(4)
+m3_back.SetColor(0.106, 0.11, 0.078, 1.0)
+m3_back.SetBackground(0.79, 0.71, 0.35, 0.92)
+m3_back.SetText(2d page)
+m3_back.SetOrder(10)
+palette.AddCall(@m3_back, @model, PaintModeler.Close)
+
+# ── what a press on the model does (PaintModeler::SetTool) ───────────────────
+pane.spawn(RenderProvider::TextLabel m3_select)
+m3_select.Create(16)
+m3_select.SetPosition(8, 44)
+m3_select.SetPadding(4)
+m3_select.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_select.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_select.SetText(select)
+m3_select.SetOrder(10)
+palette.AddCall(@m3_select, @model, PaintModeler.SetTool, select)
+
+pane.spawn(RenderProvider::TextLabel m3_move)
+m3_move.Create(16)
+m3_move.SetPosition(8, 72)
+m3_move.SetPadding(4)
+m3_move.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_move.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_move.SetText(move)
+m3_move.SetOrder(10)
+palette.AddCall(@m3_move, @model, PaintModeler.SetTool, move)
+
+pane.spawn(RenderProvider::TextLabel m3_turn)
+m3_turn.Create(16)
+m3_turn.SetPosition(8, 100)
+m3_turn.SetPadding(4)
+m3_turn.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_turn.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_turn.SetText(turn)
+m3_turn.SetOrder(10)
+palette.AddCall(@m3_turn, @model, PaintModeler.SetTool, turn)
+
+pane.spawn(RenderProvider::TextLabel m3_size)
+m3_size.Create(16)
+m3_size.SetPosition(8, 128)
+m3_size.SetPadding(4)
+m3_size.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_size.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_size.SetText(size)
+m3_size.SetOrder(10)
+palette.AddCall(@m3_size, @model, PaintModeler.SetTool, size)
+
+pane.spawn(RenderProvider::TextLabel m3_add)
+m3_add.Create(16)
+m3_add.SetPosition(8, 156)
+m3_add.SetPadding(4)
+m3_add.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_add.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_add.SetText(add)
+m3_add.SetOrder(10)
+palette.AddCall(@m3_add, @model, PaintModeler.SetTool, add)
+
+pane.spawn(RenderProvider::TextLabel m3_paint)
+m3_paint.Create(16)
+m3_paint.SetPosition(8, 184)
+m3_paint.SetPadding(4)
+m3_paint.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_paint.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_paint.SetText(paint)
+m3_paint.SetOrder(10)
+palette.AddCall(@m3_paint, @model, PaintModeler.SetTool, paint)
+
+pane.spawn(RenderProvider::TextLabel m3_delete)
+m3_delete.Create(16)
+m3_delete.SetPosition(8, 212)
+m3_delete.SetPadding(4)
+m3_delete.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_delete.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_delete.SetText(delete)
+m3_delete.SetOrder(10)
+palette.AddCall(@m3_delete, @model, PaintModeler.SetTool, delete)
+
+# ── the shape add makes, and the selected part's from then on ────────────────
+pane.spawn(RenderProvider::TextLabel m3_sh_box)
+m3_sh_box.Create(16)
+m3_sh_box.SetPosition(8, 252)
+m3_sh_box.SetPadding(4)
+m3_sh_box.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_sh_box.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_sh_box.SetText(box)
+m3_sh_box.SetOrder(10)
+palette.AddCall(@m3_sh_box, @model, PaintModeler.SetShape, box)
+
+pane.spawn(RenderProvider::TextLabel m3_sh_sphere)
+m3_sh_sphere.Create(16)
+m3_sh_sphere.SetPosition(8, 280)
+m3_sh_sphere.SetPadding(4)
+m3_sh_sphere.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_sh_sphere.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_sh_sphere.SetText(sphere)
+m3_sh_sphere.SetOrder(10)
+palette.AddCall(@m3_sh_sphere, @model, PaintModeler.SetShape, sphere)
+
+pane.spawn(RenderProvider::TextLabel m3_sh_cylinder)
+m3_sh_cylinder.Create(16)
+m3_sh_cylinder.SetPosition(8, 308)
+m3_sh_cylinder.SetPadding(4)
+m3_sh_cylinder.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_sh_cylinder.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_sh_cylinder.SetText(cylinder)
+m3_sh_cylinder.SetOrder(10)
+palette.AddCall(@m3_sh_cylinder, @model, PaintModeler.SetShape, cylinder)
+
+pane.spawn(RenderProvider::TextLabel m3_sh_pyramid)
+m3_sh_pyramid.Create(16)
+m3_sh_pyramid.SetPosition(8, 336)
+m3_sh_pyramid.SetPadding(4)
+m3_sh_pyramid.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_sh_pyramid.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_sh_pyramid.SetText(pyramid)
+m3_sh_pyramid.SetOrder(10)
+palette.AddCall(@m3_sh_pyramid, @model, PaintModeler.SetShape, pyramid)
+
+pane.spawn(RenderProvider::TextLabel m3_sh_wedge)
+m3_sh_wedge.Create(16)
+m3_sh_wedge.SetPosition(8, 364)
+m3_sh_wedge.SetPadding(4)
+m3_sh_wedge.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_sh_wedge.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_sh_wedge.SetText(wedge)
+m3_sh_wedge.SetOrder(10)
+palette.AddCall(@m3_sh_wedge, @model, PaintModeler.SetShape, wedge)
+
+# ── the axis a move slides along, a turn turns about, a size stretches ───────
+# The same one again lets go of it (PaintModeler::SetAxis).
+pane.spawn(RenderProvider::TextLabel m3_ax_x)
+m3_ax_x.Create(16)
+m3_ax_x.SetPosition(8, 404)
+m3_ax_x.SetPadding(4)
+m3_ax_x.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_ax_x.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_ax_x.SetText(x)
+m3_ax_x.SetOrder(10)
+palette.AddCall(@m3_ax_x, @model, PaintModeler.SetAxis, x)
+
+pane.spawn(RenderProvider::TextLabel m3_ax_y)
+m3_ax_y.Create(16)
+m3_ax_y.SetPosition(34, 404)
+m3_ax_y.SetPadding(4)
+m3_ax_y.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_ax_y.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_ax_y.SetText(y)
+m3_ax_y.SetOrder(10)
+palette.AddCall(@m3_ax_y, @model, PaintModeler.SetAxis, y)
+
+pane.spawn(RenderProvider::TextLabel m3_ax_z)
+m3_ax_z.Create(16)
+m3_ax_z.SetPosition(60, 404)
+m3_ax_z.SetPadding(4)
+m3_ax_z.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_ax_z.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_ax_z.SetText(z)
+m3_ax_z.SetOrder(10)
+palette.AddCall(@m3_ax_z, @model, PaintModeler.SetAxis, z)
+
+# ── a grid to land on: a quarter of a unit and fifteen degrees, or neither ───
+pane.spawn(RenderProvider::TextLabel m3_snap)
+m3_snap.Create(16)
+m3_snap.SetPosition(8, 432)
+m3_snap.SetPadding(4)
+m3_snap.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_snap.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_snap.SetText(snap)
+m3_snap.SetOrder(10)
+palette.AddCall(@m3_snap, @model, PaintModeler.SetSnap, 0.25 15)
+
+pane.spawn(RenderProvider::TextLabel m3_free)
+m3_free.Create(16)
+m3_free.SetPosition(72, 432)
+m3_free.SetPadding(4)
+m3_free.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_free.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_free.SetText(free)
+m3_free.SetOrder(10)
+palette.AddCall(@m3_free, @model, PaintModeler.SetSnap, 0 0)
+
+# ── out, as a file beside the runtime (Scene3D.Export): the ending is the format
+pane.spawn(RenderProvider::TextLabel m3_out_obj)
+m3_out_obj.Create(16)
+m3_out_obj.SetPosition(8, 472)
+m3_out_obj.SetPadding(4)
+m3_out_obj.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_out_obj.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_out_obj.SetText(obj)
+m3_out_obj.SetOrder(10)
+palette.AddCall(@m3_out_obj, @model, PaintModeler.Export, model.obj)
+
+pane.spawn(RenderProvider::TextLabel m3_out_stl)
+m3_out_stl.Create(16)
+m3_out_stl.SetPosition(58, 472)
+m3_out_stl.SetPadding(4)
+m3_out_stl.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_out_stl.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_out_stl.SetText(stl)
+m3_out_stl.SetOrder(10)
+palette.AddCall(@m3_out_stl, @model, PaintModeler.Export, model.stl)
+
+pane.spawn(RenderProvider::TextLabel m3_out_glb)
+m3_out_glb.Create(16)
+m3_out_glb.SetPosition(108, 472)
+m3_out_glb.SetPadding(4)
+m3_out_glb.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_out_glb.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_out_glb.SetText(glb)
+m3_out_glb.SetOrder(10)
+palette.AddCall(@m3_out_glb, @model, PaintModeler.Export, model.glb)
+
+# ── the model as its own lines, and back (PaintModeler::Save / Load) ─────────
+pane.spawn(RenderProvider::TextLabel m3_save)
+m3_save.Create(16)
+m3_save.SetPosition(8, 500)
+m3_save.SetPadding(4)
+m3_save.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_save.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_save.SetText(save)
+m3_save.SetOrder(10)
+palette.AddCall(@m3_save, @model, PaintModeler.Save, model.lines)
+
+pane.spawn(RenderProvider::TextLabel m3_load)
+m3_load.Create(16)
+m3_load.SetPosition(72, 500)
+m3_load.SetPadding(4)
+m3_load.SetColor(0.94, 0.89, 0.78, 1.0)
+m3_load.SetBackground(0.17, 0.18, 0.13, 0.92)
+m3_load.SetText(load)
+m3_load.SetOrder(10)
+palette.AddCall(@m3_load, @model, PaintModeler.Load, model.lines)
+
+# ── what is in hand: the tool, the axis, the selection, parts used of the pool
+pane.spawn(RenderProvider::TextLabel m3_readout)
+m3_readout.Create(8)
+m3_readout.SetPosition(8, 536)
+m3_readout.SetPadding(3)
+m3_readout.SetColor(0.80, 0.80, 0.84, 1.0)
+m3_readout.SetBackground(0.106, 0.110, 0.078, 0.80)
+m3_readout.SetText(select)
+m3_readout.SetOrder(10)
+model.BindReadout(@m3_readout)
