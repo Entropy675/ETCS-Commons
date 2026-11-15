@@ -87,6 +87,35 @@ public:
         m_surface = raw ? static_cast<PaintSurface*>(raw->getTrueType()) : nullptr;
     }
     void BindReadout(ETCS::RID label) { std::lock_guard<std::mutex> g(m_mu); m_readout = label; m_readout_text.clear(); readoutLocked(); }
+    // The layout the page's panes are in: solved again when the mode flips, so
+    // the bar that is shown takes the row and the hidden one takes nothing.
+    void BindLayout(ETCS::RID layout) { std::lock_guard<std::mutex> g(m_mu); m_layout = layout; }
+    // The page's share: while it is in a session, a guest's line is taken only
+    // from a writer (PaintShare::Writers), as a page's strokes are.
+    void BindShare(ETCS::RID share) { std::lock_guard<std::mutex> g(m_mu); m_share = share; }
+    /*
+     * A CELL OF THE BAR, AND WHAT IT SAYS. The bar is script (paint_model_bar.
+     * etcs) and every press on it is a verb; what the bar SHOWS is this type's,
+     * because only it knows what is in hand. `role` is a tool's name -- that
+     * cell is lit while it is the tool -- or one of axis, snap (lit while one
+     * is set), shape, export, mode. A caption is the word under a cell that
+     * says its current value: the shape, the axis, on/off, the format, and on
+     * the mode cell the page the press goes TO.
+     */
+    void BindCell(const std::string& role, ETCS::RID node)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_cells.emplace_back(role, node);
+        m_cell_lit.push_back(-1);
+        cellsLocked();
+    }
+    void BindCaption(const std::string& role, ETCS::RID label)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_captions.emplace_back(role, label);
+        m_caption_text.emplace_back();
+        cellsLocked();
+    }
     // A node of the pool: a Scene3D under the world, hidden until a line adds it.
     void AddPart(ETCS::RID node)
     {
@@ -177,6 +206,64 @@ public:
         std::lock_guard<std::mutex> g(m_mu);
         m_snap = step > 0.0f ? step : 0.0f;
         m_turn_snap = degrees > 0.0f ? degrees : 0.0f;
+    }
+
+    // The bar's steppers: each press is the next one round.
+    void CycleShape()
+    {
+        std::string next;
+        {
+            std::lock_guard<std::mutex> g(m_mu);
+            std::vector<std::string> names{ "box" };
+            for (auto& sh : m_shapes) names.push_back(sh.first);
+            const std::string& now = (m_tool != Tool::Add && m_sel >= 0) ? m_parts[m_sel].shape : m_shape;
+            size_t i = 0;
+            while (i < names.size() && names[i] != now) ++i;
+            next = names[(i + 1) % names.size()];
+        }
+        SetShape(next);
+    }
+    void CycleAxis()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_axis = (m_axis >= 2) ? -1 : m_axis + 1;
+        axesLocked();
+        readoutLocked();
+    }
+    // The grid on (a quarter unit, fifteen degrees) or off.
+    void ToggleSnap()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const bool on = m_snap > 0.0f || m_turn_snap > 0.0f;
+        m_snap = on ? 0.0f : 0.25f;
+        m_turn_snap = on ? 0.0f : 15.0f;
+        readoutLocked();
+    }
+    void CycleFormat()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_format = m_format == "glb" ? "obj" : (m_format == "obj" ? "stl" : "glb");
+        readoutLocked();
+    }
+    /*
+     * OUT, AS THE BAR'S FORMAT. Beside the runtime on a desktop (model.<fmt>
+     * in the working directory, the log says where); in the browser the
+     * page's to hand over -- it calls Export into its own filesystem and gives
+     * the bytes to the browser, as it does a GIF (index.html, downloadModel).
+     */
+    std::string ExportHere()
+    {
+        std::string fmt;
+        { std::lock_guard<std::mutex> g(m_mu); fmt = m_format; }
+#if defined(__EMSCRIPTEN__)
+        const std::string what = "model-" + fmt;
+        MAIN_THREAD_EM_ASM({
+            window.dispatchEvent(new CustomEvent('etcs-menu', { detail: UTF8ToString($0) }));
+        }, what.c_str());
+        return "page";
+#else
+        return Export("model." + fmt);
+#endif
     }
 
     // ── the eye ──────────────────────────────────────────────────────────
@@ -448,14 +535,31 @@ public:
     // A proposal, judged: applied and recorded if taken.
     bool JudgeLine(uint64_t gen, const std::string& msg)
     {
-        ETCS::RID proposals = 0; uint64_t seq = 0;
+        ETCS::RID proposals = 0, share = 0; uint64_t seq = 0;
+        std::string author, line;
         {
             std::lock_guard<std::mutex> g(m_mu);
             if (gen != m_gen) return false;
             if (!m_judge || !m_session || msg.compare(0, 2, "~ ") == 0) return true;
-            std::string author, line, inverse;
             if (!parseLine(msg, seq, author, line) || author.empty() || author == m_me) return true;
-            if (applyLocked(line, inverse)) recordLocked(author, line);
+            share = m_share;
+        }
+        // A page in a session takes a line only from a writer. Asked with no
+        // lock held: the share is another type's, reached by its verb.
+        bool may = true;
+        if (share)
+        {
+            std::istringstream in(ask(share, "Writers", ""));
+            std::string w;
+            may = false;
+            while (in >> w) if (w == author) { may = true; break; }
+        }
+        {
+            std::lock_guard<std::mutex> g(m_mu);
+            if (gen != m_gen) return false;
+            std::string inverse;
+            if (!may) ETCS_LOG("PaintModeler", author << " is not a writer here -- '" << line << "' refused.");
+            else if (applyLocked(line, inverse)) recordLocked(author, line);
             proposals = m_proposals;
         }
         if (Record_* p = recordOf(proposals)) p->Checkpoint(seq + 1);
@@ -546,6 +650,7 @@ private:
     {
         std::vector<ETCS::RID> two, three;
         PaintSurface* surface = nullptr;
+        ETCS::RID layout = 0;
         {
             std::lock_guard<std::mutex> g(m_mu);
             if (m_open.load() == on) return;
@@ -553,11 +658,15 @@ private:
             cancelDragLocked();
             two = m_panes2; three = m_panes3;
             surface = m_surface;
+            layout = m_layout;
             if (on) placeCameraLocked();
+            cellsLocked();
         }
         // No lock across these: hidden is a flag, and a flag change is ordered.
-        for (ETCS::RID n : two)   paint_node_hidden(n, on);
-        for (ETCS::RID n : three) paint_node_hidden(n, !on);
+        // Hide before show, so the two bars never both hold the row.
+        for (ETCS::RID n : (on ? two : three)) paint_node_hidden(n, true);
+        for (ETCS::RID n : (on ? three : two)) paint_node_hidden(n, false);
+        if (layout) verb(layout, "Solve", "");
         if (!on && surface) surface->Render();
     }
 
@@ -878,6 +987,7 @@ private:
     }
     void readoutLocked()
     {
+        cellsLocked();
         if (!m_readout) return;
         std::string t = std::string(toolName(m_tool)) + (m_axis < 0 ? "" : (m_axis == 0 ? "  x" : (m_axis == 1 ? "  y" : "  z")));
         if (m_sel >= 0) t += "  #" + std::to_string(m_sel) + " " + m_parts[m_sel].shape;
@@ -886,6 +996,41 @@ private:
         if (t == m_readout_text) return;
         m_readout_text = t;
         paint_node_text(m_readout, t);
+    }
+
+    // Each cell lit or not, each caption its value -- written only when it
+    // changed, since this runs on every change of what is in hand.
+    void cellsLocked()
+    {
+        static constexpr float kIdle[3] = { 0.16f, 0.16f, 0.20f };
+        static constexpr float kLift = 0.30f;   // the 2D bar's tool in hand (PaintPalette, SELECTED_LIFT)
+        for (size_t i = 0; i < m_cells.size(); ++i)
+        {
+            const std::string& role = m_cells[i].first;
+            bool lit;
+            if (role == "axis")      lit = m_axis >= 0;
+            else if (role == "snap") lit = m_snap > 0.0f || m_turn_snap > 0.0f;
+            else                     lit = toolFrom(role) != Tool::None && toolFrom(role) == m_tool;
+            if (m_cell_lit[i] == static_cast<int>(lit)) continue;
+            m_cell_lit[i] = static_cast<int>(lit);
+            const float t = lit ? kLift : 0.0f;
+            paint_node_fill(m_cells[i].second, kIdle[0] + (1.0f - kIdle[0]) * t, kIdle[1] + (1.0f - kIdle[1]) * t,
+                            kIdle[2] + (1.0f - kIdle[2]) * t, 1.0f);
+        }
+        for (size_t i = 0; i < m_captions.size(); ++i)
+        {
+            const std::string& role = m_captions[i].first;
+            std::string t;
+            if (role == "shape")       t = (m_tool != Tool::Add && m_sel >= 0) ? m_parts[m_sel].shape : m_shape;
+            else if (role == "axis")   t = m_axis < 0 ? "free" : (m_axis == 0 ? "x" : (m_axis == 1 ? "y" : "z"));
+            else if (role == "snap")   t = (m_snap > 0.0f || m_turn_snap > 0.0f) ? "on" : "off";
+            else if (role == "export") t = m_format;
+            else if (role == "mode")   t = m_open.load() ? "2d" : "3d";
+            else continue;
+            if (t == m_caption_text[i]) continue;
+            m_caption_text[i] = t;
+            paint_node_text(m_captions[i].second, t);
+        }
     }
 
     // ── the table, and its picture ───────────────────────────────────────
@@ -1141,6 +1286,11 @@ private:
     ETCS::RID  m_world = 0, m_camera = 0, m_tool_src = 0, m_readout = 0;
     ETCS::RID  m_axis_node[3] = { 0, 0, 0 };
     std::vector<ETCS::RID> m_panes2, m_panes3;
+    ETCS::RID m_layout = 0, m_share = 0;
+    std::vector<std::pair<std::string, ETCS::RID>> m_cells, m_captions;
+    std::vector<int>         m_cell_lit;
+    std::vector<std::string> m_caption_text;
+    std::string m_format = "glb";
     PaintSurface* m_surface = nullptr;
     std::string m_readout_text;
     std::atomic<bool> m_open{ false };   // read by the input edge with no lock

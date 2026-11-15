@@ -15,7 +15,7 @@ world.spawn(RenderProvider::Scene3D parts)
 parts.Create(1.0, 1.0, 1.0)
 parts.SetVisible(0)
 model.BindWorld(@parts)
-run paint_model_shapes.etcs model=model
+run paint_model_shapes.etcs world=parts model=model
 # The pool: forty-eight parts. More is this line again.
 run paint_model_parts.etcs world=parts model=model
 run paint_model_parts.etcs world=parts model=model

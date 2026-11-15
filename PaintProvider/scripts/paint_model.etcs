@@ -3,29 +3,35 @@
 
 # THE PAGE'S 3D HALF: a model, a camera on it, and a hand (PaintModeler).
 #
-#     run PaintProvider/scripts/paint_model.etcs paper=<Drawable2D> layers=<Drawable2D> canvas=<PaintSurface>
-#         input=<PaintInput> palette=<PaintPalette> brush=<PaintTool> layout=<Layout> menu=<Drawable2D>
+#     run PaintProvider/scripts/paint_model.etcs model=<PaintModeler> sheet=<Drawable2D> paper=<Drawable2D>
+#         bar=<Drawable2D> layers=<Drawable2D> canvas=<PaintSurface> input=<PaintInput>
+#         palette=<PaintPalette> brush=<PaintTool> layout=<Layout>
 #
 # The page stays one page. The camera is a Drawable2D that owns pixels
 # (RenderProvider/Camera3D.h), so it goes in the tree where the picture is and
-# the switch is which of the two is shown: `model.Toggle()`, from the menu's
-# last row, hides one set of nodes and shows the other (PaintModeler::AddPane).
-# The bar under the page is left alone on purpose -- a part is painted with the
-# page's brush, so its swatches and its wheel choose the colour in both modes.
+# the switch is which of the two is shown: `model.Toggle()` hides one set of
+# nodes and shows the other (PaintModeler::AddPane) and solves the layout
+# again. The toolbar row is the same row in both: the 2D bar, or the 3D one
+# (paint_model_bar.etcs), whichever is shown -- a hidden box takes no room.
+#
+# THE MODELLER IS THE BOOT'S, not this script's: the session templates and the
+# page's own calls reach boot globals only, so it is made there and handed in.
 #
 # WHAT IS NOT A PART is made here and is the script's: the floor, the three
 # arrows, the camera. What IS one is a node of the pool, under a container of
 # its own (paint_model_world.etcs) -- and that container is what an export
 # writes, so a file has the model in it and nothing of the room it was made in.
 
+requires model   [PaintModeler]
+requires sheet   [Drawable2D]
 requires paper   [Drawable2D]
+requires bar     [Drawable2D]
 requires layers  [Drawable2D]
 requires canvas  [PaintSurface]
 requires input   [PaintInput]
 requires palette [PaintPalette]
 requires brush   [PaintTool]
 requires layout  [Layout]
-requires menu    [Drawable2D]
 
 # ── the pane, INSIDE the page's own ──────────────────────────────────────────
 #
@@ -74,8 +80,6 @@ floor.SetPosition(0.0, -0.02, 0.0)
 floor.SetColor(0.30, 0.32, 0.36, 1.0)
 
 # ── the hand ─────────────────────────────────────────────────────────────────
-spawn PaintProvider::PaintModeler model
-model.Create()
 model.BindCamera(@eye)
 model.BindTool(@brush)
 model.BindSurface(@canvas)
@@ -86,7 +90,7 @@ run paint_model_world.etcs world=world model=model
 
 # The axes on the selected part: x red, y green, z blue. Siblings of the model,
 # not parts of it -- the modeller sizes, aims and shows them and nothing else.
-spawn RenderProvider::Mesh axis_shape
+world.spawn(RenderProvider::Mesh axis_shape)
 axis_shape.Create()
 axis_shape.Arrow(0.35, 0.3)
 
@@ -110,10 +114,24 @@ model.BindAxis(2, @axis_z)
 
 # ── the two modes ────────────────────────────────────────────────────────────
 #
-# Shown with the model: its pane. Hidden with it: the layer window, which is
-# the document's and would lie over the camera.
+# Shown with the model: its pane and its bar. Hidden with it: the 2D bar, and
+# the layer window, which is the document's and would lie over the camera.
 model.AddPane(3, @pane3d)
 model.AddPane(2, @layers)
+model.AddPane(2, @bar)
+model.BindLayout(@layout)
+
+# The 3D bar: the toolbar row while the model is open, hidden -- so taking no
+# room -- until then.
+sheet.spawn(RenderProvider::CompositeDrawable2D bar3d)
+bar3d.Create(960, 64)
+bar3d.SetOrder(20)
+bar3d.SetBackground(0.16, 0.16, 0.19, 1.0)
+bar3d.SetHidden(1)
+layout.AddBox(@bar3d, @sheet, 1, 0.0, 2, 64.0)
+layout.SetDirection(@bar3d, 0)
+run paint_model_bar.etcs bar=bar3d palette=palette model=model layout=layout
+model.AddPane(3, @bar3d)
 
 # A hit on the camera is the modeller's, as a hit on the canvas is the tool's;
 # the wheel, the keys, undo and redo follow while the model is open.
@@ -122,15 +140,14 @@ input.BindModeler(@model, @eye)
 layout.AddBox(@pane3d, @paper, 1, 0.0, 1, 0.0)
 layout.AddBox(@eye, @pane3d, 1, 0.0, 1, 0.0)
 
-run paint_model_tools.etcs pane=pane3d palette=palette model=model
-
-# ── the switch, as the canvas menu's last row ────────────────────────────────
-menu.spawn(RenderProvider::TextLabel menu_model)
-menu_model.Create(8)
-menu_model.SetPosition(8, 414)
-menu_model.SetPadding(5)
-menu_model.SetColor(0.106, 0.110, 0.078, 1.0)
-menu_model.SetBackground(0.79, 0.71, 0.35, 1.0)
-menu_model.SetText(3d model  /  2d page)
-menu_model.SetOrder(2)
-palette.AddCall(@menu_model, @model, PaintModeler.Toggle)
+# What is in hand, in the camera's corner: the tool, the axis, the chosen part,
+# the parts used of the pool.
+pane3d.spawn(RenderProvider::TextLabel m3_readout)
+m3_readout.Create(8)
+m3_readout.SetPosition(8, 8)
+m3_readout.SetPadding(3)
+m3_readout.SetColor(0.80, 0.80, 0.84, 1.0)
+m3_readout.SetBackground(0.106, 0.110, 0.078, 0.80)
+m3_readout.SetText(select)
+m3_readout.SetOrder(10)
+model.BindReadout(@m3_readout)

@@ -8,11 +8,12 @@
 requires world [Drawable3D]
 requires battle [KartBattle]
 
-# One tyre for all thirty-two wheels, one ball for every burst and hill.
-spawn RenderProvider::Mesh tyre
+# One tyre for all thirty-two wheels, one ball for every burst and hill --
+# children of the world, since a shape is named by where it is (Scene3D::SetMesh).
+world.spawn(RenderProvider::Mesh tyre)
 tyre.Create()
 tyre.Cylinder(14)
-spawn RenderProvider::Mesh ball
+world.spawn(RenderProvider::Mesh ball)
 ball.Create()
 ball.Sphere(12)
 

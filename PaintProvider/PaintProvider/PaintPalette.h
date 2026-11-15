@@ -141,7 +141,7 @@ public:
     {
         for (const auto& [rid, e] : m_entries)
         {
-            if (e.kind != Kind::WheelArrow && e.kind != Kind::ModeArrow) continue;
+            if (e.kind != Kind::WheelArrow && e.kind != Kind::ModeArrow && !e.stretch) continue;
             const int32_t w = cell_width_of(rid);
             if (w > 0 && w != e.drawn_w) return true;
         }
@@ -152,7 +152,7 @@ public:
     {
         for (auto& [rid, e] : m_entries)
         {
-            if (e.kind != Kind::WheelArrow && e.kind != Kind::ModeArrow) continue;
+            if (e.kind != Kind::WheelArrow && e.kind != Kind::ModeArrow && !e.stretch) continue;
             const int32_t w = cell_width_of(rid);
             if (w <= 0 || w == e.drawn_w) continue;
 
@@ -244,6 +244,17 @@ public:
  * is spawned as a child of the cell -- and a cell that has not been declared
  * gets no arrow rather than a guessed one.
  */
+    // A CALL THAT IS AN ARROW: the triangle across the top of a cell whose
+    // press is a verb somebody else answers (AddCall) -- the 3D bar's shape and
+    // format steppers. Stretched to its cell like the two above; what pressing
+    // it does stays the call's.
+    void StretchArrow(ETCS::RID node)
+    {
+        auto it = m_entries.find(node);
+        if (it == m_entries.end() || it->second.kind != Kind::Call) return;
+        it->second.stretch = true;
+        it->second.drawn_w = 0;
+    }
     void AddArrow(ETCS::RID node, ETCS::RID slot)
     {
         if (node == 0) return;
@@ -820,6 +831,7 @@ private:
         // stretchArrows. Zero means never, which is also what forces the
         // first build.
         int32_t drawn_w = 0;
+        bool    stretch = false;   // a call drawn as an arrow (StretchArrow)
     };
 
     // The two makers every call site goes through, so that adding a member to

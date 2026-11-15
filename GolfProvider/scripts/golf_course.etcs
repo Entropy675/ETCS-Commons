@@ -119,7 +119,7 @@ tee.SetColor(0.85, 0.85, 0.8, 1.0)
 tee.SetAnchored(1)
 
 # ── the ball: a sphere, solid and free ─────────────────────────────────────
-spawn RenderProvider::Mesh ball_shape
+anchor.spawn(RenderProvider::Mesh ball_shape)
 ball_shape.Create()
 ball_shape.Sphere(12)
 anchor.spawn(RenderProvider::Scene3D ball)
@@ -132,7 +132,7 @@ ball.SetColor(0.97, 0.97, 0.95, 1.0)
 ball.SetPosition(0.0, 0.15, 0.0)
 
 # ── the arrow a pull draws: not solid, held in place, hidden until a pull ───
-spawn RenderProvider::Mesh arrow_shape
+anchor.spawn(RenderProvider::Mesh arrow_shape)
 arrow_shape.Create()
 arrow_shape.Arrow(0.3, 0.3)
 anchor.spawn(RenderProvider::Scene3D arrow)

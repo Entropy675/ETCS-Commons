@@ -112,6 +112,16 @@ public:
         }
         else if (k == "sensitivity")
             m_sens_scale = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : kSensitivity;
+        else if (k == "mesh")
+        {
+            // Where the shape is, by structure (SetMesh): the cached RID goes,
+            // and the next projection finds it again (meshRid).
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+            if (readWords(value, w, 2) && w[0] >= 0 && w[1] >= 0) { m_mesh_up = w[0]; m_mesh_at = w[1]; }
+            else m_mesh_up = m_mesh_at = -1;
+            m_mesh_rid = 0; m_mesh_holder = nullptr;
+            markViewersDirty();
+        }
         else if (k == "extent")
         {
             // Half extents. The reach is theirs (row 2), so it moves with them.
@@ -323,7 +333,30 @@ public:
     // The shape this node is drawn with (a Mesh, by RID); 0 is its box. Both
     // paths draw it: the device from the geometry sent once, the host from
     // the same triangles (rasterMesh).
-    void SetMesh(ETCS::RID mesh) { m_mesh = mesh; markViewersDirty(); }
+    /*
+     * THE SHAPE, BY WHERE IT IS -- never by RID, which is this run's alone. A
+     * mesh is a child of this node or of one of its ancestors, and the value
+     * behind "mesh" says which: how many generations up, and its place among
+     * that node's Mesh children in their ordered list (a Mesh declares no
+     * operator<, so the list is creation order: emergent, and the same in a
+     * replay). So the record keeps the verb, a store keeps the address, and a
+     * rebuilt scene finds the same shape in the same place. 0 is the box.
+     * False for a mesh that is no child of this node's line.
+     */
+    bool SetMesh(ETCS::RID mesh)
+    {
+        if (mesh == 0) { this->removeTag(ETCS::Buffer("mesh")); return true; }
+        ETCS::Entity* m = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), mesh);
+        ETCS::Entity* holder = m ? m->getParent() : nullptr;
+        int64_t up = 0;
+        for (ETCS::Entity* a = this; a; a = a->getParent(), ++up)
+            if (a == holder) break;
+        if (!holder || up < 0 || !isLine(holder, up)) return false;
+        const int64_t at = meshIndex(holder, mesh);
+        if (at < 0) return false;
+        this->addTag("mesh", words({ up, at }));
+        return true;
+    }
 
     /*
      * THIS SUBTREE AS A FILE (SceneExport.h): .obj with its .mtl, .stl or
@@ -1218,7 +1251,7 @@ private:
             // node drawn is a child, and its facing is its own.
             n.rot  = root ? Matrix4::Identity() : Order4().ToMatrix4();
             n.rot.at(0,3) = n.rot.at(1,3) = n.rot.at(2,3) = 0.0f;
-            n.mesh = m_mesh;
+            n.mesh = meshRid();
             out.push_back(n);
         }
         { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out, false); }
@@ -1412,6 +1445,55 @@ private:
 
     // The Mesh a node names, by RID and tag -- the way the surface finds it
     // to send to the device (HostSurface::sendMeshes). Not a family.
+    bool isLine(const ETCS::Entity* holder, int64_t up) const
+    {
+        const ETCS::Entity* a = this;
+        for (int64_t i = 0; a && i < up; ++i) a = a->getParent();
+        return a == holder;
+    }
+    // A Mesh child's place in its holder's ordered list, or -1.
+    static int64_t meshIndex(const ETCS::Entity* holder, ETCS::RID rid)
+    {
+        std::vector<ETCS::Entity::ChildRef> kids;
+        holder->getOrderedTypedChildRefs(kids);
+        static const ETCS::Buffer kMesh("Mesh");
+        int64_t i = 0;
+        for (const auto& [tag, r] : kids)
+        {
+            if (!(*tag == kMesh)) continue;
+            if (r == rid) return i;
+            ++i;
+        }
+        return -1;
+    }
+    /*
+     * The address, as this run's RID: walked up, then counted along the
+     * holder's ordered Mesh children. Kept until the holder's hash epoch moves
+     * -- a child arriving or going moves it -- so a still scene pays nothing.
+     * Under the tree's lock, as the walk that asks is.
+     */
+    ETCS::RID meshRid()
+    {
+        if (m_mesh_up < 0) return 0;
+        ETCS::Entity* holder = this;
+        for (int64_t i = 0; holder && i < m_mesh_up; ++i) holder = holder->getParent();
+        if (!holder) return 0;
+        const uint32_t epoch = holder->hashEpoch();
+        if (holder == m_mesh_holder && epoch == m_mesh_epoch) return m_mesh_rid;
+        std::vector<ETCS::Entity::ChildRef> kids;
+        holder->getOrderedTypedChildRefs(kids);
+        static const ETCS::Buffer kMesh("Mesh");
+        int64_t i = 0;
+        ETCS::RID found = 0;
+        for (const auto& [tag, r] : kids)
+        {
+            if (!(*tag == kMesh)) continue;
+            if (i++ == m_mesh_at) { found = r; break; }
+        }
+        m_mesh_holder = holder; m_mesh_epoch = epoch; m_mesh_rid = found;
+        return found;
+    }
+
     static const Mesh* meshOf(ETCS::RID rid)
     {
         ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
@@ -2029,7 +2111,13 @@ private:
         return true;
     }
 
-    ETCS::RID m_mesh = 0;
+    // The shape's address (onValue, "mesh"): generations up and place among
+    // that node's Mesh children; -1 is the box. And this run's RID for it,
+    // kept against the holder's epoch (meshRid).
+    int64_t        m_mesh_up = -1, m_mesh_at = -1;
+    ETCS::RID      m_mesh_rid = 0;
+    ETCS::Entity*  m_mesh_holder = nullptr;
+    uint32_t       m_mesh_epoch = 0;
     static constexpr float kColor[4] = {0.8f, 0.8f, 0.85f, 1.0f};
     float   m_color[4] = {kColor[0], kColor[1], kColor[2], kColor[3]};
     // Causal: they decide what an impulse is and how motion decays, so they

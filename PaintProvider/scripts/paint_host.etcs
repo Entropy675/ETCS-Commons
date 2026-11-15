@@ -35,6 +35,15 @@ room{{n}}.Publish(presence @presence{{n}} Advertise Withdraw Watch)
 
 # The share keys the seal and announces the page as it stands (PaintShare::Host).
 share.Host(@record{{n}} @intake{{n}} @seal{{n}} @presence{{n}} @room{{n}} {{name}})
+# The model rides the same room with a record of its own: this page judges it,
+# and takes a guest's line only from a writer (PaintModeler::JudgeLine).
+spawn NetworkProvider::Ledger mrecord{{n}}
+mrecord{{n}}.Author({{name}})
+spawn NetworkProvider::Ledger mproposals{{n}}
+room{{n}}.Publish(mrecord @mrecord{{n}} Head Since Follow)
+room{{n}}.Publish(mproposals @mproposals{{n}} Take)
+model.Host(@mrecord{{n}} @mproposals{{n}} {{name}})
+detach PaintProvider/scripts/paint_model_judge.etcs src=mproposals{{n}} dst=model
 
 # The host's own streams: what it draws into the record directly (it holds
 # the key), the record back, and the roster. Each is a detached script,

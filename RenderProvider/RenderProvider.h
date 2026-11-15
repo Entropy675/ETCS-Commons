@@ -946,7 +946,9 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetMesh, (ETCS::RID, mesh))
         ETCS_LOG("Scene3D::SetMesh", "RID:" << mesh << " does not resolve as a Mesh.");
         return;
     }
-    self.SetMesh(mesh);
+    if (!self.SetMesh(mesh))
+        ETCS_LOG("Scene3D::SetMesh", "RID:" << mesh << " is not a child of this node or of one of its ancestors "
+                 "-- a shape is named by where it is, so spawn the Mesh under the scene that uses it.");
 }
 
 // Export <path> -- this subtree as a file: .obj (+ .mtl), .stl or .glb by the

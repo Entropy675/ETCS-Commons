@@ -1314,6 +1314,9 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, SetColorOf,
  * text, exactly as a script line would. The general entry; see
  * PaintPalette::AddCall for why the older kinds are not spelled with it.
  */
+// StretchArrow <node> -- a call's node is a cell's arrow: rebuilt at the cell's width.
+DEFINE_WORK_FUNC_TYPED(PaintPalette, StretchArrow, (ETCS::RID, node)) { (void)ctx; self.StretchArrow(node); }
+
 DEFINE_WORK_FUNC(PaintPalette, AddCall)
 {
     (void)ctx;
@@ -2913,6 +2916,25 @@ DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCamera,  (ETCS::RID, camera)) { (void)c
 DEFINE_WORK_FUNC_TYPED(PaintModeler, BindTool,    (ETCS::RID, tool))   { (void)ctx; self.BindTool(tool); }
 DEFINE_WORK_FUNC_TYPED(PaintModeler, BindReadout, (ETCS::RID, label))  { (void)ctx; self.BindReadout(label); }
 DEFINE_WORK_FUNC_TYPED(PaintModeler, BindSurface, (ETCS::RID, surface)) { (void)ctx; self.BindSurface(surface); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindLayout,  (ETCS::RID, layout))  { (void)ctx; self.BindLayout(layout); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindShare,   (ETCS::RID, share))   { (void)ctx; self.BindShare(share); }
+// BindCell <role> <node> / BindCaption <role> <label> -- the bar's cells, lit
+// and captioned by what is in hand (PaintModeler::BindCell).
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCell,    (std::string, role), (ETCS::RID, node))  { (void)ctx; self.BindCell(role, node); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCaption, (std::string, role), (ETCS::RID, label)) { (void)ctx; self.BindCaption(role, label); }
+DEFINE_WORK_FUNC(PaintModeler, CycleShape)  { (void)ctx; (void)data; self.CycleShape(); }
+DEFINE_WORK_FUNC(PaintModeler, CycleAxis)   { (void)ctx; (void)data; self.CycleAxis(); }
+DEFINE_WORK_FUNC(PaintModeler, ToggleSnap)  { (void)ctx; (void)data; self.ToggleSnap(); }
+DEFINE_WORK_FUNC(PaintModeler, CycleFormat) { (void)ctx; (void)data; self.CycleFormat(); }
+// ExportHere -- the model in the bar's format: model.<fmt> beside the runtime,
+// or the browser's download.
+DEFINE_WORK_FUNC(PaintModeler, ExportHere)
+{
+    (void)ctx;
+    const std::string answer = self.ExportHere();
+    data.reset();
+    data.writeString(answer.c_str());
+}
 // AddPart <node> -- one more Scene3D of the pool (paint_model_part.etcs).
 DEFINE_WORK_FUNC_TYPED(PaintModeler, AddPart, (ETCS::RID, node)) { (void)ctx; self.AddPart(node); }
 // AddShape <name> <mesh> -- a shape parts can be drawn as.

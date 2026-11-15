@@ -21,6 +21,7 @@
     "LayoutProvider.wasm",
     "PaintProvider.wasm",
     "DatabaseProvider.wasm",
+    "NetworkProvider.wasm",
     "ShellProvider.wasm"
   ],
   "_scripts": [
@@ -47,7 +48,10 @@
     "PaintProvider/scripts/paint_model_shapes.etcs",
     "PaintProvider/scripts/paint_model_parts.etcs",
     "PaintProvider/scripts/paint_model_part.etcs",
-    "PaintProvider/scripts/paint_model_tools.etcs",
+    "PaintProvider/scripts/paint_model_bar.etcs",
+    "PaintProvider/scripts/paint_model_emit.etcs",
+    "PaintProvider/scripts/paint_model_follow.etcs",
+    "PaintProvider/scripts/paint_model_judge.etcs",
     "PaintProvider/scripts/paint_layers.etcs",
     "PaintProvider/scripts/paint_import.etcs",
     "PaintProvider/scripts/paint_visitors.etcs",

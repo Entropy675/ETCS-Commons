@@ -4,15 +4,18 @@
 # the unit box a part's extent scales (RenderProvider/Mesh.h). "box" is every
 # node's own and is not made here. A shape another page wants is a Mesh and a
 # line like the last of each block -- nothing in the modeller names these four.
-#   run PaintProvider/scripts/paint_model_shapes.etcs model=<PaintModeler>
+# Children of the model's container: a shape is named by where it is
+# (Scene3D::SetMesh), so it lives above every part drawn with it.
+#   run paint_model_shapes.etcs world=<Scene3D> model=<PaintModeler>
+requires world [Drawable3D]
 requires model [PaintModeler]
 
-spawn RenderProvider::Mesh sphere
+world.spawn(RenderProvider::Mesh sphere)
 sphere.Create()
 sphere.Sphere(16)
 model.AddShape(sphere, @sphere)
 
-spawn RenderProvider::Mesh cylinder
+world.spawn(RenderProvider::Mesh cylinder)
 cylinder.Create()
 cylinder.Cylinder(24)
 model.AddShape(cylinder, @cylinder)
@@ -20,7 +23,7 @@ model.AddShape(cylinder, @cylinder)
 # Four sides and a base, a normal a face. Wound as Mesh's own shapes are --
 # (b - a) x (c - a) points out -- which no picture depends on (nothing culls)
 # and an exported file does.
-spawn RenderProvider::Mesh pyramid
+world.spawn(RenderProvider::Mesh pyramid)
 pyramid.Create()
 pyramid.AddVertex(-0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
 pyramid.AddVertex( 0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
@@ -47,7 +50,7 @@ pyramid.AddTriangle(13, 15, 14)
 model.AddShape(pyramid, @pyramid)
 
 # A ramp: the box with its top front edge taken off.
-spawn RenderProvider::Mesh wedge
+world.spawn(RenderProvider::Mesh wedge)
 wedge.Create()
 wedge.AddVertex(-0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
 wedge.AddVertex( 0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
