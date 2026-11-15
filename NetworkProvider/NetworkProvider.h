@@ -1658,4 +1658,154 @@ DEFINE_WORK_FUNC(TarpitNode, Delete)
     self.Delete();
 }
 
+
+// ===========================================================================
+// The foreign boundary (Embassy.h, HttpsRelation.h, DnsRelation.h)
+// ===========================================================================
+
+// Advertise <name> <scheme> <rid> -- a Foreign leaf, by RID, under the
+// protocol it speaks.
+DEFINE_WORK_FUNC(Embassy, Advertise)
+{
+    (void)ctx;
+    std::string name, kind, info;
+    data >> name >> kind >> info;
+    const bool ok = self.Advertise(name, kind, info);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Embassy, Withdraw)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Withdraw(name);
+    data.reset(); data << ok;
+}
+// List [<scheme>] -- "name scheme rid" per line; nothing while closed.
+DEFINE_WORK_FUNC(Embassy, List)
+{
+    (void)ctx;
+    std::string kind;
+    data >> kind;
+    std::string all = self.Listing(kind);
+    if (all.size() >= ETCS::Buffer::bufsize) all.resize(ETCS::Buffer::bufsize - 4), all += "...";
+    data.reset();
+    data.write(all.c_str());
+}
+// Request <relation> <question> -- the answer inline, cut to one Buffer. A
+// caller wanting the whole answer finds the relation in List and calls
+// Foreign_::Exchange itself.
+DEFINE_WORK_FUNC(Embassy, Request)
+{
+    std::string name;
+    data >> name;
+    std::string question = data.restAsString();
+    while (!question.empty() && question.front() == ' ') question.erase(0, 1);
+    std::string answer;
+    const bool ok = self.Request(name, question, answer, ctx);
+    ETCS_LOG("Embassy::Request", name << ": " << (ok ? "answered " : "no answer ") << answer.size() << " byte(s).");
+    if (answer.size() >= ETCS::Buffer::bufsize) answer.resize(ETCS::Buffer::bufsize - 4), answer += "...";
+    data.reset();
+    if (ok) data.write(answer.c_str());
+}
+DEFINE_WORK_FUNC(Embassy, Open)
+{
+    (void)ctx;
+    const bool ok = self.Open(data);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Embassy, Close)
+{
+    (void)ctx;
+    const bool ok = self.Close();
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Embassy, IsOpen)
+{
+    (void)ctx;
+    const bool open = self.IsOpen();
+    data.reset(); data << open;
+}
+DEFINE_WORK_FUNC(Embassy, Delete) { (void)ctx; (void)data; self.Delete(); }
+
+// One relation per stranger: configure, then Activate <stand-in rid>. From
+// then on every configuration verb refuses (delete and remake to change it).
+DEFINE_WORK_FUNC(HttpsRelation, Origin)
+{
+    (void)ctx;
+    std::string v;
+    data >> v;
+    const bool ok = self.Origin(v);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(HttpsRelation, Target)
+{
+    (void)ctx;
+    const std::string v = data.toString();
+    const bool ok = self.Target(v);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(HttpsRelation, SetCaFile)
+{
+    (void)ctx;
+    std::string v;
+    data >> v;
+    const bool ok = self.SetCaFile(v);
+    data.reset(); data << ok;
+}
+// Secret <name> <path> -- {secret:<name>} in a question reads <path> at send.
+DEFINE_WORK_FUNC(HttpsRelation, Secret)
+{
+    (void)ctx;
+    std::string name, path;
+    data >> name >> path;
+    const bool ok = self.Secret(name, path);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(HttpsRelation, Activate)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Activate(rid);
+    data.reset(); data << ok;
+}
+// Ask <METHOD> /path -- Exchange directly, the answer cut to one Buffer.
+DEFINE_WORK_FUNC(HttpsRelation, Ask)
+{
+    const std::string question = data.toString();
+    std::string answer;
+    const bool ok = self.Exchange(question, answer, ctx);
+    if (answer.size() >= ETCS::Buffer::bufsize) answer.resize(ETCS::Buffer::bufsize - 4), answer += "...";
+    data.reset();
+    if (ok) data.write(answer.c_str());
+}
+DEFINE_WORK_FUNC(HttpsRelation, Delete) { (void)ctx; (void)data; self.Delete(); }
+
+DEFINE_WORK_FUNC(DnsRelation, Target)
+{
+    (void)ctx;
+    const std::string v = data.toString();
+    const bool ok = self.Target(v);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(DnsRelation, Activate)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Activate(rid);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(DnsRelation, Ask)
+{
+    const std::string question = data.toString();
+    std::string answer;
+    const bool ok = self.Exchange(question, answer, ctx);
+    ETCS_LOG("DnsRelation", question << " -> " << (ok ? (answer.empty() ? "(no records)" : answer) : "no answer"));
+    data.reset();
+    if (ok) data.write(answer.c_str());
+}
+DEFINE_WORK_FUNC(DnsRelation, Delete) { (void)ctx; (void)data; self.Delete(); }
+
 #endif
