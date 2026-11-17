@@ -32,6 +32,7 @@ tree.MountFile(KartProvider/scripts/kart_pool.etcs ACE_ROOT/modules/KartProvider
 tree.MountFile(KartProvider/scripts/kart_car.etcs ACE_ROOT/modules/KartProvider/scripts/kart_car.etcs)
 tree.MountFile(KartProvider/scripts/kart_wheel.etcs ACE_ROOT/modules/KartProvider/scripts/kart_wheel.etcs)
 tree.MountFile(KartProvider/scripts/kart_pickup.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pickup.etcs)
+tree.MountFile(KartProvider/scripts/kart_pickups.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pickups.etcs)
 tree.MountFile(KartProvider/scripts/kart_shots.etcs ACE_ROOT/modules/KartProvider/scripts/kart_shots.etcs)
 tree.MountFile(KartProvider/scripts/kart_shot.etcs ACE_ROOT/modules/KartProvider/scripts/kart_shot.etcs)
 tree.MountFile(KartProvider/scripts/kart_blast.etcs ACE_ROOT/modules/KartProvider/scripts/kart_blast.etcs)

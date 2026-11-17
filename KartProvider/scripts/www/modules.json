@@ -35,6 +35,7 @@
     "KartProvider/scripts/kart_car.etcs",
     "KartProvider/scripts/kart_wheel.etcs",
     "KartProvider/scripts/kart_pickup.etcs",
+    "KartProvider/scripts/kart_pickups.etcs",
     "KartProvider/scripts/kart_shots.etcs",
     "KartProvider/scripts/kart_shot.etcs",
     "KartProvider/scripts/kart_blast.etcs",

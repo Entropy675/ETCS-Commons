@@ -162,7 +162,7 @@ public:
     void AddRamp(float x, float z, float yaw, float width, float up, float flat, float down, float height)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (m_defs.empty() || width <= 0 || up <= 0 || flat < 0 || down < 0 || height <= 0) return;
+        if (m_defs.empty() || width <= 0 || up < 0 || flat < 0 || down < 0 || up + flat + down <= 0 || height <= 0) return;
         KartArena::Ramp r;
         r.x = Fixed::From(x); r.z = Fixed::From(z); r.yaw = static_cast<int>(std::lround(yaw));
         r.width = Fixed::From(width); r.up = Fixed::From(up); r.flat = Fixed::From(flat);

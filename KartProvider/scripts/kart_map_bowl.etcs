@@ -1,33 +1,48 @@
 #!/usr/bin/env etcs
-# BOWL: open ground, the corners filled in and four low bumpers round the
-# middle -- room to chase, little to hide behind. Flat.
+# BOWL: a basin -- every wall banked, so you can ride up any side and drop
+# back in, the corners walled off, a mound in the middle with a box on top,
+# and a ring of low bumpers round it to dodge behind.
 #   run kart_map_bowl.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
+# A ramp rises toward its yaw (0 +z, 90 +x, 180 -z, 270 -x).
 requires battle [KartBattle]
 battle.AddMap(bowl)
 
-battle.AddBlock(24.5, 24.5, 1.2, 22.0, 1.2, -45.0)
-battle.AddBlock(24.5, -24.5, 1.2, 22.0, 1.2, 45.0)
-battle.AddBlock(-24.5, 24.5, 1.2, 22.0, 1.2, 45.0)
-battle.AddBlock(-24.5, -24.5, 1.2, 22.0, 1.2, -45.0)
-battle.AddBlock(0.0, 9.0, 4.0, 1.2, 0.8, 0.0)
-battle.AddBlock(0.0, -9.0, 4.0, 1.2, 0.8, 0.0)
-battle.AddBlock(9.0, 0.0, 1.2, 4.0, 0.8, 0.0)
-battle.AddBlock(-9.0, 0.0, 1.2, 4.0, 0.8, 0.0)
+# The banks: up to the wall, their lips on it.
+battle.AddRamp(0.0, 27.5, 0.0, 36.0, 7.0, 0.0, 0.0, 2.0)
+battle.AddRamp(0.0, -27.5, 180.0, 36.0, 7.0, 0.0, 0.0, 2.0)
+battle.AddRamp(27.5, 0.0, 90.0, 36.0, 7.0, 0.0, 0.0, 2.0)
+battle.AddRamp(-27.5, 0.0, 270.0, 36.0, 7.0, 0.0, 0.0, 2.0)
+# The corners, walled off as tall as the banks are high.
+battle.AddBlock(24.5, 24.5, 1.2, 22.0, 3.0, -45.0)
+battle.AddBlock(24.5, -24.5, 1.2, 22.0, 3.0, 45.0)
+battle.AddBlock(-24.5, 24.5, 1.2, 22.0, 3.0, 45.0)
+battle.AddBlock(-24.5, -24.5, 1.2, 22.0, 3.0, -45.0)
+# The mound, and the bumpers round it.
+battle.AddHill(0.0, 0.0, 7.0, 1.4)
+battle.AddBlock(0.0, 11.0, 4.0, 1.2, 0.8, 0.0)
+battle.AddBlock(0.0, -11.0, 4.0, 1.2, 0.8, 0.0)
+battle.AddBlock(11.0, 0.0, 1.2, 4.0, 0.8, 0.0)
+battle.AddBlock(-11.0, 0.0, 1.2, 4.0, 0.8, 0.0)
+battle.AddBlock(8.0, 8.0, 3.0, 1.2, 0.8, 45.0)
+battle.AddBlock(-8.0, 8.0, 3.0, 1.2, 0.8, -45.0)
+battle.AddBlock(8.0, -8.0, 3.0, 1.2, 0.8, -45.0)
+battle.AddBlock(-8.0, -8.0, 3.0, 1.2, 0.8, 45.0)
 
-battle.AddSpawn(0.0, -24.0)
-battle.AddSpawn(0.0, 24.0)
-battle.AddSpawn(24.0, 0.0)
-battle.AddSpawn(-24.0, 0.0)
-battle.AddSpawn(15.0, -15.0)
-battle.AddSpawn(-15.0, 15.0)
-battle.AddSpawn(15.0, 15.0)
-battle.AddSpawn(-15.0, -15.0)
+battle.AddSpawn(0.0, -19.0)
+battle.AddSpawn(0.0, 19.0)
+battle.AddSpawn(19.0, 0.0)
+battle.AddSpawn(-19.0, 0.0)
+battle.AddSpawn(13.0, -13.0)
+battle.AddSpawn(-13.0, 13.0)
+battle.AddSpawn(13.0, 13.0)
+battle.AddSpawn(-13.0, -13.0)
 
 battle.AddPickup(0.0, 0.0)
-battle.AddPickup(9.0, 9.0)
-battle.AddPickup(-9.0, 9.0)
-battle.AddPickup(9.0, -9.0)
-battle.AddPickup(-9.0, -9.0)
-battle.AddPickup(0.0, 18.0)
+battle.AddPickup(0.0, 27.0)
+battle.AddPickup(0.0, -27.0)
+battle.AddPickup(27.0, 0.0)
+battle.AddPickup(-27.0, 0.0)
+battle.AddPickup(0.0, 14.0)
+battle.AddPickup(0.0, -14.0)

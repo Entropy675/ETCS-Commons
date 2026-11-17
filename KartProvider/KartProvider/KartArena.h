@@ -23,7 +23,8 @@
  *
  *   ramp   along its direction (yaw, degrees, from +z toward +x): `up` units
  *          rising to `height`, `flat` units level, `down` units falling --
- *          `down` 0 is a jump, its lip a drop; `width` across
+ *          `down` 0 is a jump, its lip a drop; `up` 0 a landing, its near
+ *          edge a step; `width` across
  *   hill   a dome of `radius` and `height`: the top of an ellipsoid twice the
  *          radius across, sunk so it meets the ground at a slope of about
  *          2.2 x height / radius, never a wall
@@ -116,11 +117,14 @@ namespace KartArena
     }
 
     /*
-     * A MAP FROM A SEED: the spawns on a ring first, then hills, ramps and
-     * blocks dropped where they leave room -- each kept clear of the others,
-     * of the spawns and of the middle, so a ramp never runs into a block and
-     * nobody spawns in a wall -- then the power-up spots, the middle one first.
-     * The dice are KartArms::Next, so the same seed is the same map anywhere.
+     * A MAP FROM A SEED. First what keeps the arena playable: eight spawns on
+     * a ring and the middle's box. Then, from the dice: banks on up to two
+     * walls (a ramp up to the wall, ridden up and rolled back down from), and
+     * nothing else within reach of a banked wall; hills; ramps of three
+     * kinds -- jumps, decks (up, a level top, down) and small kickers; blocks;
+     * and the power-up boxes. Each is kept clear of everything placed before
+     * it, so a ramp never runs into a block and nobody spawns in a wall. The
+     * dice are KartArms::Next, so the same seed is the same map anywhere.
      */
     inline void Generate(uint64_t seed, Map& m)
     {
@@ -130,8 +134,11 @@ namespace KartArena
         auto pick = [&r](int lo, int hi) { return lo + static_cast<int>(KartArms::Next(r) % static_cast<uint64_t>(hi - lo + 1)); };
         struct Room { Fixed x, z, rad; };
         std::vector<Room> taken;
-        auto clear = [&taken](Fixed x, Fixed z, Fixed rad) {
-            if (x.Abs() + rad > F(30) || z.Abs() + rad > F(30)) return false;
+        // How far out a thing may reach on each side (+x, -x, +z, -z): to the
+        // wall, or short of a bank on it.
+        Fixed reach[4] = { F(30), F(30), F(30), F(30) };
+        auto clear = [&taken, &reach](Fixed x, Fixed z, Fixed rad) {
+            if (x + rad > reach[0] || rad - x > reach[1] || z + rad > reach[2] || rad - z > reach[3]) return false;
             for (const Room& t : taken)
             {
                 const Fixed gap = rad + t.rad + F(3, 2);
@@ -139,41 +146,68 @@ namespace KartArena
             }
             return true;
         };
-        static const int ring[8][2] = { { 0, -26 }, { 0, 26 }, { -26, 0 }, { 26, 0 }, { 18, -18 }, { -18, 18 }, { 18, 18 }, { -18, -18 } };
+        static const int ring[8][2] = { { 0, -20 }, { 0, 20 }, { -20, 0 }, { 20, 0 }, { 14, -14 }, { -14, 14 }, { 14, 14 }, { -14, -14 } };
         for (const auto& p : ring) { m.spawns.push_back({ F(p[0]), F(p[1]) }); taken.push_back({ F(p[0]), F(p[1]), F(2) }); }
         m.pickups.push_back({ Fixed::Zero(), Fixed::Zero() });
         taken.push_back({ Fixed::Zero(), Fixed::Zero(), F(2) });
 
-        const int hills = pick(1, 2);
-        for (int t = 0; t < 30 && static_cast<int>(m.hills.size()) < hills; ++t)
+        // Banks: the side (+x, -x, +z, -z) and its yaw, rising toward the wall.
+        static const int sides[4][2] = { { 90, 0 }, { 270, 1 }, { 0, 2 }, { 180, 3 } };
+        const int banks = pick(0, 2);
+        int first = pick(0, 3);
+        for (int b = 0; b < banks; ++b)
         {
-            Hill k; k.radius = F(pick(6, 9)); k.height = F(pick(10, 16), 10);
+            const int side = (first + b * pick(1, 3)) % 4;
+            if (reach[side] < F(30)) continue;   // the same side twice: one bank
+            Ramp a; a.yaw = sides[side][0]; a.width = F(pick(20, 34)); a.up = F(pick(5, 7));
+            a.flat = a.down = Fixed::Zero(); a.height = F(pick(15, 22), 10);
+            const Fixed at = F(31) - a.up * Fixed::Half();   // its lip on the karts' bound
+            const Fixed along = F(pick(-4, 4));
+            a.x = side == 0 ? at : side == 1 ? -at : along;
+            a.z = side == 2 ? at : side == 3 ? -at : along;
+            m.ramps.push_back(a);
+            reach[side] = F(31) - a.up - F(1);
+        }
+        const int hills = pick(1, 3);
+        for (int t = 0; t < 40 && static_cast<int>(m.hills.size()) < hills; ++t)
+        {
+            Hill k; k.radius = F(pick(5, 8)); k.height = F(pick(10, 16), 10);
             k.x = F(pick(-18, 18)); k.z = F(pick(-18, 18));
             if (!clear(k.x, k.z, k.radius)) continue;
             m.hills.push_back(k); taken.push_back({ k.x, k.z, k.radius });
         }
-        const int ramps = pick(2, 4);
-        for (int t = 0; t < 80 && static_cast<int>(m.ramps.size()) < ramps; ++t)
+        const int ramps = static_cast<int>(m.ramps.size()) + pick(3, 6);
+        for (int t = 0; t < 120 && static_cast<int>(m.ramps.size()) < ramps; ++t)
         {
-            Ramp a; a.yaw = pick(0, 7) * 45; a.width = F(pick(3, 5));
-            a.up = F(pick(5, 7)); a.flat = pick(0, 1) ? F(pick(2, 3)) : Fixed::Zero();
-            a.down = pick(0, 1) ? F(pick(4, 5)) : Fixed::Zero(); a.height = F(pick(10, 18), 10);
+            Ramp a; a.yaw = pick(0, 7) * 45;
+            switch (pick(0, 2))
+            {
+                case 0:   // a jump
+                    a.width = F(pick(3, 5)); a.up = F(pick(5, 7)); a.flat = a.down = Fixed::Zero();
+                    a.height = F(pick(10, 18), 10); break;
+                case 1:   // a deck
+                    a.width = F(pick(4, 6)); a.up = F(pick(4, 6)); a.flat = F(pick(3, 6)); a.down = F(pick(4, 6));
+                    a.height = F(pick(12, 20), 10); break;
+                default:  // a kicker
+                    a.width = F(3); a.up = F(pick(3, 4)); a.flat = a.down = Fixed::Zero();
+                    a.height = F(pick(8, 12), 10); break;
+            }
             a.x = F(pick(-20, 20)); a.z = F(pick(-20, 20));
             const Fixed rad = a.length() * Fixed::Half() + a.width * Fixed::Half();
             if (!clear(a.x, a.z, rad)) continue;
             m.ramps.push_back(a); taken.push_back({ a.x, a.z, rad });
         }
-        const int blocks = pick(3, 6);
-        for (int t = 0; t < 60 && static_cast<int>(m.blocks.size()) < blocks; ++t)
+        const int blocks = pick(4, 8);
+        for (int t = 0; t < 80 && static_cast<int>(m.blocks.size()) < blocks; ++t)
         {
-            Block b; b.w = F(pick(3, 7)); b.d = F(pick(3, 7)); b.h = F(pick(25, 40), 10);
+            Block b; b.w = F(pick(2, 7)); b.d = F(pick(2, 7)); b.h = F(pick(14, 40), 10);
             b.yaw = pick(0, 3) == 0 ? 45 : 0;
             b.x = F(pick(-22, 22)); b.z = F(pick(-22, 22));
             const Fixed rad = (b.w + b.d) * Fixed::Half();
             if (!clear(b.x, b.z, rad)) continue;
             m.blocks.push_back(b); taken.push_back({ b.x, b.z, rad });
         }
-        for (int t = 0; t < 40 && m.pickups.size() < 6; ++t)
+        for (int t = 0; t < 60 && m.pickups.size() < 8; ++t)
         {
             const Fixed x = F(pick(-22, 22)), z = F(pick(-22, 22));
             if (!clear(x, z, F(1))) continue;

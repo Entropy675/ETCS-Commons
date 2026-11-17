@@ -1,16 +1,34 @@
 #!/usr/bin/env etcs
-# CROSSROADS: four city blocks -- a cross of roads through the middle and a
-# ring road round the outside, the corners blind. Flat.
+# CROSSROADS: a cross of roads through the middle and a ring road round the
+# outside, the four quarters built up in pairs of buildings of different
+# heights with an alley between, planters at the junction, and a jump on
+# every side of the ring.
 #   run kart_map_crossroads.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
+# A ramp rises toward its yaw (0 +z, 90 +x, 180 -z, 270 -x).
 requires battle [KartBattle]
 battle.AddMap(crossroads)
 
-battle.AddBlock(15.0, 15.0, 14.0, 14.0, 2.0, 0.0)
-battle.AddBlock(-15.0, 15.0, 14.0, 14.0, 2.0, 0.0)
-battle.AddBlock(15.0, -15.0, 14.0, 14.0, 2.0, 0.0)
-battle.AddBlock(-15.0, -15.0, 14.0, 14.0, 2.0, 0.0)
+# The buildings: two to a quarter, an alley four wide between them.
+battle.AddBlock(10.5, 15.0, 5.0, 14.0, 3.0, 0.0)
+battle.AddBlock(19.5, 15.0, 5.0, 14.0, 2.2, 0.0)
+battle.AddBlock(-15.0, 10.5, 14.0, 5.0, 2.5, 0.0)
+battle.AddBlock(-15.0, 19.5, 14.0, 5.0, 3.5, 0.0)
+battle.AddBlock(15.0, -10.5, 14.0, 5.0, 3.5, 0.0)
+battle.AddBlock(15.0, -19.5, 14.0, 5.0, 2.0, 0.0)
+battle.AddBlock(-10.5, -15.0, 5.0, 14.0, 2.0, 0.0)
+battle.AddBlock(-19.5, -15.0, 5.0, 14.0, 3.0, 0.0)
+# Planters on the junction's corners, clear of both roads' middles.
+battle.AddBlock(6.0, 6.0, 2.0, 2.0, 1.0, 0.0)
+battle.AddBlock(-6.0, 6.0, 2.0, 2.0, 1.0, 0.0)
+battle.AddBlock(6.0, -6.0, 2.0, 2.0, 1.0, 0.0)
+battle.AddBlock(-6.0, -6.0, 2.0, 2.0, 1.0, 0.0)
+# A jump on each side of the ring road, all the same way round.
+battle.AddRamp(27.0, -16.0, 0.0, 4.0, 5.0, 0.0, 0.0, 1.2)
+battle.AddRamp(-27.0, 16.0, 180.0, 4.0, 5.0, 0.0, 0.0, 1.2)
+battle.AddRamp(16.0, 27.0, 270.0, 4.0, 5.0, 0.0, 0.0, 1.2)
+battle.AddRamp(-16.0, -27.0, 90.0, 4.0, 5.0, 0.0, 0.0, 1.2)
 
 # On the roads, each facing the middle down its road: the corners face a
 # block, so none is a spawn.
@@ -28,4 +46,6 @@ battle.AddPickup(15.0, 0.0)
 battle.AddPickup(-15.0, 0.0)
 battle.AddPickup(0.0, 15.0)
 battle.AddPickup(0.0, -15.0)
-battle.AddPickup(27.0, 15.0)
+battle.AddPickup(15.0, 15.0)
+battle.AddPickup(-15.0, -15.0)
+battle.AddPickup(27.0, 27.0)

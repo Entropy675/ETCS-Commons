@@ -1,12 +1,17 @@
 #!/usr/bin/env etcs
-# PILLARS: eight square pillars on a grid -- cover to break a line of fire,
-# corners to wait behind. Flat.
+# PILLARS: a raised plaza in the middle -- a cross with a ramp at each end
+# and a box on every arm -- eight pillars round it to break a line of fire,
+# deflectors in the corners, and kickers on the outer ring.
 #   run kart_map_pillars.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
+# A ramp rises toward its yaw (0 +z, 90 +x, 180 -z, 270 -x).
 requires battle [KartBattle]
 battle.AddMap(pillars)
 
+# The plaza: two decks crossing, level at the top.
+battle.AddRamp(0.0, 0.0, 0.0, 7.0, 5.0, 8.0, 5.0, 1.6)
+battle.AddRamp(0.0, 0.0, 90.0, 7.0, 5.0, 8.0, 5.0, 1.6)
 battle.AddBlock(-14.0, -14.0, 3.0, 3.0, 2.5, 0.0)
 battle.AddBlock(0.0, -14.0, 3.0, 3.0, 2.5, 0.0)
 battle.AddBlock(14.0, -14.0, 3.0, 3.0, 2.5, 0.0)
@@ -15,6 +20,16 @@ battle.AddBlock(14.0, 0.0, 3.0, 3.0, 2.5, 0.0)
 battle.AddBlock(-14.0, 14.0, 3.0, 3.0, 2.5, 0.0)
 battle.AddBlock(0.0, 14.0, 3.0, 3.0, 2.5, 0.0)
 battle.AddBlock(14.0, 14.0, 3.0, 3.0, 2.5, 0.0)
+# Low deflectors across each corner: cover for whoever spawns behind.
+battle.AddBlock(20.0, 20.0, 6.0, 1.0, 1.4, 45.0)
+battle.AddBlock(-20.0, 20.0, 6.0, 1.0, 1.4, -45.0)
+battle.AddBlock(20.0, -20.0, 6.0, 1.0, 1.4, -45.0)
+battle.AddBlock(-20.0, -20.0, 6.0, 1.0, 1.4, 45.0)
+# Kickers round the outer ring, each the way round it goes.
+battle.AddRamp(26.0, 10.0, 0.0, 3.0, 4.0, 0.0, 0.0, 1.0)
+battle.AddRamp(-26.0, -10.0, 180.0, 3.0, 4.0, 0.0, 0.0, 1.0)
+battle.AddRamp(-10.0, 26.0, 90.0, 3.0, 4.0, 0.0, 0.0, 1.0)
+battle.AddRamp(10.0, -26.0, 270.0, 3.0, 4.0, 0.0, 0.0, 1.0)
 
 battle.AddSpawn(-26.0, -26.0)
 battle.AddSpawn(26.0, 26.0)
@@ -26,8 +41,9 @@ battle.AddSpawn(26.0, 0.0)
 battle.AddSpawn(-26.0, 0.0)
 
 battle.AddPickup(0.0, 0.0)
-battle.AddPickup(7.0, 7.0)
-battle.AddPickup(-7.0, 7.0)
-battle.AddPickup(7.0, -7.0)
-battle.AddPickup(-7.0, -7.0)
-battle.AddPickup(-21.0, 7.0)
+battle.AddPickup(0.0, 6.0)
+battle.AddPickup(0.0, -6.0)
+battle.AddPickup(6.0, 0.0)
+battle.AddPickup(-6.0, 0.0)
+battle.AddPickup(21.0, 7.0)
+battle.AddPickup(-21.0, -7.0)

@@ -26,10 +26,12 @@ run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
 
-# The map in play: sixteen blocks, eighteen slabs (a ramp takes up to
-# three), six domes.
+# The map in play: twenty-four blocks, twenty-four slabs (a ramp takes up
+# to three), six domes.
 run kart_blocks.etcs world=world battle=battle
 run kart_blocks.etcs world=world battle=battle
+run kart_blocks.etcs world=world battle=battle
+run kart_slabs.etcs world=world battle=battle
 run kart_slabs.etcs world=world battle=battle
 run kart_slabs.etcs world=world battle=battle
 run kart_slabs.etcs world=world battle=battle
@@ -40,13 +42,9 @@ run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
 
-# As many boxes as the busiest map has spots.
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
+# As many boxes as the busiest map has spots: eight.
+run kart_pickups.etcs world=world battle=battle
+run kart_pickups.etcs world=world battle=battle
 
 # Sixteen shots drawn at once (more fly, undrawn) and four bursts.
 run kart_shots.etcs world=world battle=battle

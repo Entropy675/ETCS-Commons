@@ -41,11 +41,14 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   six seconds, then the lobby, which keeps them), or the host **abandons** it (**Esc**, or the
   page's button) -- back to the lobby, its scores discarded.
 - **Hold Tab** in a round for the scores on the arena.
-- **The maps:** bowl, pillars and crossroads (flat); **hills** (four rolling hills with a box on
-  every top, two jumps); **skatepark** (two jumps down the middle, a raised deck on either side
-  with a ramp at each end); and **random** -- a new layout of hills, ramps and blocks from a seed
-  each time it is chosen (**new layout** on the page, or **Enter** on the map in the menu), the
-  same on every tab.
+- **The maps:** **bowl** (every wall banked, a mound in the middle, a ring of bumpers);
+  **pillars** (a raised plaza in the middle, ramps up from all four sides, pillars round it,
+  kickers at the edge); **crossroads** (a cross of roads and a ring road between buildings of
+  different heights, jumps round the outside); **hills** (six hills, a ridge to ride over, two
+  jumps, boulders); **skatepark** (two jumps down the middle, a gap jump across it, a raised deck
+  either side, the end walls banked, kickers in the corners); and **random** -- a new layout from
+  a seed each time it is chosen (**new layout** on the page, or **Enter** on the map in the menu),
+  the same on every tab: banked walls, hills, jumps, decks and kickers, and blocks.
 - **The ground has slopes.** A kart slows going up and gains going down; off a jump's lip at speed
   it flies and lands beyond it. Ground too steep to climb -- a lip met from the drop side, the side
   of a deck -- is a wall.
