@@ -4,8 +4,9 @@
 # what you can see over is what can see you.
 #   run kart_map_hills.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
-# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
-# A ramp rises toward its yaw (0 +z, 90 +x, 180 -z, 270 -x).
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
+# <yaw> (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
+# 90 +x, 180 -z, 270 -x).
 requires battle [KartBattle]
 battle.AddMap(hills)
 
@@ -24,6 +25,12 @@ battle.AddBlock(-4.0, -20.0, 2.5, 2.5, 1.5, 45.0)
 battle.AddBlock(4.0, 20.0, 2.5, 2.5, 1.5, 45.0)
 battle.AddBlock(22.0, 14.0, 2.5, 2.5, 1.5, 45.0)
 battle.AddBlock(-22.0, -12.0, 2.5, 2.5, 1.5, 45.0)
+
+# Pads on the flats between the hills.
+battle.AddPad(16.0, 26.0, 270.0)
+battle.AddPad(-12.0, -25.0, 90.0)
+battle.AddPad(-23.0, 9.0, 0.0)
+battle.AddPad(24.0, -11.0, 180.0)
 
 battle.AddSpawn(0.0, -26.0)
 battle.AddSpawn(0.0, 26.0)

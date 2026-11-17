@@ -1,0 +1,10 @@
+#!/usr/bin/env etcs
+# An arrow of a pad: bright, flat, held, hidden until its pad is on the map.
+#   run kart_arrow.etcs arrow=<Scene3D> dart=<Mesh>
+requires arrow [Drawable3D]
+requires dart [Mesh]
+arrow.Create(1.0, 1.0, 1.0)
+arrow.SetMesh(@dart)
+arrow.SetColor(0.35, 0.95, 1.0, 1.0)
+arrow.SetAnchored(1)
+arrow.SetVisible(0)

@@ -192,6 +192,16 @@ public:
         k.x = Fixed::From(x); k.z = Fixed::From(z); k.radius = Fixed::From(radius); k.height = Fixed::From(height);
         m_defs.back().hills.push_back(k);
     }
+    // A pad on the level ground of the map being described, pushing toward
+    // `yaw` (a ramp's convention).
+    void AddPad(float x, float z, float yaw)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (m_defs.empty()) return;
+        KartArena::Pad p;
+        p.x = Fixed::From(x); p.z = Fixed::From(z); p.yaw = static_cast<int>(std::lround(yaw));
+        m_defs.back().pads.push_back(p);
+    }
     void AddSpawn(float x, float z)  { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().spawns.push_back({ Fixed::From(x), Fixed::From(z) }); }
     void AddPickup(float x, float z) { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().pickups.push_back({ Fixed::From(x), Fixed::From(z) }); }
 
@@ -204,6 +214,18 @@ public:
     // The arena's floor: coloured here, as the slabs and domes are, so a
     // mark fades into the ground it is on.
     void AddGroundNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); groundColour(r, KartArena::Floor); }
+    // A pad of the pool: its plate, coloured and sized here (the size is the
+    // arena's), and the three arrows that run along it.
+    void AddPadNode(ETCS::RID plate, ETCS::RID a, ETCS::RID b, ETCS::RID c)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_pad_nodes.push_back({ plate, { a, b, c } });
+        groundColour(plate, KartArena::OnPad);
+        verb(plate, "Create", fmt3(KartArena::PadWidth().ToFloat()) + ", 0.01, " + fmt3(KartArena::PadLength().ToFloat()));
+        parkNode(plate);
+        // An arrow lies flat: its mesh's length (+y) along the pad, its depth up.
+        for (ETCS::RID r : { a, b, c }) { verb(r, "Create", "1.7, " + fmt3(padArrow().ToFloat()) + ", 0.02"); parkNode(r); }
+    }
     // A segment of a tyre's mark: a thin strip on the ground, sized when it
     // is laid; twenty-four to a tyre, ninety-six to a kart, in the order the
     // karts are made.
@@ -541,8 +563,8 @@ public:
         for (const KartArena::Map& m : m_defs) out += m.name + "\n";
         return out;
     }
-    // The map in play: "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <digest>",
-    // the digest over every number on it.
+    // The map in play: "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads>
+    // <digest>", the digest over every number on it.
     std::string Layout()
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -551,13 +573,15 @@ public:
         for (const auto& b : m_live.blocks) { put(b.x); put(b.z); put(b.w); put(b.d); put(b.h); st += std::to_string(b.yaw) + "|"; }
         for (const auto& r : m_live.ramps)  { put(r.x); put(r.z); put(r.width); put(r.up); put(r.flat); put(r.down); put(r.height); st += std::to_string(r.yaw) + "|"; }
         for (const auto& k : m_live.hills)  { put(k.x); put(k.z); put(k.radius); put(k.height); st += "|"; }
+        for (const auto& p : m_live.pads)   { put(p.x); put(p.z); st += std::to_string(p.yaw) + "|"; }
         for (const auto& p : m_live.spawns) { put(p.x); put(p.z); }
         for (const auto& p : m_live.pickups) { put(p.x); put(p.z); }
         char d[17];
         std::snprintf(d, sizeof d, "%016llx", static_cast<unsigned long long>(XXH3_64bits(st.data(), st.size())));
         return m_live.name + " " + std::to_string(m_layout) + " " + std::to_string(m_live.blocks.size()) + " "
              + std::to_string(m_live.ramps.size()) + " " + std::to_string(m_live.hills.size()) + " "
-             + std::to_string(m_live.spawns.size()) + " " + std::to_string(m_live.pickups.size()) + " " + d;
+             + std::to_string(m_live.spawns.size()) + " " + std::to_string(m_live.pickups.size()) + " "
+             + std::to_string(m_live.pads.size()) + " " + d;
     }
     std::string Hash()     { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_tick) + " " + hashLocked(); }
     std::string Snapshot() { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_snap_tick) + " " + m_snap_hash; }
@@ -719,6 +743,7 @@ private:
         int life = 0, armed = 0, node = -1;
     };
     struct BoardRow { ETCS::RID rid; std::string text; bool shown; };
+    struct PadNodes { ETCS::RID plate = 0; ETCS::RID arrow[3] = { 0, 0, 0 }; };
     enum Phase { Lobby, Playing, Results };
     enum MenuItem { MenuMap, MenuLength, MenuStart, MenuItems };
 
@@ -734,7 +759,8 @@ private:
     static constexpr int      kResults    = 6 * kHz;
     // The ground's colours, the battle's to give (AddGroundNode, AddSlabNode,
     // AddDomeNode): a mark is drawn between the ground's own and the tyre's.
-    static constexpr float kGround[3][3] = { { 0.30f, 0.31f, 0.33f }, { 0.72f, 0.52f, 0.30f }, { 0.33f, 0.52f, 0.27f } };
+    static constexpr float kGround[4][3] = { { 0.30f, 0.31f, 0.33f }, { 0.72f, 0.52f, 0.30f }, { 0.33f, 0.52f, 0.27f },
+                                             { 0.13f, 0.20f, 0.36f } };   // floor, ramp, hill, pad
     static constexpr float kTyre[3] = { 0.06f, 0.06f, 0.07f };
     static constexpr float kColors[kMaxKarts][3] = {
         { 0.86f, 0.18f, 0.16f }, { 0.18f, 0.42f, 0.88f }, { 0.95f, 0.80f, 0.15f }, { 0.20f, 0.70f, 0.30f },
@@ -787,6 +813,12 @@ private:
         if (off <= free) return least;
         return Fixed::Min(Fixed::One(), least + (Fixed::One() - least) * (off - free) / (Fixed::One() - free));
     }
+    // A PAD: this much push (u/s/s) the way it points while a kart's middle
+    // is over it, up to a boost's top that way; its arrows run its length in
+    // padBeat() ticks, one behind the other.
+    static Fixed padPush()   { return F(40); }
+    static Fixed padArrow()  { return F(9, 10); }    // an arrow's length
+    static constexpr int padBeat() { return 40; }
     // The tyres at the body's corners, in its frame: across, ahead.
     static Fixed tyreSide()  { return F(70, 100); }
     static Fixed tyreAhead() { return F(64, 100); }
@@ -1156,6 +1188,21 @@ private:
         for (; nb < m_block_nodes.size(); ++nb) parkNode(m_block_nodes[nb]);
         for (; ns < m_slab_nodes.size(); ++ns) parkNode(m_slab_nodes[ns]);
         for (; nd < m_dome_nodes.size(); ++nd) parkNode(m_dome_nodes[nd]);
+        // The pads: each plate on the floor, under any tyre's mark; the
+        // arrows are put on it every tick (arrowsLocked).
+        for (size_t n = 0; n < m_pad_nodes.size(); ++n)
+        {
+            const PadNodes& pn = m_pad_nodes[n];
+            if (n < m_live.pads.size())
+            {
+                const KartArena::Pad& p = m_live.pads[n];
+                poseNode(pn.plate, p.x, F(3, 1000), p.z, p.yaw, Fixed::Zero(), Fixed::One());
+                verb(pn.plate, "SetVisible", "1");
+                for (ETCS::RID a : pn.arrow) verb(a, "SetVisible", "1");
+            }
+            else { parkNode(pn.plate); for (ETCS::RID a : pn.arrow) parkNode(a); }
+        }
+        arrowsLocked();
     }
 
     // ── one tick ────────────────────────────────────────────────────────
@@ -1193,6 +1240,7 @@ private:
             if (m_phase != Lobby) pickupsLocked();
             for (size_t b = 0; b < m_blast_nodes.size(); ++b)
                 if (m_blast_until[b] && static_cast<int64_t>(m_tick) >= m_blast_until[b]) { m_blast_until[b] = 0; hide(m_blast_nodes[b]); }
+            arrowsLocked();
         }
         if (m_phase == Playing && static_cast<int64_t>(m_tick) >= m_end)
         {
@@ -1229,6 +1277,13 @@ private:
         const Fixed hx = s.hx, hz = s.hz;
         Fixed vx, vy, vz;
         r.Velocity(m, vx, vy, vz);
+        // A pad under it pushes the way the pad points, whichever way the
+        // kart does: along its heading that is speed, across it a slide for
+        // the tyres. The work is the Impulse below, with the pedal's.
+        if (!s.air)
+            if (const KartArena::Pad* pad = KartArena::PadAt(m_live, r.x, r.z))
+                if (groundAt(r.x, r.z).IsZero() && vx * pad->sx + vz * pad->cz < boostSpeed())
+                { vx += pad->sx * padPush() * step; vz += pad->cz * padPush() * step; }
         Fixed speed = vx * hx + vz * hz;
         wheelTurnLocked(s, steer, speed, step);
         if (s.boost > 0) --s.boost;
@@ -1804,6 +1859,31 @@ private:
             q.qx = aw * bx + ax * bw + ay * bz - az * by;
             q.qy = aw * by - ax * bz + ay * bw + az * bx;
             q.qz = aw * bz + ax * by - ay * bx + az * bw;
+        }
+    }
+
+    // ── the pads' arrows ────────────────────────────────────────────────
+
+    // Three arrows a pad, running its length one behind the other, like a
+    // belt: where each is follows from the tick, so the same everywhere and
+    // no state. Flat on the plate, above any tyre's mark. The rows are
+    // written under the picture, which a still scene does not take again:
+    // the world is told it moved (by nothing), so a belt runs in the lobby
+    // and with every kart at rest.
+    void arrowsLocked()
+    {
+        if (!m_pad_nodes.empty() && !m_live.pads.empty()) verb(m_world, "Move", "0, 0, 0");
+        const Fixed run = KartArena::PadLength() - padArrow();   // an arrow's middle goes this far
+        const Fixed beat = F(static_cast<int64_t>(m_tick % static_cast<uint64_t>(padBeat())), padBeat());
+        for (size_t n = 0; n < m_pad_nodes.size() && n < m_live.pads.size(); ++n)
+        {
+            const KartArena::Pad& p = m_live.pads[n];
+            for (int k = 0; k < 3; ++k)
+            {
+                Fixed at = (F(k) + beat) / F(3);
+                at = (at - Fixed::Half()) * run;
+                poseNode(m_pad_nodes[n].arrow[k], p.x + p.sx * at, F(6, 100), p.z + p.cz * at, p.yaw, Fixed::One(), Fixed::Zero());
+            }
         }
     }
 
@@ -2431,6 +2511,7 @@ private:
     std::vector<ETCS::RID> m_live_blocks;
     std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_dome_nodes;
     std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;
+    std::vector<PadNodes> m_pad_nodes;
     std::vector<bool> m_shot_busy;
     std::vector<int64_t> m_blast_until;
     std::vector<BoardRow> m_board;

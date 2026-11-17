@@ -5,8 +5,9 @@
 # every side of the ring.
 #   run kart_map_crossroads.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
-# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
-# A ramp rises toward its yaw (0 +z, 90 +x, 180 -z, 270 -x).
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
+# <yaw> (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
+# 90 +x, 180 -z, 270 -x).
 requires battle [KartBattle]
 battle.AddMap(crossroads)
 
@@ -32,6 +33,14 @@ battle.AddRamp(-16.0, -27.0, 90.0, 4.0, 5.0, 0.0, 0.0, 1.2)
 
 # On the roads, each facing the middle down its road: the corners face a
 # block, so none is a spawn.
+# Pads on the cross street toward the junction, and round the ring road.
+battle.AddPad(-21.0, 0.0, 90.0)
+battle.AddPad(21.0, 0.0, 270.0)
+battle.AddPad(26.0, 10.0, 0.0)
+battle.AddPad(-26.0, -10.0, 180.0)
+battle.AddPad(-10.0, 26.0, 270.0)
+battle.AddPad(10.0, -26.0, 90.0)
+
 battle.AddSpawn(0.0, -27.0)
 battle.AddSpawn(0.0, 27.0)
 battle.AddSpawn(-27.0, 0.0)

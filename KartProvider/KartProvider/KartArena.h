@@ -29,6 +29,9 @@
  *          radius across, sunk so it meets the ground at a slope of about
  *          2.2 x height / radius, never a wall
  *
+ * A PAD lies on the level ground and pushes what drives over it the way it
+ * points (yaw, as a ramp's): PadWidth() across, PadLength() along.
+ *
  * Every number is the rows' own integers (Fixed), the generator's too, so
  * the ground under a kart is the same on every runtime.
  */
@@ -48,6 +51,11 @@ namespace KartArena
         Fixed x, z, radius, height;
         Fixed a, b, y0;                // derived: the ellipsoid's half extents and its centre's height
     };
+    struct Pad
+    {
+        Fixed x, z; int yaw = 0;
+        Fixed sx, cz;                  // derived: the way it pushes (sin yaw, cos yaw)
+    };
     struct Map
     {
         std::string        name;
@@ -55,17 +63,21 @@ namespace KartArena
         std::vector<Block> blocks;
         std::vector<Ramp>  ramps;
         std::vector<Hill>  hills;
+        std::vector<Pad>   pads;
         std::vector<Spot>  spawns, pickups;
     };
 
     inline Fixed F(int64_t n, int64_t d = 1) { return Fixed::FromInt(n) / Fixed::FromInt(d); }
     inline void Turn(int yaw_deg, Fixed& s, Fixed& c) { (Fixed::TwoPi() * F(yaw_deg, 360)).SinCos(s, c); }
+    inline Fixed PadWidth()  { return F(3); }
+    inline Fixed PadLength() { return F(4); }
 
     // What the ground is made of follows from what was given: call once a
     // map's ramps and hills are in.
     inline void Prepare(Map& m)
     {
         for (Ramp& r : m.ramps) Turn(r.yaw, r.sx, r.cz);
+        for (Pad& p : m.pads)   Turn(p.yaw, p.sx, p.cz);
         const Fixed half_root3 = F(3).Sqrt() / F(2);   // where an ellipsoid twice as wide meets the ground
         for (Hill& h : m.hills)
         {
@@ -104,8 +116,19 @@ namespace KartArena
         gx = per * dx; gz = per * dz;
         return true;
     }
+    // The pad a point of the level ground is on, or null.
+    inline const Pad* PadAt(const Map& m, Fixed x, Fixed z)
+    {
+        for (const Pad& p : m.pads)
+        {
+            const Fixed dx = x - p.x, dz = z - p.z;
+            const Fixed u = dx * p.sx + dz * p.cz, v = dx * p.cz - dz * p.sx;
+            if (u.Abs() <= PadLength() * Fixed::Half() && v.Abs() <= PadWidth() * Fixed::Half()) return &p;
+        }
+        return nullptr;
+    }
     // What the ground is at a point: what a skid mark there is drawn over.
-    enum Surface { Floor = 0, OnRamp = 1, OnHill = 2 };
+    enum Surface { Floor = 0, OnRamp = 1, OnHill = 2, OnPad = 3 };
     // The ground: the highest thing standing at (x, z), with its slope and
     // what it is.
     inline Fixed Height(const Map& m, Fixed x, Fixed z, Fixed* gx_out = nullptr, Fixed* gz_out = nullptr,
@@ -118,7 +141,7 @@ namespace KartArena
         for (const Hill& k : m.hills) if (HillAt(k, x, z, h, gx, gz) && h > best) { best = h; bgx = gx; bgz = gz; on = OnHill; }
         if (gx_out) *gx_out = bgx;
         if (gz_out) *gz_out = bgz;
-        if (what) *what = on;
+        if (what) *what = on == Floor && PadAt(m, x, z) ? OnPad : on;
         return best;
     }
 
@@ -127,14 +150,14 @@ namespace KartArena
      * a ring and the middle's box. Then, from the dice: banks on up to two
      * walls (a ramp up to the wall, ridden up and rolled back down from), and
      * nothing else within reach of a banked wall; hills; ramps of three
-     * kinds -- jumps, decks (up, a level top, down) and small kickers; blocks;
-     * and the power-up boxes. Each is kept clear of everything placed before
+     * kinds -- jumps, decks (up, a level top, down) and small kickers; pads,
+     * pointing any of eight ways; blocks; and the power-up boxes. Each is kept clear of everything placed before
      * it, so a ramp never runs into a block and nobody spawns in a wall. The
      * dice are KartArms::Next, so the same seed is the same map anywhere.
      */
     inline void Generate(uint64_t seed, Map& m)
     {
-        m.blocks.clear(); m.ramps.clear(); m.hills.clear(); m.spawns.clear(); m.pickups.clear();
+        m.blocks.clear(); m.ramps.clear(); m.hills.clear(); m.pads.clear(); m.spawns.clear(); m.pickups.clear();
         m.generated = true;
         uint64_t r = seed | 1;
         auto pick = [&r](int lo, int hi) { return lo + static_cast<int>(KartArms::Next(r) % static_cast<uint64_t>(hi - lo + 1)); };
@@ -202,6 +225,15 @@ namespace KartArena
             const Fixed rad = a.length() * Fixed::Half() + a.width * Fixed::Half();
             if (!clear(a.x, a.z, rad)) continue;
             m.ramps.push_back(a); taken.push_back({ a.x, a.z, rad });
+        }
+        const int pads = pick(2, 4);
+        for (int t = 0; t < 60 && static_cast<int>(m.pads.size()) < pads; ++t)
+        {
+            Pad p; p.yaw = pick(0, 7) * 45;
+            p.x = F(pick(-22, 22)); p.z = F(pick(-22, 22));
+            const Fixed rad = F(5, 2);   // half its diagonal
+            if (!clear(p.x, p.z, rad)) continue;
+            m.pads.push_back(p); taken.push_back({ p.x, p.z, rad });
         }
         const int blocks = pick(4, 8);
         for (int t = 0; t < 80 && static_cast<int>(m.blocks.size()) < blocks; ++t)

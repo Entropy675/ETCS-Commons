@@ -4,8 +4,9 @@
 # and a ring of low bumpers round it to dodge behind.
 #   run kart_map_bowl.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
-# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
-# A ramp rises toward its yaw (0 +z, 90 +x, 180 -z, 270 -x).
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
+# <yaw> (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
+# 90 +x, 180 -z, 270 -x).
 requires battle [KartBattle]
 battle.AddMap(bowl)
 
@@ -29,6 +30,12 @@ battle.AddBlock(8.0, 8.0, 3.0, 1.2, 0.8, 45.0)
 battle.AddBlock(-8.0, 8.0, 3.0, 1.2, 0.8, -45.0)
 battle.AddBlock(8.0, -8.0, 3.0, 1.2, 0.8, -45.0)
 battle.AddBlock(-8.0, -8.0, 3.0, 1.2, 0.8, 45.0)
+
+# Pads round the ring between the bumpers and the banks, pointing round it.
+battle.AddPad(14.7, 8.5, 330.0)
+battle.AddPad(-8.5, 14.7, 240.0)
+battle.AddPad(-14.7, -8.5, 150.0)
+battle.AddPad(8.5, -14.7, 60.0)
 
 battle.AddSpawn(0.0, -19.0)
 battle.AddSpawn(0.0, 19.0)

@@ -56,10 +56,13 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   jumps, boulders); **skatepark** (two jumps down the middle, a gap jump across it, a raised deck
   either side, the end walls banked, kickers in the corners); and **random** -- a new layout from
   a seed each time it is chosen (**new layout** on the page, or **Enter** on the map in the menu),
-  the same on every tab: banked walls, hills, jumps, decks and kickers, and blocks.
+  the same on every tab: banked walls, hills, jumps, decks and kickers, pads, and blocks.
 - **The ground has slopes.** A kart slows going up and gains going down; off a jump's lip at speed
   it flies and lands beyond it. Ground too steep to climb -- a lip met from the drop side, the side
   of a deck -- is a wall.
+- **Pads** push a kart that drives over them the way their arrows run, up to a boost's speed --
+  along its heading that is speed, across it a slide to catch. Every map has some, the random
+  one too.
 - Out of a battle, the arena is yours alone: practice, with the lobby yours.
 
 ## How it stays one battle
@@ -79,11 +82,12 @@ battle is not the host's at the same tick says so.
 The karts are solid spheres to everything (`etcs_causal_constraints.md` §13): they bump each other,
 the walls and the maps' blocks with the family's own contact, and a shot stops on a wall or a
 block. The ground is not a solid: a map's ramps and hills are a height the battle keeps each kart
-at (`KartArena.h`). A map is data; the battle draws the one in play with pools of blocks, slabs and
+at (`KartArena.h`). A map is data; the battle draws the one in play with pools of blocks, slabs, pads and
 domes made at boot, so a change of map is one line of the record. What you see of a kart is a body
 on four tyres, tilted to the ground, and an HP bar. The tyres are the body's members, anchored in
 its frame, so they go where it goes; frames are translations, so the battle turns them with it
 after every step, and turns each tab's bars to that tab's own eye. What the brake and a slide take
 from a kart's motion is heat in the rows like any other loss: the battle hands each tyre its share,
-the tyre sheds it into the body, and what it sheds per unit of road is the darkness of its mark. The hall is the site's name server, the one chess lists its tables in
+the tyre sheds it into the body, and what it sheds per unit of road is the darkness of its mark.
+The hall is the site's name server, the one chess lists its tables in
 (`ChessProvider/scripts/chess_hall.etcs`).

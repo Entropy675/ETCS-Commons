@@ -53,6 +53,9 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddHill, (float, x), (float, z), (float, radi
     (void)ctx;
     self.AddHill(x, z, radius, height);
 }
+// AddPad <x> <z> <yaw> -- a pad on the level ground, pushing karts over it
+// the way it points (a ramp's yaw).
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddPad, (float, x), (float, z), (float, yaw)) { (void)ctx; self.AddPad(x, z, yaw); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpawn, (float, x), (float, z))      { (void)ctx; self.AddSpawn(x, z); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickup, (float, x), (float, z))     { (void)ctx; self.AddPickup(x, z); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlockNode, (ETCS::RID, node))      { (void)ctx; self.AddBlockNode(node); }
@@ -62,6 +65,13 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickupNode, (ETCS::RID, node))     { (void
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddShotNode, (ETCS::RID, node))       { (void)ctx; self.AddShotNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlastNode, (ETCS::RID, node))      { (void)ctx; self.AddBlastNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBoardRow, (ETCS::RID, label))      { (void)ctx; self.AddBoardRow(label); }
+// AddPadNode <plate> <arrow> <arrow> <arrow> -- a pad of the pool: its plate
+// and the three arrows that run along it (kart_pad.etcs).
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddPadNode, (ETCS::RID, plate), (ETCS::RID, a), (ETCS::RID, b), (ETCS::RID, c))
+{
+    (void)ctx;
+    self.AddPadNode(plate, a, b, c);
+}
 // AddGroundNode <floor> -- the arena's floor, coloured by the battle as its
 // slabs and domes are: a tyre's mark fades into the ground it is on.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddGroundNode, (ETCS::RID, node))     { (void)ctx; self.AddGroundNode(node); }
@@ -126,7 +136,7 @@ DEFINE_WORK_FUNC(KartBattle, Status)    { (void)ctx; data.reset(); data.writeStr
 DEFINE_WORK_FUNC(KartBattle, Scores)    { (void)ctx; data.reset(); data.writeString(self.Scores().c_str()); }
 // The maps' names, one a line.
 DEFINE_WORK_FUNC(KartBattle, Maps)      { (void)ctx; data.reset(); data.writeString(self.Maps().c_str()); }
-// "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <digest>": the map in play.
+// "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads> <digest>": the map in play.
 DEFINE_WORK_FUNC(KartBattle, Layout)    { (void)ctx; data.reset(); data.writeString(self.Layout().c_str()); }
 // "<tick> <hash>": the battle now.
 DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeString(self.Hash().c_str()); }

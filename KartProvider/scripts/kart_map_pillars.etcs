@@ -4,8 +4,9 @@
 # deflectors in the corners, and kickers on the outer ring.
 #   run kart_map_pillars.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
-# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
-# A ramp rises toward its yaw (0 +z, 90 +x, 180 -z, 270 -x).
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
+# <yaw> (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
+# 90 +x, 180 -z, 270 -x).
 requires battle [KartBattle]
 battle.AddMap(pillars)
 
@@ -30,6 +31,12 @@ battle.AddRamp(26.0, 10.0, 0.0, 3.0, 4.0, 0.0, 0.0, 1.0)
 battle.AddRamp(-26.0, -10.0, 180.0, 3.0, 4.0, 0.0, 0.0, 1.0)
 battle.AddRamp(-10.0, 26.0, 90.0, 3.0, 4.0, 0.0, 0.0, 1.0)
 battle.AddRamp(10.0, -26.0, 270.0, 3.0, 4.0, 0.0, 0.0, 1.0)
+
+# Pads on the outer lanes, pointing round the ring.
+battle.AddPad(21.0, -8.0, 0.0)
+battle.AddPad(-21.0, 8.0, 180.0)
+battle.AddPad(8.0, 21.0, 270.0)
+battle.AddPad(-8.0, -21.0, 90.0)
 
 battle.AddSpawn(-26.0, -26.0)
 battle.AddSpawn(26.0, 26.0)
