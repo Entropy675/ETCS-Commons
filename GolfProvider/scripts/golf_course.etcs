@@ -20,10 +20,10 @@
 #   run GolfProvider/scripts/golf_course.etcs anchor=world eye=eye game=game
 #
 # A script's names are its own, so the course hands its pieces to the game
-# itself, at the end (golf_play.etcs): the ball, the cup, the arrow. Its parts
-# are run by bare name: a script's own folder is looked in first, and that is
-# the one path the same in a window and on a page, where #IMPORT's ACE_ROOT
-# names the build machine's tree.
+# itself, at the end (golf_play.etcs): the ball, the cup, the arrow and its
+# shadow. Its parts are run by bare name: a script's own folder is looked in
+# first, and that is the one path the same in a window and on a page, where
+# #IMPORT's ACE_ROOT names the build machine's tree.
 
 requires anchor [Drawable3D]
 requires eye [Camera]
@@ -140,6 +140,14 @@ arrow.Create(0.15, 1.0, 0.15)
 arrow.SetMesh(@arrow_shape)
 arrow.SetAnchored(1)
 arrow.SetVisible(0)
+# Its shadow: the same arrow laid on the ground under it, so a pull shows how
+# far it rises. Placed by the game with the arrow.
+anchor.spawn(RenderProvider::Scene3D arrow_shadow)
+arrow_shadow.Create(0.15, 1.0, 0.02)
+arrow_shadow.SetMesh(@arrow_shape)
+arrow_shadow.SetColor(0.05, 0.14, 0.07, 1.0)
+arrow_shadow.SetAnchored(1)
+arrow_shadow.SetVisible(0)
 
 # ── the game on it ──────────────────────────────────────────────────────────
-run golf_play.etcs game=game world=anchor eye=eye ball=ball cup=cup arrow=arrow
+run golf_play.etcs game=game world=anchor eye=eye ball=ball cup=cup arrow=arrow shadow=arrow_shadow
