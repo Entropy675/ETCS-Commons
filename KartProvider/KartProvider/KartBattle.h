@@ -205,7 +205,7 @@ public:
     // mark fades into the ground it is on.
     void AddGroundNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); groundColour(r, KartArena::Floor); }
     // A segment of a tyre's mark: a thin strip on the ground, sized when it
-    // is laid; sixteen to a tyre, sixty-four to a kart, in the order the
+    // is laid; twenty-four to a tyre, ninety-six to a kart, in the order the
     // karts are made.
     void AddMarkNode(ETCS::RID r)
     {
@@ -640,7 +640,7 @@ public:
     }
 
 private:
-    static constexpr int kMarkNodes = 16;   // a tyre's drawn segments at most
+    static constexpr int kMarkNodes = 24;   // a tyre's drawn segments at most
     /*
      * A TYRE'S MARK: the road it ran, as segments laid where it ran them and
      * left there, newest first, each as dark as what the tyre shed over it
@@ -784,8 +784,8 @@ private:
     // part way, deepening as it opens.
     static Fixed markFrom()  { return F(1, 5); }
     static Fixed markFull()  { return F(2); }
-    static Fixed markLength(){ return F(18); }      // the rope: this much road, and the segment over
-    static Fixed markSegMax(){ return F(5, 4); }    // a dark segment at most; an unmarked run...
+    static Fixed markLength(){ return F(40); }      // the rope: this much road, and the segment over
+    static Fixed markSegMax(){ return F(5, 2); }    // a dark segment at most; an unmarked run...
     static Fixed markRunMax(){ return F(4); }       // ...at most this
     static Fixed markTurn()  { return F(99, 100); } // a way turned past ~8 degrees ends a segment...
     static Fixed markMin()   { return F(1, 4); }    // ...this long at least

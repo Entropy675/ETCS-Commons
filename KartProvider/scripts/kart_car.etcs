@@ -3,7 +3,7 @@
 # no drag of its own (the battle's tyres and pedal are its drag); four tyres,
 # its members -- held in its frame, so they go where it goes; the battle turns
 # them with it after every step (the front two with the wheel) and hands them
-# the friction as heat, which they shed into it -- each tyre's mark (sixty-four
+# the friction as heat, which they shed into it -- each tyre's mark (ninety-six
 # segments, kart_ropes.etcs); and an HP bar over it, turned to this runtime's
 # eye. Handed to the battle, which colours the body and puts it all in the pit.
 #   run kart_car.etcs world=<Scene3D> battle=<KartBattle> tyre=<Mesh>

@@ -20,7 +20,7 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 - **The tyres grip only so hard.** Turn too sharply for your speed (or brake in a turn) and the
   kart slides out of it: a drift, which keeps more of your speed through a corner than braking
   for it. Steer against the slide to catch it. Braking and sliding heat the tyres, and each leaves
-  a **skid mark** where it ran, darker the harder it worked: eighteen units of trail that stay
+  a **skid mark** where it ran, darker the harder it worked: forty units of trail that stay
   while you stand and are wiped from the far end as you drive on, either way.
 - **Drive over a gold box** for a weapon off the dice, in place of one you have not used up;
   **Space** fires it. The box is back eight seconds later.
