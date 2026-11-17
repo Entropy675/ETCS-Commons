@@ -18,13 +18,14 @@ DEFINE_WORK_FUNC(KartBattle, Create)                                 { (void)ctx
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindWorld,  (ETCS::RID, rid))    { (void)ctx; self.BindWorld(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCamera, (ETCS::RID, rid))    { (void)ctx; self.BindCamera(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCard,   (ETCS::RID, rid))    { (void)ctx; self.BindCard(rid); }
-// AddKart <body> <fl> <fr> <rl> <rr> <bar back> <bar fill> -- a kart of the
-// pool, its four wheels and its HP bar.
-DEFINE_WORK_FUNC_TYPED(KartBattle, AddKart, (ETCS::RID, body), (ETCS::RID, fl), (ETCS::RID, fr), (ETCS::RID, rl),
-                       (ETCS::RID, rr), (ETCS::RID, bar_back), (ETCS::RID, bar_fill))
+// AddKart <body> <fr> <fl> <rr> <rl> <bar back> <bar fill> -- a kart of the
+// pool, its four wheels (the right ones first, as the picture shows them)
+// and its HP bar.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddKart, (ETCS::RID, body), (ETCS::RID, fr), (ETCS::RID, fl), (ETCS::RID, rr),
+                       (ETCS::RID, rl), (ETCS::RID, bar_back), (ETCS::RID, bar_fill))
 {
     (void)ctx;
-    self.AddKart(body, fl, fr, rl, rr, bar_back, bar_fill);
+    self.AddKart(body, fr, fl, rr, rl, bar_back, bar_fill);
 }
 // The arena: a wall of every map; a map by name (or one made from a seed each
 // time it is chosen), then what is on it -- blocks, ramps, hills, spawns and
@@ -109,6 +110,9 @@ DEFINE_WORK_FUNC(KartBattle, Give)
     data.reset();
     data.writeString(self.Give(who, weapon) ? "ok" : "refused");
 }
+// SetInvert <on> -- this runtime's wheel keys swapped (A right, D left): the
+// page's own setting, no line of the record.
+DEFINE_WORK_FUNC_TYPED(KartBattle, SetInvert, (int32_t, on)) { (void)ctx; self.SetInvert(on != 0); }
 // Key <code> <down> -- a GLFW key, for a test or a page.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Key, (uint32_t, code), (int32_t, down))
 {
@@ -131,7 +135,7 @@ DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeStr
 // Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
 // <slide>", or "-".
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
-// Tyres <name> -- per tyre (fl fr rl rr) "<heat> <rope> <shown> <darkest>": its heat, its mark's
+// Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
 // rope laid behind it, the segments drawn and the darkest (0..1); or "-".
 DEFINE_WORK_FUNC(KartBattle, Tyres)     { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Tyres(who).c_str()); }
 // Run <ticks> -- the judge's clock by hand: stepped and recorded.

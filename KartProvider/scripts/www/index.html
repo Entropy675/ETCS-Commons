@@ -42,7 +42,9 @@
             padding: 12px 14px; align-items: start; }
     #stage { position: relative; aspect-ratio: 4 / 3; background: #1c1d21;
              box-shadow: 0 0 0 1px var(--line); }
-    canvas#canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+    /* The window sizes its canvas inline, in its own pixels: held to the stage
+       all the same, or a narrow page has it lying over the panel beside it. */
+    canvas#canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated; }
     #bootthrob { position: absolute; left: calc(50% - 48px); top: calc(50% - 48px); pointer-events: none; }
     aside { display: flex; flex-direction: column; gap: 10px; }
     section { border: 1px solid var(--line); background: var(--panel); padding: 8px 10px; }
@@ -141,6 +143,8 @@
         &nbsp; <b>Tab</b> scores. Drive over a gold box for a weapon; ramps throw you, hills slow you going up.
         In the lobby the host's arrows move the menu and <b>Enter</b> starts; in a round the host's <b>Esc</b>
         abandons it. Click the arena first so it has the keys.</div>
+        <label class="keys" style="display:block;margin-top:6px" title="swap the wheel's keys: A turns right, D left">
+          <input id="invert" type="checkbox"> invert steering</label>
       </section>
     </aside>
   </div>
@@ -378,9 +382,28 @@
   let shownScores = '', shownHall = '', shownMaps = '', polling = false, judging = false;
   function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
   function clock(secs) { return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'); }
+  /*
+   * THE WHEEL'S KEYS, SWAPPED: this tab's own setting, kept with the name,
+   * and no line of the record -- the battle reads the keys the other way
+   * round. Told to the battle once it is up, and at every change.
+   */
+  const invertEl = $('invert');
+  let invertTold = false;
+  try { invertEl.checked = window.localStorage.getItem('etcs-kart-invert') === '1'; } catch (e) {}
+  function tellInvert() {
+    invertTold = true;
+    callResult('battle', 'SetInvert', invertEl.checked ? '1' : '0');
+  }
+  invertEl.addEventListener('change', function () {
+    try { window.localStorage.setItem('etcs-kart-invert', invertEl.checked ? '1' : '0'); } catch (e) {}
+    if (runtimeUp() && nameLive('battle')) tellInvert();
+    canvas.focus();
+  });
+
   async function poll() {
     if (polling || !runtimeUp() || !nameLive('battle')) return;
     polling = true;
+    if (!invertTold) tellInvert();
     try {
       const st = await callResult('battle', 'Status', '');
       if (st) {

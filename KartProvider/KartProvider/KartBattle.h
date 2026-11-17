@@ -114,17 +114,17 @@ public:
 
     // ── the arena: what the scripts hand over ────────────────────────────
 
-    // A kart of the pool, its four wheels (front left, front right, rear left,
-    // rear right) and its HP bar (the back and the fill): coloured by its
+    // A kart of the pool, its four wheels (front right, front left, rear
+    // right, rear left: +x first, the picture's right) and its HP bar (the back and the fill): coloured by its
     // slot, waiting in the pit until someone joins.
-    void AddKart(ETCS::RID body, ETCS::RID fl, ETCS::RID fr, ETCS::RID rl, ETCS::RID rr,
+    void AddKart(ETCS::RID body, ETCS::RID fr, ETCS::RID fl, ETCS::RID rr, ETCS::RID rl,
                  ETCS::RID bar_back, ETCS::RID bar_fill)
     {
         std::lock_guard<std::mutex> g(m_mu);
         if (!body || m_slots.size() >= kMaxKarts) return;
         Slot s;
         s.body = body;
-        s.wheels[0] = fl; s.wheels[1] = fr; s.wheels[2] = rl; s.wheels[3] = rr;
+        s.wheels[0] = fr; s.wheels[1] = fl; s.wheels[2] = rr; s.wheels[3] = rl;
         s.bar_back = bar_back; s.bar_fill = bar_fill;
         const float* c = kColors[m_slots.size() % kMaxKarts];
         verb(body, "SetColor", f4(c[0], c[1], c[2], 1.0f));
@@ -457,7 +457,10 @@ public:
     /*
      * A KEY from the window (GLFW codes). In a round: W/S (or up/down) the
      * pedal, A/D (or left/right) the wheel, Space the trigger -- a change of
-     * any is a `drive` line -- and, for the host, Esc abandons the round. Tab
+     * any is a `drive` line -- and, for the host, Esc abandons the round. A
+     * turns the kart to the picture's left and D to its right, which is the
+     * wheel's -1 and +1 (the camera's right is up x forward: +x for a kart
+     * heading +z); SetInvert swaps the two keys for this runtime alone. Tab
      * holds up the board, this runtime's alone. In the lobby the host's keys
      * move the menu instead: up/down choose, left/right change, Enter
      * changes or starts; each change is a line.
@@ -471,16 +474,17 @@ public:
             if (m_phase == Lobby && menuKeyLocked(key)) return;
             if (m_phase == Playing && key == 256) { takeLocked(m_me, "abandon"); return; }
         }
-        int bit = -1;
+        int bit = key == 0 ? 5 : -1;   // no key: the held ones read again (SetInvert)
         if (key == 'W' || key == 265) bit = 0;
         else if (key == 'S' || key == 264) bit = 1;
         else if (key == 'A' || key == 263) bit = 2;
         else if (key == 'D' || key == 262) bit = 3;
         else if (key == ' ') bit = 4;
         if (bit < 0) return;
-        if (down) m_keys |= (1u << bit); else m_keys &= ~(1u << bit);
+        if (bit < 5) { if (down) m_keys |= (1u << bit); else m_keys &= ~(1u << bit); }
         const int t = ((m_keys & 1) ? 1 : 0) - ((m_keys & 2) ? 1 : 0);
-        const int s = ((m_keys & 4) ? 1 : 0) - ((m_keys & 8) ? 1 : 0);
+        const int right = ((m_keys & 8) ? 1 : 0) - ((m_keys & 4) ? 1 : 0);
+        const int s = m_invert ? -right : right;
         const int f = (m_keys & 16) ? 1 : 0;
         if (t == m_sent_t && s == m_sent_s && f == m_sent_f) return;
         m_sent_t = t; m_sent_s = s; m_sent_f = f;
@@ -489,6 +493,15 @@ public:
         if (m_judge) takeLocked(m_me, line);
         else m_outbox.push_back(line);
     }
+
+    // The wheel's keys swapped, for this runtime alone: the keys held are
+    // read again, so a change mid-turn is a `drive` line like any other.
+    void SetInvert(bool on)
+    {
+        { std::lock_guard<std::mutex> g(m_mu); if (m_invert == on) return; m_invert = on; }
+        Key(0, false);
+    }
+    bool Inverted() { std::lock_guard<std::mutex> g(m_mu); return m_invert; }
 
     // ── reads ────────────────────────────────────────────────────────────
 
@@ -550,7 +563,8 @@ public:
     std::string Snapshot() { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_snap_tick) + " " + m_snap_hash; }
     std::string Note()     { std::lock_guard<std::mutex> g(m_mu); return m_note; }
     // "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel> <slide>",
-    // or "-"; the slide is the way across the heading, + to the left.
+    // or "-"; the wheel and the slide (the way across the heading) are + to
+    // the picture's right.
     std::string Kart(const std::string& who)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -565,14 +579,14 @@ public:
             x = r.x.ToFloat(); y = r.y.ToFloat(); z = r.z.ToFloat();
             Fixed vx, vy, vz;
             r.Velocity(k->MassUnder(), vx, vy, vz);
-            slide = (vx * s.hz - vz * s.hx).ToFloat();   // along the heading's left, (hz, -hx)
+            slide = (vx * s.hz - vz * s.hx).ToFloat();   // along the heading's across, (hz, -hx)
         }
         return std::to_string(i) + " " + fmt3(x) + " " + fmt3(z) + " " + fmt3(s.hx.ToFloat()) + " " + fmt3(s.hz.ToFloat()) + " "
              + fmt1(speedOf(static_cast<size_t>(i))) + " " + std::to_string(s.hp) + " " + KartArms::Name(s.weapon)
              + " " + std::to_string(s.ammo) + " " + fmt3(y) + " " + (s.air ? "air" : "ground") + " " + fmt3(s.wheel.ToFloat())
              + " " + fmt3(slide);
     }
-    // Tyres <name> -- per tyre, fl fr rl rr, "<heat> <rope> <shown> <darkest>": its heat (J), how
+    // Tyres <name> -- per tyre, fr fl rr rl, "<heat> <rope> <shown> <darkest>": its heat (J), how
     // long its mark's rope is laid behind it, how many segments are drawn,
     // and the darkest (0..1). "-" for nobody.
     std::string Tyres(const std::string& who)
@@ -668,13 +682,13 @@ private:
     struct Slot
     {
         ETCS::RID   body = 0;
-        ETCS::RID   wheels[4] = { 0, 0, 0, 0 };   // fl fr rl rr: drawn, placed by the battle
+        ETCS::RID   wheels[4] = { 0, 0, 0, 0 };   // fr fl rr rl: drawn, placed by the battle
         ETCS::RID   bar_back = 0, bar_fill = 0;   // the HP bar: this runtime's to turn
         OrderVector pristine;                      // the rows as made: every restart starts here
         std::string driver;
         int         thr = 0, steer = 0, fire = 0;
         int         press = 0;                     // a press of the trigger the tick has not yet seen
-        Fixed       wheel;                         // radians, + is left
+        Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
         Fixed       wheel_rate;                    // how fast the wheel is turning now: it gathers pace while held
         int         steer_held = 0;                // the way the wheel was being turned last tick
         Fixed       hx, hz;                        // the heading, level (the body is tilted to the ground)
@@ -1252,7 +1266,7 @@ private:
         if (speed > top && along.raw >= 0) speed = Fixed::Max(top, speed - brake() * Fixed::Half() * step);
         if (speed > boostSpeed()) speed = boostSpeed();
         // The heading turns by speed x wheel / wheelbase, about +y: a turn of
-        // +a takes +x toward -z, which with +z ahead is to the left.
+        // +a takes +z toward +x, which with +z ahead is to the picture's right.
         const Fixed yaw = speed * s.wheel / wheelbase() * step;
         if (!yaw.IsZero())
         {
@@ -1777,7 +1791,7 @@ private:
             Causal_* w = causal(s.wheels[i]);
             if (!w) continue;
             OrderVector& q = w->RowsUnder();
-            // In the body's own frame: +z ahead, the front left wheel at +x
+            // In the body's own frame: +z ahead, the front right wheel at +x
             // (the heading's across, (hz, -hx), on the level).
             Fixed ox = (i % 2) ? -tyreSide() : tyreSide(), oy = -down, oz = (i < 2) ? tyreAhead() : -tyreAhead();
             r.RotateVector(ox, oy, oz);
@@ -2447,6 +2461,7 @@ private:
 
     // This runtime's own: its keys, its eye, its card, its menu, its board.
     unsigned m_keys = 0;
+    bool     m_invert = false;   // this runtime's wheel keys swapped (SetInvert)
     int      m_sent_t = 0, m_sent_s = 0, m_sent_f = 0;
     int      m_menu = MenuStart;
     bool     m_board_held = false;

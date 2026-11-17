@@ -12,6 +12,6 @@ ETCS_MODULE_EXPORT_MAIN(KartProvider, "KartBattle")
 ETCS_TAG_BLOCK_HYBRID(KartBattle,
     (Create, BindWorld, BindCamera, BindCard, AddKart, AddWall, AddMap, AddRandomMap, AddBlock, AddRamp, AddHill,
      AddSpawn, AddPickup, AddBlockNode, AddSlabNode, AddDomeNode, AddPickupNode, AddShotNode, AddBlastNode, AddBoardRow,
-     AddGroundNode, AddMarkNode, Ready, Practice, Host, Join, Leave, Tick, Configure, Reroll, StartRound, Abandon, Give, Key, Run, Status, Scores,
+     AddGroundNode, AddMarkNode, Ready, Practice, Host, Join, Leave, Tick, Configure, Reroll, StartRound, Abandon, Give, Key, SetInvert, Run, Status, Scores,
      Maps, Layout, Kart, Tyres, Hash, Snapshot, Note, Delete),
     (Emit, Absorb, Judge, Roster, ConsumeKeys))
