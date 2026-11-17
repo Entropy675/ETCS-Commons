@@ -204,13 +204,14 @@ public:
     // The arena's floor: coloured here, as the slabs and domes are, so a
     // mark fades into the ground it is on.
     void AddGroundNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); groundColour(r, KartArena::Floor); }
-    // A segment of a tyre's mark: a thin strip on the ground, eight to a
-    // tyre, thirty-two to a kart, in the order the karts are made.
+    // A segment of a tyre's mark: a thin strip on the ground, sized when it
+    // is laid; sixteen to a tyre, sixty-four to a kart, in the order the
+    // karts are made.
     void AddMarkNode(ETCS::RID r)
     {
         std::lock_guard<std::mutex> g(m_mu);
         m_mark_nodes.push_back(r);
-        verb(r, "Create", "0.18, 0.01, " + fmt3(markSeg().ToFloat() + 0.02f));
+        verb(r, "Create", "0.18, 0.01, 1.0");
         verb(r, "SetAnchored", "1");
         parkNode(r);
     }
@@ -584,12 +585,13 @@ public:
         for (int t = 0; t < 4; ++t)
         {
             const Trail& tr = s.trail[t];
-            Fixed rope = Fixed::Zero();
-            Fixed px = tr.hx, pz = tr.hz;
-            for (const MarkPoint& q : tr.pts) { rope += Fixed::Length(q.x - px, Fixed::Zero(), q.z - pz); px = q.x; pz = q.z; }
-            if (rope > markLength()) rope = markLength();
+            Fixed rope = tr.run_d;
             int shown = 0, darkest = 0;
-            for (int k : tr.key) if (k >= 0) { ++shown; darkest = std::max(darkest, k / 3); }
+            for (const MarkSeg& g : tr.segs)
+            {
+                rope += g.len;
+                if (g.node >= 0) { ++shown; darkest = std::max(darkest, g.level); }
+            }
             Causal_* c = causal(s.wheels[t]);
             const float heat = c ? c->Order4().Heat().ToFloat() : 0.0f;
             out += (t ? " " : "") + fmt3(heat) + " " + fmt3(rope.ToFloat()) + " " + std::to_string(shown) + " "
@@ -638,21 +640,30 @@ public:
     }
 
 private:
-    static constexpr int kMarkSegments = 8;   // a tyre's mark, drawn: 8 x 0.75, a rope of 6 units
-    // A TYRE'S MARK: where the tyre has been, newest first, each piece of the
-    // way with what the tyre shed over it (opacity, 0..1). A rope of fixed
-    // length: the marks drawn are its last markLength() of road, so going on
-    // wipes them from the far end. Derived from the rows (the tyres' heat),
-    // so the same everywhere, but drawn only: not in the hash.
-    struct MarkPoint { Fixed x, y, z, a; };
+    static constexpr int kMarkNodes = 16;   // a tyre's drawn segments at most
+    /*
+     * A TYRE'S MARK: the road it ran, as segments laid where it ran them and
+     * left there, newest first, each as dark as what the tyre shed over it
+     * (a level, 0..8; 0 is laid but not drawn). A segment is laid when the
+     * way turns, the darkness changes, the tyre leaves or meets the ground,
+     * or it is long enough -- so a reversal is a segment's end, and nothing
+     * already laid moves. A rope of fixed length: past markLength() of road
+     * the oldest goes, so going on, either way, wipes it from the far end.
+     * Derived from the rows (the tyres' heat), so the same everywhere, but
+     * drawn only: not in the hash.
+     */
+    struct MarkSeg { Fixed x0, y0, z0, x1, y1, z1, len; int level = 0; int node = -1; };
     struct Trail
     {
-        std::deque<MarkPoint> pts;
-        Fixed  carry_e, carry_d;                   // shed and run since the last point
-        Fixed  hx, hy, hz;                         // where the tyre touched last tick
-        bool   touched = false;                    // ...and whether it did
-        int    key[kMarkSegments];                 // what each segment's node shows: -1 hidden
-        Trail() { for (int& k : key) k = -1; }
+        std::deque<MarkSeg> segs;
+        Fixed    sx, sy, sz;                       // where the open run starts: the last segment's end
+        Fixed    hx, hy, hz;                       // where the tyre touched last tick
+        Fixed    run_e, run_d;                     // shed and road in the open run
+        Fixed    dx, dz;                           // the open run's way, as its first step went
+        int      run_level = 0;
+        bool     touched = false, air = false;
+        uint32_t seq = 0;                          // segments laid: which lift a new one takes
+        uint32_t used = 0;                         // the tyre's drawn segments' nodes in use, a bit each
     };
     struct Slot
     {
@@ -768,13 +779,16 @@ private:
     // A MARK, from the heat a tyre sheds per unit of road (a force: its
     // share of the friction against its speed) over its quarter of the
     // kart's mass -- a deceleration. Nothing below markFrom(); full black
-    // at markFull(): the brake on (20) is full, a drift's slide (the grip
-    // times how much of the way is across) part way, deepening as it opens.
-    static Fixed markFrom()  { return F(1, 2); }
-    static Fixed markFull()  { return F(4); }
-    static Fixed markSpacing(){ return F(1, 4); }   // a point of the trail every quarter unit run
-    static Fixed markSeg()   { return F(3, 4); }   // a drawn segment
-    static Fixed markLength(){ return markSeg() * F(kMarkSegments); }
+    // at markFull(): the brake on (20) is full, a drift's slide (what it
+    // costs: a quarter of the grip times how far the way is off the heading)
+    // part way, deepening as it opens.
+    static Fixed markFrom()  { return F(1, 5); }
+    static Fixed markFull()  { return F(2); }
+    static Fixed markLength(){ return F(18); }      // the rope: this much road, and the segment over
+    static Fixed markSegMax(){ return F(5, 4); }    // a dark segment at most; an unmarked run...
+    static Fixed markRunMax(){ return F(4); }       // ...at most this
+    static Fixed markTurn()  { return F(99, 100); } // a way turned past ~8 degrees ends a segment...
+    static Fixed markMin()   { return F(1, 4); }    // ...this long at least
     static Fixed kartY()     { return F(25, 100); }   // the ride height: the body's centre over the ground
     static Fixed kartR()     { return F(1); }          // the reach a shot meets
     static Fixed gravity()   { return F(20); }
@@ -1800,13 +1814,12 @@ private:
     }
 
     /*
-     * THE MARKS, after the tick: each tyre's way since the last, and what it
-     * shed over it (its heat before the tick, less its heat now). A point is
-     * laid every markSpacing() of road, with what was shed per unit of road
-     * as its darkness; off the ground the tyre lays its way unmarked. The
-     * trail keeps markLength() and a little more, and is drawn as a rope of
-     * kMarkSegments segments from the tyre back along it: the further the
-     * tyre goes, the further back the old marks slide, and off the end.
+     * THE MARKS, after the tick: each tyre's step since the last, and what
+     * it shed over it (its heat before the tick, less its heat now), added to
+     * the open run -- or, when the step turns from the run's way, is of
+     * another darkness, or the tyre left or met the ground, the run is laid
+     * as a segment first and a new one starts. A run long enough is laid as
+     * it stands; a kart come to a stop lays a dark run's end at its tyres.
      */
     void marksLocked(size_t i)
     {
@@ -1821,97 +1834,114 @@ private:
             if (!tyreAt(s, t, x, y, z)) continue;
             Fixed shed = Fixed::Zero();
             if (Causal_* c = causal(s.wheels[t])) shed = s.tyre_heat[t] - c->Order4().Heat();
-            if (shed.raw < 0) shed = Fixed::Zero();
-            const Fixed gy = groundAt(x, z) + F(12, 1000);
-            if (!tr.touched) { tr.touched = true; tr.hx = x; tr.hy = gy; tr.hz = z; }
-            const Fixed run = Fixed::Length(x - tr.hx, Fixed::Zero(), z - tr.hz);
-            tr.carry_d += run;
-            tr.carry_e += s.air ? Fixed::Zero() : shed;
-            tr.hx = x; tr.hy = gy; tr.hz = z;
-            if (tr.carry_d >= markSpacing())
+            if (shed.raw < 0 || s.air) shed = Fixed::Zero();
+            const Fixed gy = groundAt(x, z);
+            if (!tr.touched)
             {
-                tr.pts.push_front({ x, gy, z, markOf(tr.carry_e, tr.carry_d, quarter) });
-                tr.carry_e = tr.carry_d = Fixed::Zero();
-                // Kept: the rope's length and one spacing over.
-                Fixed len = Fixed::Zero();
-                for (size_t n = 1; n < tr.pts.size(); ++n)
-                {
-                    const MarkPoint& a = tr.pts[n - 1];
-                    const MarkPoint& b = tr.pts[n];
-                    len += Fixed::Length(a.x - b.x, Fixed::Zero(), a.z - b.z);
-                    if (len > markLength() + markSpacing()) { tr.pts.resize(n + 1); break; }
-                }
+                tr.touched = true; tr.air = s.air;
+                tr.sx = tr.hx = x; tr.sy = tr.hy = gy; tr.sz = tr.hz = z;
+                continue;
             }
-            drawTrailLocked(i, t, quarter);
+            const Fixed stx = x - tr.hx, stz = z - tr.hz;
+            const Fixed step = Fixed::Length(stx, Fixed::Zero(), stz);
+            if (step < F(1, 100))
+            {
+                if (tr.run_level > 0 && tr.run_d >= F(1, 10)) layLocked(i, t, tr.hx, tr.hy, tr.hz);
+                continue;
+            }
+            const int level = s.air ? 0 : levelOf(markOf(shed, step, quarter));
+            // A run shorter than markMin() is not ended by a turn or a shade:
+            // a kart held at a wall, shoved back and forth, lays nothing new.
+            if (tr.run_d.IsPositive() && Fixed::Length(tr.hx - tr.sx, Fixed::Zero(), tr.hz - tr.sz) >= markMin())
+            {
+                const bool turned = stx * tr.dx + stz * tr.dz < markTurn() * step;
+                const bool shade = (level > 0) != (tr.run_level > 0) || std::abs(level - tr.run_level) >= 3;
+                if (turned || shade || s.air != tr.air) layLocked(i, t, tr.hx, tr.hy, tr.hz);
+            }
+            if (!tr.run_d.IsPositive()) { tr.dx = stx / step; tr.dz = stz / step; tr.air = s.air; }
+            tr.run_e += shed;
+            tr.run_d += step;
+            tr.run_level = tr.air ? 0 : levelOf(markOf(tr.run_e, tr.run_d, quarter));
+            tr.hx = x; tr.hy = gy; tr.hz = z;
+            const Fixed chord = Fixed::Length(x - tr.sx, Fixed::Zero(), z - tr.sz);
+            if (chord >= (tr.run_level > 0 ? markSegMax() : markRunMax())) layLocked(i, t, x, gy, z);
+            trimLocked(i, t);
         }
     }
-    // Darkness from what was shed over a run of road (MarkPoint::a).
+    // Darkness from what was shed over a run of road, 0..1, and as a level of 8.
     static Fixed markOf(Fixed shed, Fixed run, Fixed quarter)
     {
         if (!run.IsPositive() || !quarter.IsPositive()) return Fixed::Zero();
         const Fixed a = (shed / run / quarter - markFrom()) / (markFull() - markFrom());
         return a.raw < 0 ? Fixed::Zero() : Fixed::Min(a, Fixed::One());
     }
-    // The rope: segment n from markSeg() x n behind the tyre to markSeg()
-    // further, as dark as the darkest of the way under it.
-    void drawTrailLocked(size_t i, int t, Fixed quarter)
+    static int levelOf(Fixed a) { return static_cast<int>((a * F(8) + Fixed::Half()).ToFloat()); }
+    /*
+     * The open run laid, from its start to (x, y, z): a segment, drawn when
+     * dark -- sized to its length, laid along it, tinted between the ground's
+     * colour and the tyre's -- and left where it is. Lifted a hair by tyre
+     * and by how many came before, so two that overlap (a rear tyre in a
+     * front one's track, a run back over its own) are never at one height.
+     */
+    void layLocked(size_t i, int t, Fixed x, Fixed y, Fixed z)
     {
-        Slot& s = m_slots[i];
-        Trail& tr = s.trail[t];
-        const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkSegments;
-        // The way, as pieces from the tyre back: [from, to) of arc, each with
-        // the darkness laid over it; the newest the run not yet laid.
-        struct Piece { Fixed x0, y0, z0, x1, y1, z1, s0, s1, a; };
-        std::vector<Piece> way;
-        Fixed arc = Fixed::Zero();
-        Fixed px = tr.hx, py = tr.hy, pz = tr.hz;
-        Fixed pa = tr.carry_d > F(1, 20) ? markOf(tr.carry_e, tr.carry_d, quarter) : (tr.pts.empty() ? Fixed::Zero() : tr.pts.front().a);
-        for (const MarkPoint& q : tr.pts)
+        Trail& tr = m_slots[i].trail[t];
+        MarkSeg g;
+        g.x0 = tr.sx; g.y0 = tr.sy; g.z0 = tr.sz; g.x1 = x; g.y1 = y; g.z1 = z;
+        g.len = Fixed::Length(x - tr.sx, y - tr.sy, z - tr.sz);
+        g.level = tr.run_level;
+        const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkNodes;
+        if (g.level > 0 && g.len.IsPositive() && base + kMarkNodes <= m_mark_nodes.size())
         {
-            const Fixed l = Fixed::Length(q.x - px, Fixed::Zero(), q.z - pz);
-            if (l.IsPositive()) way.push_back({ px, py, pz, q.x, q.y, q.z, arc, arc + l, pa });
-            arc += l; px = q.x; py = q.y; pz = q.z; pa = q.a;
-        }
-        auto at = [&way](Fixed a, Fixed& x, Fixed& y, Fixed& z) {
-            for (const Piece& w : way)
-                if (a <= w.s1)
-                {
-                    const Fixed f = (a - w.s0) / (w.s1 - w.s0);
-                    x = w.x0 + (w.x1 - w.x0) * f; y = w.y0 + (w.y1 - w.y0) * f; z = w.z0 + (w.z1 - w.z0) * f;
-                    return;
-                }
-        };
-        for (int n = 0; n < kMarkSegments; ++n)
-        {
-            const size_t ni = base + static_cast<size_t>(n);
-            if (ni >= m_mark_nodes.size()) return;
-            const Fixed s0 = markSeg() * F(n), s1 = s0 + markSeg();
-            Fixed dark = Fixed::Zero();
-            if (s1 <= arc)
-                for (const Piece& w : way) if (w.s1 > s0 && w.s0 < s1 && w.a > dark) dark = w.a;
-            const int level = static_cast<int>((dark * F(8) + Fixed::Half()).ToFloat());
-            if (level <= 0)
+            // A node of the tyre's own: a free one, or the oldest drawn one's.
+            while (tr.used == (1u << kMarkNodes) - 1u)
             {
-                if (tr.key[n] >= 0) { parkNode(m_mark_nodes[ni]); tr.key[n] = -1; }
-                continue;
+                for (auto it = tr.segs.rbegin(); it != tr.segs.rend(); ++it)
+                    if (it->node >= 0) { unmarkLocked(base, tr, *it); break; }
             }
-            Fixed x0, y0, z0, x1, y1, z1;
-            at(s0, x0, y0, z0); at(s1, x1, y1, z1);
+            int n = 0;
+            while (tr.used & (1u << n)) ++n;
+            tr.used |= 1u << n;
+            g.node = n;
+            const ETCS::RID node = m_mark_nodes[base + static_cast<size_t>(n)];
+            const Fixed lift = F(8, 1000) + F(1, 1000) * F(static_cast<int64_t>(t * 8 + static_cast<int>(tr.seq % 8)));
             KartArena::Surface on = KartArena::Floor;
-            const Fixed mx = (x0 + x1) * Fixed::Half(), mz = (z0 + z1) * Fixed::Half();
+            const Fixed mx = (g.x0 + g.x1) * Fixed::Half(), mz = (g.z0 + g.z1) * Fixed::Half();
             KartArena::Height(m_live, mx, mz, nullptr, nullptr, &on);
-            poseAlong(m_mark_nodes[ni], mx, (y0 + y1) * Fixed::Half(), mz, x1 - x0, y1 - y0, z1 - z0);
-            const int key = level * 3 + static_cast<int>(on);
-            if (key != tr.key[n])
-            {
-                const float a = static_cast<float>(level) / 8.0f;
-                const float* g = kGround[on];
-                verb(m_mark_nodes[ni], "SetColor", f4(g[0] + (kTyre[0] - g[0]) * a, g[1] + (kTyre[1] - g[1]) * a,
-                                                        g[2] + (kTyre[2] - g[2]) * a, 1.0f));
-                if (tr.key[n] < 0) verb(m_mark_nodes[ni], "SetVisible", "1");
-                tr.key[n] = key;
-            }
+            verb(node, "Create", "0.18, 0.01, " + fmt3(g.len.ToFloat() + 0.02f));
+            poseAlong(node, mx, (g.y0 + g.y1) * Fixed::Half() + lift, mz, g.x1 - g.x0, g.y1 - g.y0, g.z1 - g.z0);
+            const float a = static_cast<float>(g.level) / 8.0f;
+            const float* c = kGround[on];
+            verb(node, "SetColor", f4(c[0] + (kTyre[0] - c[0]) * a, c[1] + (kTyre[1] - c[1]) * a, c[2] + (kTyre[2] - c[2]) * a, 1.0f));
+            verb(node, "SetVisible", "1");
         }
+        if (g.len.IsPositive()) { tr.segs.push_front(g); ++tr.seq; }
+        tr.sx = x; tr.sy = y; tr.sz = z;
+        tr.run_e = tr.run_d = Fixed::Zero();
+        tr.run_level = 0;
+    }
+    // The rope's far end: the oldest segments go while what is left, the
+    // open run with it, is still markLength() of road.
+    void trimLocked(size_t i, int t)
+    {
+        Trail& tr = m_slots[i].trail[t];
+        const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkNodes;
+        Fixed rope = tr.run_d;
+        for (const MarkSeg& m : tr.segs) rope += m.len;
+        while (!tr.segs.empty() && rope - tr.segs.back().len >= markLength())
+        {
+            rope -= tr.segs.back().len;
+            unmarkLocked(base, tr, tr.segs.back());
+            tr.segs.pop_back();
+        }
+    }
+    // A segment no longer drawn: its node parked and free.
+    void unmarkLocked(size_t base, Trail& tr, MarkSeg& g)
+    {
+        if (g.node < 0) return;
+        if (base + static_cast<size_t>(g.node) < m_mark_nodes.size()) parkNode(m_mark_nodes[base + static_cast<size_t>(g.node)]);
+        tr.used &= ~(1u << g.node);
+        g.node = -1;
     }
     // A tyre's mark gone: the trail forgotten, its segments parked.
     void clearMarksLocked(size_t i)
@@ -1920,9 +1950,8 @@ private:
         for (int t = 0; t < 4; ++t)
         {
             Trail& tr = s.trail[t];
-            const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkSegments;
-            for (int n = 0; n < kMarkSegments; ++n)
-                if (tr.key[n] >= 0 && base + n < m_mark_nodes.size()) parkNode(m_mark_nodes[base + n]);
+            const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkNodes;
+            for (MarkSeg& g : tr.segs) unmarkLocked(base, tr, g);
             tr = Trail();
         }
     }

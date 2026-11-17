@@ -64,7 +64,7 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddBoardRow, (ETCS::RID, label))      { (void
 // AddGroundNode <floor> -- the arena's floor, coloured by the battle as its
 // slabs and domes are: a tyre's mark fades into the ground it is on.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddGroundNode, (ETCS::RID, node))     { (void)ctx; self.AddGroundNode(node); }
-// AddMarkNode <node> -- a segment of a tyre's mark: eight a tyre, thirty-two
+// AddMarkNode <node> -- a segment of a tyre's mark: sixteen a tyre, sixty-four
 // a kart, in the order the karts are made (kart_ropes.etcs).
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddMarkNode, (ETCS::RID, node))       { (void)ctx; self.AddMarkNode(node); }
 // The arena is made: the first map out, the lobby open.
