@@ -74,11 +74,13 @@
  * everyone after three seconds, whole and unarmed. Tab holds up the scores.
  *
  * THE KART IS A BICYCLE ON THE GROUND. W and S are the pedal, A and D turn
- * the WHEELS, which ease to a lock and back; the heading turns by speed x
- * wheel angle / wheelbase, so a kart standing still does not turn. The ground
- * is the map's (KartArena.h): a kart rides on it, slows going up and gains
- * going down, leaves it where it falls away faster than gravity follows (a
- * ramp's lip) and lands where it meets it again; ground rising more than a
+ * the WHEELS -- slowly at first, gathering pace while held, toward a lock
+ * that is smaller the faster the kart goes -- and back when let go; the
+ * heading turns by speed x wheel angle / wheelbase, so a kart standing still
+ * does not turn, and one at speed carves an arc rather than spinning. The
+ * ground is the map's (KartArena.h): a kart rides on it, slows going up and
+ * gains going down, leaves it where it falls away faster than gravity follows
+ * (a ramp's lip) and lands where it meets it again; ground rising more than a
  * kart can climb in a step is a wall. A kart is SOLID -- a sphere to
  * everything (etcs_causal_constraints.md §13) -- and drawn as a body on four
  * wheels, tilted to the ground, which this battle places after every step (a
@@ -518,7 +520,7 @@ public:
     std::string Hash()     { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_tick) + " " + hashLocked(); }
     std::string Snapshot() { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_snap_tick) + " " + m_snap_hash; }
     std::string Note()     { std::lock_guard<std::mutex> g(m_mu); return m_note; }
-    // "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground>", or "-".
+    // "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>", or "-".
     std::string Kart(const std::string& who)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -534,7 +536,7 @@ public:
         const Slot& s = m_slots[i];
         return std::to_string(i) + " " + fmt3(x) + " " + fmt3(z) + " " + fmt3(s.hx.ToFloat()) + " " + fmt3(s.hz.ToFloat()) + " "
              + fmt1(speedOf(static_cast<size_t>(i))) + " " + std::to_string(s.hp) + " " + KartArms::Name(s.weapon)
-             + " " + std::to_string(s.ammo) + " " + fmt3(y) + " " + (s.air ? "air" : "ground");
+             + " " + std::to_string(s.ammo) + " " + fmt3(y) + " " + (s.air ? "air" : "ground") + " " + fmt3(s.wheel.ToFloat());
     }
     /*
      * THE JUDGE'S CLOCK BY HAND: `ticks` ticks stepped and recorded, as the
@@ -587,6 +589,8 @@ private:
         int         thr = 0, steer = 0, fire = 0;
         int         press = 0;                     // a press of the trigger the tick has not yet seen
         Fixed       wheel;                         // radians, + is left
+        Fixed       wheel_rate;                    // how fast the wheel is turning now: it gathers pace while held
+        int         steer_held = 0;                // the way the wheel was being turned last tick
         Fixed       hx, hz;                        // the heading, level (the body is tilted to the ground)
         Fixed       vy;                            // up: the ground's pace under it, or a flight's
         bool        air = false;                   // off the ground
@@ -636,8 +640,14 @@ private:
     static Fixed reverseAcc(){ return F(5); }
     static Fixed reverseTop(){ return F(6); }
     static Fixed coast()     { return F(6, 10); }
-    static Fixed wheelLock() { return F(45, 100); }
-    static Fixed wheelRate() { return F(3); }
+    static Fixed wheelLock() { return F(45, 100); }   // the lock standing still
+    static Fixed steerAccel(){ return F(25, 10); }    // rad/s/s: the pace the wheel's turn gathers while held
+    static Fixed steerMax()  { return F(12, 10); }    // rad/s: the fastest the wheel turns
+    static Fixed steerBack() { return F(15, 10); }    // rad/s: back toward the middle, let go
+    // The lock at a speed: the full lock standing still, less the faster the
+    // kart goes, so the turn at speed (speed x lock / wheelbase) tops out
+    // near 1.7 rad/s at the kart's top speed instead of 4.5.
+    static Fixed lockAt(Fixed speed) { return wheelLock() / (Fixed::One() + speed.Abs() / F(10)); }
     static Fixed wheelbase() { return F(16, 10); }
     static Fixed grip()      { return F(9); }
     static Fixed kartY()     { return F(25, 100); }   // the ride height: the body's centre over the ground
@@ -849,7 +859,7 @@ private:
     void parkLocked(size_t i)
     {
         Slot& s = m_slots[i];
-        s.thr = s.steer = s.fire = s.press = 0; s.wheel = Fixed::Zero();
+        s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_rate = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
         s.dead_until = -1; s.ram_safe = 0;
         verb(s.body, "SetVisible", "0");
@@ -881,7 +891,7 @@ private:
             }
             if (nearest > best) { best = nearest; bx = p.x; bz = p.z; }
         }
-        s.thr = s.steer = 0; s.press = 0; s.wheel = Fixed::Zero();
+        s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_rate = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
         s.dead_until = -1;
         Fixed dx = -bx, dz = -bz;
@@ -1058,17 +1068,13 @@ private:
         const Fixed m = k->MassUnder();
         const Fixed step = dt();
         const int thr = m_phase == Results ? 0 : s.thr, steer = m_phase == Results ? 0 : s.steer;
-        const Fixed target = wheelLock() * F(steer);
-        const Fixed turn = wheelRate() * step;
-        Fixed d = target - s.wheel;
-        if (d > turn) d = turn; else if (d < -turn) d = -turn;
-        s.wheel += d;
-        if (s.boost > 0) --s.boost;
-        if (s.air) return;
         const Fixed hx = s.hx, hz = s.hz;
         Fixed vx, vy, vz;
         r.Velocity(m, vx, vy, vz);
         Fixed speed = vx * hx + vz * hz;
+        wheelTurnLocked(s, steer, speed, step);
+        if (s.boost > 0) --s.boost;
+        if (s.air) return;
         Fixed lx = vx - hx * speed, lz = vz - hz * speed;
         const Fixed top = s.boost > 0 ? boostSpeed() : topSpeed();
         const Fixed push = s.boost > 0 ? accel() * F(2) : accel();
@@ -1115,6 +1121,33 @@ private:
         const Fixed before = r.KineticEnergy();
         if (after > before) k->Impulse(nx, Fixed::Zero(), nz, after - before);
         r.SetVelocity(m, nx, Fixed::Zero(), nz);
+    }
+
+    /*
+     * THE WHEEL, turned by A and D. Held, its turn starts slow and gathers
+     * pace (steerAccel) up to the fastest it turns (steerMax), toward the lock
+     * for the kart's speed (lockAt) -- a tap steers a little, a hold a lot.
+     * Turned the other way, the pace starts again from nothing. Let go, it
+     * goes back to the middle at steerBack; and past a smaller lock (the
+     * kart speeding up with the wheel turned) it eases back to it.
+     */
+    static void wheelTurnLocked(Slot& s, int steer, Fixed speed, Fixed step)
+    {
+        const Fixed lock = lockAt(speed);
+        if (steer != s.steer_held) s.wheel_rate = Fixed::Zero();
+        s.steer_held = steer;
+        Fixed target = Fixed::Zero(), turn = steerBack() * step;
+        if (steer != 0)
+        {
+            target = lock * F(steer);
+            s.wheel_rate = Fixed::Min(s.wheel_rate + steerAccel() * step, steerMax());
+            // Toward the lock at the turn's pace; back from past it as when let go.
+            const bool past = (steer > 0 && s.wheel > target) || (steer < 0 && s.wheel < target);
+            turn = past ? steerBack() * step : s.wheel_rate * step;
+        }
+        Fixed d = target - s.wheel;
+        if (d > turn) d = turn; else if (d < -turn) d = -turn;
+        s.wheel += d;
     }
 
     /*
@@ -1615,7 +1648,8 @@ private:
         for (const Slot& s : m_slots)
         {
             st += "|" + s.driver + " " + std::to_string(s.thr) + std::to_string(s.steer) + std::to_string(s.fire)
-                + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.hx.raw) + " "
+                + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.wheel_rate.raw) + " "
+                + std::to_string(s.steer_held) + " " + std::to_string(s.hx.raw) + " "
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
                 + std::to_string(s.hp) + " " + std::to_string(s.weapon) + " " + std::to_string(s.ammo) + " "
                 + std::to_string(s.cooldown) + " " + std::to_string(s.boost) + " " + std::to_string(s.elims) + " "

@@ -122,7 +122,7 @@ DEFINE_WORK_FUNC(KartBattle, Layout)    { (void)ctx; data.reset(); data.writeStr
 DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeString(self.Hash().c_str()); }
 // "<tick> <hash>": the last snapshot, what presence carries.
 DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
-// Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground>", or "-".
+// Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>", or "-".
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
 // Run <ticks> -- the judge's clock by hand: stepped and recorded.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Run, (uint32_t, ticks)) { (void)ctx; self.Run(ticks); }

@@ -10,9 +10,11 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 
 - **Host a battle** and it is listed in the hall; anyone who opens the page sees it and **joins**,
   taking the next free kart of eight. The link under the button joins it directly.
-- **W** go, **S** brake and reverse, **A** / **D** turn the wheels -- the kart turns by its speed
-  and the wheels' angle, so a kart standing still does not turn. Click the arena first so it has
-  the keys.
+- **W** go, **S** brake and reverse, **A** / **D** turn the wheels -- slowly at first, faster
+  the longer the key is held, so a tap steers a little and a hold a lot; let go, they come back.
+  The kart turns by its speed and the wheels' angle, so a kart standing still does not turn, and
+  the faster it goes the less the wheels turn: at speed it carves an arc. Click the arena first
+  so it has the keys.
 - **Drive over a gold box** for a weapon off the dice, in place of one you have not used up;
   **Space** fires it. The box is back eight seconds later.
 - A kart has **10 HP**, shown over it. Damage follows how hard a hit is to land:
