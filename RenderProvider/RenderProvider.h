@@ -308,6 +308,7 @@ DEFINE_WORK_FUNC(Surface, RunFrames)
             break;
         }
         etcs_advance_animated();
+        Scene3D::StepLooked();   // outside every visit's hold: what this tick's pictures looked at
         ++ticks;
         // A floor, not the pacing: the frame interval lives on the family now
         // (PresentableBase). This only stops an unpaced surface from turning the
@@ -1213,6 +1214,7 @@ DEFINE_WORK_FUNC(Camera3D, Render)
     if (!self.Render())
         ETCS_LOG("Camera3D::Render", "no view produced -- no scene bound, a scene "
                  "that no longer resolves, or a degenerate frustum.");
+    Scene3D::StepLooked();
 }
 
 // Render if stale, then blit once. The same verb, with the same meaning, that
@@ -1229,6 +1231,7 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, Draw, (ETCS::RID, target))
         return;
     }
     self.DrawInto(dst);
+    Scene3D::StepLooked();
     ETCS_LOG("Camera3D::Draw", "renders so far: " << self.Renders());
 }
 // How many projections this camera has driven: whether a draw re-rendered.

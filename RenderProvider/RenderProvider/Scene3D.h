@@ -591,8 +591,8 @@ public:
  *
  * Integration happens here rather than on a clock of its own, and the reason
  * is not economy: a step taken between two frames is a step nobody can see,
- * and a step taken at projection time is sampled at exactly the rate the
- * result is looked at. dt is the interval since the last projection, so
+ * and a step taken for each look is sampled at exactly the rate the
+ * result is looked at. dt is the interval since the last look, so
  * position is a continuous function of elapsed time and a frame that took
  * longer covers proportionally more ground -- which IS the interpolation,
  * done by measuring instead of by guessing between two fixed ticks.
@@ -613,7 +613,7 @@ public:
  * it the other way round and every commit bills for heat that had not
  * happened yet when the interval started.
  *
- * Called from Project and nowhere else, because being observed is the causal
+ * Called for a look and nowhere else (StepLooked), because being observed is the causal
  * interaction this system actually has: a node nobody looked at has had no
  * interaction to commit on, and it owes exactly the same amount whenever
  * somebody finally does -- which is what EmissionOver's exponential form
@@ -635,6 +635,35 @@ public:
         const Fixed commit = Fixed::From(static_cast<double>(m_entropy_clock.Take()) * 0.001);
         const Fixed step   = Fixed::From(static_cast<double>(m_motion_clock.Take())  * 0.001);
         InteractObserved(commit, step);   // a first observation has nothing behind it: both zero, nothing happens
+    }
+
+    /*
+     * A LOOK IS NOTED IN THE PICTURE AND STEPPED BY ITS OBSERVER. The picture
+     * is drawn under a hold on the tree it walks, where nothing may emit, and
+     * a step may: fit's move is an ordered event. So a projection says only
+     * that this node was looked at, and whoever took the picture steps what
+     * it looked at once it is outside that hold -- the frame edge when its
+     * visits are done (Surface.RunFrames), a script after its own Render.
+     *
+     * One list an image, not one a thread: a look is stepped by the next
+     * observer that may act, whichever thread drew it. The step lands after
+     * the picture that asked for it, so a step that had anything in motion
+     * before or after marks the viewers: the next picture is of the rows it
+     * left, and a scene come to rest is drawn at rest.
+     */
+    static void StepLooked()
+    {
+        std::vector<ETCS::RID> looked;
+        { std::lock_guard<std::mutex> lk(lookedMutex()); looked.swap(lookedList()); }
+        for (ETCS::RID rid : looked)
+        {
+            Drawable3D_* d = ETCS::resolve_in_family<Drawable3D_>("Drawable3D", rid);
+            if (!isOwnLeaf(d)) continue;   // gone since the picture
+            Scene3D* s = static_cast<Scene3D*>(d->getTrueType());
+            const bool before = s->InMotion();
+            s->Interact();
+            if (before || s->InMotion()) s->markViewersDirty();
+        }
     }
 
     // The family's step: what a held key pushes with and what drag takes,
@@ -906,7 +935,7 @@ public:
         // The whole projection under the tree's lock: the picture is of one
         // state, not of rows a Run on another thread is halfway through.
         std::lock_guard<std::recursive_mutex> lk(TreeMutex());
-        if (!m_driven) { applyLookTo(camera); Interact(); }   // a driven tree is only read (SetDriven)
+        if (!m_driven) { applyLookTo(camera); noteLook(); }   // stepped after the picture (StepLooked); a driven tree is only read
 
         View v;
         if (!buildView(camera, v)) return nullptr;
@@ -1363,6 +1392,16 @@ private:
     static bool isOwnLeaf(ETCS::Entity* e)
     {
         return e && e->getSourceTag() == ETCS::Buffer("Scene3D");
+    }
+    // The nodes looked at and not yet stepped (StepLooked), each once.
+    static std::mutex& lookedMutex() { static std::mutex m; return m; }
+    static std::vector<ETCS::RID>& lookedList() { static std::vector<ETCS::RID> v; return v; }
+    void noteLook()
+    {
+        const ETCS::RID rid = getRID();
+        std::lock_guard<std::mutex> lk(lookedMutex());
+        std::vector<ETCS::RID>& v = lookedList();
+        if (std::find(v.begin(), v.end(), rid) == v.end()) v.push_back(rid);
     }
     std::vector<ETCS::Entity*> drawable3DChildren()
     {
