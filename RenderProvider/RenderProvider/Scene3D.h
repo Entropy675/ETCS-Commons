@@ -114,12 +114,18 @@ public:
             m_sens_scale = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : kSensitivity;
         else if (k == "mesh")
         {
-            // Where the shape is, by structure (SetMesh): the cached RID goes,
-            // and the next projection finds it again (meshRid).
+            // Where the shape is, by structure. Three ways here. From SetMesh
+            // the RID it was handed comes with it and is this run's anchor.
+            // Handed back as it stands (a store's values follow the replayed
+            // lines, Entity::restoreValue): the line already set the anchor,
+            // and it stands. Anything else arrived with no RID, and the first
+            // use finds one (meshRid).
             std::lock_guard<std::recursive_mutex> lk(TreeMutex());
-            if (readWords(value, w, 2) && w[0] >= 0 && w[1] >= 0) { m_mesh_up = w[0]; m_mesh_at = w[1]; }
-            else m_mesh_up = m_mesh_at = -1;
-            m_mesh_rid = 0; m_mesh_holder = nullptr;
+            const bool has = readWords(value, w, 2) && w[0] >= 0 && w[1] >= 0;
+            const int64_t up = has ? w[0] : -1, at = has ? w[1] : -1;
+            if (m_mesh_pending)                             m_mesh_rid = m_mesh_pending;
+            else if (up != m_mesh_up || at != m_mesh_at)    m_mesh_rid = 0;
+            m_mesh_up = up; m_mesh_at = at; m_mesh_holder = nullptr;
             markViewersDirty();
         }
         else if (k == "extent")
@@ -334,14 +340,20 @@ public:
     // paths draw it: the device from the geometry sent once, the host from
     // the same triangles (rasterMesh).
     /*
-     * THE SHAPE, BY WHERE IT IS -- never by RID, which is this run's alone. A
-     * mesh is a child of this node or of one of its ancestors, and the value
-     * behind "mesh" says which: how many generations up, and its place among
-     * that node's Mesh children in their ordered list (a Mesh declares no
+     * THE SHAPE, STORED BY WHERE IT IS -- never by RID, which is this run's
+     * alone. A mesh is a child of this node or of one of its ancestors, and the
+     * value behind "mesh" says which: how many generations up, and its place
+     * among that node's Mesh children in their ordered list (a Mesh declares no
      * operator<, so the list is creation order: emergent, and the same in a
      * replay). So the record keeps the verb, a store keeps the address, and a
      * rebuilt scene finds the same shape in the same place. 0 is the box.
      * False for a mesh that is no child of this node's line.
+     *
+     * THE RID IS THE ANCHOR INSIDE THE RUN: kept beside the address and what a
+     * picture reads, so a node that moves (a ball fit takes into a cup, where
+     * "one up" is the cup) is still drawn as the shape it was given. The
+     * address is what crosses out of the run; it is still the one SetMesh
+     * wrote, from the line the node had then.
      */
     bool SetMesh(ETCS::RID mesh)
     {
@@ -354,7 +366,12 @@ public:
         if (!holder || up < 0 || !isLine(holder, up)) return false;
         const int64_t at = meshIndex(holder, mesh);
         if (at < 0) return false;
+        // The anchor rides the write (onValue takes it), and is stated again
+        // after: a value that did not change calls nobody.
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); m_mesh_pending = mesh; }
         this->addTag("mesh", words({ up, at }));
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+        m_mesh_rid = mesh; m_mesh_pending = 0;
         return true;
     }
 
@@ -1467,19 +1484,23 @@ private:
         return -1;
     }
     /*
-     * The address, as this run's RID: walked up, then counted along the
-     * holder's ordered Mesh children. Kept until the holder's hash epoch moves
-     * -- a child arriving or going moves it -- so a still scene pays nothing.
+     * This run's RID for the shape: the anchor, when there is one (SetMesh).
+     * An address that arrived with none -- a record replayed, a store loaded --
+     * is resolved here, at first use and not on arrival, so the lines of a
+     * replay may land in any order: walked up, then counted along the holder's
+     * ordered Mesh children, and what it finds is the anchor from then on. One
+     * that does not resolve is asked again only when the holder's hash epoch
+     * has moved -- a child arriving or going moves it -- or the line has.
      * Under the tree's lock, as the walk that asks is.
      */
     ETCS::RID meshRid()
     {
-        if (m_mesh_up < 0) return 0;
+        if (m_mesh_rid != 0 || m_mesh_up < 0) return m_mesh_rid;
         ETCS::Entity* holder = this;
         for (int64_t i = 0; holder && i < m_mesh_up; ++i) holder = holder->getParent();
         if (!holder) return 0;
         const uint32_t epoch = holder->hashEpoch();
-        if (holder == m_mesh_holder && epoch == m_mesh_epoch) return m_mesh_rid;
+        if (holder == m_mesh_holder && epoch == m_mesh_epoch) return 0;   // asked of this structure already
         std::vector<ETCS::Entity::ChildRef> kids;
         holder->getOrderedTypedChildRefs(kids);
         static const ETCS::Buffer kMesh("Mesh");
@@ -2112,10 +2133,12 @@ private:
     }
 
     // The shape's address (onValue, "mesh"): generations up and place among
-    // that node's Mesh children; -1 is the box. And this run's RID for it,
-    // kept against the holder's epoch (meshRid).
+    // that node's Mesh children; -1 is the box. And this run's anchor for it:
+    // the RID SetMesh was handed (m_mesh_pending while its write is in
+    // flight), or the one the address resolved to (meshRid, which keeps what
+    // it last asked in the holder and its epoch).
     int64_t        m_mesh_up = -1, m_mesh_at = -1;
-    ETCS::RID      m_mesh_rid = 0;
+    ETCS::RID      m_mesh_rid = 0, m_mesh_pending = 0;
     ETCS::Entity*  m_mesh_holder = nullptr;
     uint32_t       m_mesh_epoch = 0;
     static constexpr float kColor[4] = {0.8f, 0.8f, 0.85f, 1.0f};
