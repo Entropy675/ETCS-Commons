@@ -81,20 +81,21 @@
  * TYRES GRIP only so hard: across the heading they pull the kart's way round
  * with it, up to grip() (half that with the brake on), and a turn that asks
  * more -- too fast, too much lock -- leaves the rest a slide: the kart
- * drifts, and steering against it brings it back. What the brake and the
- * slide take from the motion is heat, and the tyres -- the body's members,
- * anchored in its frame -- take it, each its share, and shed it into the
- * body; what a tyre sheds per unit of road is its MARK, a rope of fixed
- * length drawn behind it, dark where it braked or slid, wiped from the far
- * end as it goes on. The ground is the map's (KartArena.h): a kart rides on
- * it, slows going up and gains going down, leaves it where it falls away
- * faster than gravity follows (a ramp's lip) and lands where it meets it
- * again; ground rising more than a kart can climb in a step is a wall. A kart
- * is SOLID -- a sphere to everything (etcs_causal_constraints.md §13) -- and
- * drawn as a body on its four tyres, tilted to the ground, which this battle
- * turns with it after every step (frames are translations). What is drawn for
- * one runtime alone -- its camera, its card, the menu and the board, the HP
- * bars turned to face its eye -- is set on the frame edge and is not a line.
+ * drifts, keeping most of its speed, and steering against it brings it back.
+ * What the brake and the slide take from the motion is heat, and the tyres --
+ * the body's members, anchored in its frame -- take it, each its share, and
+ * shed it into the body; what a tyre sheds per unit of road is its MARK, a
+ * rope of fixed length drawn behind it, dark where it braked or slid, wiped
+ * from the far end as it goes on. The ground is the map's (KartArena.h): a
+ * kart rides on it, slows going up and gains going down, leaves it where it
+ * falls away faster than gravity follows (a ramp's lip) and lands where it
+ * meets it again; ground rising more than a kart can climb in a step is a
+ * wall. A kart is SOLID -- a sphere to everything (etcs_causal_constraints.md
+ * §13) -- and drawn as a body on its four tyres, tilted to the ground, which
+ * this battle turns with it after every step (frames are translations). What
+ * is drawn for one runtime alone -- its camera, its card, the menu and the
+ * board, the HP bars turned to face its eye -- is set on the frame edge and
+ * is not a line.
  */
 class KartBattle : public AnimatedBase<KartBattle>,
                    public DeletableBase<KartBattle>
@@ -716,9 +717,23 @@ private:
 
     static Fixed F(int64_t n, int64_t d = 1) { return Fixed::FromInt(n) / Fixed::FromInt(d); }
     static Fixed dt()        { return F(1, kHz); }
-    static Fixed accel()     { return F(9); }
-    static Fixed topSpeed()  { return F(16); }
-    static Fixed boostSpeed(){ return F(26); }
+    /*
+     * THE PEDAL: quick off the line, then less the nearer the top -- the
+     * launch's push falling with speed, never below pull() -- so the top is
+     * reached over about 80 units, more than a wall to the other. Speed is
+     * worth keeping: a corner taken in a drift keeps more of it than one
+     * braked for. A boost pushes hard (boostPush()) to its own top.
+     */
+    static Fixed launch()    { return F(10); }
+    static Fixed pull()      { return F(2); }
+    static Fixed topSpeed()  { return F(22); }
+    static Fixed boostSpeed(){ return F(30); }
+    static Fixed boostPush() { return F(18); }
+    static Fixed pushAt(Fixed v, Fixed top)
+    {
+        const Fixed p = launch() * (Fixed::One() - v / top);
+        return p > pull() ? p : pull();
+    }
     static Fixed brake()     { return F(20); }
     static Fixed reverseAcc(){ return F(5); }
     static Fixed reverseTop(){ return F(6); }
@@ -728,15 +743,25 @@ private:
     static Fixed steerMax()  { return F(12, 10); }    // rad/s: the fastest the wheel turns
     static Fixed steerBack() { return F(15, 10); }    // rad/s: back toward the middle, let go
     // The lock at a speed: the full lock standing still, less the faster the
-    // kart goes, so the turn at speed (speed x lock / wheelbase) tops out
-    // near 1.7 rad/s at the kart's top speed instead of 4.5.
+    // kart goes, so the turn at speed (speed x lock / wheelbase) stays near
+    // 1.7 to 1.9 rad/s from 16 u/s up instead of growing with it.
     static Fixed lockAt(Fixed speed) { return wheelLock() / (Fixed::One() + speed.Abs() / F(10)); }
     static Fixed wheelbase() { return F(16, 10); }
     // The tyres across: the most they pull a slide out (u/s/s), and less
-    // with the brake on -- past it the kart slides. At its top speed a full
-    // lock asks ~28, so it drifts; at 12 u/s it still bites.
+    // with the brake on -- past it the kart slides. A full lock at 16 u/s
+    // asks ~28, at the top ~42, so it drifts; at 12 u/s it still bites.
     static Fixed grip()      { return F(20); }
     static Fixed brakeGrip() { return F(10); }
+    // What a slide costs, of the speed the tyres' pull would take with it:
+    // a quarter while the way is up to ~35 degrees off the heading (`off`
+    // is that angle's sine), rising to all of it full sideways -- so a drift
+    // keeps its speed and a kart knocked sideways still stops.
+    static Fixed slideCost(Fixed off)
+    {
+        const Fixed free = F(574, 1000), least = F(1, 4);
+        if (off <= free) return least;
+        return Fixed::Min(Fixed::One(), least + (Fixed::One() - least) * (off - free) / (Fixed::One() - free));
+    }
     // The tyres at the body's corners, in its frame: across, ahead.
     static Fixed tyreSide()  { return F(70, 100); }
     static Fixed tyreAhead() { return F(64, 100); }
@@ -1184,7 +1209,8 @@ private:
         const Fixed rolled = speed;
         const bool braking = (thr > 0 && speed.raw < 0) || (thr < 0 && speed.raw > 0);
         const Fixed top = s.boost > 0 ? boostSpeed() : topSpeed();
-        const Fixed push = s.boost > 0 ? accel() * F(2) : accel();
+        Fixed push = pushAt(speed, top);
+        if (s.boost > 0 && push < boostPush()) push = boostPush();
         if (thr > 0)
         {
             if (speed.raw < 0) speed = Fixed::Min(speed + brake() * step, Fixed::Zero());
@@ -1225,18 +1251,25 @@ private:
         // The tyres: what the kart's way is across its new heading they pull
         // out, as hard as they grip -- a turn within that bends the way with
         // the heading; past it (too fast, too much lock, the brake on) the
-        // rest stays a slide across, and the kart drifts.
+        // rest stays a slide across, and the kart drifts. The pull turns the
+        // way; of the speed it would take with it, a slide keeps most
+        // (slideCost): a drift carries its speed round a corner.
         const Fixed wx = hx * speed + lx, wz = hz * speed + lz;
         const Fixed on = wx * s.hx + wz * s.hz;
         Fixed ax = wx - s.hx * on, az = wz - s.hz * on;
         const Fixed across = Fixed::Length(ax, Fixed::Zero(), az);
         const Fixed most = (braking ? brakeGrip() : grip()) * step;
-        const Fixed pulled = Fixed::Min(across, most);
         if (across > most) { const Fixed keep = (across - most) / across; ax *= keep; az *= keep; }
         else               { ax = az = Fixed::Zero(); }
-        const Fixed kept = across - pulled;
-        const Fixed scrubbed = Fixed::Half() * m * (across * across - kept * kept);
-        const Fixed nx = s.hx * on + ax, nz = s.hz * on + az;
+        Fixed nx = s.hx * on + ax, nz = s.hz * on + az;
+        const Fixed was = Fixed::Length(wx, Fixed::Zero(), wz), pulled = Fixed::Length(nx, Fixed::Zero(), nz);
+        Fixed now = pulled;
+        if (pulled.IsPositive() && was > pulled)
+        {
+            now = was - slideCost(across / was) * (was - pulled);
+            nx = nx * now / pulled; nz = nz * now / pulled;
+        }
+        const Fixed scrubbed = Fixed::Half() * m * (was * was - now * now);
         // THE LEDGER: the pedal's work is what the motion gained plus what
         // the tyres took (an Impulse, from outside); what the motion lost
         // beyond that is heat in the body (SetVelocity), and the tyres' part

@@ -15,10 +15,13 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   The kart turns by its speed and the wheels' angle, so a kart standing still does not turn, and
   the faster it goes the less the wheels turn: at speed it carves an arc. Click the arena first
   so it has the keys.
+- **Speed builds.** Quick off the line, then slower the faster you go: full speed takes longer
+  than a run from one wall to the other, so speed kept is worth more than speed won back.
 - **The tyres grip only so hard.** Turn too sharply for your speed (or brake in a turn) and the
-  kart slides out of it: a drift. Steer against the slide to catch it. Braking and sliding heat
-  the tyres, and each leaves a **skid mark** behind it, darker the harder it worked: a fixed
-  length of trail that stays while you stand and is wiped as you drive on.
+  kart slides out of it: a drift, which keeps more of your speed through a corner than braking
+  for it. Steer against the slide to catch it. Braking and sliding heat the tyres, and each leaves
+  a **skid mark** behind it, darker the harder it worked: a fixed length of trail that stays
+  while you stand and is wiped as you drive on.
 - **Drive over a gold box** for a weapon off the dice, in place of one you have not used up;
   **Space** fires it. The box is back eight seconds later.
 - A kart has **10 HP**, shown over it. Damage follows how hard a hit is to land:
