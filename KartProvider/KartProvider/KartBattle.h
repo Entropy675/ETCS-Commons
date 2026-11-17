@@ -641,7 +641,7 @@ private:
     static Fixed reverseTop(){ return F(6); }
     static Fixed coast()     { return F(6, 10); }
     static Fixed wheelLock() { return F(45, 100); }   // the lock standing still
-    static Fixed steerAccel(){ return F(25, 10); }    // rad/s/s: the pace the wheel's turn gathers while held
+    static Fixed steerAccel(){ return F(125, 100); }  // rad/s/s: the pace the wheel's turn gathers while held
     static Fixed steerMax()  { return F(12, 10); }    // rad/s: the fastest the wheel turns
     static Fixed steerBack() { return F(15, 10); }    // rad/s: back toward the middle, let go
     // The lock at a speed: the full lock standing still, less the faster the
