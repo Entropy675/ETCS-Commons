@@ -104,15 +104,21 @@ namespace KartArena
         gx = per * dx; gz = per * dz;
         return true;
     }
-    // The ground: the highest thing standing at (x, z), with its slope.
-    inline Fixed Height(const Map& m, Fixed x, Fixed z, Fixed* gx_out = nullptr, Fixed* gz_out = nullptr)
+    // What the ground is at a point: what a skid mark there is drawn over.
+    enum Surface { Floor = 0, OnRamp = 1, OnHill = 2 };
+    // The ground: the highest thing standing at (x, z), with its slope and
+    // what it is.
+    inline Fixed Height(const Map& m, Fixed x, Fixed z, Fixed* gx_out = nullptr, Fixed* gz_out = nullptr,
+                        Surface* what = nullptr)
     {
         Fixed best = Fixed::Zero(), bgx = Fixed::Zero(), bgz = Fixed::Zero();
+        Surface on = Floor;
         Fixed h, gx, gz;
-        for (const Ramp& r : m.ramps) if (RampAt(r, x, z, h, gx, gz) && h > best) { best = h; bgx = gx; bgz = gz; }
-        for (const Hill& k : m.hills) if (HillAt(k, x, z, h, gx, gz) && h > best) { best = h; bgx = gx; bgz = gz; }
+        for (const Ramp& r : m.ramps) if (RampAt(r, x, z, h, gx, gz) && h > best) { best = h; bgx = gx; bgz = gz; on = OnRamp; }
+        for (const Hill& k : m.hills) if (HillAt(k, x, z, h, gx, gz) && h > best) { best = h; bgx = gx; bgz = gz; on = OnHill; }
         if (gx_out) *gx_out = bgx;
         if (gz_out) *gz_out = bgz;
+        if (what) *what = on;
         return best;
     }
 

@@ -15,6 +15,10 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   The kart turns by its speed and the wheels' angle, so a kart standing still does not turn, and
   the faster it goes the less the wheels turn: at speed it carves an arc. Click the arena first
   so it has the keys.
+- **The tyres grip only so hard.** Turn too sharply for your speed (or brake in a turn) and the
+  kart slides out of it: a drift. Steer against the slide to catch it. Braking and sliding heat
+  the tyres, and each leaves a **skid mark** behind it, darker the harder it worked: a fixed
+  length of trail that stays while you stand and is wiped as you drive on.
 - **Drive over a gold box** for a weapon off the dice, in place of one you have not used up;
   **Space** fires it. The box is back eight seconds later.
 - A kart has **10 HP**, shown over it. Damage follows how hard a hit is to land:
@@ -73,7 +77,9 @@ the walls and the maps' blocks with the family's own contact, and a shot stops o
 block. The ground is not a solid: a map's ramps and hills are a height the battle keeps each kart
 at (`KartArena.h`). A map is data; the battle draws the one in play with pools of blocks, slabs and
 domes made at boot, so a change of map is one line of the record. What you see of a kart is a body
-on four wheels, tilted to the ground, and an HP bar; the battle puts the wheels at the body's
-corners after every step (a node's children do not turn with it) and turns each tab's bars to that
-tab's own eye. The hall is the site's name server, the one chess lists its tables in
+on four tyres, tilted to the ground, and an HP bar. The tyres are the body's members, anchored in
+its frame, so they go where it goes; frames are translations, so the battle turns them with it
+after every step, and turns each tab's bars to that tab's own eye. What the brake and a slide take
+from a kart's motion is heat in the rows like any other loss: the battle hands each tyre its share,
+the tyre sheds it into the body, and what it sheds per unit of road is the darkness of its mark. The hall is the site's name server, the one chess lists its tables in
 (`ChessProvider/scripts/chess_hall.etcs`).

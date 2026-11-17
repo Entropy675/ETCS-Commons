@@ -1,0 +1,13 @@
+#!/usr/bin/env etcs
+# One tyre's mark: eight segments, a rope of six units drawn back along its
+# way. `run kart_rope.etcs world=<Scene3D> battle=<KartBattle>`
+requires world [Drawable3D]
+requires battle [KartBattle]
+run kart_mark.etcs world=world battle=battle
+run kart_mark.etcs world=world battle=battle
+run kart_mark.etcs world=world battle=battle
+run kart_mark.etcs world=world battle=battle
+run kart_mark.etcs world=world battle=battle
+run kart_mark.etcs world=world battle=battle
+run kart_mark.etcs world=world battle=battle
+run kart_mark.etcs world=world battle=battle
