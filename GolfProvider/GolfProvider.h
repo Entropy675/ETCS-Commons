@@ -41,6 +41,9 @@ DEFINE_WORK_FUNC_TYPED(GolfGame, Press,   (float, x), (float, y)) { (void)ctx; s
 DEFINE_WORK_FUNC_TYPED(GolfGame, Drag,    (float, x), (float, y)) { (void)ctx; self.Drag(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfGame, Release, (float, x), (float, y)) { (void)ctx; self.Release(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfGame, Wheel,   (float, notches))       { (void)ctx; self.Wheel(notches); }
+// Cancel -- a pull in hand put down, not shot: what the right button does
+// while the left holds one.
+DEFINE_WORK_FUNC(GolfGame, Cancel) { (void)ctx; (void)data; self.Cancel(); }
 // Key <code> <down> -- a key as a verb (R the round again, N the next hole).
 DEFINE_WORK_FUNC_TYPED(GolfGame, Key, (uint32_t, code), (int32_t, down)) { (void)ctx; self.Key(static_cast<uint16_t>(code), down != 0); }
 // "x y z length mode": the pull as it stands.

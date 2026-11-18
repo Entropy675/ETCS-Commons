@@ -10,10 +10,10 @@
 # The pointer is the session's to wire (golf_pointer.etcs): a window, or a
 # test playing strokes with game.Press/Drag/Release, or nothing at all.
 # Then: drag the ball back to aim (the arrow is the shot, opposite the drag),
-# let go to putt; drag anywhere else to walk the camera round the ball; the
-# wheel brings it in and out; R starts the round again and N goes on to the
-# next hole. The camera's pitch is the loft: look down for a putt, level for
-# a lob.
+# let go to putt, or press the right button to put the pull down; drag
+# anywhere else to walk the camera round the ball; the wheel brings it in and
+# out; R starts the round again and N goes on to the next hole. The camera's
+# pitch is the loft: look down for a putt, level for a lob.
 
 requires game [GolfGame]
 requires world [Drawable3D]
@@ -34,7 +34,7 @@ card.SetPadding(6)
 card.SetOrder(11)
 eye.spawn(RenderProvider::TextLabel howto)
 howto.Create(16)
-howto.SetText(pull the ball: shoot / drag: look / wheel: zoom / N: next hole / R: restart)
+howto.SetText(pull: shoot, right click: cancel / drag: look / wheel: zoom / N: next / R: reset)
 howto.SetPosition(16, 724)
 howto.SetColor(0.75, 0.9, 0.8, 1.0)
 howto.SetBackground(0.0, 0.0, 0.0, 0.35)

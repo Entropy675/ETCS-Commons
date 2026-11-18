@@ -10,7 +10,8 @@ modules/GolfProvider/scripts/golf.etcs`.
 ## Playing
 
 - **Drag the ball back** to aim: the arrow growing out of the ball is the shot -- opposite the
-  drag, as long as it (to a cap), green to red with power. Let go to shoot.
+  drag, as long as it (to a cap), green to red with power. Let go to shoot, or **press the
+  right button** while holding it to put the pull down: no shot, no stroke.
 - **Drag anywhere else** to walk the camera round the ball; the **wheel** brings it in and out;
   **R** starts the round again (the first tee, the card clear) and **N** goes on to the next
   hole.
@@ -41,10 +42,15 @@ each of which builds its green and gives the game its cup and its tee (`AddHole`
 the ball and the arrow to `golf_play.etcs`. A cup and its flag are `golf_cup.etcs`, a tee's
 mark `golf_tee.etcs`. A fourth hole is a fourth script and a line in the course.
 
-None of the physics is golf's. The world's space states a field (`SetGravity`); the green and
-walls are anchored solids, the ball a free solid sphere (`SetSolid`, `SetShape`); the cup is a
-container under a real gap in the green, with its own floor inside its own space -- a ball that
-drops in fits that space, fit takes it in, and that move is what "holed" means
-(`ontology/etcs_causal_constraints.md` §11-§13). A hole's levels are the same solids: a terrace
-is a thick slab, a slope a slab turned about x, a trap a floor under a cut in the green. `GolfGame` reads the rows and writes only
-through verbs: the shot is the ball's own `Impulse`.
+None of the physics is golf's. The world's space states a field (`SetGravity`) and a speed of
+light (`SetLightSpeed`, 16 a second: a little over the hardest shot, and nothing on the course
+moves faster); the green and walls are anchored solids, the ball a free solid sphere
+(`SetSolid`, `SetShape`); the cup is a container under a real gap in the green, with its own
+floor inside its own space -- a ball that drops in fits that space, fit takes it in, and that
+move is what "holed" means (`ontology/etcs_causal_constraints.md` §11-§13). A hole's levels
+are the same solids: a terrace is a thick slab, a slope a slab turned about x, a trap a floor
+under a cut in the green. A ball meets a solid where its path first touches it, however far
+one frame moves it (§13, the cut; §14, the smear): a lob on a slow frame comes down on the
+green, not through it, and a drive is turned back by a bumper thinner than its step, from
+where it met it and at the angle it met it. `GolfGame` reads the rows and writes only through
+verbs: the shot is the ball's own `Impulse`.

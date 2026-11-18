@@ -23,6 +23,8 @@
 //                                       cap), drawn as an arrow out of the ball
 //                                       with its shadow on the ground under it
 //   letting go of a pull                is the shot: an impulse along it
+//   another button pressed during one   puts it down: no shot, the arrow gone
+//                                       (the right button, with the left held)
 //   the wheel                           brings the camera in or out
 //   R (the key edge)                    the round again: the ball back on the
 //                                       first tee, the card clear
@@ -145,6 +147,12 @@ public:
     void Drag(float x, float y)    { Pointer(event(INPUT_MOTION, x, y)); }
     void Release(float x, float y) { Pointer(event(INPUT_BUTTON_UP, x, y)); }
     void Wheel(float notches)      { Pointer(event(INPUT_SCROLL, 0.0f, notches)); }
+    // A pull in hand put down, not shot: what another button's press does.
+    void Cancel()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        cancelLocked();
+    }
     // What a pull would shoot right now, for a reader: x y z length.
     std::string PullReport()
     {
@@ -160,6 +168,10 @@ public:
         switch (ev.action)
         {
             case INPUT_BUTTON_DOWN:
+                // Another button while a pull is held (the right, with the
+                // left down): the pull is put down. The first button's
+                // release then finds nothing in hand.
+                if (m_mode == Pull && ev.key != m_button) { cancelLocked(); break; }
                 if (m_mode != Idle) break;
                 m_button = ev.key;
                 m_last_x = x; m_last_y = y;
@@ -509,6 +521,13 @@ private:
         verb(m_shadow, "SetPosition", f3(b[0] + u[0] * mid - m_world_at[0], b[1] - r + kShadowDepth - m_world_at[1], b[2] + u[2] * mid - m_world_at[2]));
         verb(m_shadow, "Orient", f3(c, s, -s) + ", " + std::to_string(degrees));
         verb(m_shadow, "SetVisible", "1");
+    }
+    void cancelLocked()
+    {
+        if (m_mode != Pull) return;
+        m_pull_len = 0.0f;
+        hideArrowLocked();
+        m_mode = Idle;
     }
     void hideArrowLocked()
     {

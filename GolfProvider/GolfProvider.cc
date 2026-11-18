@@ -9,5 +9,5 @@ ETCS_MODULE_EXPORT_MAIN(GolfProvider, "GolfGame")
 // main.ProduceEvents() -> game.ConsumeKeys().
 ETCS_TAG_BLOCK_HYBRID(GolfGame,
     (Create, BindWorld, BindBall, BindCamera, BindCup, BindArrow, BindShadow, BindBallShadow, BindHud,
-     SetTee, AddHole, PlayHole, SetPower, SetOrbit, Reset, Strokes, Card, Press, Drag, Release, Wheel, Key, Pull, Delete),
+     SetTee, AddHole, PlayHole, SetPower, SetOrbit, Reset, Strokes, Card, Press, Drag, Release, Wheel, Cancel, Key, Pull, Delete),
     (ConsumePointer, ConsumeKeys))

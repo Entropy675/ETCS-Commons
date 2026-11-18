@@ -9,6 +9,8 @@
 #
 #   the anchor's space has a field     anchor.SetGravity -- everything inside
 #                                      falls, the ball included
+#   and a speed of light               anchor.SetLightSpeed -- nothing inside
+#                                      moves faster
 #   the green, the walls are solid     SetSolid, and anchored: places, not
 #                                      things; the ball is solid and free
 #   the cup is a space of its own      a container under the gap, with its own
@@ -34,6 +36,10 @@ requires game [GolfGame]
 
 anchor.SetGravity(0.0, -9.8, 0.0)
 anchor.SetSpace(500.0)
+# The speed of light here: 16 a second, a little over the hardest shot's 12.
+# Nothing on the course moves faster (a ball pushed past it keeps the rest as
+# heat), so no step carries the ball further than light goes in it.
+anchor.SetLightSpeed(16.0)
 
 # ── the holes, in the order they are played ────────────────────────────────
 run golf_hole_1.etcs anchor=anchor game=game
