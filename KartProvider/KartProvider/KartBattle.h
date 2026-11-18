@@ -788,7 +788,7 @@ private:
         int         thr = 0, steer = 0, fire = 0;
         int         press = 0;                     // a press of the trigger the tick has not yet seen
         Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
-        Fixed       wheel_rate;                    // how fast the wheel is turning now: it gathers pace while held
+        Fixed       wheel_ease;                    // how far past the lock a held wheel has eased: 0 at the press, 1 at the far lock
         int         steer_held = 0;                // the way the wheel was being turned last tick
         Fixed       hx, hz;                        // the heading, level (the body is tilted to the ground)
         Fixed       vy;                            // up: the ground's pace under it, or a flight's
@@ -868,13 +868,13 @@ private:
     static Fixed reverseAcc(){ return F(5); }
     static Fixed reverseTop(){ return F(6); }
     static Fixed coast()     { return F(6, 10); }
-    static Fixed wheelLock() { return F(45, 100); }   // the lock standing still
-    static Fixed steerAccel(){ return F(125, 100); }  // rad/s/s: the pace the wheel's turn gathers while held
-    static Fixed steerMax()  { return F(12, 10); }    // rad/s: the fastest the wheel turns
-    static Fixed steerBack() { return F(15, 10); }    // rad/s: back toward the middle, let go
+    static Fixed wheelLock() { return F(45, 100); }   // the lock standing still: where a press puts the wheel at once
+    static Fixed steerEase() { return F(3, 2); }      // s: a hold eases the wheel on from the lock to twice it in this long
+    static Fixed steerBack() { return F(3); }         // rad/s: back toward the middle, let go
     // The lock at a speed: the full lock standing still, less the faster the
-    // kart goes, so the turn at speed (speed x lock / wheelbase) stays near
-    // 1.7 to 1.9 rad/s from 16 u/s up instead of growing with it.
+    // kart goes, so the turn a press gives at speed (speed x lock /
+    // wheelbase) stays near 1.7 to 1.9 rad/s from 16 u/s up instead of
+    // growing with it. A long hold doubles it.
     static Fixed lockAt(Fixed speed) { return wheelLock() / (Fixed::One() + speed.Abs() / F(10)); }
     static Fixed wheelbase() { return F(16, 10); }
     // The tyres across: the most they pull a slide out (u/s/s), and less
@@ -1131,7 +1131,7 @@ private:
     void parkLocked(size_t i)
     {
         Slot& s = m_slots[i];
-        s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_rate = Fixed::Zero(); s.steer_held = 0;
+        s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
         s.dead_until = -1; s.ram_safe = 0;
         verb(s.body, "SetVisible", "0");
@@ -1165,7 +1165,7 @@ private:
             }
             if (nearest > best) { best = nearest; bx = p.x; bz = p.z; }
         }
-        s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_rate = Fixed::Zero(); s.steer_held = 0;
+        s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
         s.dead_until = -1;
         Fixed dx = -bx, dz = -bz;
@@ -1548,27 +1548,28 @@ private:
     }
 
     /*
-     * THE WHEEL, turned by A and D. Held, its turn starts slow and gathers
-     * pace (steerAccel) up to the fastest it turns (steerMax), toward the lock
-     * for the kart's speed (lockAt) -- a tap steers a little, a hold a lot.
-     * Turned the other way, the pace starts again from nothing. Let go, it
-     * goes back to the middle at steerBack; and past a smaller lock (the
-     * kart speeding up with the wheel turned) it eases back to it.
+     * THE WHEEL, turned by A and D. A press puts it at the lock for the
+     * kart's speed (lockAt) at once -- the wheel answers the key, not a
+     * moment after it -- and held, it eases on from there to twice the lock
+     * over steerEase: a tap is a firm turn, a long hold a hard one. Turned
+     * the other way it is at that side's lock at once and eases again from
+     * there. Let go, it goes back to the middle at steerBack; and past where
+     * it should be (the kart speeding up with the wheel turned, so the lock
+     * shrinking) it comes back at that pace too.
      */
     static void wheelTurnLocked(Slot& s, int steer, Fixed speed, Fixed step)
     {
-        const Fixed lock = lockAt(speed);
-        if (steer != s.steer_held) s.wheel_rate = Fixed::Zero();
+        if (steer != s.steer_held) s.wheel_ease = Fixed::Zero();
         s.steer_held = steer;
-        Fixed target = Fixed::Zero(), turn = steerBack() * step;
+        Fixed target = Fixed::Zero();
         if (steer != 0)
         {
-            target = lock * F(steer);
-            s.wheel_rate = Fixed::Min(s.wheel_rate + steerAccel() * step, steerMax());
-            // Toward the lock at the turn's pace; back from past it as when let go.
-            const bool past = (steer > 0 && s.wheel > target) || (steer < 0 && s.wheel < target);
-            turn = past ? steerBack() * step : s.wheel_rate * step;
+            s.wheel_ease = Fixed::Min(s.wheel_ease + step / steerEase(), Fixed::One());
+            target = lockAt(speed) * (Fixed::One() + s.wheel_ease) * F(steer);
+            // Short of it: there at once (the press's jump, and the ease after it).
+            if (((target - s.wheel) * F(steer)).IsPositive()) { s.wheel = target; return; }
         }
+        const Fixed turn = steerBack() * step;
         Fixed d = target - s.wheel;
         if (d > turn) d = turn; else if (d < -turn) d = -turn;
         s.wheel += d;
@@ -2330,7 +2331,7 @@ private:
         for (const Slot& s : m_slots)
         {
             st += "|" + s.driver + " " + std::to_string(s.thr) + std::to_string(s.steer) + std::to_string(s.fire)
-                + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.wheel_rate.raw) + " "
+                + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.wheel_ease.raw) + " "
                 + std::to_string(s.steer_held) + " " + std::to_string(s.hx.raw) + " "
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
                 + std::to_string(s.hp) + " " + std::to_string(s.weapon) + " " + std::to_string(s.ammo) + " "

@@ -11,11 +11,11 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 - **Host a battle** and it is listed in the hall; anyone who opens the page sees it and **joins**,
   taking the next free kart of eight. The link under the button joins it directly.
 - **W** go, **S** brake and reverse, **A** / **D** turn the wheels left and right (**invert
-  steering** on the page swaps the two, for this tab) -- slowly at first, faster the longer the
-  key is held, so a tap steers a little and a hold a lot; let go, they come back. The kart turns
-  by its speed and the wheels' angle, so a kart standing still does not turn, and the faster it
-  goes the less the wheels turn: at speed it carves an arc. Click the arena first so it has the
-  keys.
+  steering** on the page swaps the two, for this tab). A press turns them to their lock at
+  once; held, they ease on to twice that over a second and a half, so a tap is a firm turn and
+  a long hold a hard one; let go, they come back. The kart turns by its speed and the wheels'
+  angle, so a kart standing still does not turn, and the faster it goes the less the wheels
+  turn: at speed it carves an arc. Click the arena first so it has the keys.
 - **Speed builds.** Quick off the line, then slower the faster you go: full speed takes longer
   than a run from one wall to the other, so speed kept is worth more than speed won back.
 - **The tyres grip only so hard.** Turn too sharply for your speed (or brake in a turn) and the
