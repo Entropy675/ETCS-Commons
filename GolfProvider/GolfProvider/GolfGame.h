@@ -4,19 +4,24 @@
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // GolfGame -- the hand on the club. A ball in a scene, a camera on it, and a
 // pointer: what a drag means, and what letting go does.
 //
+//   the ball                            has a shadow on whatever is under it,
+//                                       straight down: how high it is, seen
 //   a drag from anywhere but the ball   turns the camera about the ball
 //   a drag that starts on the ball      pulls a shot back: the vector opposite
 //                                       the drag, as long as the drag (to a
 //                                       cap), drawn as an arrow out of the ball
+//                                       with its shadow on the ground under it
 //   letting go of a pull                is the shot: an impulse along it
 //   the wheel                           brings the camera in or out
 //   R (the key edge)                    the ball back on the tee, the card clear
@@ -60,6 +65,8 @@ public:
     void BindCamera(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_camera = r; m_follow = true; }
     void BindCup(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_cup = r; }
     void BindArrow(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_arrow = r; }
+    void BindShadow(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_shadow = r; }
+    void BindBallShadow(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_under = r; m_follow = true; }
     void BindHud(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_hud = r; m_hud_text.clear(); }
 
     // Where the ball goes back to, in the world's frame.
@@ -133,7 +140,7 @@ public:
                 // go is not known.
                 if (m_mode != Idle && input_button_state(ev, m_button) == 0)
                 {
-                    if (m_mode == Pull) { m_pull_len = 0.0f; if (m_arrow) verb(m_arrow, "SetVisible", "0"); }
+                    if (m_mode == Pull) { m_pull_len = 0.0f; hideArrowLocked(); }
                     m_mode = Idle;
                     break;
                 }
@@ -184,6 +191,7 @@ public:
             m_seen[0] = b[0]; m_seen[1] = b[1]; m_seen[2] = b[2];
             m_follow = false;
             placeCameraLocked();
+            underLocked(b);
         }
         // Holed: fit took the ball into the cup's space.
         if (!m_holed && m_cup && parentOfBallLocked() == m_cup)
@@ -224,6 +232,8 @@ private:
     static constexpr float  kLostY    = -25.0f;
     static constexpr double kHoledMs  = 2500.0;
     static constexpr float  kMinPull  = 0.05f;             // shorter is a click, not a shot
+    static constexpr float  kShadowDepth = 0.02f;          // the shadow's thickness, and how far it sits off the ground
+    static constexpr float  kUnderLift   = 0.035f;         // the ball's shadow's middle over its surface: above the tee's mark and the arrow's shadow
 
     static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
     static InputEvent event(uint8_t action, float x, float y)
@@ -358,7 +368,7 @@ private:
     void arrowLocked(const float b[3], float r)
     {
         if (!m_arrow) return;
-        if (m_pull_len < kMinPull) { verb(m_arrow, "SetVisible", "0"); return; }
+        if (m_pull_len < kMinPull) { hideArrowLocked(); return; }
         const float u[3] = { m_pull[0] / m_pull_len, m_pull[1] / m_pull_len, m_pull[2] / m_pull_len };
         const float mid = r + m_pull_len * 0.5f;
         const float w = 0.12f + 0.08f * m_pull_len / m_max_pull;
@@ -368,11 +378,101 @@ private:
         verb(m_arrow, "Aim", f3(u[0], u[1], u[2]));
         verb(m_arrow, "SetColor", f3(0.25f + 0.7f * k, 0.85f - 0.6f * k, 0.25f) + ", 1");
         verb(m_arrow, "SetVisible", "1");
+        shadowLocked(b, r, u, mid, w);
+    }
+
+    /*
+     * THE BALL'S SHADOW: a dark disc on whatever solid is straight under the
+     * ball -- the green, the ridge (laid to its slope), the block's top -- so
+     * the gap between ball and shadow is how high the ball is. Found among
+     * the members of whatever holds the ball (the world; the cup, once it is
+     * holed): the box a line straight down from the ball meets first. Over
+     * the hole, or off the green, there is nothing to fall on, and no shadow.
+     * A little over the surface, above the tee's mark.
+     */
+    void underLocked(const float b[3])
+    {
+        if (!m_under) return;
+        Causal_* ball = ETCS::resolve_in_family<Causal_>("Causal", m_ball);
+        Causal_* held = ball ? ball->Environment() : nullptr;
+        bool found = false;
+        float drop = 1e9f, turn[4] = { 0.0f, 1.0f, 0.0f, 0.0f };   // the surface's own turn: axis, degrees
+        if (held)
+        {
+            // In the frame of what holds it, as its members' rows are.
+            Fixed x, y, z;
+            { std::lock_guard<std::recursive_mutex> lk(ball->TreeMutex()); const OrderVector& o = ball->Order4(); x = o.x; y = o.y; z = o.z; }
+            std::vector<Causal_*> parts;
+            held->Near(x, y, z, Fixed::FromInt(1000), parts);
+            for (Causal_* c : parts)
+            {
+                if (c == ball) continue;
+                const CausalSolid solid = c->Solid();
+                if (solid.shape != CausalSolid::Box) continue;
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                const OrderVector& o = c->Order4();
+                // The line in the box's own frame: from p, along d.
+                Fixed px = x - o.x, py = y - o.y, pz = z - o.z, dx = Fixed::Zero(), dy = -Fixed::One(), dz = Fixed::Zero();
+                o.UnrotateVector(px, py, pz);
+                o.UnrotateVector(dx, dy, dz);
+                const float p[3] = { px.ToFloat(), py.ToFloat(), pz.ToFloat() }, d[3] = { dx.ToFloat(), dy.ToFloat(), dz.ToFloat() };
+                const float h[3] = { solid.hx.ToFloat(), solid.hy.ToFloat(), solid.hz.ToFloat() };
+                float in = 0.0f, out = 1e9f;
+                bool miss = false;
+                for (int k = 0; k < 3 && !miss; ++k)
+                {
+                    if (std::fabs(d[k]) < 1e-6f) { miss = std::fabs(p[k]) > h[k]; continue; }
+                    float t0 = (-h[k] - p[k]) / d[k], t1 = (h[k] - p[k]) / d[k];
+                    if (t0 > t1) std::swap(t0, t1);
+                    in = std::max(in, t0); out = std::min(out, t1);
+                    miss = in > out;
+                }
+                if (miss || in >= drop) continue;
+                drop = in; found = true;
+                const float qw = clampf(o.qw.ToFloat(), -1.0f, 1.0f), sn = std::sqrt(1.0f - qw * qw);
+                turn[3] = 2.0f * std::acos(qw) * 180.0f / kPi;
+                if (sn > 1e-4f) { turn[0] = o.qx.ToFloat() / sn; turn[1] = o.qy.ToFloat() / sn; turn[2] = o.qz.ToFloat() / sn; }
+                else            { turn[0] = 0.0f; turn[1] = 1.0f; turn[2] = 0.0f; turn[3] = 0.0f; }
+            }
+        }
+        if (!found) { if (m_under_shown) { verb(m_under, "SetVisible", "0"); m_under_shown = false; } return; }
+        verb(m_under, "SetPosition", f3(b[0] - m_world_at[0], b[1] - drop + kUnderLift - m_world_at[1], b[2] - m_world_at[2]));
+        verb(m_under, "Orient", f3(turn[0], turn[1], turn[2]) + ", " + std::to_string(turn[3]));
+        if (!m_under_shown) { verb(m_under, "SetVisible", "1"); m_under_shown = true; }
+    }
+
+    /*
+     * THE ARROW'S SHADOW: the same arrow laid flat on the ground straight
+     * under it, as long as the arrow's run over the ground. A picture of the
+     * arrow alone cannot say how far it rises; the gap between the two can.
+     * The ground is where the ball stands.
+     *
+     * Flat means the mesh's length (+y) along the ground track and its depth
+     * (+z) vertical: a quarter turn about x, then the track's bearing about
+     * y, stated as the one turn they compose to (the node's Orient).
+     */
+    void shadowLocked(const float b[3], float r, const float u[3], float mid, float w)
+    {
+        if (!m_shadow) return;
+        const float run = m_pull_len * std::sqrt(u[0] * u[0] + u[2] * u[2]);
+        if (run < kMinPull) { verb(m_shadow, "SetVisible", "0"); return; }   // straight up: nothing to lay down
+        const float half = 0.5f * std::atan2(u[0], u[2]);
+        const float c = std::cos(half), s = std::sin(half);
+        const float degrees = 2.0f * std::acos(c * 0.70710678f) * 180.0f / 3.14159265f;
+        verb(m_shadow, "Create", f3(w, run, kShadowDepth));
+        verb(m_shadow, "SetPosition", f3(b[0] + u[0] * mid - m_world_at[0], b[1] - r + kShadowDepth - m_world_at[1], b[2] + u[2] * mid - m_world_at[2]));
+        verb(m_shadow, "Orient", f3(c, s, -s) + ", " + std::to_string(degrees));
+        verb(m_shadow, "SetVisible", "1");
+    }
+    void hideArrowLocked()
+    {
+        if (m_arrow)  verb(m_arrow, "SetVisible", "0");
+        if (m_shadow) verb(m_shadow, "SetVisible", "0");
     }
 
     void shootLocked()
     {
-        if (m_arrow) verb(m_arrow, "SetVisible", "0");
+        hideArrowLocked();
         if (m_pull_len < kMinPull) return;
         // Speed proportional to the pull; the impulse is its kinetic energy
         // (the ball's mass is one), along the pull.
@@ -432,7 +532,8 @@ private:
     }
 
     std::mutex m_mu;
-    ETCS::RID  m_world = 0, m_ball = 0, m_camera = 0, m_cup = 0, m_arrow = 0, m_hud = 0;
+    ETCS::RID  m_world = 0, m_ball = 0, m_camera = 0, m_cup = 0, m_arrow = 0, m_shadow = 0, m_under = 0, m_hud = 0;
+    bool       m_under_shown = false;
     float      m_tee[3] = { 0.0f, 0.5f, 0.0f };
     float      m_world_at[3] = { 0.0f, 0.0f, 0.0f };
     float      m_max_pull = 4.0f, m_max_speed = 14.0f;

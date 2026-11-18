@@ -1314,6 +1314,9 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, SetColorOf,
  * text, exactly as a script line would. The general entry; see
  * PaintPalette::AddCall for why the older kinds are not spelled with it.
  */
+// StretchArrow <node> -- a call's node is a cell's arrow: rebuilt at the cell's width.
+DEFINE_WORK_FUNC_TYPED(PaintPalette, StretchArrow, (ETCS::RID, node)) { (void)ctx; self.StretchArrow(node); }
+
 DEFINE_WORK_FUNC(PaintPalette, AddCall)
 {
     (void)ctx;
@@ -2348,6 +2351,13 @@ DEFINE_WORK_FUNC(PaintInput, BindGlyphs)
     self.BindGlyphs(glyphs);
 }
 
+// BindModeler <modeler> <camera> -- the 3D half of this pane (PaintInput::BindModeler).
+DEFINE_WORK_FUNC_TYPED(PaintInput, BindModeler, (ETCS::RID, modeler), (ETCS::RID, view))
+{
+    (void)ctx;
+    self.BindModeler(modeler, view);
+}
+
 DEFINE_WORK_FUNC(PaintInput, BindWheel)
 {
     (void)ctx;
@@ -2896,6 +2906,153 @@ DEFINE_STREAM_FUNC_CONSUME(PaintShare, Mail)
     (void)data;
     std::string line;
     while (!ctx.isInterrupted() && stream.readMessage(line)) self.mail(line);
+}
+
+// ── PaintModeler ────────────────────────────────────────────────────────────
+
+DEFINE_WORK_FUNC(PaintModeler, Create) { (void)ctx; (void)data; self.Create(); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindWorld,   (ETCS::RID, world))  { (void)ctx; self.BindWorld(world); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCamera,  (ETCS::RID, camera)) { (void)ctx; self.BindCamera(camera); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindTool,    (ETCS::RID, tool))   { (void)ctx; self.BindTool(tool); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindReadout, (ETCS::RID, label))  { (void)ctx; self.BindReadout(label); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindSurface, (ETCS::RID, surface)) { (void)ctx; self.BindSurface(surface); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindLayout,  (ETCS::RID, layout))  { (void)ctx; self.BindLayout(layout); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindShare,   (ETCS::RID, share))   { (void)ctx; self.BindShare(share); }
+// BindCell <role> <node> / BindCaption <role> <label> -- the bar's cells, lit
+// and captioned by what is in hand (PaintModeler::BindCell).
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCell,    (std::string, role), (ETCS::RID, node))  { (void)ctx; self.BindCell(role, node); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCaption, (std::string, role), (ETCS::RID, label)) { (void)ctx; self.BindCaption(role, label); }
+DEFINE_WORK_FUNC(PaintModeler, CycleShape)  { (void)ctx; (void)data; self.CycleShape(); }
+DEFINE_WORK_FUNC(PaintModeler, CycleAxis)   { (void)ctx; (void)data; self.CycleAxis(); }
+DEFINE_WORK_FUNC(PaintModeler, ToggleSnap)  { (void)ctx; (void)data; self.ToggleSnap(); }
+DEFINE_WORK_FUNC(PaintModeler, CycleFormat) { (void)ctx; (void)data; self.CycleFormat(); }
+// ExportHere -- the model in the bar's format: model.<fmt> beside the runtime,
+// or the browser's download.
+DEFINE_WORK_FUNC(PaintModeler, ExportHere)
+{
+    (void)ctx;
+    const std::string answer = self.ExportHere();
+    data.reset();
+    data.writeString(answer.c_str());
+}
+// AddPart <node> -- one more Scene3D of the pool (paint_model_part.etcs).
+DEFINE_WORK_FUNC_TYPED(PaintModeler, AddPart, (ETCS::RID, node)) { (void)ctx; self.AddPart(node); }
+// AddShape <name> <mesh> -- a shape parts can be drawn as.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, AddShape, (std::string, name), (ETCS::RID, mesh)) { (void)ctx; self.AddShape(name, mesh); }
+// BindAxis <0|1|2> <node> -- the arrow drawn along x, y or z of the selection.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, BindAxis, (uint32_t, axis), (ETCS::RID, node)) { (void)ctx; self.BindAxis(axis, node); }
+// AddPane <2|3> <node> -- shown only in that mode.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, AddPane, (uint32_t, mode), (ETCS::RID, node)) { (void)ctx; self.AddPane(mode, node); }
+DEFINE_WORK_FUNC(PaintModeler, Open)   { (void)ctx; (void)data; self.Open(); }
+DEFINE_WORK_FUNC(PaintModeler, Close)  { (void)ctx; (void)data; self.Close(); }
+DEFINE_WORK_FUNC(PaintModeler, Toggle) { (void)ctx; (void)data; self.Toggle(); }
+// SetTool <select|move|turn|size|add|paint|delete>
+DEFINE_WORK_FUNC_TYPED(PaintModeler, SetTool,  (std::string, name)) { (void)ctx; self.SetTool(name); }
+// SetAxis <x|y|z|none> -- the same one again lets go of it.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, SetAxis,  (std::string, name)) { (void)ctx; self.SetAxis(name); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, SetShape, (std::string, name)) { (void)ctx; self.SetShape(name); }
+// SetSnap <units> <degrees> -- the grid moves, sizes and turns land on; 0 is free.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, SetSnap, (float, step), (float, degrees)) { (void)ctx; self.SetSnap(step, degrees); }
+// SetOrbit <distance> <yaw> <pitch> -- the eye about what it looks at, degrees.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, SetOrbit, (float, distance), (float, yaw), (float, pitch)) { (void)ctx; self.SetOrbit(distance, yaw, pitch); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, LookAt, (float, x), (float, y), (float, z)) { (void)ctx; self.LookAt(x, y, z); }
+// The pointer as verbs, in the camera frame's pixels: a gesture with no window.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, Press,   (float, x), (float, y)) { (void)ctx; self.Press(x, y); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, Drag,    (float, x), (float, y)) { (void)ctx; self.Drag(x, y); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, Release, (float, x), (float, y)) { (void)ctx; self.Release(x, y); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, Wheel,   (float, notches))       { (void)ctx; self.Wheel(notches); }
+// Do <line> -- a line of the model, as this runtime's own edit (PaintModeler.h).
+DEFINE_WORK_FUNC(PaintModeler, Do)
+{
+    (void)ctx;
+    const bool ok = self.Do(paint_path_arg(data));
+    data.reset();
+    data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(PaintModeler, Undo) { (void)ctx; const bool ok = self.Undo(); data.reset(); data.writeString(ok ? "ok" : "nothing"); }
+DEFINE_WORK_FUNC(PaintModeler, Redo) { (void)ctx; const bool ok = self.Redo(); data.reset(); data.writeString(ok ? "ok" : "nothing"); }
+// Save <path> / Load <path> -- the model as its lines; Export <path> -- as
+// .obj, .stl or .glb, by the ending (the world's own Scene3D.Export).
+DEFINE_WORK_FUNC(PaintModeler, Save)
+{
+    (void)ctx;
+    const bool ok = self.Save(paint_path_arg(data));
+    data.reset();
+    data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(PaintModeler, Load)
+{
+    (void)ctx;
+    const bool ok = self.Load(paint_path_arg(data));
+    data.reset();
+    data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(PaintModeler, Export)
+{
+    (void)ctx;
+    const std::string answer = self.Export(paint_path_arg(data));
+    data.reset();
+    data.writeString(answer.c_str());
+}
+DEFINE_WORK_FUNC(PaintModeler, Hash)     { (void)ctx; const std::string v = self.Hash();   data.reset(); data.writeString(v.c_str()); }
+DEFINE_WORK_FUNC(PaintModeler, Status)   { (void)ctx; const std::string v = self.Status(); data.reset(); data.writeString(v.c_str()); }
+// Report <id> -- "<shape> <x y z> <w h d> <r g b a>", or "-".
+DEFINE_WORK_FUNC(PaintModeler, Report)
+{
+    (void)ctx;
+    uint32_t id = 0;
+    data >> id;
+    const std::string v = self.Report(id);
+    data.reset();
+    data.writeString(v.c_str());
+}
+// Host <record> <proposals> <name> / Join <name> / Leave -- the session.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, Host, (ETCS::RID, record), (ETCS::RID, proposals), (std::string, name))
+{
+    (void)ctx;
+    self.Host(record, proposals, name);
+}
+DEFINE_WORK_FUNC_TYPED(PaintModeler, Join, (std::string, name)) { (void)ctx; self.Join(name); }
+DEFINE_WORK_FUNC(PaintModeler, Leave)  { (void)ctx; (void)data; self.Leave(); }
+DEFINE_WORK_FUNC(PaintModeler, Delete) { (void)ctx; (void)data; data.writeString(self.Delete() ? "deleted" : "FAILED"); }
+
+// The session's streams, each its session's (KartBattle's, KartProvider.h).
+//
+// model.Emit() -> proposals.Take() -- a guest's lines, for the host to judge.
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(PaintModeler, Emit)
+{
+    (void)data;
+    const uint64_t gen = self.Generation();
+    std::string line;
+    bool stale = false;
+    while (!ctx.isInterrupted() && !ctx.isTerminated() && !stream.readerGone())
+    {
+        if (!self.nextEmit(gen, line, stale))
+        {
+            if (stale) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        if (!stream.writeMessage(line)) break;
+    }
+}
+// record.Follow(0) -> model.Absorb() -- the record, applied in its order.
+DEFINE_STREAM_FUNC_CONSUME(PaintModeler, Absorb)
+{
+    (void)data;
+    const uint64_t gen = self.Generation();
+    std::string m;
+    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20))
+        if (!self.Absorb(gen, m)) return;
+}
+// proposals.Follow(0) -> model.Judge() -- the host judging every line proposed.
+DEFINE_STREAM_FUNC_CONSUME(PaintModeler, Judge)
+{
+    (void)data;
+    const uint64_t gen = self.Generation();
+    std::string m;
+    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20))
+        if (!self.JudgeLine(gen, m)) return;
 }
 
 #endif // PAINTPROVIDER_H__

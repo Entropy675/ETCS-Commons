@@ -210,10 +210,16 @@ struct CallerScope
 
 // Told when an edge closes, with its id -- what ties an advert's life to its
 // advertiser's link.
+//
+// NEVER DESTROYED, on purpose. Its watchers (Lobby) live in the module's
+// MemoryArena, which is torn down at exit; a function-local static built after
+// the arena is destroyed BEFORE it, so ~Lobby's remove() ran on a freed map --
+// an erase on dead tree nodes, reported by glibc as "corrupted size vs.
+// prev_size". A leaked singleton outlives every arena that can hold a watcher.
 class EdgeWatch
 {
 public:
-    static EdgeWatch& get() { static EdgeWatch w; return w; }
+    static EdgeWatch& get() { static EdgeWatch* w = new EdgeWatch; return *w; }
     int add(std::function<void(uint64_t)> fn)
     {
         std::lock_guard<std::mutex> lock(mu_);

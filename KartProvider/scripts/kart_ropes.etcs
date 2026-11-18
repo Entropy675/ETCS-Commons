@@ -1,0 +1,9 @@
+#!/usr/bin/env etcs
+# One kart's marks: a rope for each tyre, fl fr rl rr, before the kart is
+# handed over (kart_car.etcs). `run kart_ropes.etcs world=<Scene3D> battle=<KartBattle>`
+requires world [Drawable3D]
+requires battle [KartBattle]
+run kart_rope.etcs world=world battle=battle
+run kart_rope.etcs world=world battle=battle
+run kart_rope.etcs world=world battle=battle
+run kart_rope.etcs world=world battle=battle

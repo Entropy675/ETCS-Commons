@@ -28,6 +28,7 @@
 #include "PaintProvider/PaintColorWheel.h"
 #include "PaintProvider/PaintCanvasMenu.h"
 #include "PaintProvider/PaintVisitors.h"
+#include "PaintProvider/PaintModeler.h"
 #include "PaintProvider/PaintInput.h"
 #include "PaintProvider/PaintRouter.h"
 #include "PaintProvider/PaintShare.h"

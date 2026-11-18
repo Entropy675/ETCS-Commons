@@ -14,7 +14,7 @@
 ETCS_MODULE_EXPORT_MAIN(PaintProvider,
     "PaintDocument PaintLayer PaintTool PaintSurface PaintInput PaintPalette "
     "PaintRouter PaintLayerPanel PaintColorWheel PaintCanvasMenu PaintPages PaintPagePanel PaintAnimation PaintShare PaintVisitors "
-    "PaintFonts PaintTextBar")
+    "PaintFonts PaintTextBar PaintModeler")
 
 // SetKind is what makes one tool eight: radius/colour/hardness vary
 // independently of it, and the kind is the shape of the whole gesture rather
@@ -65,7 +65,7 @@ ETCS_TAG_BLOCK_BASIC(PaintSurface,
 ETCS_TAG_BLOCK_HYBRID(PaintInput,
     (Create, BindDocument, BindTool, BindSurface, SetBrush,
      BindRoot, BindCanvas, BindPalette, BindPanel, BindPagePanel, BindVisitors, BindTextBar, Undo, Redo, RedoAlt, BindRedoAlt, BindAnimation, BindGlyphs, SetHoldCapacity, BindPages,
-     BindWheel, SetWheelPane,
+     BindWheel, SetWheelPane, BindModeler,
      Pointer, Press, Release, Report, Delete),
     (ConsumeInput, ConsumePointer, ConsumeRouted, ConsumeRoutedPointer))
 
@@ -84,7 +84,7 @@ ETCS_TAG_BLOCK_BASIC(PaintPalette,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
     BindWheel, AddWheelArrow, AddModeArrow, AddArrow, SetModeReadout, SetShapeReadout, SetTipReadout,
     SetHoldCapacity, AddHoverLabel,
-    AddCall, AddPopup, OpenPopup, ClosePopup, BindRouter,
+    AddCall, StretchArrow, AddPopup, OpenPopup, ClosePopup, BindRouter,
     SetColorOf, Report, Delete)
 
 // The pages of this session, kept in a database -- see PaintPages.
@@ -168,3 +168,13 @@ ETCS_TAG_BLOCK_BASIC(PaintVisitors,
     BindMe, BindSwatch, SetRowColors, SetInk,
     SetRoster, SetMe, Open, OpenAs, Close, Hide, CopyLink, PickColor, EditName,
     Promote, Demote, Remove, Delete)
+
+// The 3D half of the page: a hand on a scene, whose model is its lines
+// (PaintModeler.h). HYBRID for the session's three streams.
+ETCS_TAG_BLOCK_HYBRID(PaintModeler,
+    (Create, BindWorld, BindCamera, BindTool, BindSurface, BindReadout, BindLayout, BindShare, BindCell, BindCaption, AddPart, AddShape, BindAxis, AddPane,
+     Open, Close, Toggle, SetTool, SetAxis, SetShape, SetSnap, SetOrbit, LookAt,
+     CycleShape, CycleAxis, ToggleSnap, CycleFormat, ExportHere,
+     Press, Drag, Release, Wheel, Do, Undo, Redo, Save, Load, Export, Hash, Status, Report,
+     Host, Join, Leave, Delete),
+    (Emit, Absorb, Judge))

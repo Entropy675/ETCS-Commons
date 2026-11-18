@@ -1124,7 +1124,7 @@
     share.id   = mintId();
     share.role = 'owner';
     callVerb('share', 'Hue', (shareHueEl.value || myHue()).replace('#', ''));
-    if (!runTemplate('paint_host.etcs', { n: share.n, name: myName(), id: share.id, hub: hubUrl() }, 'share=share doc=doc')) { share.id = null; return; }
+    if (!runTemplate('paint_host.etcs', { n: share.n, name: myName(), id: share.id, hub: hubUrl() }, 'share=share doc=doc model=model')) { share.id = null; return; }
     showLink();
     beat();
     log('[etcs] sharing -- the link in the header is the invitation\n', 'ok');
@@ -1146,7 +1146,7 @@
     const kept = await callResult('pages', 'Stash', '');
     if (kept && kept.trim() === 'ok') log('[etcs] your page is kept in the page list\n');
     callVerb('share', 'Hue', (shareHueEl.value || myHue()).replace('#', ''));
-    if (!runTemplate('paint_join.etcs', { n: share.n, name: myName(), id: id, hub: hubUrl() }, 'share=share doc=doc')) { share.id = null; return; }
+    if (!runTemplate('paint_join.etcs', { n: share.n, name: myName(), id: id, hub: hubUrl() }, 'share=share doc=doc model=model')) { share.id = null; return; }
     shareLinkEl.textContent = 'in a shared canvas';
     shareLinkEl.hidden = false;
     shareHueEl.hidden = false;        // a viewer picks their colour too
@@ -1267,13 +1267,18 @@
   // A link opened cold. Waits for the BOOT, not only the runtime: the runtime
   // is up seconds before boot_paint_panels.etcs has spawned the document and
   // the page store, and a join that lands in between replays into nothing --
-  // the joiner kept their own blank page and never got the host's. The import
-  // prompt's input is one of the last names the boot script makes.
+  // the joiner kept their own blank page and never got the host's. The mode
+  // cell's word is the LAST name the boot script makes, after the modeller and
+  // its whole 3D half (paint_model.etcs): the join template drives `model`, and
+  // a join that runs before it exists joins the canvas and leaves the model
+  // alone. (This waited on the import prompt's input, which the modeller now
+  // follows -- the gap showed up as a guest that never joined about one run in
+  // two.)
   (function () {
     const id = new URLSearchParams(window.location.search).get('s');
     if (!id) return;
     const t = setInterval(function () {
-      if (!runtimeUp() || !nameLive('import_input') || !nameLive('pages')) return;
+      if (!runtimeUp() || !nameLive('mode_word') || !nameLive('pages')) return;
       clearInterval(t);
       joinFromLink(id.replace(/[^0-9a-f]/g, '').slice(0, 40));
     }, 500);
@@ -1304,6 +1309,37 @@
   // The reel as a GIF: the animation window's button raises this
   // (PaintAnimation::Download), the encoder writes the file here, and the
   // page hands it over the same way the PNG goes.
+  // The model out, in the bar's format (PaintModeler::ExportHere): written into
+  // this page's filesystem by the world's own Export, then handed over -- an
+  // .obj with the .mtl it names, so the pair opens anywhere.
+  function downloadModel(fmt) {
+    if (!runtimeUp()) { log('[etcs] model: runtime is not up yet\n', 'err'); return; }
+    if (['obj', 'stl', 'glb'].indexOf(fmt) < 0) { log('[etcs] model: no format "' + fmt + '"\n', 'err'); return; }
+    try {
+      const fs = etcsFS();
+      try { fs.mkdirTree('/exports'); } catch (e) {}
+      const path = '/exports/model.' + fmt;
+      try { fs.unlink(path); } catch (e) {}
+      // A plain call says whether `model` was live, not what Export decided:
+      // an empty model writes nothing, and the read below says so.
+      callVerb('model', 'Export', path);
+      const files = fmt === 'obj' ? ['model.obj', 'model.mtl'] : ['model.' + fmt];
+      const types = { obj: 'text/plain', mtl: 'text/plain', stl: 'model/stl', glb: 'model/gltf-binary' };
+      files.forEach(function (name, i) {
+        const bytes = fs.readFile('/exports/' + name);
+        const url = URL.createObjectURL(new Blob([bytes], { type: types[name.split('.').pop()] }));
+        const a = document.createElement('a');
+        a.href = url; a.download = name;
+        setTimeout(function () {
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        }, i * 300);
+      });
+    } catch (e) {
+      log('[etcs] model download failed: ' + e + '\n', 'err');
+    }
+  }
+
   function downloadGif() {
     if (!runtimeUp()) { log('[etcs] gif: runtime is not up yet\n', 'err'); return; }
     try {
@@ -1328,6 +1364,7 @@
     if (what === 'save') { downloadComposite(); return; }
     if (what === 'load') { uploadEl.click(); return; }
     if (what === 'gif')  { downloadGif(); return; }
+    if (typeof what === 'string' && what.indexOf('model-') === 0) { downloadModel(what.slice(6)); return; }
     log('[etcs] menu: unknown request "' + what + '"\n', 'err');
   });
 

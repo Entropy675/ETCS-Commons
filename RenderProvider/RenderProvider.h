@@ -308,6 +308,7 @@ DEFINE_WORK_FUNC(Surface, RunFrames)
             break;
         }
         etcs_advance_animated();
+        Scene3D::StepLooked();   // outside every visit's hold: what this tick's pictures looked at
         ++ticks;
         // A floor, not the pacing: the frame interval lives on the family now
         // (PresentableBase). This only stops an unpaced surface from turning the
@@ -946,7 +947,35 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetMesh, (ETCS::RID, mesh))
         ETCS_LOG("Scene3D::SetMesh", "RID:" << mesh << " does not resolve as a Mesh.");
         return;
     }
-    self.SetMesh(mesh);
+    if (!self.SetMesh(mesh))
+        ETCS_LOG("Scene3D::SetMesh", "RID:" << mesh << " is not a child of this node or of one of its ancestors "
+                 "-- a shape is named by where it is, so spawn the Mesh under the scene that uses it.");
+}
+
+// Export <path> -- this subtree as a file: .obj (+ .mtl), .stl or .glb by the
+// path's ending (Scene3D::Export). The path is the rest of the line; a quoted
+// one is unquoted. Answers "<parts> <triangles>", or "refused: <why>".
+DEFINE_WORK_FUNC(Scene3D, Export)
+{
+    (void)ctx;
+    std::string path = data.restAsString();
+    const char* ws = " \t\r\n";
+    const size_t a = path.find_first_not_of(ws);
+    path = a == std::string::npos ? std::string() : path.substr(a, path.find_last_not_of(ws) - a + 1);
+    if (path.size() >= 2 && (path.front() == '\'' || path.front() == '"') && path.back() == path.front())
+        path = path.substr(1, path.size() - 2);
+    uint32_t parts = 0; uint64_t triangles = 0;
+    std::string why;
+    data.reset();
+    if (path.empty()) why = "Export needs a path";
+    if (!why.empty() || !self.Export(path, parts, triangles, why))
+    {
+        ETCS_LOG("Scene3D::Export", "refused: " << why);
+        data.writeString(("refused: " + why).c_str());
+        return;
+    }
+    ETCS_LOG("Scene3D::Export", path << ": " << parts << " part(s), " << triangles << " triangle(s)");
+    data.writeString((std::to_string(parts) + " " + std::to_string(triangles)).c_str());
 }
 
 // Project into a camera on demand -- the same verb the frame path calls, so a
@@ -1185,6 +1214,7 @@ DEFINE_WORK_FUNC(Camera3D, Render)
     if (!self.Render())
         ETCS_LOG("Camera3D::Render", "no view produced -- no scene bound, a scene "
                  "that no longer resolves, or a degenerate frustum.");
+    Scene3D::StepLooked();
 }
 
 // Render if stale, then blit once. The same verb, with the same meaning, that
@@ -1201,6 +1231,7 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, Draw, (ETCS::RID, target))
         return;
     }
     self.DrawInto(dst);
+    Scene3D::StepLooked();
     ETCS_LOG("Camera3D::Draw", "renders so far: " << self.Renders());
 }
 // How many projections this camera has driven: whether a draw re-rendered.

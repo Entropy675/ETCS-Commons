@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A guest's lines to the host: `detach paint_model_emit.etcs src=<PaintModeler> dst=<Ledger>`
+requires src [PaintModeler]
+src.Emit() -> dst.Take()

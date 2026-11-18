@@ -33,6 +33,18 @@ presence{{n}}.spawn(NetworkProvider::Remote rpresence{{n}})
 rpresence{{n}}.Bind(presence @peer{{n}})
 
 share.Join(@record{{n}} @intake{{n}} @seal{{n}} @presence{{n}} @peer{{n}} {{name}})
+# The model: the host's record followed, this page's lines proposed to it.
+# The Join first -- it starts the model afresh, and a record followed before
+# it would be lines lost (KartProvider's kart_join.etcs).
+spawn NetworkProvider::Ledger mrecord{{n}}
+mrecord{{n}}.spawn(NetworkProvider::Remote rmrecord{{n}})
+rmrecord{{n}}.Bind(mrecord @peer{{n}})
+spawn NetworkProvider::Ledger mproposals{{n}}
+mproposals{{n}}.spawn(NetworkProvider::Remote rmproposals{{n}})
+rmproposals{{n}}.Bind(mproposals @peer{{n}})
+model.Join({{name}})
+detach PaintProvider/scripts/paint_model_follow.etcs src=mrecord{{n}} dst=model
+detach PaintProvider/scripts/paint_model_emit.etcs src=model dst=mproposals{{n}}
 
 detach PaintProvider/scripts/paint_follow.etcs src=record{{n}} dst=doc
 detach PaintProvider/scripts/paint_watch.etcs src=presence{{n}} dst=share

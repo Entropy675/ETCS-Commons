@@ -18,13 +18,14 @@ DEFINE_WORK_FUNC(KartBattle, Create)                                 { (void)ctx
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindWorld,  (ETCS::RID, rid))    { (void)ctx; self.BindWorld(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCamera, (ETCS::RID, rid))    { (void)ctx; self.BindCamera(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCard,   (ETCS::RID, rid))    { (void)ctx; self.BindCard(rid); }
-// AddKart <body> <fl> <fr> <rl> <rr> <bar back> <bar fill> -- a kart of the
-// pool, its four wheels and its HP bar.
-DEFINE_WORK_FUNC_TYPED(KartBattle, AddKart, (ETCS::RID, body), (ETCS::RID, fl), (ETCS::RID, fr), (ETCS::RID, rl),
-                       (ETCS::RID, rr), (ETCS::RID, bar_back), (ETCS::RID, bar_fill))
+// AddKart <body> <fr> <fl> <rr> <rl> <bar back> <bar fill> -- a kart of the
+// pool, its four wheels (the right ones first, as the picture shows them)
+// and its HP bar.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddKart, (ETCS::RID, body), (ETCS::RID, fr), (ETCS::RID, fl), (ETCS::RID, rr),
+                       (ETCS::RID, rl), (ETCS::RID, bar_back), (ETCS::RID, bar_fill))
 {
     (void)ctx;
-    self.AddKart(body, fl, fr, rl, rr, bar_back, bar_fill);
+    self.AddKart(body, fr, fl, rr, rl, bar_back, bar_fill);
 }
 // The arena: a wall of every map; a map by name (or one made from a seed each
 // time it is chosen), then what is on it -- blocks, ramps, hills, spawns and
@@ -52,15 +53,56 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddHill, (float, x), (float, z), (float, radi
     (void)ctx;
     self.AddHill(x, z, radius, height);
 }
+// AddPad <x> <z> <yaw> -- a pad on the level ground, pushing karts over it
+// the way it points (a ramp's yaw).
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddPad, (float, x), (float, z), (float, yaw)) { (void)ctx; self.AddPad(x, z, yaw); }
+// AddSpring <x> <z> -- a round pad that throws a kart up.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpring, (float, x), (float, z))     { (void)ctx; self.AddSpring(x, z); }
+// AddDeck <x> <z> <width> <depth> <height> -- a level plane in the air: on
+// it from above, under it from below, through it going up.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddDeck, (float, x), (float, z), (float, width), (float, depth), (float, height))
+{
+    (void)ctx;
+    self.AddDeck(x, z, width, depth, height);
+}
+// AddPit <x> <z> <width> <depth> <deep> -- a floor sunk `deep` below the
+// arena's; a ramp put in it rises from that floor.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddPit, (float, x), (float, z), (float, width), (float, depth), (float, deep))
+{
+    (void)ctx;
+    self.AddPit(x, z, width, depth, deep);
+}
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpawn, (float, x), (float, z))      { (void)ctx; self.AddSpawn(x, z); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickup, (float, x), (float, z))     { (void)ctx; self.AddPickup(x, z); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlockNode, (ETCS::RID, node))      { (void)ctx; self.AddBlockNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSlabNode, (ETCS::RID, node))       { (void)ctx; self.AddSlabNode(node); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddWedgeNode, (ETCS::RID, node))      { (void)ctx; self.AddWedgeNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddDomeNode, (ETCS::RID, node))       { (void)ctx; self.AddDomeNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickupNode, (ETCS::RID, node))     { (void)ctx; self.AddPickupNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddShotNode, (ETCS::RID, node))       { (void)ctx; self.AddShotNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlastNode, (ETCS::RID, node))      { (void)ctx; self.AddBlastNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBoardRow, (ETCS::RID, label))      { (void)ctx; self.AddBoardRow(label); }
+// AddPadNode <plate> <arrow> <arrow> <arrow> -- a pad of the pool: its plate
+// and the three arrows that run along it (kart_pad.etcs).
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddPadNode, (ETCS::RID, plate), (ETCS::RID, a), (ETCS::RID, b), (ETCS::RID, c))
+{
+    (void)ctx;
+    self.AddPadNode(plate, a, b, c);
+}
+// AddSpringNode <plate> <arrow> <arrow> <arrow> <arrow> -- a spring of the
+// pool: its round plate and the four arrows that close on its middle.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpringNode, (ETCS::RID, plate), (ETCS::RID, a), (ETCS::RID, b), (ETCS::RID, c),
+                       (ETCS::RID, d))
+{
+    (void)ctx;
+    self.AddSpringNode(plate, a, b, c, d);
+}
+// AddGroundNode <floor> -- the arena's floor, coloured by the battle as its
+// slabs and domes are: a tyre's mark fades into the ground it is on.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddGroundNode, (ETCS::RID, node))     { (void)ctx; self.AddGroundNode(node); }
+// AddMarkNode <node> -- a segment of a tyre's mark: twenty-four a tyre, ninety-six
+// a kart, in the order the karts are made (kart_ropes.etcs).
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddMarkNode, (ETCS::RID, node))       { (void)ctx; self.AddMarkNode(node); }
 // The arena is made: the first map out, the lobby open.
 DEFINE_WORK_FUNC(KartBattle, Ready) { (void)ctx; (void)data; self.Ready(); }
 // Practice <name> -- alone, its own judge, nothing recorded.
@@ -103,6 +145,9 @@ DEFINE_WORK_FUNC(KartBattle, Give)
     data.reset();
     data.writeString(self.Give(who, weapon) ? "ok" : "refused");
 }
+// SetInvert <on> -- this runtime's wheel keys swapped (A right, D left): the
+// page's own setting, no line of the record.
+DEFINE_WORK_FUNC_TYPED(KartBattle, SetInvert, (int32_t, on)) { (void)ctx; self.SetInvert(on != 0); }
 // Key <code> <down> -- a GLFW key, for a test or a page.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Key, (uint32_t, code), (int32_t, down))
 {
@@ -116,14 +161,21 @@ DEFINE_WORK_FUNC(KartBattle, Status)    { (void)ctx; data.reset(); data.writeStr
 DEFINE_WORK_FUNC(KartBattle, Scores)    { (void)ctx; data.reset(); data.writeString(self.Scores().c_str()); }
 // The maps' names, one a line.
 DEFINE_WORK_FUNC(KartBattle, Maps)      { (void)ctx; data.reset(); data.writeString(self.Maps().c_str()); }
-// "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <digest>": the map in play.
+// "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads> <springs> <decks> <pits>
+// <digest>": the map in play.
 DEFINE_WORK_FUNC(KartBattle, Layout)    { (void)ctx; data.reset(); data.writeString(self.Layout().c_str()); }
+// What is wrong with the maps (KartArena::Faults), "<map>: <fault>" a line, or "none".
+DEFINE_WORK_FUNC(KartBattle, Faults)    { (void)ctx; data.reset(); data.writeString(self.Faults().c_str()); }
 // "<tick> <hash>": the battle now.
 DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeString(self.Hash().c_str()); }
 // "<tick> <hash>": the last snapshot, what presence carries.
 DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
-// Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground>", or "-".
+// Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
+// <slide>", or "-".
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
+// Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
+// rope laid behind it, the segments drawn and the darkest (0..1); or "-".
+DEFINE_WORK_FUNC(KartBattle, Tyres)     { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Tyres(who).c_str()); }
 // Run <ticks> -- the judge's clock by hand: stepped and recorded.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Run, (uint32_t, ticks)) { (void)ctx; self.Run(ticks); }
 DEFINE_WORK_FUNC(KartBattle, Note)      { (void)ctx; data.reset(); data.writeString(self.Note().c_str()); }

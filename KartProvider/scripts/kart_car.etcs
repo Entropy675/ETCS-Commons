@@ -1,10 +1,11 @@
 #!/usr/bin/env etcs
 # One kart of the pool: a body to look at, a solid sphere to everything else,
-# no drag of its own (the battle's tyres and pedal are its drag), four wheels
-# and an HP bar -- drawn, held, solid to nothing. The battle puts the wheels at
-# the body's corners after every step (the front two turned with the wheel)
-# and the bar over the kart, turned to this runtime's eye. Handed to the
-# battle, which colours the body and puts it all in the pit.
+# no drag of its own (the battle's tyres and pedal are its drag); four tyres,
+# its members -- held in its frame, so they go where it goes; the battle turns
+# them with it after every step (the front two with the wheel) and hands them
+# the friction as heat, which they shed into it -- each tyre's mark (ninety-six
+# segments, kart_ropes.etcs); and an HP bar over it, turned to this runtime's
+# eye. Handed to the battle, which colours the body and puts it all in the pit.
 #   run kart_car.etcs world=<Scene3D> battle=<KartBattle> tyre=<Mesh>
 requires world [Drawable3D]
 requires battle [KartBattle]
@@ -14,14 +15,15 @@ kart.Create(1.1, 0.4, 2.0)
 kart.SetShape(sphere)
 kart.SetSolid(0.35, 0.0)
 kart.SetDamping(0.0)
-world.spawn(RenderProvider::Scene3D fl)
-world.spawn(RenderProvider::Scene3D fr)
-world.spawn(RenderProvider::Scene3D rl)
-world.spawn(RenderProvider::Scene3D rr)
+kart.spawn(RenderProvider::Scene3D fl)
+kart.spawn(RenderProvider::Scene3D fr)
+kart.spawn(RenderProvider::Scene3D rl)
+kart.spawn(RenderProvider::Scene3D rr)
 run kart_wheel.etcs wheel=fl tyre=tyre
 run kart_wheel.etcs wheel=fr tyre=tyre
 run kart_wheel.etcs wheel=rl tyre=tyre
 run kart_wheel.etcs wheel=rr tyre=tyre
+run kart_ropes.etcs world=world battle=battle
 # The bar: a dark back, and a fill the battle sizes to the kart's health.
 world.spawn(RenderProvider::Scene3D bar)
 bar.Create(1.8, 0.28, 0.06)
@@ -33,4 +35,4 @@ fill.Create(1.7, 0.2, 0.1)
 fill.SetColor(0.25, 0.85, 0.3, 1.0)
 fill.SetAnchored(1)
 fill.SetVisible(0)
-battle.AddKart(@kart @fl @fr @rl @rr @bar @fill)
+battle.AddKart(@kart @fr @fl @rr @rl @bar @fill)

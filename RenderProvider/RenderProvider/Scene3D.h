@@ -4,6 +4,7 @@
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
 #include "SceneSink.h"
+#include "SceneExport.h"
 #include "Mesh.h"
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -110,6 +112,34 @@ public:
         }
         else if (k == "sensitivity")
             m_sens_scale = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : kSensitivity;
+        else if (k == "mesh")
+        {
+            // Where the shape is, by structure. Three ways here. From SetMesh
+            // the RID it was handed comes with it and is this run's anchor.
+            // Handed back as it stands (a store's values follow the replayed
+            // lines, Entity::restoreValue): the line already set the anchor,
+            // and it stands. Anything else arrived with no RID, and the first
+            // use finds one (meshRid).
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+            const bool has = readWords(value, w, 2) && w[0] >= 0 && w[1] >= 0;
+            const int64_t up = has ? w[0] : -1, at = has ? w[1] : -1;
+            if (m_mesh_pending)                             m_mesh_rid = m_mesh_pending;
+            else if (up != m_mesh_up || at != m_mesh_at)    m_mesh_rid = 0;
+            m_mesh_up = up; m_mesh_at = at; m_mesh_holder = nullptr;
+            markViewersDirty();
+        }
+        else if (k == "extent")
+        {
+            // Half extents. The reach is theirs (row 2), so it moves with them.
+            const bool has = readWords(value, w, 3);
+            {
+                std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the step and the projection read it under it
+                m_half = has ? Point3D{ Fixed::FromRaw(w[0]).ToFloat(), Fixed::FromRaw(w[1]).ToFloat(), Fixed::FromRaw(w[2]).ToFloat() }
+                             : Point3D{ 0.5f, 0.5f, 0.5f };
+                reachLocked();
+            }
+            markViewersDirty();
+        }
         else if (k == "solid")
         {
             CausalBase<Scene3D>::onValue(key, value);
@@ -157,7 +187,11 @@ public:
                      << w << "x" << h << "x" << d << ").");
             return false;
         }
-        m_half = Point3D{ w * 0.5f, h * 0.5f, d * 0.5f };
+        // THE EXTENT IS A VALUE, like the colour: set through the funnel, so
+        // the record keeps the verb that sized the box, a store keeps the
+        // size, and another module reads it off the surface (valueOf). Half
+        // extents, as Fixed words; onValue is the one writer of m_half.
+        //
         // Row 0's fourth slot, the identity, is the family base's to fill
         // (CausalBase::refreshIdentityLocked): the state hash, not the RID.
         // Row 2's fourth slot. A box is not a point -- it is already an
@@ -165,8 +199,9 @@ public:
         // bounding sphere, and it is an aggregate from the moment it exists.
         // Only a node with no extent is a leaf here.
         // Causal, so computed on the causal side: the extent's numbers cross
-        // the boundary once, here, and the reach is their Fixed length.
-        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); reachLocked(); }
+        // the boundary once, here, and the reach is their Fixed length
+        // (onValue, "extent").
+        this->addTag("extent", words({ Fixed::From(w * 0.5f).raw, Fixed::From(h * 0.5f).raw, Fixed::From(d * 0.5f).raw }));
         this->addTag("active");
         /*
  * The symmetric half of ReleaseConcrete's, and needed for the same reason: a
@@ -304,7 +339,82 @@ public:
     // The shape this node is drawn with (a Mesh, by RID); 0 is its box. Both
     // paths draw it: the device from the geometry sent once, the host from
     // the same triangles (rasterMesh).
-    void SetMesh(ETCS::RID mesh) { m_mesh = mesh; markViewersDirty(); }
+    /*
+     * THE SHAPE, STORED BY WHERE IT IS -- never by RID, which is this run's
+     * alone. A mesh is a child of this node or of one of its ancestors, and the
+     * value behind "mesh" says which: how many generations up, and its place
+     * among that node's Mesh children in their ordered list (a Mesh declares no
+     * operator<, so the list is creation order: emergent, and the same in a
+     * replay). So the record keeps the verb, a store keeps the address, and a
+     * rebuilt scene finds the same shape in the same place. 0 is the box.
+     * False for a mesh that is no child of this node's line.
+     *
+     * THE RID IS THE ANCHOR INSIDE THE RUN: kept beside the address and what a
+     * picture reads, so a node that moves (a ball fit takes into a cup, where
+     * "one up" is the cup) is still drawn as the shape it was given. The
+     * address is what crosses out of the run; it is still the one SetMesh
+     * wrote, from the line the node had then.
+     */
+    bool SetMesh(ETCS::RID mesh)
+    {
+        if (mesh == 0) { this->removeTag(ETCS::Buffer("mesh")); return true; }
+        ETCS::Entity* m = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), mesh);
+        ETCS::Entity* holder = m ? m->getParent() : nullptr;
+        int64_t up = 0;
+        for (ETCS::Entity* a = this; a; a = a->getParent(), ++up)
+            if (a == holder) break;
+        if (!holder || up < 0 || !isLine(holder, up)) return false;
+        const int64_t at = meshIndex(holder, mesh);
+        if (at < 0) return false;
+        // The anchor rides the write (onValue takes it), and is stated again
+        // after: a value that did not change calls nobody.
+        { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); m_mesh_pending = mesh; }
+        this->addTag("mesh", words({ up, at }));
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+        m_mesh_rid = mesh; m_mesh_pending = 0;
+        return true;
+    }
+
+    /*
+     * THIS SUBTREE AS A FILE (SceneExport.h): .obj with its .mtl, .stl or
+     * .glb, by the path's ending. The same walk a projection makes, so what
+     * is written is what is drawn -- a hidden node's own box is not, its
+     * children are, and a foreign Drawable3D child owns geometry this module
+     * cannot read. Positions are from THIS node's centre: where the model
+     * stands in a larger scene is not in the file.
+     */
+    bool Export(const std::string& path, uint32_t& parts, uint64_t& triangles, std::string& why)
+    {
+        std::vector<Node> nodes;
+        std::map<ETCS::RID, std::pair<std::vector<float>, std::vector<uint32_t>>> shapes;
+        {
+            // One state of the tree, and the geometry copied under it.
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+            const Point3D p = Pos();
+            collectSubtree(Point3D{ -p.x, -p.y, -p.z }, nodes);
+            for (Node& n : nodes)
+            {
+                const Mesh* mesh = n.mesh ? meshOf(n.mesh) : nullptr;
+                if (!mesh) n.mesh = 0;                 // no mesh, or one that is gone: its box
+                if (shapes.count(n.mesh)) continue;
+                auto& shape = shapes[n.mesh];
+                if (mesh) { shape.first = mesh->Vertices(); shape.second = mesh->Indices(); }
+                else device_unit_box(shape.first, shape.second);
+            }
+        }
+        std::vector<SceneExportPart> out(nodes.size());
+        for (size_t i = 0; i < nodes.size(); ++i)
+        {
+            const auto& shape = shapes[nodes[i].mesh];
+            out[i].geometry = nodes[i].mesh;
+            modelOf(nodes[i], out[i].model);
+            for (int k = 0; k < 4; ++k) out[i].color[k] = nodes[i].color[k];
+            out[i].vertices = &shape.first;
+            out[i].indices  = &shape.second;
+        }
+        parts = static_cast<uint32_t>(out.size());
+        return scene_export(path, out, triangles, why);
+    }
 
     // ── the held-key bitset ──────────────────────────────────────────────
     //
@@ -481,8 +591,8 @@ public:
  *
  * Integration happens here rather than on a clock of its own, and the reason
  * is not economy: a step taken between two frames is a step nobody can see,
- * and a step taken at projection time is sampled at exactly the rate the
- * result is looked at. dt is the interval since the last projection, so
+ * and a step taken for each look is sampled at exactly the rate the
+ * result is looked at. dt is the interval since the last look, so
  * position is a continuous function of elapsed time and a frame that took
  * longer covers proportionally more ground -- which IS the interpolation,
  * done by measuring instead of by guessing between two fixed ticks.
@@ -503,7 +613,7 @@ public:
  * it the other way round and every commit bills for heat that had not
  * happened yet when the interval started.
  *
- * Called from Project and nowhere else, because being observed is the causal
+ * Called for a look and nowhere else (StepLooked), because being observed is the causal
  * interaction this system actually has: a node nobody looked at has had no
  * interaction to commit on, and it owes exactly the same amount whenever
  * somebody finally does -- which is what EmissionOver's exponential form
@@ -525,6 +635,35 @@ public:
         const Fixed commit = Fixed::From(static_cast<double>(m_entropy_clock.Take()) * 0.001);
         const Fixed step   = Fixed::From(static_cast<double>(m_motion_clock.Take())  * 0.001);
         InteractObserved(commit, step);   // a first observation has nothing behind it: both zero, nothing happens
+    }
+
+    /*
+     * A LOOK IS NOTED IN THE PICTURE AND STEPPED BY ITS OBSERVER. The picture
+     * is drawn under a hold on the tree it walks, where nothing may emit, and
+     * a step may: fit's move is an ordered event. So a projection says only
+     * that this node was looked at, and whoever took the picture steps what
+     * it looked at once it is outside that hold -- the frame edge when its
+     * visits are done (Surface.RunFrames), a script after its own Render.
+     *
+     * One list an image, not one a thread: a look is stepped by the next
+     * observer that may act, whichever thread drew it. The step lands after
+     * the picture that asked for it, so a step that had anything in motion
+     * before or after marks the viewers: the next picture is of the rows it
+     * left, and a scene come to rest is drawn at rest.
+     */
+    static void StepLooked()
+    {
+        std::vector<ETCS::RID> looked;
+        { std::lock_guard<std::mutex> lk(lookedMutex()); looked.swap(lookedList()); }
+        for (ETCS::RID rid : looked)
+        {
+            Drawable3D_* d = ETCS::resolve_in_family<Drawable3D_>("Drawable3D", rid);
+            if (!isOwnLeaf(d)) continue;   // gone since the picture
+            Scene3D* s = static_cast<Scene3D*>(d->getTrueType());
+            const bool before = s->InMotion();
+            s->Interact();
+            if (before || s->InMotion()) s->markViewersDirty();
+        }
     }
 
     // The family's step: what a held key pushes with and what drag takes,
@@ -796,7 +935,7 @@ public:
         // The whole projection under the tree's lock: the picture is of one
         // state, not of rows a Run on another thread is halfway through.
         std::lock_guard<std::recursive_mutex> lk(TreeMutex());
-        if (!m_driven) { applyLookTo(camera); Interact(); }   // a driven tree is only read (SetDriven)
+        if (!m_driven) { applyLookTo(camera); noteLook(); }   // stepped after the picture (StepLooked); a driven tree is only read
 
         View v;
         if (!buildView(camera, v)) return nullptr;
@@ -1158,7 +1297,7 @@ private:
             // node drawn is a child, and its facing is its own.
             n.rot  = root ? Matrix4::Identity() : Order4().ToMatrix4();
             n.rot.at(0,3) = n.rot.at(1,3) = n.rot.at(2,3) = 0.0f;
-            n.mesh = m_mesh;
+            n.mesh = meshRid();
             out.push_back(n);
         }
         { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out, false); }
@@ -1197,22 +1336,24 @@ private:
         {
             DeviceMeshOp op;
             op.mesh = nd.mesh;
-            // A mesh is in unit space like the box is; the extent is the size
-            // of either, so a shape swapped in stands where the box stood.
-            const float sx = nd.half.x * 2.0f;
-            const float sy = nd.half.y * 2.0f;
-            const float sz = nd.half.z * 2.0f;
-            // model = T * R * S, column-major: column c is R's column c scaled.
-            for (int c = 0; c < 3; ++c)
-            {
-                const float sc = c == 0 ? sx : c == 1 ? sy : sz;
-                for (int r = 0; r < 3; ++r) op.model[c * 4 + r] = nd.rot.at(r, c) * sc;
-                op.model[c * 4 + 3] = 0.0f;
-            }
-            op.model[12] = nd.pos.x; op.model[13] = nd.pos.y; op.model[14] = nd.pos.z; op.model[15] = 1.0f;
+            modelOf(nd, op.model);
             for (int i = 0; i < 4; ++i) op.color[i] = nd.color[i];
             sink->AddMesh(op);
         }
+    }
+
+    // A node's model matrix: T * R * S, column-major -- column c is R's
+    // column c scaled. A mesh is in unit space like the box is; the extent is
+    // the size of either, so a shape swapped in stands where the box stood.
+    static void modelOf(const Node& nd, float model[16])
+    {
+        const float s[3] = { nd.half.x * 2.0f, nd.half.y * 2.0f, nd.half.z * 2.0f };
+        for (int c = 0; c < 3; ++c)
+        {
+            for (int r = 0; r < 3; ++r) model[c * 4 + r] = nd.rot.at(r, c) * s[c];
+            model[c * 4 + 3] = 0.0f;
+        }
+        model[12] = nd.pos.x; model[13] = nd.pos.y; model[14] = nd.pos.z; model[15] = 1.0f;
     }
 
     // Children of this module's own 3D leaf, which are the ones whose
@@ -1251,6 +1392,16 @@ private:
     static bool isOwnLeaf(ETCS::Entity* e)
     {
         return e && e->getSourceTag() == ETCS::Buffer("Scene3D");
+    }
+    // The nodes looked at and not yet stepped (StepLooked), each once.
+    static std::mutex& lookedMutex() { static std::mutex m; return m; }
+    static std::vector<ETCS::RID>& lookedList() { static std::vector<ETCS::RID> v; return v; }
+    void noteLook()
+    {
+        const ETCS::RID rid = getRID();
+        std::lock_guard<std::mutex> lk(lookedMutex());
+        std::vector<ETCS::RID>& v = lookedList();
+        if (std::find(v.begin(), v.end(), rid) == v.end()) v.push_back(rid);
     }
     std::vector<ETCS::Entity*> drawable3DChildren()
     {
@@ -1350,6 +1501,59 @@ private:
 
     // The Mesh a node names, by RID and tag -- the way the surface finds it
     // to send to the device (HostSurface::sendMeshes). Not a family.
+    bool isLine(const ETCS::Entity* holder, int64_t up) const
+    {
+        const ETCS::Entity* a = this;
+        for (int64_t i = 0; a && i < up; ++i) a = a->getParent();
+        return a == holder;
+    }
+    // A Mesh child's place in its holder's ordered list, or -1.
+    static int64_t meshIndex(const ETCS::Entity* holder, ETCS::RID rid)
+    {
+        std::vector<ETCS::Entity::ChildRef> kids;
+        holder->getOrderedTypedChildRefs(kids);
+        static const ETCS::Buffer kMesh("Mesh");
+        int64_t i = 0;
+        for (const auto& [tag, r] : kids)
+        {
+            if (!(*tag == kMesh)) continue;
+            if (r == rid) return i;
+            ++i;
+        }
+        return -1;
+    }
+    /*
+     * This run's RID for the shape: the anchor, when there is one (SetMesh).
+     * An address that arrived with none -- a record replayed, a store loaded --
+     * is resolved here, at first use and not on arrival, so the lines of a
+     * replay may land in any order: walked up, then counted along the holder's
+     * ordered Mesh children, and what it finds is the anchor from then on. One
+     * that does not resolve is asked again only when the holder's hash epoch
+     * has moved -- a child arriving or going moves it -- or the line has.
+     * Under the tree's lock, as the walk that asks is.
+     */
+    ETCS::RID meshRid()
+    {
+        if (m_mesh_rid != 0 || m_mesh_up < 0) return m_mesh_rid;
+        ETCS::Entity* holder = this;
+        for (int64_t i = 0; holder && i < m_mesh_up; ++i) holder = holder->getParent();
+        if (!holder) return 0;
+        const uint32_t epoch = holder->hashEpoch();
+        if (holder == m_mesh_holder && epoch == m_mesh_epoch) return 0;   // asked of this structure already
+        std::vector<ETCS::Entity::ChildRef> kids;
+        holder->getOrderedTypedChildRefs(kids);
+        static const ETCS::Buffer kMesh("Mesh");
+        int64_t i = 0;
+        ETCS::RID found = 0;
+        for (const auto& [tag, r] : kids)
+        {
+            if (!(*tag == kMesh)) continue;
+            if (i++ == m_mesh_at) { found = r; break; }
+        }
+        m_mesh_holder = holder; m_mesh_epoch = epoch; m_mesh_rid = found;
+        return found;
+    }
+
     static const Mesh* meshOf(ETCS::RID rid)
     {
         ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
@@ -1967,7 +2171,15 @@ private:
         return true;
     }
 
-    ETCS::RID m_mesh = 0;
+    // The shape's address (onValue, "mesh"): generations up and place among
+    // that node's Mesh children; -1 is the box. And this run's anchor for it:
+    // the RID SetMesh was handed (m_mesh_pending while its write is in
+    // flight), or the one the address resolved to (meshRid, which keeps what
+    // it last asked in the holder and its epoch).
+    int64_t        m_mesh_up = -1, m_mesh_at = -1;
+    ETCS::RID      m_mesh_rid = 0, m_mesh_pending = 0;
+    ETCS::Entity*  m_mesh_holder = nullptr;
+    uint32_t       m_mesh_epoch = 0;
     static constexpr float kColor[4] = {0.8f, 0.8f, 0.85f, 1.0f};
     float   m_color[4] = {kColor[0], kColor[1], kColor[2], kColor[3]};
     // Causal: they decide what an impulse is and how motion decays, so they

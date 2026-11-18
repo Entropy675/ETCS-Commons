@@ -1,0 +1,15 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# Eight parts of the pool. A model holds as many parts as its pool has nodes;
+# the page runs this as many times as it wants eights (paint_model.etcs).
+#   run PaintProvider/scripts/paint_model_parts.etcs world=<Scene3D> model=<PaintModeler>
+requires world [Drawable3D]
+requires model [PaintModeler]
+run paint_model_part.etcs world=world model=model
+run paint_model_part.etcs world=world model=model
+run paint_model_part.etcs world=world model=model
+run paint_model_part.etcs world=world model=model
+run paint_model_part.etcs world=world model=model
+run paint_model_part.etcs world=world model=model
+run paint_model_part.etcs world=world model=model
+run paint_model_part.etcs world=world model=model

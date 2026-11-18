@@ -30,6 +30,14 @@
     #include "NetworkProvider/Seal.h"
     #include "NetworkProvider/Lobby.h"
     #include "NetworkProvider/Ledger.h"
+    // Where the ETCS wire ends: one Foreign relation per stranger
+    // (ontology/Foreign.h), locked once active; HttpsWire is the language
+    // underneath, not a relation. The Embassy is the Directory of live
+    // relations, behind a Gate -- every outward conversation goes through it.
+    #include "NetworkProvider/HttpsWire.h"
+    #include "NetworkProvider/HttpsRelation.h"
+    #include "NetworkProvider/DnsRelation.h"
+    #include "NetworkProvider/Embassy.h"
     // Not a tag: the in-module pipe the parse verbs drive directly.
     #include "NetworkProvider/LocalPipePair.h"
 

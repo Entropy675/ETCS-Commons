@@ -1,24 +1,52 @@
 #!/usr/bin/env etcs
-# SKATEPARK: two jumps facing the same way down the middle, a raised deck
-# with a ramp at each end on either side, and four low walls -- speed, air,
-# and the high ground.
+# SKATEPARK: two jumps down the middle, a gap jump across it (launch, a gap,
+# a landing), a raised deck with a ramp at each end on either side, the north
+# and south walls banked, kickers in the corners, and four low walls -- speed,
+# air, and the high ground.
 #   run kart_map_skatepark.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
-# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height> (KartArena.h).
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
+# <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
+# <z> <width> <depth> <deep> (KartArena.h). A ramp rises, and a pad pushes,
+# toward its yaw (0 +z, 90 +x, 180 -z, 270 -x); one in a pit stands on its floor.
 requires battle [KartBattle]
 battle.AddMap(skatepark)
 
 battle.AddRamp(0.0, -14.0, 0.0, 4.0, 6.0, 0.0, 0.0, 1.5)
 battle.AddRamp(0.0, 14.0, 0.0, 4.0, 6.0, 0.0, 0.0, 1.5)
+# The gap: a launch rising east, ten units of air, a landing falling east.
+battle.AddRamp(-9.0, 0.0, 90.0, 4.0, 5.0, 0.0, 0.0, 1.5)
+battle.AddRamp(6.5, 0.0, 90.0, 4.0, 0.0, 1.0, 5.0, 1.5)
 battle.AddRamp(-17.0, 0.0, 0.0, 5.0, 5.0, 6.0, 5.0, 2.0)
 battle.AddRamp(17.0, 0.0, 0.0, 5.0, 5.0, 6.0, 5.0, 2.0)
-battle.AddBlock(12.0, 24.0, 5.0, 3.0, 3.0, 0.0)
-battle.AddBlock(-12.0, 24.0, 5.0, 3.0, 3.0, 0.0)
-battle.AddBlock(12.0, -24.0, 5.0, 3.0, 3.0, 0.0)
-battle.AddBlock(-12.0, -24.0, 5.0, 3.0, 3.0, 0.0)
+# The banks, up to the north and south walls.
+battle.AddRamp(0.0, 28.0, 0.0, 30.0, 6.0, 0.0, 0.0, 2.0)
+battle.AddRamp(0.0, -28.0, 180.0, 30.0, 6.0, 0.0, 0.0, 2.0)
+# Kickers in the corners, toward the middle.
+battle.AddRamp(22.0, 20.0, 225.0, 3.0, 4.0, 0.0, 0.0, 1.0)
+battle.AddRamp(-22.0, 20.0, 135.0, 3.0, 4.0, 0.0, 0.0, 1.0)
+battle.AddRamp(22.0, -20.0, 315.0, 3.0, 4.0, 0.0, 0.0, 1.0)
+battle.AddRamp(-22.0, -20.0, 45.0, 3.0, 4.0, 0.0, 0.0, 1.0)
+battle.AddBlock(12.0, 21.0, 5.0, 3.0, 3.0, 0.0)
+battle.AddBlock(-12.0, 21.0, 5.0, 3.0, 3.0, 0.0)
+battle.AddBlock(12.0, -21.0, 5.0, 3.0, 3.0, 0.0)
+battle.AddBlock(-12.0, -21.0, 5.0, 3.0, 3.0, 0.0)
 
-battle.AddSpawn(0.0, -27.0)
-battle.AddSpawn(0.0, 27.0)
+# Pads at the foot of each deck's ramps, pointing up them.
+battle.AddPad(-17.0, -12.0, 0.0)
+battle.AddPad(17.0, 12.0, 180.0)
+battle.AddPad(17.0, -12.0, 0.0)
+battle.AddPad(-17.0, 12.0, 180.0)
+
+# A deck high over the gap, the middle's box on it, and a spring under its
+# edge; two more springs to play on.
+battle.AddDeck(0.0, 0.0, 8.0, 6.0, 4.2)
+battle.AddSpring(-3.0, 0.0)
+battle.AddSpring(9.0, 10.0)
+battle.AddSpring(-9.0, -10.0)
+
+battle.AddSpawn(0.0, -22.0)
+battle.AddSpawn(0.0, 22.0)
 battle.AddSpawn(-27.0, 0.0)
 battle.AddSpawn(27.0, 0.0)
 battle.AddSpawn(-24.0, -14.0)
@@ -29,6 +57,7 @@ battle.AddSpawn(-24.0, 14.0)
 battle.AddPickup(0.0, 0.0)
 battle.AddPickup(-17.0, 0.0)
 battle.AddPickup(17.0, 0.0)
-battle.AddPickup(0.0, -22.0)
-battle.AddPickup(0.0, 22.0)
-battle.AddPickup(-8.0, 0.0)
+battle.AddPickup(0.0, 8.0)
+battle.AddPickup(0.0, -8.0)
+battle.AddPickup(0.0, 29.0)
+battle.AddPickup(0.0, -29.0)

@@ -3,7 +3,7 @@
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
-#include "PaintVisitors.h"   // in order: everything above this in the module is visible here
+#include "PaintModeler.h"   // in order: everything above this in the module is visible here
 
 class PaintInput : public DeletableBase<PaintInput>,
                    public AnimatedBase<PaintInput>
@@ -135,6 +135,7 @@ public:
      */
     bool Undo()
     {
+        if (modelOpen()) return m_modeler->Undo();
         if (!m_document) return false;
         const bool did = m_document->Undo();
         if (did) { m_sel_carry = false; repaint_view(); }
@@ -142,6 +143,7 @@ public:
     }
     bool Redo()
     {
+        if (modelOpen()) return m_modeler->Redo();
         if (!m_document) return false;
         const bool did = m_document->Redo();
         if (did) { m_sel_carry = false; repaint_view(); }
@@ -364,6 +366,21 @@ public:
     // Whether this input's pane IS the wheel (pick) or merely dismisses it.
     void SetWheelPane(bool is_wheel) { m_is_wheel_pane = is_wheel; }
 
+    /*
+     * THE MODEL THIS PANE SHOWS, and the camera it is seen through. While the
+     * model is open a hit on that camera is the modeller's, in the camera's own
+     * pixels, as a hit on the canvas is the tool's -- and so are the wheel, the
+     * keys, and undo and redo, which are the model's lines then and not the
+     * document's (PaintModeler.h).
+     */
+    void BindModeler(ETCS::RID modeler, ETCS::RID view)
+    {
+        ETCS::Entity* raw = paint_resolve_tag("PaintModeler", modeler);
+        if (!raw) return;
+        m_modeler = static_cast<PaintModeler*>(raw->getTrueType());
+        m_model_view = view;
+    }
+
     void RouteLeave()
     {
         m_cursor_seen = false;
@@ -430,11 +447,24 @@ public:
                     return;
                 }
             }
+            if (modelOpen()) { m_modeler->Pointer(ev); return; }   // the eye, in or out
             HandleEvent(ev);
             return;
         }
 
         if (m_root == 0) { HandleEvent(ev); return; }   // unrouted: the old path
+
+        // A drag the modeller has in hand follows the pointer off its camera,
+        // as a carried window does: the release has to reach it wherever it is.
+        if (modelOpen() && m_modeler->dragging() && ev.action != INPUT_DOWN && ev.action != INPUT_BUTTON_DOWN)
+        {
+            const Point2D at = paint_root_origin(m_model_view);
+            InputEvent local = ev;
+            local.x = static_cast<int16_t>(ev.x - at.x);
+            local.y = static_cast<int16_t>(ev.y - at.y);
+            m_modeler->Pointer(local);
+            return;
+        }
 
         // A window carried by its title follows the pointer wherever it is --
         // over its own pane or not, which is why this is ahead of the pick --
@@ -661,6 +691,14 @@ public:
      * matters: a stroke that began on the canvas, left over the toolbar and
      * came back would otherwise be joined by a straight line across the gap.
      */
+        if (modelOpen() && hit_rid == m_model_view)
+        {
+            InputEvent local = ev;
+            local.x = static_cast<int16_t>(hit_local.x);
+            local.y = static_cast<int16_t>(hit_local.y);
+            m_modeler->Pointer(local);
+            return;
+        }
         if (m_canvas != 0 && hit_rid != m_canvas)
         {
             if (ev.action == INPUT_MOTION) m_cursor_seen = false;
@@ -1389,6 +1427,7 @@ public:
  */
     bool KeyDown(uint16_t key)
     {
+        if (modelOpen() && m_modeler->KeyDown(key)) return true;
         if (!m_document) return false;
         /*
      * A NAME BEING TYPED IN THE LAYER WINDOW TAKES EVERY KEY, ahead of the
@@ -2210,6 +2249,9 @@ private:
     // module's entity (see place_glyphs).
     ETCS::RID m_glyphs = 0;
     PaintColorWheel* m_wheel = nullptr;
+    PaintModeler*    m_modeler = nullptr;
+    ETCS::RID        m_model_view = 0;    // the camera the model is seen through
+    bool modelOpen() const { return m_modeler && m_modeler->open(); }
     // The window currently on top and the order it will go back to -- see
     // FocusWindow. Base is meaningless while m_focus_pane is 0.
     ETCS::RID m_focus_pane = 0;

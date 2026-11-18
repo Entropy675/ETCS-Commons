@@ -482,7 +482,10 @@ public:
         mbedtls_x509_crt_free(&ca_);
         if (fd_ >= 0) ::close(fd_);
     }
-    bool handshake(const std::string& host, bool insecure, std::string& err)
+    // `ca_file`: the trust anchors when verifying. The system bundle unless a
+    // caller names its own (HttpsWire::SetCaFile -- a private CA, a test).
+    bool handshake(const std::string& host, bool insecure, std::string& err,
+                   const char* ca_file = "/etc/ssl/certs/ca-certificates.crt")
     {
         if (psa_crypto_init() != PSA_SUCCESS) { err = "psa_crypto_init failed"; return false; }
         if (mbedtls_ssl_config_defaults(&conf_, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
@@ -491,8 +494,8 @@ public:
         if (insecure) mbedtls_ssl_conf_authmode(&conf_, MBEDTLS_SSL_VERIFY_NONE);
         else
         {
-            if (mbedtls_x509_crt_parse_file(&ca_, "/etc/ssl/certs/ca-certificates.crt") < 0)
-            { err = "no system CA bundle at /etc/ssl/certs/ca-certificates.crt"; return false; }
+            if (mbedtls_x509_crt_parse_file(&ca_, ca_file) < 0)
+            { err = std::string("no CA bundle at ") + ca_file; return false; }
             mbedtls_ssl_conf_authmode(&conf_, MBEDTLS_SSL_VERIFY_REQUIRED);
             mbedtls_ssl_conf_ca_chain(&conf_, &ca_, nullptr);
         }

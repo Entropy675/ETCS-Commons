@@ -74,17 +74,31 @@
  * everyone after three seconds, whole and unarmed. Tab holds up the scores.
  *
  * THE KART IS A BICYCLE ON THE GROUND. W and S are the pedal, A and D turn
- * the WHEELS, which ease to a lock and back; the heading turns by speed x
- * wheel angle / wheelbase, so a kart standing still does not turn. The ground
- * is the map's (KartArena.h): a kart rides on it, slows going up and gains
- * going down, leaves it where it falls away faster than gravity follows (a
- * ramp's lip) and lands where it meets it again; ground rising more than a
- * kart can climb in a step is a wall. A kart is SOLID -- a sphere to
- * everything (etcs_causal_constraints.md §13) -- and drawn as a body on four
- * wheels, tilted to the ground, which this battle places after every step (a
- * node's children do not turn with it). What is drawn for one runtime alone
- * -- its camera, its card, the menu and the board, the HP bars turned to face
- * its eye -- is set on the frame edge and is not a line.
+ * the WHEELS -- slowly at first, gathering pace while held, toward a lock
+ * that is smaller the faster the kart goes -- and back when let go; the
+ * heading turns by speed x wheel angle / wheelbase, so a kart standing still
+ * does not turn, and one at speed carves an arc rather than spinning. THE
+ * TYRES GRIP only so hard: across the heading they pull the kart's way round
+ * with it, up to grip() (half that with the brake on), and a turn that asks
+ * more -- too fast, too much lock -- leaves the rest a slide: the kart
+ * drifts, keeping most of its speed, and steering against it brings it back.
+ * What the brake and the slide take from the motion is heat, and the tyres --
+ * the body's members, anchored in its frame -- take it, each its share, and
+ * shed it into the body; what a tyre sheds per unit of road is its MARK, a
+ * rope of fixed length drawn behind it, dark where it braked or slid, wiped
+ * from the far end as it goes on. The ground is the map's (KartArena.h): a
+ * kart rides on it, slows going up and gains going down, leaves it where it
+ * falls away faster than gravity follows (a ramp's lip) and lands where it
+ * meets it again; ground rising more than a kart can climb in a step is a
+ * wall. The ground has levels -- a pit's floor below the arena's, a deck in
+ * the air that a kart is on from above, under from below and through going up
+ * -- so which ground is a kart's follows from how high it is; a spring throws
+ * it up, a pad pushes it along. A kart is SOLID -- a sphere to everything
+ * (etcs_causal_constraints.md §13) -- and drawn as a body on its four tyres,
+ * tilted to the ground, which this battle turns with it after every step
+ * (frames are translations). What is drawn for one runtime alone -- its
+ * camera, its card, the menu and the board, the HP bars turned to face its
+ * eye -- is set on the frame edge and is not a line.
  */
 class KartBattle : public AnimatedBase<KartBattle>,
                    public DeletableBase<KartBattle>
@@ -103,17 +117,17 @@ public:
 
     // ── the arena: what the scripts hand over ────────────────────────────
 
-    // A kart of the pool, its four wheels (front left, front right, rear left,
-    // rear right) and its HP bar (the back and the fill): coloured by its
+    // A kart of the pool, its four wheels (front right, front left, rear
+    // right, rear left: +x first, the picture's right) and its HP bar (the back and the fill): coloured by its
     // slot, waiting in the pit until someone joins.
-    void AddKart(ETCS::RID body, ETCS::RID fl, ETCS::RID fr, ETCS::RID rl, ETCS::RID rr,
+    void AddKart(ETCS::RID body, ETCS::RID fr, ETCS::RID fl, ETCS::RID rr, ETCS::RID rl,
                  ETCS::RID bar_back, ETCS::RID bar_fill)
     {
         std::lock_guard<std::mutex> g(m_mu);
         if (!body || m_slots.size() >= kMaxKarts) return;
         Slot s;
         s.body = body;
-        s.wheels[0] = fl; s.wheels[1] = fr; s.wheels[2] = rl; s.wheels[3] = rr;
+        s.wheels[0] = fr; s.wheels[1] = fl; s.wheels[2] = rr; s.wheels[3] = rl;
         s.bar_back = bar_back; s.bar_fill = bar_fill;
         const float* c = kColors[m_slots.size() % kMaxKarts];
         verb(body, "SetColor", f4(c[0], c[1], c[2], 1.0f));
@@ -122,6 +136,12 @@ public:
             std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
             s.pristine = k->RowsUnder();   // what "as made" means, for every restart
         }
+        for (int t = 0; t < 4; ++t)
+            if (Causal_* c = causal(s.wheels[t]))
+            {
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                s.tyre_pristine[t] = c->RowsUnder();
+            }
         m_slots.push_back(s);
         pitLocked(m_slots.size() - 1);
         // Practice asked for before the arena had made the karts (a page is
@@ -160,7 +180,7 @@ public:
     void AddRamp(float x, float z, float yaw, float width, float up, float flat, float down, float height)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (m_defs.empty() || width <= 0 || up <= 0 || flat < 0 || down < 0 || height <= 0) return;
+        if (m_defs.empty() || width <= 0 || up < 0 || flat < 0 || down < 0 || up + flat + down <= 0 || height <= 0) return;
         KartArena::Ramp r;
         r.x = Fixed::From(x); r.z = Fixed::From(z); r.yaw = static_cast<int>(std::lround(yaw));
         r.width = Fixed::From(width); r.up = Fixed::From(up); r.flat = Fixed::From(flat);
@@ -175,6 +195,36 @@ public:
         k.x = Fixed::From(x); k.z = Fixed::From(z); k.radius = Fixed::From(radius); k.height = Fixed::From(height);
         m_defs.back().hills.push_back(k);
     }
+    // A pad on the level ground of the map being described, pushing toward
+    // `yaw` (a ramp's convention).
+    void AddPad(float x, float z, float yaw)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (m_defs.empty()) return;
+        KartArena::Pad p;
+        p.x = Fixed::From(x); p.z = Fixed::From(z); p.yaw = static_cast<int>(std::lround(yaw));
+        m_defs.back().pads.push_back(p);
+    }
+    // A spring on the ground of the map being described; a deck, its top
+    // `height` up, `width` along x and `depth` along z; a pit, its floor
+    // `deep` down (what is put in it stands on that floor).
+    void AddSpring(float x, float z)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (!m_defs.empty()) m_defs.back().springs.push_back({ Fixed::From(x), Fixed::From(z), Fixed::Zero() });
+    }
+    void AddDeck(float x, float z, float width, float depth, float height)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (m_defs.empty() || width <= 0 || depth <= 0 || height <= 0) return;
+        m_defs.back().decks.push_back({ Fixed::From(x), Fixed::From(z), Fixed::From(width), Fixed::From(depth), Fixed::From(height) });
+    }
+    void AddPit(float x, float z, float width, float depth, float deep)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (m_defs.empty() || width <= 0 || depth <= 0 || deep <= 0) return;
+        m_defs.back().pits.push_back({ Fixed::From(x), Fixed::From(z), Fixed::From(width), Fixed::From(depth), Fixed::From(deep) });
+    }
     void AddSpawn(float x, float z)  { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().spawns.push_back({ Fixed::From(x), Fixed::From(z) }); }
     void AddPickup(float x, float z) { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().pickups.push_back({ Fixed::From(x), Fixed::From(z) }); }
 
@@ -182,8 +232,55 @@ public:
     // slabs (a ramp's slope or top) and domes (a hill), power-up boxes, shots,
     // bursts, and the rows of the menu and the board on the camera.
     void AddBlockNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_block_nodes.push_back(r); parkNode(r); }
-    void AddSlabNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_slab_nodes.push_back(r); parkNode(r); }
-    void AddDomeNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_dome_nodes.push_back(r); parkNode(r); }
+    void AddSlabNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_slab_nodes.push_back(r); groundColour(r, KartArena::OnRamp); parkNode(r); }
+    // A wedge of the pool: a ramp's slope, solid down to the ground (its mesh
+    // rises toward its own +z: kart_wedge_shape.etcs).
+    void AddWedgeNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_wedge_nodes.push_back(r); groundColour(r, KartArena::OnRamp); parkNode(r); }
+    void AddDomeNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_dome_nodes.push_back(r); groundColour(r, KartArena::OnHill); parkNode(r); }
+    // The arena's whole floor: coloured here, as the slabs and domes are, so a
+    // mark fades into the ground it is on; put away when the map has a pit,
+    // for a floor of slabs laid round it.
+    void AddGroundNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_floor = r; groundColour(r, KartArena::Floor); }
+    // A spring of the pool: its round plate and the four arrows that close on
+    // its middle, sized and coloured here.
+    void AddSpringNode(ETCS::RID plate, ETCS::RID a, ETCS::RID b, ETCS::RID c, ETCS::RID d)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_spring_nodes.push_back({ plate, { a, b, c, d } });
+        const float wide = KartArena::SpringRadius().ToFloat() * 2.0f;
+        verb(plate, "Create", fmt3(wide) + ", 0.012, " + fmt3(wide));
+        verb(plate, "SetColor", f4(kSpring[0], kSpring[1], kSpring[2], 1.0f));
+        parkNode(plate);
+        for (ETCS::RID r : { a, b, c, d })
+        {
+            verb(r, "Create", "0.9, 0.7, 0.02");
+            verb(r, "SetColor", f4(kSpringArrow[0], kSpringArrow[1], kSpringArrow[2], 1.0f));
+            parkNode(r);
+        }
+    }
+    // A pad of the pool: its plate, coloured and sized here (the size is the
+    // arena's), and the three arrows that run along it.
+    void AddPadNode(ETCS::RID plate, ETCS::RID a, ETCS::RID b, ETCS::RID c)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_pad_nodes.push_back({ plate, { a, b, c } });
+        groundColour(plate, KartArena::OnPad);
+        verb(plate, "Create", fmt3(KartArena::PadWidth().ToFloat()) + ", 0.01, " + fmt3(KartArena::PadLength().ToFloat()));
+        parkNode(plate);
+        // An arrow lies flat: its mesh's length (+y) along the pad, its depth up.
+        for (ETCS::RID r : { a, b, c }) { verb(r, "Create", "1.7, " + fmt3(padArrow().ToFloat()) + ", 0.02"); parkNode(r); }
+    }
+    // A segment of a tyre's mark: a thin strip on the ground, sized when it
+    // is laid; twenty-four to a tyre, ninety-six to a kart, in the order the
+    // karts are made.
+    void AddMarkNode(ETCS::RID r)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_mark_nodes.push_back(r);
+        verb(r, "Create", "0.18, 0.01, 1.0");
+        verb(r, "SetAnchored", "1");
+        parkNode(r);
+    }
     void AddPickupNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_pickup_nodes.push_back(r); hide(r); }
     void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); hide(r); }
     void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); m_blast_until.push_back(0); hide(r); }
@@ -426,7 +523,10 @@ public:
     /*
      * A KEY from the window (GLFW codes). In a round: W/S (or up/down) the
      * pedal, A/D (or left/right) the wheel, Space the trigger -- a change of
-     * any is a `drive` line -- and, for the host, Esc abandons the round. Tab
+     * any is a `drive` line -- and, for the host, Esc abandons the round. A
+     * turns the kart to the picture's left and D to its right, which is the
+     * wheel's -1 and +1 (the camera's right is up x forward: +x for a kart
+     * heading +z); SetInvert swaps the two keys for this runtime alone. Tab
      * holds up the board, this runtime's alone. In the lobby the host's keys
      * move the menu instead: up/down choose, left/right change, Enter
      * changes or starts; each change is a line.
@@ -440,16 +540,17 @@ public:
             if (m_phase == Lobby && menuKeyLocked(key)) return;
             if (m_phase == Playing && key == 256) { takeLocked(m_me, "abandon"); return; }
         }
-        int bit = -1;
+        int bit = key == 0 ? 5 : -1;   // no key: the held ones read again (SetInvert)
         if (key == 'W' || key == 265) bit = 0;
         else if (key == 'S' || key == 264) bit = 1;
         else if (key == 'A' || key == 263) bit = 2;
         else if (key == 'D' || key == 262) bit = 3;
         else if (key == ' ') bit = 4;
         if (bit < 0) return;
-        if (down) m_keys |= (1u << bit); else m_keys &= ~(1u << bit);
+        if (bit < 5) { if (down) m_keys |= (1u << bit); else m_keys &= ~(1u << bit); }
         const int t = ((m_keys & 1) ? 1 : 0) - ((m_keys & 2) ? 1 : 0);
-        const int s = ((m_keys & 4) ? 1 : 0) - ((m_keys & 8) ? 1 : 0);
+        const int right = ((m_keys & 8) ? 1 : 0) - ((m_keys & 4) ? 1 : 0);
+        const int s = m_invert ? -right : right;
         const int f = (m_keys & 16) ? 1 : 0;
         if (t == m_sent_t && s == m_sent_s && f == m_sent_f) return;
         m_sent_t = t; m_sent_s = s; m_sent_f = f;
@@ -458,6 +559,15 @@ public:
         if (m_judge) takeLocked(m_me, line);
         else m_outbox.push_back(line);
     }
+
+    // The wheel's keys swapped, for this runtime alone: the keys held are
+    // read again, so a change mid-turn is a `drive` line like any other.
+    void SetInvert(bool on)
+    {
+        { std::lock_guard<std::mutex> g(m_mu); if (m_invert == on) return; m_invert = on; }
+        Key(0, false);
+    }
+    bool Inverted() { std::lock_guard<std::mutex> g(m_mu); return m_invert; }
 
     // ── reads ────────────────────────────────────────────────────────────
 
@@ -497,8 +607,8 @@ public:
         for (const KartArena::Map& m : m_defs) out += m.name + "\n";
         return out;
     }
-    // The map in play: "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <digest>",
-    // the digest over every number on it.
+    // The map in play: "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads>
+    // <springs> <decks> <pits> <digest>", the digest over every number on it.
     std::string Layout()
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -507,34 +617,100 @@ public:
         for (const auto& b : m_live.blocks) { put(b.x); put(b.z); put(b.w); put(b.d); put(b.h); st += std::to_string(b.yaw) + "|"; }
         for (const auto& r : m_live.ramps)  { put(r.x); put(r.z); put(r.width); put(r.up); put(r.flat); put(r.down); put(r.height); st += std::to_string(r.yaw) + "|"; }
         for (const auto& k : m_live.hills)  { put(k.x); put(k.z); put(k.radius); put(k.height); st += "|"; }
+        for (const auto& p : m_live.pads)   { put(p.x); put(p.z); st += std::to_string(p.yaw) + "|"; }
+        for (const auto& p : m_live.springs) { put(p.x); put(p.z); st += "|"; }
+        for (const auto& d : m_live.decks)  { put(d.x); put(d.z); put(d.w); put(d.d); put(d.h); st += "|"; }
+        for (const auto& p : m_live.pits)   { put(p.x); put(p.z); put(p.w); put(p.d); put(p.depth); st += "|"; }
         for (const auto& p : m_live.spawns) { put(p.x); put(p.z); }
         for (const auto& p : m_live.pickups) { put(p.x); put(p.z); }
         char d[17];
         std::snprintf(d, sizeof d, "%016llx", static_cast<unsigned long long>(XXH3_64bits(st.data(), st.size())));
         return m_live.name + " " + std::to_string(m_layout) + " " + std::to_string(m_live.blocks.size()) + " "
              + std::to_string(m_live.ramps.size()) + " " + std::to_string(m_live.hills.size()) + " "
-             + std::to_string(m_live.spawns.size()) + " " + std::to_string(m_live.pickups.size()) + " " + d;
+             + std::to_string(m_live.spawns.size()) + " " + std::to_string(m_live.pickups.size()) + " "
+             + std::to_string(m_live.pads.size()) + " " + std::to_string(m_live.springs.size()) + " "
+             + std::to_string(m_live.decks.size()) + " " + std::to_string(m_live.pits.size()) + " " + d;
+    }
+    // What is wrong with the maps, "<map>: <fault>" a line (KartArena::Faults),
+    // or "none": the hand-made ones as given, one from a seed as it is in
+    // play. A verb's answer is 255 characters: past the lines that fit,
+    // "+<n> more".
+    std::string Faults()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        std::string out;
+        int more = 0;
+        for (size_t i = 0; i < m_defs.size(); ++i)
+        {
+            KartArena::Map m = m_defs[i];
+            if (!m.generated) KartArena::Prepare(m);
+            else if (static_cast<int>(i) == m_map) m = m_live;
+            else continue;
+            std::istringstream lines(KartArena::Faults(m));
+            for (std::string line; std::getline(lines, line);)
+            {
+                line = m.name + ": " + line + "\n";
+                if (more == 0 && out.size() + line.size() <= 240) out += line; else ++more;
+            }
+        }
+        if (out.empty()) return "none";
+        if (more) return out + "+" + std::to_string(more) + " more";
+        out.pop_back();
+        return out;
     }
     std::string Hash()     { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_tick) + " " + hashLocked(); }
     std::string Snapshot() { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_snap_tick) + " " + m_snap_hash; }
     std::string Note()     { std::lock_guard<std::mutex> g(m_mu); return m_note; }
-    // "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground>", or "-".
+    // "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel> <slide>",
+    // or "-"; the wheel and the slide (the way across the heading) are + to
+    // the picture's right.
     std::string Kart(const std::string& who)
     {
         std::lock_guard<std::mutex> g(m_mu);
         const int i = slotOf(who);
         Causal_* k = i < 0 ? nullptr : causal(m_slots[i].body);
         if (!k) return "-";
-        float x, y, z;
+        const Slot& s = m_slots[i];
+        float x, y, z, slide;
         {
             std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
             const OrderVector& r = k->Order4();
             x = r.x.ToFloat(); y = r.y.ToFloat(); z = r.z.ToFloat();
+            Fixed vx, vy, vz;
+            r.Velocity(k->MassUnder(), vx, vy, vz);
+            slide = (vx * s.hz - vz * s.hx).ToFloat();   // along the heading's across, (hz, -hx)
         }
-        const Slot& s = m_slots[i];
         return std::to_string(i) + " " + fmt3(x) + " " + fmt3(z) + " " + fmt3(s.hx.ToFloat()) + " " + fmt3(s.hz.ToFloat()) + " "
              + fmt1(speedOf(static_cast<size_t>(i))) + " " + std::to_string(s.hp) + " " + KartArms::Name(s.weapon)
-             + " " + std::to_string(s.ammo) + " " + fmt3(y) + " " + (s.air ? "air" : "ground");
+             + " " + std::to_string(s.ammo) + " " + fmt3(y) + " " + (s.air ? "air" : "ground") + " " + fmt3(s.wheel.ToFloat())
+             + " " + fmt3(slide);
+    }
+    // Tyres <name> -- per tyre, fr fl rr rl, "<heat> <rope> <shown> <darkest>": its heat (J), how
+    // long its mark's rope is laid behind it, how many segments are drawn,
+    // and the darkest (0..1). "-" for nobody.
+    std::string Tyres(const std::string& who)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotOf(who);
+        if (i < 0) return "-";
+        const Slot& s = m_slots[i];
+        std::string out;
+        for (int t = 0; t < 4; ++t)
+        {
+            const Trail& tr = s.trail[t];
+            Fixed rope = tr.run_d;
+            int shown = 0, darkest = 0;
+            for (const MarkSeg& g : tr.segs)
+            {
+                rope += g.len;
+                if (g.node >= 0) { ++shown; darkest = std::max(darkest, g.level); }
+            }
+            Causal_* c = causal(s.wheels[t]);
+            const float heat = c ? c->Order4().Heat().ToFloat() : 0.0f;
+            out += (t ? " " : "") + fmt3(heat) + " " + fmt3(rope.ToFloat()) + " " + std::to_string(shown) + " "
+                 + fmt3(static_cast<float>(darkest) / 8.0f);
+        }
+        return out;
     }
     /*
      * THE JUDGE'S CLOCK BY HAND: `ticks` ticks stepped and recorded, as the
@@ -577,16 +753,43 @@ public:
     }
 
 private:
+    static constexpr int kMarkNodes = 24;   // a tyre's drawn segments at most
+    /*
+     * A TYRE'S MARK: the road it ran, as segments laid where it ran them and
+     * left there, newest first, each as dark as what the tyre shed over it
+     * (a level, 0..8; 0 is laid but not drawn). A segment is laid when the
+     * way turns, the darkness changes, the tyre leaves or meets the ground,
+     * or it is long enough -- so a reversal is a segment's end, and nothing
+     * already laid moves. A rope of fixed length: past markLength() of road
+     * the oldest goes, so going on, either way, wipes it from the far end.
+     * Derived from the rows (the tyres' heat), so the same everywhere, but
+     * drawn only: not in the hash.
+     */
+    struct MarkSeg { Fixed x0, y0, z0, x1, y1, z1, len; int level = 0; int node = -1; };
+    struct Trail
+    {
+        std::deque<MarkSeg> segs;
+        Fixed    sx, sy, sz;                       // where the open run starts: the last segment's end
+        Fixed    hx, hy, hz;                       // where the tyre touched last tick
+        Fixed    run_e, run_d;                     // shed and road in the open run
+        Fixed    dx, dz;                           // the open run's way, as its first step went
+        int      run_level = 0;
+        bool     touched = false, air = false;
+        uint32_t seq = 0;                          // segments laid: which lift a new one takes
+        uint32_t used = 0;                         // the tyre's drawn segments' nodes in use, a bit each
+    };
     struct Slot
     {
         ETCS::RID   body = 0;
-        ETCS::RID   wheels[4] = { 0, 0, 0, 0 };   // fl fr rl rr: drawn, placed by the battle
+        ETCS::RID   wheels[4] = { 0, 0, 0, 0 };   // fr fl rr rl: drawn, placed by the battle
         ETCS::RID   bar_back = 0, bar_fill = 0;   // the HP bar: this runtime's to turn
         OrderVector pristine;                      // the rows as made: every restart starts here
         std::string driver;
         int         thr = 0, steer = 0, fire = 0;
         int         press = 0;                     // a press of the trigger the tick has not yet seen
-        Fixed       wheel;                         // radians, + is left
+        Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
+        Fixed       wheel_rate;                    // how fast the wheel is turning now: it gathers pace while held
+        int         steer_held = 0;                // the way the wheel was being turned last tick
         Fixed       hx, hz;                        // the heading, level (the body is tilted to the ground)
         Fixed       vy;                            // up: the ground's pace under it, or a flight's
         bool        air = false;                   // off the ground
@@ -601,6 +804,11 @@ private:
         int64_t     ram_safe = 0;                  // rammed: not again before this tick
         int         killer = -1;                   // who took it out last
         int         shown_hp = -1, shown_band = -1; bool bar_shown = false;   // drawn, not state
+        // The tyres: Causal members of the body (kart_car.etcs), anchored in
+        // its frame; their rows as made, every restart starts there.
+        OrderVector tyre_pristine[4];
+        Fixed       tyre_heat[4];                  // each tyre's heat as the drive left it: the tick emits from it
+        Trail       trail[4];                      // each tyre's mark: drawn, not state
     };
     struct Pickup { Fixed x, y, z; int64_t back = 0; ETCS::RID node = 0; };
     struct Shot
@@ -610,6 +818,8 @@ private:
         int life = 0, armed = 0, node = -1;
     };
     struct BoardRow { ETCS::RID rid; std::string text; bool shown; };
+    struct PadNodes { ETCS::RID plate = 0; ETCS::RID arrow[3] = { 0, 0, 0 }; };
+    struct SpringNodes { ETCS::RID plate = 0; ETCS::RID arrow[4] = { 0, 0, 0, 0 }; };
     enum Phase { Lobby, Playing, Results };
     enum MenuItem { MenuMap, MenuLength, MenuStart, MenuItems };
 
@@ -623,23 +833,95 @@ private:
     static constexpr int      kRespawn    = 3 * kHz;
     static constexpr int      kPickupBack = 8 * kHz;
     static constexpr int      kResults    = 6 * kHz;
+    // The ground's colours, the battle's to give (AddGroundNode, AddSlabNode,
+    // AddDomeNode): a mark is drawn between the ground's own and the tyre's.
+    static constexpr float kGround[6][3] = { { 0.30f, 0.31f, 0.33f }, { 0.72f, 0.52f, 0.30f }, { 0.33f, 0.52f, 0.27f },
+                                             { 0.13f, 0.20f, 0.36f }, { 0.50f, 0.55f, 0.66f }, { 0.22f, 0.21f, 0.24f } };
+                                             // floor, ramp, hill, pad, deck, a pit's floor
+    static constexpr float kPitWall[3] = { 0.15f, 0.15f, 0.17f };
+    static constexpr float kSpring[3] = { 0.42f, 0.12f, 0.34f }, kSpringArrow[3] = { 1.0f, 0.82f, 0.25f };
+    static constexpr float kTyre[3] = { 0.06f, 0.06f, 0.07f };
     static constexpr float kColors[kMaxKarts][3] = {
         { 0.86f, 0.18f, 0.16f }, { 0.18f, 0.42f, 0.88f }, { 0.95f, 0.80f, 0.15f }, { 0.20f, 0.70f, 0.30f },
         { 0.95f, 0.50f, 0.10f }, { 0.60f, 0.30f, 0.80f }, { 0.20f, 0.80f, 0.85f }, { 0.92f, 0.92f, 0.90f } };
 
     static Fixed F(int64_t n, int64_t d = 1) { return Fixed::FromInt(n) / Fixed::FromInt(d); }
     static Fixed dt()        { return F(1, kHz); }
-    static Fixed accel()     { return F(9); }
-    static Fixed topSpeed()  { return F(16); }
-    static Fixed boostSpeed(){ return F(26); }
+    /*
+     * THE PEDAL: quick off the line, then less the nearer the top -- the
+     * launch's push falling with speed, never below pull() -- so the top is
+     * reached over about 80 units, more than a wall to the other. Speed is
+     * worth keeping: a corner taken in a drift keeps more of it than one
+     * braked for. A boost pushes hard (boostPush()) to its own top.
+     */
+    static Fixed launch()    { return F(10); }
+    static Fixed pull()      { return F(2); }
+    static Fixed topSpeed()  { return F(22); }
+    static Fixed boostSpeed(){ return F(30); }
+    static Fixed boostPush() { return F(18); }
+    static Fixed pushAt(Fixed v, Fixed top)
+    {
+        const Fixed p = launch() * (Fixed::One() - v / top);
+        return p > pull() ? p : pull();
+    }
     static Fixed brake()     { return F(20); }
     static Fixed reverseAcc(){ return F(5); }
     static Fixed reverseTop(){ return F(6); }
     static Fixed coast()     { return F(6, 10); }
-    static Fixed wheelLock() { return F(45, 100); }
-    static Fixed wheelRate() { return F(3); }
+    static Fixed wheelLock() { return F(45, 100); }   // the lock standing still
+    static Fixed steerAccel(){ return F(125, 100); }  // rad/s/s: the pace the wheel's turn gathers while held
+    static Fixed steerMax()  { return F(12, 10); }    // rad/s: the fastest the wheel turns
+    static Fixed steerBack() { return F(15, 10); }    // rad/s: back toward the middle, let go
+    // The lock at a speed: the full lock standing still, less the faster the
+    // kart goes, so the turn at speed (speed x lock / wheelbase) stays near
+    // 1.7 to 1.9 rad/s from 16 u/s up instead of growing with it.
+    static Fixed lockAt(Fixed speed) { return wheelLock() / (Fixed::One() + speed.Abs() / F(10)); }
     static Fixed wheelbase() { return F(16, 10); }
-    static Fixed grip()      { return F(9); }
+    // The tyres across: the most they pull a slide out (u/s/s), and less
+    // with the brake on -- past it the kart slides. A full lock at 16 u/s
+    // asks ~28, at the top ~42, so it drifts; at 12 u/s it still bites.
+    static Fixed grip()      { return F(20); }
+    static Fixed brakeGrip() { return F(10); }
+    // What a slide costs, of the speed the tyres' pull would take with it:
+    // a quarter while the way is up to ~35 degrees off the heading (`off`
+    // is that angle's sine), rising to all of it full sideways -- so a drift
+    // keeps its speed and a kart knocked sideways still stops.
+    static Fixed slideCost(Fixed off)
+    {
+        const Fixed free = F(574, 1000), least = F(1, 4);
+        if (off <= free) return least;
+        return Fixed::Min(Fixed::One(), least + (Fixed::One() - least) * (off - free) / (Fixed::One() - free));
+    }
+    // A PAD pushes the way it points while a kart's middle is over it:
+    // padPush() (u/s/s) whatever the kart is doing, and padGain() of its
+    // speed that way a second on top, so one taken at speed gives more --
+    // until it is going padTop() that way, the fastest anything goes. Its
+    // arrows run its length in padBeat() ticks, one behind the other.
+    static Fixed padPush()   { return F(120); }
+    static Fixed padGain()   { return F(1); }
+    static Fixed padTop()    { return F(40); }
+    // A SPRING throws a kart up as hard as a pad pushes one along in an
+    // eighth of a second -- 15 u/s, five and a half units high -- and again
+    // when it comes down on it. Its four arrows close on its middle.
+    static Fixed springKick(){ return padPush() / F(8); }
+    static Fixed padArrow()  { return F(9, 10); }    // an arrow's length
+    static constexpr int padBeat() { return 40; }
+    // The tyres at the body's corners, in its frame: across, ahead.
+    static Fixed tyreSide()  { return F(70, 100); }
+    static Fixed tyreAhead() { return F(64, 100); }
+    // A MARK, from the heat a tyre sheds per unit of road (a force: its
+    // share of the friction against its speed) over its quarter of the
+    // kart's mass -- a deceleration. Nothing below markFrom(); full black
+    // at markFull(): the brake on (20) is full, a drift's slide (what it
+    // costs: a quarter of the grip times how far the way is off the heading)
+    // part way, deepening as it opens.
+    static Fixed markFrom()  { return F(1, 5); }
+    static Fixed markFull()  { return F(2); }
+    static Fixed markLength(){ return F(40); }      // the rope: this much road, and the segment over
+    static Fixed markSegMax(){ return F(5, 2); }    // a dark segment at most; an unmarked run...
+    static Fixed markRunMax(){ return F(4); }       // ...at most this
+    static Fixed markTurn()  { return F(99, 100); } // a way turned past ~8 degrees ends a segment...
+    static Fixed markMin()   { return F(1, 4); }    // ...this long at least
     static Fixed kartY()     { return F(25, 100); }   // the ride height: the body's centre over the ground
     static Fixed kartR()     { return F(1); }          // the reach a shot meets
     static Fixed gravity()   { return F(20); }
@@ -830,7 +1112,7 @@ private:
         const Fixed l = Fixed::Length(dx, Fixed::Zero(), dz);
         if (l.IsPositive()) { s.hx = dx / l; s.hz = dz / l; } else { s.hx = Fixed::Zero(); s.hz = Fixed::One(); }
         Fixed gx, gz;
-        const Fixed y = groundAt(x, z, &gx, &gz) + kartY();
+        const Fixed y = topAt(x, z, &gx, &gz) + kartY();
         s.sgx = gx; s.sgz = gz; s.vy = Fixed::Zero(); s.air = false;
         std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
         OrderVector& r = k->RowsUnder();
@@ -849,12 +1131,14 @@ private:
     void parkLocked(size_t i)
     {
         Slot& s = m_slots[i];
-        s.thr = s.steer = s.fire = s.press = 0; s.wheel = Fixed::Zero();
+        s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_rate = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
         s.dead_until = -1; s.ram_safe = 0;
         verb(s.body, "SetVisible", "0");
         verb(s.body, "SetAnchored", "1");
         for (ETCS::RID w : s.wheels) verb(w, "SetVisible", "0");
+        tyresAfreshLocked(s);
+        clearMarksLocked(i);
         placeLocked(i, F(200) + F(4) * F(static_cast<int64_t>(i)), Fixed::Zero(), Fixed::Zero(), Fixed::One());
         wheelsLocked(s);
     }
@@ -881,12 +1165,14 @@ private:
             }
             if (nearest > best) { best = nearest; bx = p.x; bz = p.z; }
         }
-        s.thr = s.steer = 0; s.press = 0; s.wheel = Fixed::Zero();
+        s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_rate = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
         s.dead_until = -1;
         Fixed dx = -bx, dz = -bz;
         if (dx.IsZero() && dz.IsZero()) dz = Fixed::One();
         placeLocked(i, bx, bz, dx, dz);
+        tyresAfreshLocked(s);
+        clearMarksLocked(i);
         wheelsLocked(s);
         verb(s.body, "SetAnchored", m_phase == Lobby ? "1" : "0");
         verb(s.body, "SetVisible", "1");
@@ -903,7 +1189,7 @@ private:
 
     /*
      * A MAP OUT, drawn with the pools: each block a pooled solid box sized
-     * and placed, each ramp's slopes and top a pooled slab, each hill a
+     * and placed, each ramp's slopes a pooled wedge and its top a slab, each hill a
      * pooled dome; what a pool has left over waits far below, hidden. The
      * boxes are set out on the ground, and the shots go.
      */
@@ -924,7 +1210,7 @@ private:
         for (const KartArena::Spot& sp : m_live.pickups)
             if (n < m_pickup_nodes.size())
             {
-                Pickup p; p.x = sp.x; p.z = sp.z; p.y = groundAt(sp.x, sp.z) + F(7, 10); p.back = 0; p.node = m_pickup_nodes[n++];
+                Pickup p; p.x = sp.x; p.z = sp.z; p.y = topAt(sp.x, sp.z) + F(7, 10); p.back = 0; p.node = m_pickup_nodes[n++];
                 m_pickups.push_back(p);
                 placeNode(p.node, p.x, p.y, p.z);
                 verb(p.node, "SetVisible", "1");
@@ -944,38 +1230,72 @@ private:
             verb(node, "SetVisible", "1");
             m_live_blocks.push_back(node);
         }
-        // A ramp: its slope up (a slab tilted by the rise), its top (a box
-        // down to the ground), its slope down; a jump has no slope down -- its
-        // lip stands over the drop.
-        const Fixed T = F(3, 10);
+        // A ramp, solid to the ground it stands on (a pit's floor, for one in
+        // a pit): its slope up a wedge, its top a box, its slope down a wedge
+        // turned about; a jump has no slope down -- its lip is a wall's top.
+        // Nothing is hollow, so nothing is under one.
+        size_t nw = 0;
         for (const KartArena::Ramp& r : m_live.ramps)
         {
             const Fixed len = r.length();
-            auto slab = [&](Fixed from, Fixed run, bool rising) {
-                if (ns >= m_slab_nodes.size() || !run.IsPositive()) return;
-                const ETCS::RID node = m_slab_nodes[ns++];
-                const Fixed slope = Fixed::Length(run, r.height, Fixed::Zero());
-                const Fixed sn = r.height / slope, cs = run / slope;
-                // The top face's middle, lowered half the slab along its normal.
+            auto part = [&](std::vector<ETCS::RID>& pool, size_t& n, Fixed from, Fixed run, int turn) {
+                if (n >= pool.size() || !run.IsPositive()) return;
+                const ETCS::RID node = pool[n++];
                 const Fixed mid = from + run * Fixed::Half() - len * Fixed::Half();
-                const Fixed off = T * Fixed::Half() * sn;
-                const Fixed along = rising ? mid + off : mid - off;
-                const Fixed y = r.height * Fixed::Half() - T * Fixed::Half() * cs;
-                verb(node, "Create", fmt3(r.width.ToFloat()) + ", " + fmt3(T.ToFloat()) + ", " + fmt3(slope.ToFloat()));
-                // Pitched about its own across: its far end up when rising.
-                poseNode(node, r.x + r.sx * along, y, r.z + r.cz * along, r.yaw, rising ? -sn : sn, cs);
+                verb(node, "Create", fmt3(r.width.ToFloat()) + ", " + fmt3(r.height.ToFloat()) + ", " + fmt3(run.ToFloat()));
+                poseNode(node, r.x + r.sx * mid, r.base + r.height * Fixed::Half(), r.z + r.cz * mid, r.yaw + turn, Fixed::Zero(), Fixed::One());
+                groundColour(node, KartArena::OnRamp);
                 verb(node, "SetVisible", "1");
             };
-            slab(Fixed::Zero(), r.up, true);
-            if (r.flat.IsPositive() && ns < m_slab_nodes.size())
+            part(m_wedge_nodes, nw, Fixed::Zero(), r.up, 0);
+            part(m_slab_nodes, ns, r.up, r.flat, 0);
+            part(m_wedge_nodes, nw, r.up + r.flat, r.down, 180);
+        }
+        for (; nw < m_wedge_nodes.size(); ++nw) parkNode(m_wedge_nodes[nw]);
+        // The levels, of slabs: a deck a plate in the air; a pit its floor and
+        // four walls down to it -- and the arena's floor then laid round the
+        // pits in pieces, the whole one put away.
+        auto slab = [&](Fixed x, Fixed y, Fixed z, Fixed w, Fixed h, Fixed d, const float* c) {
+            if (ns >= m_slab_nodes.size() || !w.IsPositive() || !d.IsPositive()) return;
+            const ETCS::RID node = m_slab_nodes[ns++];
+            verb(node, "Create", fmt3(w.ToFloat()) + ", " + fmt3(h.ToFloat()) + ", " + fmt3(d.ToFloat()));
+            poseNode(node, x, y, z, 0, Fixed::Zero(), Fixed::One());
+            verb(node, "SetColor", f4(c[0], c[1], c[2], 1.0f));
+            verb(node, "SetVisible", "1");
+        };
+        const Fixed half = Fixed::Half(), thick = KartArena::DeckThick();
+        for (const KartArena::Deck& d : m_live.decks)
+            slab(d.x, d.h - thick * half, d.z, d.w, thick, d.d, kGround[KartArena::OnDeck]);
+        struct Rect { Fixed x0, z0, x1, z1; };
+        std::vector<Rect> floor{ { F(-36), F(-36), F(36), F(36) } };
+        for (const KartArena::Pit& p : m_live.pits)
+        {
+            const Fixed x0 = p.x - p.w * half, x1 = p.x + p.w * half, z0 = p.z - p.d * half, z1 = p.z + p.d * half;
+            const Fixed mid = -p.depth * half - F(1, 100), wall = F(3, 10);
+            slab(p.x, -p.depth - F(5, 100), p.z, p.w, F(1, 10), p.d, kGround[KartArena::InPit]);
+            slab(p.x, mid, z1 + wall * half, p.w + wall * F(2), p.depth, wall, kPitWall);
+            slab(p.x, mid, z0 - wall * half, p.w + wall * F(2), p.depth, wall, kPitWall);
+            slab(x1 + wall * half, mid, p.z, wall, p.depth, p.d, kPitWall);
+            slab(x0 - wall * half, mid, p.z, wall, p.depth, p.d, kPitWall);
+            // Every piece of floor the pit cuts into: what is left of it, in up to four.
+            std::vector<Rect> next;
+            for (const Rect& r : floor)
             {
-                const ETCS::RID node = m_slab_nodes[ns++];
-                const Fixed mid = r.up + r.flat * Fixed::Half() - len * Fixed::Half();
-                verb(node, "Create", fmt3(r.width.ToFloat()) + ", " + fmt3(r.height.ToFloat()) + ", " + fmt3(r.flat.ToFloat()));
-                poseNode(node, r.x + r.sx * mid, r.height * Fixed::Half(), r.z + r.cz * mid, r.yaw, Fixed::Zero(), Fixed::One());
-                verb(node, "SetVisible", "1");
+                if (r.x1 <= x0 || r.x0 >= x1 || r.z1 <= z0 || r.z0 >= z1) { next.push_back(r); continue; }
+                if (r.x0 < x0) next.push_back({ r.x0, r.z0, x0, r.z1 });
+                if (r.x1 > x1) next.push_back({ x1, r.z0, r.x1, r.z1 });
+                const Fixed a = Fixed::Max(r.x0, x0), b = Fixed::Min(r.x1, x1);
+                if (r.z0 < z0) next.push_back({ a, r.z0, b, z0 });
+                if (r.z1 > z1) next.push_back({ a, z1, b, r.z1 });
             }
-            slab(r.up + r.flat, r.down, false);
+            floor.swap(next);
+        }
+        if (m_live.pits.empty()) { if (m_floor) verb(m_floor, "SetVisible", "1"); }
+        else
+        {
+            if (m_floor) hide(m_floor);
+            for (const Rect& r : floor)
+                slab((r.x0 + r.x1) * half, F(-5, 100), (r.z0 + r.z1) * half, r.x1 - r.x0, F(1, 10), r.z1 - r.z0, kGround[KartArena::Floor]);
         }
         for (const KartArena::Hill& k : m_live.hills)
         {
@@ -989,6 +1309,33 @@ private:
         for (; nb < m_block_nodes.size(); ++nb) parkNode(m_block_nodes[nb]);
         for (; ns < m_slab_nodes.size(); ++ns) parkNode(m_slab_nodes[ns]);
         for (; nd < m_dome_nodes.size(); ++nd) parkNode(m_dome_nodes[nd]);
+        // The pads: each plate on the floor, under any tyre's mark; the
+        // arrows are put on it every tick (arrowsLocked).
+        for (size_t n = 0; n < m_pad_nodes.size(); ++n)
+        {
+            const PadNodes& pn = m_pad_nodes[n];
+            if (n < m_live.pads.size())
+            {
+                const KartArena::Pad& p = m_live.pads[n];
+                poseNode(pn.plate, p.x, p.y + F(3, 1000), p.z, p.yaw, Fixed::Zero(), Fixed::One());
+                verb(pn.plate, "SetVisible", "1");
+                for (ETCS::RID a : pn.arrow) verb(a, "SetVisible", "1");
+            }
+            else { parkNode(pn.plate); for (ETCS::RID a : pn.arrow) parkNode(a); }
+        }
+        for (size_t n = 0; n < m_spring_nodes.size(); ++n)
+        {
+            const SpringNodes& sn = m_spring_nodes[n];
+            if (n < m_live.springs.size())
+            {
+                const KartArena::Spring& p = m_live.springs[n];
+                poseNode(sn.plate, p.x, p.y + F(4, 1000), p.z, 0, Fixed::Zero(), Fixed::One());
+                verb(sn.plate, "SetVisible", "1");
+                for (ETCS::RID a : sn.arrow) verb(a, "SetVisible", "1");
+            }
+            else { parkNode(sn.plate); for (ETCS::RID a : sn.arrow) parkNode(a); }
+        }
+        arrowsLocked();
     }
 
     // ── one tick ────────────────────────────────────────────────────────
@@ -1005,6 +1352,7 @@ private:
                     {
                         s.px = k->Order4().x; s.pz = k->Order4().z;
                         if (m_phase != Lobby) driveLocked(s, k);
+                        heatsLocked(s);
                     }
             w->Interact(dt());
             ++m_tick;
@@ -1020,11 +1368,12 @@ private:
                 Slot& s = m_slots[i];
                 if (s.driver.empty()) continue;
                 if (s.dead_until >= 0 && static_cast<int64_t>(m_tick) >= s.dead_until) spawnLocked(i);
-                if (alive(s)) wheelsLocked(s);
+                if (alive(s)) { wheelsLocked(s); marksLocked(i); }
             }
             if (m_phase != Lobby) pickupsLocked();
             for (size_t b = 0; b < m_blast_nodes.size(); ++b)
                 if (m_blast_until[b] && static_cast<int64_t>(m_tick) >= m_blast_until[b]) { m_blast_until[b] = 0; hide(m_blast_nodes[b]); }
+            arrowsLocked();
         }
         if (m_phase == Playing && static_cast<int64_t>(m_tick) >= m_end)
         {
@@ -1058,20 +1407,34 @@ private:
         const Fixed m = k->MassUnder();
         const Fixed step = dt();
         const int thr = m_phase == Results ? 0 : s.thr, steer = m_phase == Results ? 0 : s.steer;
-        const Fixed target = wheelLock() * F(steer);
-        const Fixed turn = wheelRate() * step;
-        Fixed d = target - s.wheel;
-        if (d > turn) d = turn; else if (d < -turn) d = -turn;
-        s.wheel += d;
-        if (s.boost > 0) --s.boost;
-        if (s.air) return;
         const Fixed hx = s.hx, hz = s.hz;
         Fixed vx, vy, vz;
         r.Velocity(m, vx, vy, vz);
+        // A pad under it pushes the way the pad points, whichever way the
+        // kart does: along its heading that is speed, across it a slide for
+        // the tyres. The work is the Impulse below, with the pedal's.
+        if (!s.air)
+            if (const KartArena::Pad* pad = KartArena::PadAt(m_live, r.x, r.z))
+                if ((groundFor(s, r, r.x, r.z) - pad->y).Abs() < F(5, 100))
+                {
+                    const Fixed along = vx * pad->sx + vz * pad->cz;
+                    if (along < padTop())
+                    {
+                        const Fixed push = (padPush() + (along.IsPositive() ? along * padGain() : Fixed::Zero())) * step;
+                        const Fixed add = Fixed::Min(push, padTop() - along);
+                        vx += pad->sx * add; vz += pad->cz * add;
+                    }
+                }
         Fixed speed = vx * hx + vz * hz;
+        wheelTurnLocked(s, steer, speed, step);
+        if (s.boost > 0) --s.boost;
+        if (s.air) return;
         Fixed lx = vx - hx * speed, lz = vz - hz * speed;
+        const Fixed rolled = speed;
+        const bool braking = (thr > 0 && speed.raw < 0) || (thr < 0 && speed.raw > 0);
         const Fixed top = s.boost > 0 ? boostSpeed() : topSpeed();
-        const Fixed push = s.boost > 0 ? accel() * F(2) : accel();
+        Fixed push = pushAt(speed, top);
+        if (s.boost > 0 && push < boostPush()) push = boostPush();
         if (thr > 0)
         {
             if (speed.raw < 0) speed = Fixed::Min(speed + brake() * step, Fixed::Zero());
@@ -1087,17 +1450,19 @@ private:
             speed -= speed * coast() * step;
             if (speed.Abs() < F(1, 100)) speed = Fixed::Zero();
         }
+        // What the brake took is the tyres' work against the road.
+        const Fixed braked = braking ? Fixed::Half() * m * (rolled * rolled - speed * speed) : Fixed::Zero();
         // The slope: gravity's share along the heading (the sine of the rise).
         Fixed gx, gz;
-        groundAt(r.x, r.z, &gx, &gz);
+        groundFor(s, r, r.x, r.z, &gx, &gz);
         const Fixed along = gx * hx + gz * hz;
         if (!along.IsZero()) speed -= gravity() * along / (Fixed::One() + along * along).Sqrt() * step;
-        // Past the kart's own top (a boost run out, a hill run down) it eases
-        // back on the level; nothing goes past a boost's top.
+        // Past the kart's own top (a boost run out, a pad taken, a hill run
+        // down) it eases back on the level; nothing goes past a pad's top.
         if (speed > top && along.raw >= 0) speed = Fixed::Max(top, speed - brake() * Fixed::Half() * step);
-        if (speed > boostSpeed()) speed = boostSpeed();
+        if (speed > padTop()) speed = padTop();
         // The heading turns by speed x wheel / wheelbase, about +y: a turn of
-        // +a takes +x toward -z, which with +z ahead is to the left.
+        // +a takes +z toward +x, which with +z ahead is to the picture's right.
         const Fixed yaw = speed * s.wheel / wheelbase() * step;
         if (!yaw.IsZero())
         {
@@ -1107,14 +1472,106 @@ private:
             const Fixed l = Fixed::Length(nx, Fixed::Zero(), nz);
             s.hx = nx / l; s.hz = nz / l;
         }
-        Fixed keep = Fixed::One() - grip() * step;
-        if (keep.raw < 0) keep = Fixed::Zero();
-        lx *= keep; lz *= keep;
-        const Fixed nx = s.hx * speed + lx, nz = s.hz * speed + lz;
+        // The tyres: what the kart's way is across its new heading they pull
+        // out, as hard as they grip -- a turn within that bends the way with
+        // the heading; past it (too fast, too much lock, the brake on) the
+        // rest stays a slide across, and the kart drifts. The pull turns the
+        // way; of the speed it would take with it, a slide keeps most
+        // (slideCost): a drift carries its speed round a corner.
+        const Fixed wx = hx * speed + lx, wz = hz * speed + lz;
+        const Fixed on = wx * s.hx + wz * s.hz;
+        Fixed ax = wx - s.hx * on, az = wz - s.hz * on;
+        const Fixed across = Fixed::Length(ax, Fixed::Zero(), az);
+        const Fixed most = (braking ? brakeGrip() : grip()) * step;
+        if (across > most) { const Fixed keep = (across - most) / across; ax *= keep; az *= keep; }
+        else               { ax = az = Fixed::Zero(); }
+        Fixed nx = s.hx * on + ax, nz = s.hz * on + az;
+        const Fixed was = Fixed::Length(wx, Fixed::Zero(), wz), pulled = Fixed::Length(nx, Fixed::Zero(), nz);
+        Fixed now = pulled;
+        if (pulled.IsPositive() && was > pulled)
+        {
+            now = was - slideCost(across / was) * (was - pulled);
+            nx = nx * now / pulled; nz = nz * now / pulled;
+        }
+        const Fixed scrubbed = Fixed::Half() * m * (was * was - now * now);
+        // THE LEDGER: the pedal's work is what the motion gained plus what
+        // the tyres took (an Impulse, from outside); what the motion lost
+        // beyond that is heat in the body (SetVelocity), and the tyres' part
+        // of it -- the brake, the scrub -- crosses into the tyres that did it.
         const Fixed after = Fixed::Half() * m * (nx * nx + nz * nz);
         const Fixed before = r.KineticEnergy();
-        if (after > before) k->Impulse(nx, Fixed::Zero(), nz, after - before);
+        const Fixed friction = braked + scrubbed;
+        if (after + friction > before) k->Impulse(nx, Fixed::Zero(), nz, after + friction - before);
         r.SetVelocity(m, nx, Fixed::Zero(), nz);
+        tyresTakeLocked(s, r, braked, scrubbed, wx, wz, yaw / step);
+    }
+
+    /*
+     * THE TYRES TAKE THE FRICTION, as heat out of the body: the brake's part
+     * a quarter each, the scrub's by how fast each tyre's patch of road
+     * slides across the way that tyre rolls (the body's turn adds to its
+     * way; the front two roll where the wheel points). Each tyre sheds it
+     * again at its emissivity (kart_wheel.etcs), up into the body -- and what
+     * it sheds per unit of road is its mark (marksLocked).
+     */
+    void tyresTakeLocked(Slot& s, OrderVector& r, Fixed braked, Fixed scrubbed, Fixed wx, Fixed wz, Fixed spin)
+    {
+        Fixed total = braked + scrubbed;
+        if (!total.IsPositive()) return;
+        if (total > r.Heat()) { const Fixed f = r.Heat() / total; braked *= f; scrubbed *= f; total = r.Heat(); }
+        Fixed slide[4], sum = Fixed::Zero();
+        Fixed dsn, dcs;
+        s.wheel.SinCos(dsn, dcs);
+        for (int t = 0; t < 4; ++t)
+        {
+            // The tyre's place off the body's middle, level: across (hz, -hx), ahead (hx, hz).
+            const Fixed sx = (t % 2) ? -tyreSide() : tyreSide(), sz = (t < 2) ? tyreAhead() : -tyreAhead();
+            const Fixed ox = s.hz * sx + s.hx * sz, oz = -s.hx * sx + s.hz * sz;
+            // Its patch's way: the body's, and the turn's (+spin takes +x toward -z).
+            const Fixed px = wx + spin * oz, pz = wz - spin * ox;
+            Fixed rx = s.hx, rz = s.hz;
+            if (t < 2) { rx = s.hx * dcs + s.hz * dsn; rz = s.hz * dcs - s.hx * dsn; }
+            slide[t] = (px * rz - pz * rx).Abs();
+            sum += slide[t];
+        }
+        r.energy -= total;
+        for (int t = 0; t < 4; ++t)
+        {
+            const Fixed share = braked / F(4) + (sum.IsPositive() ? scrubbed * slide[t] / sum : scrubbed / F(4));
+            if (!share.IsPositive()) continue;
+            Causal_* c = causal(s.wheels[t]);
+            if (!c) { r.energy += share; continue; }   // no tyre: the body keeps it
+            OrderVector heat;
+            heat.energy = share;
+            c->AbsorbUnder(heat);
+        }
+    }
+
+    /*
+     * THE WHEEL, turned by A and D. Held, its turn starts slow and gathers
+     * pace (steerAccel) up to the fastest it turns (steerMax), toward the lock
+     * for the kart's speed (lockAt) -- a tap steers a little, a hold a lot.
+     * Turned the other way, the pace starts again from nothing. Let go, it
+     * goes back to the middle at steerBack; and past a smaller lock (the
+     * kart speeding up with the wheel turned) it eases back to it.
+     */
+    static void wheelTurnLocked(Slot& s, int steer, Fixed speed, Fixed step)
+    {
+        const Fixed lock = lockAt(speed);
+        if (steer != s.steer_held) s.wheel_rate = Fixed::Zero();
+        s.steer_held = steer;
+        Fixed target = Fixed::Zero(), turn = steerBack() * step;
+        if (steer != 0)
+        {
+            target = lock * F(steer);
+            s.wheel_rate = Fixed::Min(s.wheel_rate + steerAccel() * step, steerMax());
+            // Toward the lock at the turn's pace; back from past it as when let go.
+            const bool past = (steer > 0 && s.wheel > target) || (steer < 0 && s.wheel < target);
+            turn = past ? steerBack() * step : s.wheel_rate * step;
+        }
+        Fixed d = target - s.wheel;
+        if (d > turn) d = turn; else if (d < -turn) d = -turn;
+        s.wheel += d;
     }
 
     /*
@@ -1134,22 +1591,28 @@ private:
         Fixed vx, vy, vz;
         r.Velocity(m, vx, vy, vz);
         Fixed gx, gz;
-        Fixed g = groundAt(r.x, r.z, &gx, &gz) + kartY();
+        Fixed g = groundFor(s, r, r.x, r.z, &gx, &gz) + kartY();
         const Fixed sp = Fixed::Length(vx, Fixed::Zero(), vz);
         bool wall = g - r.y > climb();
         if (!wall && sp.IsPositive() && !s.air)
         {
             const Fixed nx = r.x + vx / sp * F(9, 10), nz = r.z + vz / sp * F(9, 10);
-            wall = groundAt(nx, nz) + kartY() - r.y > noseRise();
+            wall = groundFor(s, r, nx, nz) + kartY() - r.y > noseRise();
         }
         if (wall)
         {
+            // On the ground it is stopped; in the air it only does not go on
+            // (a kart thrown up beside a pit's wall clears it as it rises).
             r.PlaceAt(s.px, r.y, s.pz);
-            r.SetVelocity(m, Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
-            g = groundAt(s.px, s.pz, &gx, &gz) + kartY();
+            if (!s.air) r.SetVelocity(m, Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
+            g = groundFor(s, r, s.px, s.pz, &gx, &gz) + kartY();
         }
         Fixed y = r.y;
         const Fixed step = dt();
+        // A spring under it throws it up, whatever way it was going.
+        if (!s.air)
+            if (const KartArena::Spring* up = KartArena::SpringAt(m_live, r.x, r.z))
+                if ((g - kartY() - up->y).Abs() < F(5, 100)) { s.air = true; s.vy = springKick(); }
         if (!s.air)
         {
             const Fixed flying = y + s.vy * step - gravity() * step * step * Fixed::Half();
@@ -1205,7 +1668,17 @@ private:
         const Fixed n = Fixed::Length(a, ux, Fixed::Zero());
         w = a / n; y = ux / n;
     }
-    Fixed groundAt(Fixed x, Fixed z, Fixed* gx = nullptr, Fixed* gz = nullptr) const { return KartArena::Height(m_live, x, z, gx, gz); }
+    // The ground under a kart at (x, z): the solid ground, or a deck it is on
+    // or over -- rising it goes through one, falling it lands on it
+    // (KartArena::Height).
+    Fixed groundFor(const Slot& s, const OrderVector& r, Fixed x, Fixed z, Fixed* gx = nullptr, Fixed* gz = nullptr) const
+    {
+        const Fixed reach = s.air && s.vy.IsPositive() ? Fixed::Zero() : climb();
+        return KartArena::Height(m_live, x, z, r.y - kartY(), reach, gx, gz);
+    }
+    // ...under a shot at height y, and the top of everything at a point.
+    Fixed groundAt(Fixed x, Fixed z, Fixed y) const { return KartArena::Height(m_live, x, z, y, Fixed::Zero()); }
+    Fixed topAt(Fixed x, Fixed z, Fixed* gx = nullptr, Fixed* gz = nullptr) const { return KartArena::Top(m_live, x, z, gx, gz); }
 
     // What a kart touches after the step: a kart it rams.
     void touchLocked(size_t i)
@@ -1253,7 +1726,7 @@ private:
             case Mine:
             {
                 const Fixed mx = x - hx * F(2), mz = z - hz * F(2);
-                Shot& m = shootLocked(MineShot, i, mx, groundAt(mx, mz) + F(1, 10), mz, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), 30 * kHz);
+                Shot& m = shootLocked(MineShot, i, mx, groundAt(mx, mz, y - kartY() + climb()) + F(1, 10), mz, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), 30 * kHz);
                 m.armed = 25;
                 break;
             }
@@ -1322,7 +1795,7 @@ private:
         for (Fixed t = F(1); t < reach; t += F(1, 2))
         {
             const Fixed sx = x + hx * t, sz = z + hz * t;
-            if (solidAt(sx, y, sz, F(1, 10)) || groundAt(sx, sz) > y - F(15, 100)) { reach = t; hit = -1; break; }
+            if (solidAt(sx, y, sz, F(1, 10)) || groundAt(sx, sz, y) > y - F(15, 100)) { reach = t; hit = -1; break; }
         }
         Shot& tr = shootLocked(KartArms::Tracer, i, x + hx * reach * Fixed::Half(), y, z + hz * reach * Fixed::Half(),
                                hx, Fixed::Zero(), hz, 8);
@@ -1348,7 +1821,7 @@ private:
                     s.x += s.vx * dt(); s.y += s.vy * dt(); s.z += s.vz * dt();
                     const int hit = kartAt(s.x, s.y, s.z, s.owner, F(25, 100));
                     const bool wall = solidAt(s.x, s.y, s.z, F(2, 10));
-                    const bool ground = s.y < groundAt(s.x, s.z) + (s.kind == BombShot ? F(3, 10) : F(5, 100));
+                    const bool ground = s.y < groundAt(s.x, s.z, s.y) + (s.kind == BombShot ? F(3, 10) : F(5, 100));
                     if (hit >= 0 || wall || ground || s.life <= 0)
                     {
                         gone = true;
@@ -1514,25 +1987,27 @@ private:
     }
     bool alive(const Slot& s) const { return !s.driver.empty() && s.dead_until < 0; }
 
-    // The wheels at the body's corners, turned with it (tilt and all), the
-    // front two turned by the wheel.
+    // The tyres at the body's corners, turned with it (tilt and all), the
+    // front two turned by the wheel. They are its members, so where they are
+    // is stated in its frame -- which goes where the body goes; but frames
+    // are translations, so the body's turn and tilt are stated here.
     void wheelsLocked(const Slot& s)
     {
         Causal_* k = causal(s.body);
         if (!k) return;
         std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
         const OrderVector& r = k->Order4();
-        const Fixed side = F(70, 100), ahead = F(64, 100), down = F(3, 100);
+        const Fixed down = F(3, 100);
         for (int i = 0; i < 4; ++i)
         {
             Causal_* w = causal(s.wheels[i]);
             if (!w) continue;
             OrderVector& q = w->RowsUnder();
-            // In the body's own frame: +z ahead, the front left wheel at +x
+            // In the body's own frame: +z ahead, the front right wheel at +x
             // (the heading's across, (hz, -hx), on the level).
-            Fixed ox = (i % 2) ? -side : side, oy = -down, oz = (i < 2) ? ahead : -ahead;
+            Fixed ox = (i % 2) ? -tyreSide() : tyreSide(), oy = -down, oz = (i < 2) ? tyreAhead() : -tyreAhead();
             r.RotateVector(ox, oy, oz);
-            q.PlaceAt(r.x + ox, r.y + oy, r.z + oz);
+            q.PlaceAt(ox, oy, oz);
             q.Orient(Fixed::Zero(), Fixed::Zero(), Fixed::One(), Fixed::TwoPi() / F(4));
             if (i < 2 && !s.wheel.IsZero()) q.RotateBy(Fixed::Zero(), Fixed::One(), Fixed::Zero(), s.wheel);
             const Fixed aw = r.qw, ax = r.qx, ay = r.qy, az = r.qz;
@@ -1542,6 +2017,220 @@ private:
             q.qy = aw * by - ax * bz + ay * bw + az * bx;
             q.qz = aw * bz + ax * by - ay * bx + az * bw;
         }
+    }
+
+    // ── the pads' arrows ────────────────────────────────────────────────
+
+    // Three arrows a pad, running its length one behind the other, like a
+    // belt; four a spring, closing on its middle. Where each is follows from
+    // the tick, so the same everywhere and no state. Flat on the plate, above
+    // any tyre's mark. The rows are written under the picture, which a still
+    // scene does not take again: the world is told it moved (by nothing), so
+    // they run in the lobby and with every kart at rest.
+    void arrowsLocked()
+    {
+        const size_t pads = std::min(m_pad_nodes.size(), m_live.pads.size());
+        const size_t springs = std::min(m_spring_nodes.size(), m_live.springs.size());
+        if (pads + springs) verb(m_world, "Move", "0, 0, 0");
+        const Fixed run = KartArena::PadLength() - padArrow();   // an arrow's middle goes this far
+        const Fixed beat = F(static_cast<int64_t>(m_tick % static_cast<uint64_t>(padBeat())), padBeat());
+        for (size_t n = 0; n < pads; ++n)
+        {
+            const KartArena::Pad& p = m_live.pads[n];
+            for (int k = 0; k < 3; ++k)
+            {
+                Fixed at = (F(k) + beat) / F(3);
+                at = (at - Fixed::Half()) * run;
+                poseNode(m_pad_nodes[n].arrow[k], p.x + p.sx * at, p.y + F(6, 100), p.z + p.cz * at, p.yaw, Fixed::One(), Fixed::Zero());
+            }
+        }
+        // From the rim in: each on its own side (+x, +z, -x, -z), pointing at the middle.
+        static const int side[4][3] = { { 1, 0, 270 }, { 0, 1, 180 }, { -1, 0, 90 }, { 0, -1, 0 } };
+        const Fixed out = F(115, 100) - F(65, 100) * beat;
+        for (size_t n = 0; n < springs; ++n)
+        {
+            const KartArena::Spring& p = m_live.springs[n];
+            for (int k = 0; k < 4; ++k)
+                poseNode(m_spring_nodes[n].arrow[k], p.x + out * F(side[k][0]), p.y + F(6, 100), p.z + out * F(side[k][1]),
+                         side[k][2], Fixed::One(), Fixed::Zero());
+        }
+    }
+
+    // ── the tyres' marks ────────────────────────────────────────────────
+
+    // Each tyre's heat before the tick's interaction, which sheds from it.
+    void heatsLocked(Slot& s)
+    {
+        for (int t = 0; t < 4; ++t)
+            if (Causal_* c = causal(s.wheels[t])) s.tyre_heat[t] = c->Order4().Heat();
+    }
+    // A tyre's place in the world: the body's, and the tyre's own in its frame.
+    bool tyreAt(const Slot& s, int t, Fixed& x, Fixed& y, Fixed& z)
+    {
+        Causal_* k = causal(s.body);
+        Causal_* c = causal(s.wheels[t]);
+        if (!k || !c) return false;
+        const OrderVector& r = k->Order4();
+        const OrderVector& q = c->Order4();
+        x = r.x + q.x; y = r.y + q.y; z = r.z + q.z;
+        return true;
+    }
+
+    /*
+     * THE MARKS, after the tick: each tyre's step since the last, and what
+     * it shed over it (its heat before the tick, less its heat now), added to
+     * the open run -- or, when the step turns from the run's way, is of
+     * another darkness, or the tyre left or met the ground, the run is laid
+     * as a segment first and a new one starts. A run long enough is laid as
+     * it stands; a kart come to a stop lays a dark run's end at its tyres.
+     */
+    void marksLocked(size_t i)
+    {
+        Slot& s = m_slots[i];
+        Causal_* k = causal(s.body);
+        if (!k) return;
+        const Fixed quarter = k->MassUnder() / F(4);
+        for (int t = 0; t < 4; ++t)
+        {
+            Trail& tr = s.trail[t];
+            Fixed x, y, z;
+            if (!tyreAt(s, t, x, y, z)) continue;
+            Fixed shed = Fixed::Zero();
+            if (Causal_* c = causal(s.wheels[t])) shed = s.tyre_heat[t] - c->Order4().Heat();
+            if (shed.raw < 0 || s.air) shed = Fixed::Zero();
+            const Fixed gy = groundFor(s, k->Order4(), x, z);
+            if (!tr.touched)
+            {
+                tr.touched = true; tr.air = s.air;
+                tr.sx = tr.hx = x; tr.sy = tr.hy = gy; tr.sz = tr.hz = z;
+                continue;
+            }
+            const Fixed stx = x - tr.hx, stz = z - tr.hz;
+            const Fixed step = Fixed::Length(stx, Fixed::Zero(), stz);
+            if (step < F(1, 100))
+            {
+                if (tr.run_level > 0 && tr.run_d >= F(1, 10)) layLocked(i, t, tr.hx, tr.hy, tr.hz);
+                continue;
+            }
+            const int level = s.air ? 0 : levelOf(markOf(shed, step, quarter));
+            // A run shorter than markMin() is not ended by a turn or a shade:
+            // a kart held at a wall, shoved back and forth, lays nothing new.
+            if (tr.run_d.IsPositive() && Fixed::Length(tr.hx - tr.sx, Fixed::Zero(), tr.hz - tr.sz) >= markMin())
+            {
+                const bool turned = stx * tr.dx + stz * tr.dz < markTurn() * step;
+                const bool shade = (level > 0) != (tr.run_level > 0) || std::abs(level - tr.run_level) >= 3;
+                if (turned || shade || s.air != tr.air) layLocked(i, t, tr.hx, tr.hy, tr.hz);
+            }
+            if (!tr.run_d.IsPositive()) { tr.dx = stx / step; tr.dz = stz / step; tr.air = s.air; }
+            tr.run_e += shed;
+            tr.run_d += step;
+            tr.run_level = tr.air ? 0 : levelOf(markOf(tr.run_e, tr.run_d, quarter));
+            tr.hx = x; tr.hy = gy; tr.hz = z;
+            const Fixed chord = Fixed::Length(x - tr.sx, Fixed::Zero(), z - tr.sz);
+            if (chord >= (tr.run_level > 0 ? markSegMax() : markRunMax())) layLocked(i, t, x, gy, z);
+            trimLocked(i, t);
+        }
+    }
+    // Darkness from what was shed over a run of road, 0..1, and as a level of 8.
+    static Fixed markOf(Fixed shed, Fixed run, Fixed quarter)
+    {
+        if (!run.IsPositive() || !quarter.IsPositive()) return Fixed::Zero();
+        const Fixed a = (shed / run / quarter - markFrom()) / (markFull() - markFrom());
+        return a.raw < 0 ? Fixed::Zero() : Fixed::Min(a, Fixed::One());
+    }
+    static int levelOf(Fixed a) { return static_cast<int>((a * F(8) + Fixed::Half()).ToFloat()); }
+    /*
+     * The open run laid, from its start to (x, y, z): a segment, drawn when
+     * dark -- sized to its length, laid along it, tinted between the ground's
+     * colour and the tyre's -- and left where it is. Lifted a hair by tyre
+     * and by how many came before, so two that overlap (a rear tyre in a
+     * front one's track, a run back over its own) are never at one height.
+     */
+    void layLocked(size_t i, int t, Fixed x, Fixed y, Fixed z)
+    {
+        Trail& tr = m_slots[i].trail[t];
+        MarkSeg g;
+        g.x0 = tr.sx; g.y0 = tr.sy; g.z0 = tr.sz; g.x1 = x; g.y1 = y; g.z1 = z;
+        g.len = Fixed::Length(x - tr.sx, y - tr.sy, z - tr.sz);
+        g.level = tr.run_level;
+        const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkNodes;
+        if (g.level > 0 && g.len.IsPositive() && base + kMarkNodes <= m_mark_nodes.size())
+        {
+            // A node of the tyre's own: a free one, or the oldest drawn one's.
+            while (tr.used == (1u << kMarkNodes) - 1u)
+            {
+                for (auto it = tr.segs.rbegin(); it != tr.segs.rend(); ++it)
+                    if (it->node >= 0) { unmarkLocked(base, tr, *it); break; }
+            }
+            int n = 0;
+            while (tr.used & (1u << n)) ++n;
+            tr.used |= 1u << n;
+            g.node = n;
+            const ETCS::RID node = m_mark_nodes[base + static_cast<size_t>(n)];
+            const Fixed lift = F(8, 1000) + F(1, 1000) * F(static_cast<int64_t>(t * 8 + static_cast<int>(tr.seq % 8)));
+            KartArena::Surface on = KartArena::Floor;
+            const Fixed mx = (g.x0 + g.x1) * Fixed::Half(), mz = (g.z0 + g.z1) * Fixed::Half();
+            KartArena::Height(m_live, mx, mz, (g.y0 + g.y1) * Fixed::Half(), climb(), nullptr, nullptr, &on);
+            verb(node, "Create", "0.18, 0.01, " + fmt3(g.len.ToFloat() + 0.02f));
+            poseAlong(node, mx, (g.y0 + g.y1) * Fixed::Half() + lift, mz, g.x1 - g.x0, g.y1 - g.y0, g.z1 - g.z0);
+            const float a = static_cast<float>(g.level) / 8.0f;
+            const float* c = kGround[on];
+            verb(node, "SetColor", f4(c[0] + (kTyre[0] - c[0]) * a, c[1] + (kTyre[1] - c[1]) * a, c[2] + (kTyre[2] - c[2]) * a, 1.0f));
+            verb(node, "SetVisible", "1");
+        }
+        if (g.len.IsPositive()) { tr.segs.push_front(g); ++tr.seq; }
+        tr.sx = x; tr.sy = y; tr.sz = z;
+        tr.run_e = tr.run_d = Fixed::Zero();
+        tr.run_level = 0;
+    }
+    // The rope's far end: the oldest segments go while what is left, the
+    // open run with it, is still markLength() of road.
+    void trimLocked(size_t i, int t)
+    {
+        Trail& tr = m_slots[i].trail[t];
+        const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkNodes;
+        Fixed rope = tr.run_d;
+        for (const MarkSeg& m : tr.segs) rope += m.len;
+        while (!tr.segs.empty() && rope - tr.segs.back().len >= markLength())
+        {
+            rope -= tr.segs.back().len;
+            unmarkLocked(base, tr, tr.segs.back());
+            tr.segs.pop_back();
+        }
+    }
+    // A segment no longer drawn: its node parked and free.
+    void unmarkLocked(size_t base, Trail& tr, MarkSeg& g)
+    {
+        if (g.node < 0) return;
+        if (base + static_cast<size_t>(g.node) < m_mark_nodes.size()) parkNode(m_mark_nodes[base + static_cast<size_t>(g.node)]);
+        tr.used &= ~(1u << g.node);
+        g.node = -1;
+    }
+    // A tyre's mark gone: the trail forgotten, its segments parked.
+    void clearMarksLocked(size_t i)
+    {
+        Slot& s = m_slots[i];
+        for (int t = 0; t < 4; ++t)
+        {
+            Trail& tr = s.trail[t];
+            const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkNodes;
+            for (MarkSeg& g : tr.segs) unmarkLocked(base, tr, g);
+            tr = Trail();
+        }
+    }
+    // The tyres' rows as made: cold, and nothing shed to come.
+    void tyresAfreshLocked(Slot& s)
+    {
+        for (int t = 0; t < 4; ++t)
+            if (Causal_* c = causal(s.wheels[t]))
+            {
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                OrderVector& q = c->RowsUnder();
+                const uint64_t id = q.id;
+                q = s.tyre_pristine[t];
+                q.id = id;
+                s.tyre_heat[t] = Fixed::Zero();
+            }
     }
 
     // ── the drawn things the battle places ──────────────────────────────
@@ -1570,6 +2259,28 @@ private:
         r.PlaceAt(x, y, z);
         // yaw x pitch: (yc, 0, ys, 0) x (pc, ps, 0, 0)
         r.qw = yc * pc; r.qx = yc * ps; r.qy = ys * pc; r.qz = -(ys * ps);
+    }
+    // A pooled node laid along (dx, dy, dz) from its middle: its long side
+    // (+z) turned onto the way and pitched to its rise.
+    void poseAlong(ETCS::RID node, Fixed x, Fixed y, Fixed z, Fixed dx, Fixed dy, Fixed dz)
+    {
+        Causal_* c = causal(node);
+        if (!c) return;
+        Fixed yw, yy;
+        halfTurn(dx, dz, yw, yy);
+        const Fixed level = Fixed::Length(dx, Fixed::Zero(), dz), len = Fixed::Length(dx, dy, dz);
+        Fixed pc = Fixed::One(), ps = Fixed::Zero();
+        if (len.IsPositive())
+        {
+            const Fixed cs = level / len;   // pitched up by the rise: about its own across, -dy/len
+            pc = ((Fixed::One() + cs) * Fixed::Half()).Sqrt();
+            ps = ((Fixed::One() - cs) * Fixed::Half()).Sqrt();
+            if (dy.IsPositive()) ps = -ps;
+        }
+        std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+        OrderVector& r = c->RowsUnder();
+        r.PlaceAt(x, y, z);
+        r.qw = yw * pc; r.qx = yw * ps; r.qy = yy * pc; r.qz = -(yy * ps);
     }
     // A pooled node not in use: far below, hidden.
     void parkNode(ETCS::RID node)
@@ -1604,6 +2315,10 @@ private:
         hide(m_shot_nodes[n]);
     }
     static void hide(ETCS::RID r) { verb(r, "SetVisible", "0"); }
+    static void groundColour(ETCS::RID r, KartArena::Surface on)
+    {
+        verb(r, "SetColor", f4(kGround[on][0], kGround[on][1], kGround[on][2], 1.0f));
+    }
 
     // ── the battle as one number ────────────────────────────────────────
 
@@ -1615,7 +2330,8 @@ private:
         for (const Slot& s : m_slots)
         {
             st += "|" + s.driver + " " + std::to_string(s.thr) + std::to_string(s.steer) + std::to_string(s.fire)
-                + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.hx.raw) + " "
+                + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.wheel_rate.raw) + " "
+                + std::to_string(s.steer_held) + " " + std::to_string(s.hx.raw) + " "
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
                 + std::to_string(s.hp) + " " + std::to_string(s.weapon) + " " + std::to_string(s.ammo) + " "
                 + std::to_string(s.cooldown) + " " + std::to_string(s.boost) + " " + std::to_string(s.elims) + " "
@@ -1628,6 +2344,8 @@ private:
                 const Fixed v[] = { r.x, r.y, r.z, r.ox, r.oy, r.oz, r.energy, r.qx, r.qy, r.qz, r.qw };
                 for (const Fixed& f : v) st += " " + std::to_string(f.raw);
             }
+            for (ETCS::RID t : s.wheels)
+                if (Causal_* c = causal(t)) st += " t" + std::to_string(c->Order4().energy.raw);
         }
         for (const Shot& s : m_shots)
             st += "|s" + std::to_string(s.kind) + " " + std::to_string(s.owner) + " " + std::to_string(s.x.raw) + " "
@@ -1960,8 +2678,11 @@ private:
     std::vector<KartArena::Map> m_defs;
     KartArena::Map m_live;
     std::vector<ETCS::RID> m_live_blocks;
-    std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_dome_nodes;
-    std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes;
+    std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_wedge_nodes, m_dome_nodes;
+    std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;
+    std::vector<PadNodes> m_pad_nodes;
+    std::vector<SpringNodes> m_spring_nodes;
+    ETCS::RID m_floor = 0;
     std::vector<bool> m_shot_busy;
     std::vector<int64_t> m_blast_until;
     std::vector<BoardRow> m_board;
@@ -1992,6 +2713,7 @@ private:
 
     // This runtime's own: its keys, its eye, its card, its menu, its board.
     unsigned m_keys = 0;
+    bool     m_invert = false;   // this runtime's wheel keys swapped (SetInvert)
     int      m_sent_t = 0, m_sent_s = 0, m_sent_f = 0;
     int      m_menu = MenuStart;
     bool     m_board_held = false;

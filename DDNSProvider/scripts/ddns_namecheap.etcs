@@ -1,0 +1,44 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Keeps anticurrententropy.com's A records pointed at this machine.
+#
+# The roll (Namecheap, a Directory) is the stand-in two Foreign relations land
+# on -- one per stranger: the registrar (Namecheap's API) and the public
+# resolvers. Each is configured, then Activated on the roll, and is locked from
+# then on: to change one, delete it and make another. The registrar fills
+# {secret:namecheap} from the key file on the wire, so the password is never
+# in this script, a payload or a log. The Embassy lists only live relations and
+# is the one door outward, closed until Open. The Herald asks the registrar
+# what address we appear as (Self) and re-advertises every held host the
+# resolvers still place elsewhere. Detach this from the site's root script.
+
+spawn DDNSProvider::Namecheap nc
+nc.SetDomain(anticurrententropy.com)
+nc.Hold(@)
+nc.Hold(www)
+
+spawn NetworkProvider::HttpsRelation registrar
+registrar.Origin(https://dynamicdns.park-your-domain.com)
+registrar.Target(Directory)
+registrar.Secret(namecheap /etc/etcs/namecheap-ddns.key)
+registrar.Activate(@nc)
+
+spawn NetworkProvider::DnsRelation resolver
+resolver.Target(Directory)
+resolver.Activate(@nc)
+
+ensure NetworkProvider::Embassy out
+out.Advertise(namecheap-registrar https @registrar)
+out.Advertise(public-resolvers dns @resolver)
+out.Open()
+
+nc.SetEmbassy(@out)
+nc.SetRegistrar(namecheap-registrar)
+nc.SetResolver(public-resolvers)
+
+spawn DDNSProvider::Herald herald
+herald.Track(@nc)
+herald.Witness(@nc Self)
+herald.SetInterval(300)
+herald.Start()

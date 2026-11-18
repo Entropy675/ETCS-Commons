@@ -79,7 +79,7 @@ block.SetColor(0.75, 0.45, 0.85, 1.0)
 # the mesh is presentational, the rows and the extent are the physics
 # (Scene3D.SetMesh). A vertex per corner per face so each face has its own
 # normal.
-spawn RenderProvider::Mesh pyramid
+anchor.spawn(RenderProvider::Mesh pyramid)
 pyramid.Create()
 pyramid.AddVertex(-0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
 pyramid.AddVertex( 0.5, -0.5, -0.5,  0.0, -1.0, 0.0)

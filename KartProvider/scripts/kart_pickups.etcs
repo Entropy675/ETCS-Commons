@@ -1,0 +1,8 @@
+#!/usr/bin/env etcs
+# Four power-up boxes of the pool. `run kart_pickups.etcs world=<Scene3D> battle=<KartBattle>`
+requires world [Drawable3D]
+requires battle [KartBattle]
+run kart_pickup.etcs world=world battle=battle
+run kart_pickup.etcs world=world battle=battle
+run kart_pickup.etcs world=world battle=battle
+run kart_pickup.etcs world=world battle=battle

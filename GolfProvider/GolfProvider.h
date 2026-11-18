@@ -9,7 +9,8 @@
 // ── GolfGame ──────────────────────────────────────────────────────────────────
 // What each RID names is a RenderProvider node (or a TextLabel for the card):
 // the world the ball is in, the ball, the camera on it, the cup, the arrow
-// drawn for a pull. See GolfGame.h for what a drag and a release mean.
+// drawn for a pull and its shadow. See GolfGame.h for what a drag and a
+// release mean.
 
 DEFINE_WORK_FUNC(GolfGame, Create)                                  { (void)ctx; (void)data; self.Create(); }
 DEFINE_WORK_FUNC_TYPED(GolfGame, BindWorld,  (ETCS::RID, rid))     { (void)ctx; self.BindWorld(rid); }
@@ -17,6 +18,9 @@ DEFINE_WORK_FUNC_TYPED(GolfGame, BindBall,   (ETCS::RID, rid))     { (void)ctx; 
 DEFINE_WORK_FUNC_TYPED(GolfGame, BindCamera, (ETCS::RID, rid))     { (void)ctx; self.BindCamera(rid); }
 DEFINE_WORK_FUNC_TYPED(GolfGame, BindCup,    (ETCS::RID, rid))     { (void)ctx; self.BindCup(rid); }
 DEFINE_WORK_FUNC_TYPED(GolfGame, BindArrow,  (ETCS::RID, rid))     { (void)ctx; self.BindArrow(rid); }
+DEFINE_WORK_FUNC_TYPED(GolfGame, BindShadow, (ETCS::RID, rid))     { (void)ctx; self.BindShadow(rid); }
+// The ball's own shadow: a disc the game lays on whatever is under the ball.
+DEFINE_WORK_FUNC_TYPED(GolfGame, BindBallShadow, (ETCS::RID, rid)) { (void)ctx; self.BindBallShadow(rid); }
 DEFINE_WORK_FUNC_TYPED(GolfGame, BindHud,    (ETCS::RID, rid))     { (void)ctx; self.BindHud(rid); }
 // Where the ball goes back to, in the world's frame.
 DEFINE_WORK_FUNC_TYPED(GolfGame, SetTee, (float, x), (float, y), (float, z)) { (void)ctx; self.SetTee(x, y, z); }

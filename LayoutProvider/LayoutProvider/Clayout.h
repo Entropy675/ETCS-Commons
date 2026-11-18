@@ -206,7 +206,7 @@ public:
                                                   static_cast<float>(m_size.height) });
         Clay_BeginLayout();
         for (const Box& b : m_boxes)
-            if (b.parent == 0) declare(b);
+            if (b.parent == 0 && !hidden(b.node)) declare(b);
         Clay_EndLayout(0.0f);
 
         size_t moved = 0;
@@ -338,8 +338,18 @@ private:
         Clay__OpenElementWithId(idFor(b.node));
         Clay__ConfigureOpenElement(decl);
         for (const Box& child : m_boxes)
-            if (child.parent == b.node) declare(child);
+            if (child.parent == b.node && !hidden(child.node)) declare(child);
         Clay__CloseElement();
+    }
+
+    // A HIDDEN BOX TAKES NO ROOM: left out of the solve, and so not placed --
+    // two bars that take turns at one row are each the whole row while shown.
+    // A Drawable's own flag (DrawableBase, "hidden"), read through its family;
+    // a re-solve is the caller's after it flips one (Solve).
+    static bool hidden(ETCS::RID node)
+    {
+        ETCS::Held<Drawable_> d = ETCS::resolve_held<Drawable_>("Drawable", node);
+        return d && d->Hidden();
     }
 
     static void onClayError(Clay_ErrorData e)

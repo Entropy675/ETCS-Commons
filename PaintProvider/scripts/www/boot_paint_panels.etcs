@@ -908,6 +908,52 @@ layout.AddBox(@bar, @sheet_root, 1, 0.0, 2, 64.0)
 # vertically, sixteen four-pixel strips in a 64px bar.
 layout.SetDirection(@bar, 0)
 
+# ── the page's 3D half ───────────────────────────────────────────────────────
+#
+# A model, a camera on it and its bar, in the page's own pane and its toolbar
+# row, hidden until the mode cell beside redo asks for it (paint_model.etcs).
+# BEFORE the solve: its pane, its camera and its bar are boxes under the
+# page's, so the same pass that sizes the page sizes them, here and at every
+# resize after.
+#
+# The modeller is made HERE, at boot scope, for the same reason `share` and
+# `doc` are: the session templates (paint_host.etcs, paint_join.etcs) and the
+# page's own calls reach boot globals and nothing a `run` made.
+spawn PaintProvider::PaintModeler model
+model.Create()
+model.BindShare(@share)
+run PaintProvider/scripts/paint_model.etcs model=model sheet=sheet_root paper=paper_pane bar=bar layers=layers_pane canvas=canvas input=input palette=palette brush=brush layout=layout
+
+# In 3D the view is the eye's: the 2D page's pan and zoom go with it, undo and
+# redo stay (they are the model's while it is open -- PaintInput::Undo).
+model.AddPane(2, @move_btn)
+model.AddPane(2, @move_word)
+model.AddPane(2, @zoom_out)
+model.AddPane(2, @zoom_out_sign)
+model.AddPane(2, @zoom_in)
+model.AddPane(2, @zoom_in_sign)
+model.AddPane(2, @zoom_label)
+
+# The mode cell, beside redo-alt's place: its word is the page a press goes TO.
+zoom_pane.spawn(RenderProvider::PolygonDrawable2D mode_btn)
+mode_btn.Create()
+mode_btn.AddPoint(236, 1)
+mode_btn.AddPoint(280, 1)
+mode_btn.AddPoint(280, 51)
+mode_btn.AddPoint(236, 51)
+mode_btn.SetFill(0.79, 0.71, 0.35, 0.85)
+mode_btn.SetOrder(21)
+palette.AddCall(@mode_btn, @model, PaintModeler.Toggle)
+zoom_pane.spawn(RenderProvider::TextLabel mode_word)
+mode_word.Create()
+mode_word.SetPosition(251, 21)
+mode_word.SetSize(1)
+mode_word.SetColor(0.106, 0.110, 0.078, 1.0)
+mode_word.SetText(3d)
+mode_word.SetOrder(22)
+palette.AddCall(@mode_word, @model, PaintModeler.Toggle)
+model.BindCaption(mode, @mode_word)
+
 layout.Solve()
 layout.FollowResize(@main)
 

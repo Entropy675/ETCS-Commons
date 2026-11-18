@@ -1,20 +1,28 @@
 #!/usr/bin/env etcs
 # THE POOLS: everything the battle shows and hides as the record goes -- eight
-# karts; the blocks, slabs and domes a map is drawn with; the power-up boxes,
-# the shots in the air and the bursts. Each is the battle's from the moment it
+# karts; the blocks, wedges, slabs, domes, pads and springs a map is drawn
+# with; the power-up boxes, the shots in the air and the bursts. Each is the battle's from the moment it
 # is made, held, and solid to nothing but the karts' bodies and the blocks
 # (KartBattle.h).
 #   run kart_pool.etcs world=<Scene3D> battle=<KartBattle>
 requires world [Drawable3D]
 requires battle [KartBattle]
 
-# One tyre for all thirty-two wheels, one ball for every burst and hill.
-spawn RenderProvider::Mesh tyre
+# One tyre for all thirty-two wheels, one ball for every burst and hill --
+# children of the world, since a shape is named by where it is (Scene3D::SetMesh).
+world.spawn(RenderProvider::Mesh tyre)
 tyre.Create()
 tyre.Cylinder(14)
-spawn RenderProvider::Mesh ball
+world.spawn(RenderProvider::Mesh ball)
 ball.Create()
 ball.Sphere(12)
+# ...and one arrow for every pad's three: a short shaft, a broad head.
+world.spawn(RenderProvider::Mesh dart)
+dart.Create()
+dart.Arrow(0.45, 0.55)
+# ...and one wedge for every ramp's slopes.
+world.spawn(RenderProvider::Mesh slope)
+run kart_wedge_shape.etcs shape=slope
 
 run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
@@ -25,10 +33,19 @@ run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
 
-# The map in play: sixteen blocks, eighteen slabs (a ramp takes up to
-# three), six domes.
+# The map in play: twenty-four blocks, twenty-four wedges (a ramp's slopes,
+# up to two), thirty-six slabs (a ramp's level top, a deck, a pit's floor and
+# walls, the floor laid round a pit), six domes.
 run kart_blocks.etcs world=world battle=battle
 run kart_blocks.etcs world=world battle=battle
+run kart_blocks.etcs world=world battle=battle
+run kart_wedges.etcs world=world battle=battle shape=slope
+run kart_wedges.etcs world=world battle=battle shape=slope
+run kart_wedges.etcs world=world battle=battle shape=slope
+run kart_wedges.etcs world=world battle=battle shape=slope
+run kart_slabs.etcs world=world battle=battle
+run kart_slabs.etcs world=world battle=battle
+run kart_slabs.etcs world=world battle=battle
 run kart_slabs.etcs world=world battle=battle
 run kart_slabs.etcs world=world battle=battle
 run kart_slabs.etcs world=world battle=battle
@@ -39,13 +56,18 @@ run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
 
-# As many boxes as the busiest map has spots.
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
-run kart_pickup.etcs world=world battle=battle
+# Twelve pads, as many as the busiest map has.
+run kart_pads.etcs world=world battle=battle dart=dart
+run kart_pads.etcs world=world battle=battle dart=dart
+run kart_pads.etcs world=world battle=battle dart=dart
+
+# Eight springs: a tyre's shape laid flat is the plate.
+run kart_springs.etcs world=world battle=battle disc=tyre dart=dart
+run kart_springs.etcs world=world battle=battle disc=tyre dart=dart
+
+# As many boxes as the busiest map has spots: eight.
+run kart_pickups.etcs world=world battle=battle
+run kart_pickups.etcs world=world battle=battle
 
 # Sixteen shots drawn at once (more fly, undrawn) and four bursts.
 run kart_shots.etcs world=world battle=battle

@@ -1,0 +1,11 @@
+#!/usr/bin/env etcs
+# Four springs of the pool.
+#   run kart_springs.etcs world=<Scene3D> battle=<KartBattle> disc=<Mesh> dart=<Mesh>
+requires world [Drawable3D]
+requires battle [KartBattle]
+requires disc [Mesh]
+requires dart [Mesh]
+run kart_spring.etcs world=world battle=battle disc=disc dart=dart
+run kart_spring.etcs world=world battle=battle disc=disc dart=dart
+run kart_spring.etcs world=world battle=battle disc=disc dart=dart
+run kart_spring.etcs world=world battle=battle disc=disc dart=dart

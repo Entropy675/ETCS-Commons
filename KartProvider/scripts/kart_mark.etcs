@@ -1,0 +1,8 @@
+#!/usr/bin/env etcs
+# A segment of a tyre's mark, of the pool: handed to the battle, which sizes
+# it, holds it and lays it on the ground behind its tyre (KartBattle.h).
+#   run kart_mark.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Scene3D mark)
+battle.AddMarkNode(@mark)
