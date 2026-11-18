@@ -1,0 +1,87 @@
+#!/usr/bin/env etcs
+# HOLE 2, THE STEP DOWN: the tee is on a terrace a unit and a half up; the
+# green falls away down a slope to the level the cup is on. A ball that
+# leaves the terrace gathers pace all the way down -- the shot is how little
+# to give it -- and a block stands in the straight line to the cup.
+#
+# Beside hole 1, fourteen to its east (+x). The slope is a slab turned about
+# x, its top edge on the terrace's and its bottom edge on the green's.
+#
+#   run golf_hole_2.etcs anchor=<the world> game=<GolfGame>
+requires anchor [Drawable3D]
+requires game [GolfGame]
+
+# ── the terrace: z -2 to 8, its top at y = 1.5 ──────────────────────────────
+anchor.spawn(RenderProvider::Scene3D terrace)
+terrace.Create(8.0, 2.0, 10.0)
+terrace.SetPosition(14.0, 0.5, 3.0)
+run golf_surface.etcs part=terrace
+
+# ── the slope: down from it to the green over z 8 to 14 ─────────────────────
+anchor.spawn(RenderProvider::Scene3D slope)
+slope.Create(8.0, 0.5, 6.185)
+slope.SetPosition(14.0, 0.5075, 10.939)
+slope.Orient(1.0, 0.0, 0.0, 14.036)
+run golf_surface.etcs part=slope
+
+# ── the green: z 14 to 26, top at y = 0, a 0.7 gap about the hole at (14, 0, 22) ──
+anchor.spawn(RenderProvider::Scene3D green_s)
+green_s.Create(8.0, 0.5, 7.65)
+green_s.SetPosition(14.0, -0.25, 17.825)
+run golf_surface.etcs part=green_s
+anchor.spawn(RenderProvider::Scene3D green_n)
+green_n.Create(8.0, 0.5, 3.65)
+green_n.SetPosition(14.0, -0.25, 24.175)
+run golf_surface.etcs part=green_n
+anchor.spawn(RenderProvider::Scene3D green_w)
+green_w.Create(3.65, 0.5, 0.7)
+green_w.SetPosition(11.825, -0.25, 22.0)
+run golf_surface.etcs part=green_w
+anchor.spawn(RenderProvider::Scene3D green_e)
+green_e.Create(3.65, 0.5, 0.7)
+green_e.SetPosition(16.175, -0.25, 22.0)
+run golf_surface.etcs part=green_e
+
+# ── the walls: tall beside the terrace and the slope, bumpers round the green ──
+anchor.spawn(RenderProvider::Scene3D wall_w)
+wall_w.Create(0.3, 2.5, 16.3)
+wall_w.SetPosition(9.85, 0.75, 5.85)
+run golf_wall.etcs part=wall_w
+anchor.spawn(RenderProvider::Scene3D wall_e)
+wall_e.Create(0.3, 2.5, 16.3)
+wall_e.SetPosition(18.15, 0.75, 5.85)
+run golf_wall.etcs part=wall_e
+anchor.spawn(RenderProvider::Scene3D rail_w)
+rail_w.Create(0.3, 0.5, 12.3)
+rail_w.SetPosition(9.85, 0.25, 20.15)
+run golf_wall.etcs part=rail_w
+anchor.spawn(RenderProvider::Scene3D rail_e)
+rail_e.Create(0.3, 0.5, 12.3)
+rail_e.SetPosition(18.15, 0.25, 20.15)
+run golf_wall.etcs part=rail_e
+anchor.spawn(RenderProvider::Scene3D wall_s)
+wall_s.Create(8.0, 2.5, 0.3)
+wall_s.SetPosition(14.0, 0.75, -2.15)
+run golf_wall.etcs part=wall_s
+anchor.spawn(RenderProvider::Scene3D wall_n)
+wall_n.Create(8.0, 0.5, 0.3)
+wall_n.SetPosition(14.0, 0.25, 26.15)
+run golf_wall.etcs part=wall_n
+
+# ── in the way: a block between the slope and the cup ───────────────────────
+anchor.spawn(RenderProvider::Scene3D block)
+block.Create(1.6, 0.5, 1.6)
+block.SetPosition(14.0, 0.25, 18.5)
+run golf_wall.etcs part=block
+
+# ── the cup under the gap, and the tee ──────────────────────────────────────
+anchor.spawn(RenderProvider::Scene3D cup)
+cup.Create(0.7, 0.6, 0.7)
+cup.SetPosition(14.0, -0.75, 22.0)
+run golf_cup.etcs part=cup
+anchor.spawn(RenderProvider::Scene3D tee)
+tee.Create(0.6, 0.02, 0.6)
+tee.SetPosition(14.0, 1.51, 0.0)
+run golf_tee.etcs part=tee
+
+game.AddHole(@cup, 14.0, 1.65, 0.0)

@@ -1,7 +1,7 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# GOLF, IN A WINDOW. One hole: drag the ball back to aim, let go to putt.
+# GOLF, IN A WINDOW. Three holes: drag the ball back to aim, let go to putt.
 #
 #     ./bin/etcs modules/GolfProvider/scripts/golf.etcs
 #

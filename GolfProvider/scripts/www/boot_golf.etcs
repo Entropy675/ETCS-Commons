@@ -1,6 +1,6 @@
 #!/usr/bin/env etcs
 
-# GOLF, IN A BROWSER: one hole, the same course and game the window runs
+# GOLF, IN A BROWSER: three holes, the same course and game the window runs
 # (../golf.etcs), on the page served by ETCS:
 #
 #     ./bin/etcs modules/GolfProvider/scripts/serve_golf.etcs

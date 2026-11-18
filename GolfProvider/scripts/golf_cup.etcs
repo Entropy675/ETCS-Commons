@@ -1,0 +1,37 @@
+#!/usr/bin/env etcs
+# A CUP: a container under a gap in the green, its own floor inside it, and
+# the flag over it. Made and placed by the hole (0.75 under the green's top);
+# what makes it a cup is here:
+#
+#   its space reaches 0.6 about its centre   the floor fits in it, and a ball
+#                                            fits only once it is down in the
+#                                            hole -- at the lip it is still
+#                                            on the green. Fit takes the ball
+#                                            in, and that move is "holed"
+#   the flag is drawn, not solid             the ball passes it (a solid
+#                                            meets only solids); held where
+#                                            it is, it is the cup's member
+#                                            though it stands outside its
+#                                            space (fit leaves the anchored)
+#
+#   run golf_cup.etcs part=<a Scene3D, made 0.7 x 0.6 x 0.7 and placed>
+requires part [Drawable3D]
+part.SetVisible(0)
+part.SetAnchored(1)
+part.SetSpace(0.6)
+part.spawn(RenderProvider::Scene3D cup_floor)
+cup_floor.Create(0.7, 0.1, 0.7)
+cup_floor.SetPosition(0.0, -0.1, 0.0)
+cup_floor.SetColor(0.05, 0.05, 0.06, 1.0)
+cup_floor.SetAnchored(1)
+cup_floor.SetSolid(0.1, 0.6)
+part.spawn(RenderProvider::Scene3D pole)
+pole.Create(0.05, 2.2, 0.05)
+pole.SetPosition(0.3, 1.85, 0.0)
+pole.SetColor(0.92, 0.92, 0.9, 1.0)
+pole.SetAnchored(1)
+part.spawn(RenderProvider::Scene3D flag)
+flag.Create(0.6, 0.35, 0.03)
+flag.SetPosition(0.6, 2.75, 0.0)
+flag.SetColor(0.9, 0.15, 0.12, 1.0)
+flag.SetAnchored(1)

@@ -20,6 +20,11 @@
   "scripts": [
     "boot_golf.etcs",
     "GolfProvider/scripts/golf_course.etcs",
+    "GolfProvider/scripts/golf_hole_1.etcs",
+    "GolfProvider/scripts/golf_hole_2.etcs",
+    "GolfProvider/scripts/golf_hole_3.etcs",
+    "GolfProvider/scripts/golf_cup.etcs",
+    "GolfProvider/scripts/golf_tee.etcs",
     "GolfProvider/scripts/golf_surface.etcs",
     "GolfProvider/scripts/golf_wall.etcs",
     "GolfProvider/scripts/golf_play.etcs",

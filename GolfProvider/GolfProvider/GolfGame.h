@@ -24,7 +24,14 @@
 //                                       with its shadow on the ground under it
 //   letting go of a pull                is the shot: an impulse along it
 //   the wheel                           brings the camera in or out
-//   R (the key edge)                    the ball back on the tee, the card clear
+//   R (the key edge)                    the round again: the ball back on the
+//                                       first tee, the card clear
+//   N                                   on to the next hole, this one unplayed
+//
+// A COURSE IS ITS HOLES, in order: each a tee and a cup (AddHole). Holing out
+// goes on to the next hole's tee, and after the last the round is done and
+// the first comes round again. The card counts the strokes on the hole and
+// over the round.
 //
 // THE PULL IS READ ON THE VIEW PLANE: the plane through the ball facing the
 // camera. A slingshot held up to the eye: the shot is the opposite of where
@@ -47,7 +54,8 @@
 // module knows of RenderProvider is the names of its verbs.
 //
 // ANIMATED, for the frame edge: the camera follows the ball while it moves,
-// a holed ball is counted and set back on the tee, a lost one too.
+// a holed ball is counted and set on the next hole's tee, a lost one back on
+// this hole's.
 // ---------------------------------------------------------------------------
 class GolfGame : public AnimatedBase<GolfGame>,
                  public DeletableBase<GolfGame>
@@ -64,12 +72,22 @@ public:
     void BindBall(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_ball = r; m_follow = true; }
     void BindCamera(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_camera = r; m_follow = true; }
     void BindCup(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_cup = r; }
+    // A hole of the course, after the ones already given: its cup and its
+    // tee (in the world's frame). The first given is the one in play.
+    void AddHole(ETCS::RID cup, float x, float y, float z)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_holes.push_back({ cup, { x, y, z } });
+        if (m_holes.size() == 1) holeLocked(0);
+        hudLocked();
+    }
     void BindArrow(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_arrow = r; }
     void BindShadow(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_shadow = r; }
     void BindBallShadow(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_under = r; m_follow = true; }
     void BindHud(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_hud = r; m_hud_text.clear(); }
 
-    // Where the ball goes back to, in the world's frame.
+    // Where the ball goes back to, in the world's frame: with BindCup, a
+    // course of one hole stated without AddHole.
     void SetTee(float x, float y, float z) { std::lock_guard<std::mutex> g(m_mu); m_tee[0] = x; m_tee[1] = y; m_tee[2] = z; }
     // The longest pull (scene units) and the speed it gives (units/s); a
     // pull's speed is proportional to its length.
@@ -89,15 +107,31 @@ public:
         m_follow = true;
     }
 
-    // The ball back on the tee, still, and the card cleared.
+    // The round again: the ball on the first hole's tee, still, the card cleared.
     void Reset()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        teeLocked();
-        m_strokes = 0;
-        m_holed = false;
+        playLocked(0);
+        m_round = 0;
         m_message.clear();
         hudLocked();
+    }
+    // The ball on hole n's tee (the first is 1), that hole's strokes at none:
+    // a hole skipped to, or played again. The round's strokes stand.
+    void PlayHole(uint32_t n)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (n < 1 || n > m_holes.size()) return;
+        playLocked(n - 1);
+        m_message.clear();
+        hudLocked();
+    }
+    // "<hole> <holes> <strokes on it> <strokes on the holes before it>".
+    std::string Card()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        return std::to_string(m_hole + 1) + " " + std::to_string(std::max<size_t>(m_holes.size(), 1)) + " "
+             + std::to_string(m_strokes) + " " + std::to_string(m_round);
     }
     uint32_t Strokes() const { return m_strokes; }
     bool     Holed()   const { return m_holed; }
@@ -170,10 +204,17 @@ public:
         }
     }
 
-    // The key edge: R puts the ball back on the tee and clears the card.
+    // The key edge: R starts the round again; N goes on to the next hole.
     void Key(uint16_t key, bool down)
     {
-        if (down && (key == 'R' || key == 'r')) Reset();
+        if (!down) return;
+        if (key == 'R' || key == 'r') Reset();
+        else if (key == 'N' || key == 'n')
+        {
+            size_t next = 0;
+            { std::lock_guard<std::mutex> g(m_mu); if (m_holes.size() < 2) return; next = (m_hole + 1) % m_holes.size(); }
+            PlayHole(static_cast<uint32_t>(next + 1));
+        }
     }
 
     // ── Animated: the frame edge ───────────────────────────────────────────
@@ -194,7 +235,8 @@ public:
             underLocked(b);
         }
         // Holed: fit took the ball into the cup's space.
-        if (!m_holed && m_cup && parentOfBallLocked() == m_cup)
+        const ETCS::RID in = parentOfBallLocked();
+        if (!m_holed && m_cup && in == m_cup)
         {
             m_holed = true;
             m_wait_ms = 0.0;
@@ -203,18 +245,22 @@ public:
         }
         if (m_holed)
         {
+            // The card read, on to the next hole; after the last the round is
+            // done, and the first comes round again.
             m_wait_ms += dt_ms;
             if (m_wait_ms >= kHoledMs)
             {
-                teeLocked();
-                m_strokes = 0;
-                m_holed = false;
-                m_message.clear();
+                const uint32_t round = m_round + m_strokes;
+                const bool last = m_hole + 1 >= m_holes.size();
+                playLocked(last ? 0 : m_hole + 1);
+                m_round = last ? 0 : round;
+                m_message = last && m_holes.size() > 1 ? "Round: " + std::to_string(round) + (round == 1 ? " stroke" : " strokes") : std::string();
                 hudLocked();
             }
         }
-        // Lost: off the green and falling. Back on the tee, a stroke added.
-        else if (b[1] < kLostY)
+        // Lost: off the green and falling, or down another hole's cup. Back
+        // on the tee, a stroke added.
+        else if (b[1] < m_tee[1] + kLostY || (in != m_world && in != 0 && otherCupLocked(in)))
         {
             teeLocked();
             ++m_strokes;
@@ -229,7 +275,7 @@ private:
     static constexpr float  kTurn     = 0.006f;            // radians per pixel of an orbit drag
     static constexpr float  kMinPitch = 0.05f, kMaxPitch = 1.45f;
     static constexpr float  kMinDist  = 2.0f,  kMaxDist  = 60.0f;
-    static constexpr float  kLostY    = -25.0f;
+    static constexpr float  kLostY    = -25.0f;            // under the tee: fallen off the course
     static constexpr double kHoledMs  = 2500.0;
     static constexpr float  kMinPull  = 0.05f;             // shorter is a click, not a shot
     static constexpr float  kShadowDepth = 0.02f;          // the shadow's thickness, and how far it sits off the ground
@@ -503,10 +549,35 @@ private:
         verb(m_ball, "SetPosition", f3(m_tee[0], m_tee[1], m_tee[2]));
         m_follow = true;
     }
+    // Hole n (from 0) in play: its cup the one that counts, its tee the ball's.
+    void holeLocked(size_t n)
+    {
+        if (n >= m_holes.size()) return;
+        m_hole = n;
+        m_cup = m_holes[n].cup;
+        for (int k = 0; k < 3; ++k) m_tee[k] = m_holes[n].tee[k];
+    }
+    // The ball on hole n's tee (or, a course with no holes given, on the tee
+    // it has), nothing struck on it yet.
+    void playLocked(size_t n)
+    {
+        holeLocked(n);
+        teeLocked();
+        m_strokes = 0;
+        m_holed = false;
+    }
+    bool otherCupLocked(ETCS::RID r) const
+    {
+        for (size_t n = 0; n < m_holes.size(); ++n) if (n != m_hole && m_holes[n].cup == r) return true;
+        return false;
+    }
     void hudLocked()
     {
         if (!m_hud) return;
-        std::string t = "Strokes: " + std::to_string(m_strokes);
+        std::string t;
+        if (m_holes.size() > 1) t = "Hole " + std::to_string(m_hole + 1) + " of " + std::to_string(m_holes.size()) + "   ";
+        t += "Strokes: " + std::to_string(m_strokes);
+        if (m_holes.size() > 1) t += "   Round: " + std::to_string(m_round + m_strokes);
         if (!m_message.empty()) t += "   " + m_message;
         if (t == m_hud_text) return;
         m_hud_text = t;
@@ -545,6 +616,10 @@ private:
     float      m_pull_len = 0.0f;
     float      m_seen[3] = { 0.0f, 0.0f, 0.0f };
     bool       m_follow = true;
+    struct Hole { ETCS::RID cup; float tee[3]; };
+    std::vector<Hole> m_holes;                             // the course, in order (AddHole)
+    size_t     m_hole = 0;                                 // the one in play
+    uint32_t   m_round = 0;                                // strokes on the holes before it
     uint32_t   m_strokes = 0;
     bool       m_holed = false;
     double     m_wait_ms = 0.0;
