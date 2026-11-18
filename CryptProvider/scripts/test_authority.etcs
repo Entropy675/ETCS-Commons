@@ -1,23 +1,31 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# A TEST AUTHORITY: the whole chain above one loader, made in one run, so the
-# machinery can be exercised before the real ceremony exists. A super-root, an
-# active key under it, and a marketplace certificate for LOADER_KEY -- the
-# public key of the loader that will sign builds (`etcs --loader-key`).
+# A TEST AUTHORITY: ACE's half of the chain, made in one run, so the machinery
+# can be exercised before the real ceremony exists. A super-root, the active
+# key under it, and three loaders' keys that share that parent: the build
+# server's (marketplace), the release machine's (release) and the site's
+# registrar's (registrar). Each is the key `etcs --loader-key` prints for its
+# own store; three stores on one machine are three loaders.
 #
-# Nothing is kept but the three certificates, written to AUTHORITY_DIR (which
-# must exist and hold none of them: custody never overwrites). Both keys are
-# forgotten when this ends, so this authority can register nothing else. That
-# is the difference from the ceremony (root_ceremony.etcs), which shards them.
+# Nothing is kept but the certificates, written to AUTHORITY_DIR (which must
+# exist and hold none of them: custody never overwrites). Both keys are
+# forgotten when this ends, so this authority certifies nothing else. That is
+# the difference from the ceremony (root_ceremony.etcs), which shards them.
 #
-#   K=$(bin/etcs --loader-key | grep -E '^[0-9a-f]{64}$')
+#   for r in marketplace release registrar; do
+#       mkdir -p stores/$r
+#       eval "${r}_key=\$(ETCS_STORE=$PWD/stores/$r bin/etcs --loader-key | grep -E '^[0-9a-f]{64}$')"
+#   done
 #   mkdir authority
-#   sed -e "s|AUTHORITY_DIR|$PWD/authority|" -e "s|LOADER_KEY|$K|" \
+#   sed -e "s|AUTHORITY_DIR|$PWD/authority|" -e "s|MARKETPLACE_KEY|$marketplace_key|" \
+#       -e "s|RELEASE_KEY|$release_key|" -e "s|REGISTRAR_KEY|$registrar_key|" \
 #       modules/CryptProvider/scripts/test_authority.etcs > authority.etcs
 #   bin/etcs authority.etcs
-#   bin/etcs --registration authority/marketplace.cert authority/active.cert authority/root.cert
-#   ace sign
+#
+# Then pin authority/root.cert's subject (ACE_ROOT_KEY), rebuild, and give each
+# store its half: ETCS_STORE=stores/<role> bin/etcs --registration
+#   authority/<role>.cert authority/active.cert authority/root.cert
 
 spawn NetworkProvider::Embassy embassy
 spawn CryptProvider::Custody out
@@ -41,9 +49,15 @@ spawn CryptProvider::Certificate active_cert
 active_cert.Issue(@super_root intermediate @active)
 
 spawn CryptProvider::Certificate marketplace_cert
-marketplace_cert.Issue(@active marketplace LOADER_KEY)
+marketplace_cert.Issue(@active marketplace MARKETPLACE_KEY)
+spawn CryptProvider::Certificate release_cert
+release_cert.Issue(@active release RELEASE_KEY)
+spawn CryptProvider::Certificate registrar_cert
+registrar_cert.Issue(@active registrar REGISTRAR_KEY)
 
 out.Advertise(marketplace cert @marketplace_cert)
+out.Advertise(release cert @release_cert)
+out.Advertise(registrar cert @registrar_cert)
 out.Advertise(active cert @active_cert)
 out.Advertise(root cert @super_root_cert)
 

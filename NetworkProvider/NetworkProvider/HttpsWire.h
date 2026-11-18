@@ -88,7 +88,7 @@ public:
 private:
     struct Request { std::string method, host, target, body; int port = 443; };
 
-    static constexpr size_t kMaxResponse = 1u << 20;
+    static constexpr size_t kMaxResponse = 64u << 20;   // a module binary, fetched whole (CryptProvider::Upstream)
     static constexpr int    kTimeoutMs   = 10000;
 
     // --- the ETCS side ---------------------------------------------------------
@@ -244,13 +244,20 @@ private:
 
     static bool readResponse(etcs_ws::ClientTlsIO& io, std::string& raw, const ETCS::SignalContext& ctx)
     {
-        char buf[4096];
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kTimeoutMs);
+        char buf[16384];
+        // The timeout is for silence, not for size: each read that brings bytes moves it.
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kTimeoutMs);
         while (raw.size() < kMaxResponse)
         {
             if (ctx.isInterrupted() || ctx.isTerminated()) return false;
             const int r = io.readSome(buf, sizeof buf);
-            if (r > 0) { raw.append(buf, static_cast<size_t>(r)); if (complete(raw)) return true; continue; }
+            if (r > 0)
+            {
+                raw.append(buf, static_cast<size_t>(r));
+                if (complete(raw)) return true;
+                deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kTimeoutMs);
+                continue;
+            }
             if (r < 0) return !raw.empty() && parseHeadOnly(raw);   // peer closed: close-delimited body ends here
             if (std::chrono::steady_clock::now() > deadline) return false;
             etcs_ws::wait_fd(io.fd(), POLLIN, 100);
