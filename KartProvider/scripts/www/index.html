@@ -3,6 +3,22 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <!--
+    THE PAGE STARTS AT 150%. Zoomed in, the canvas is put on fewer of the
+    screen's pixels, which is cheaper, and at 100% a wide window gives it more
+    than it needs. This is the browser's own zoom stated by the page: the
+    browser's still works on top of it, and `?zoom=1` (or any number) says
+    otherwise. Not in a frame -- the shell inside another page is zoomed with
+    that page -- and not on a narrow screen, where it would crowd the page.
+  -->
+  <script>
+    (function () {
+      if (window !== window.top) return;
+      const asked = parseFloat(new URLSearchParams(location.search).get('zoom'));
+      const zoom = asked > 0 ? asked : (window.innerWidth >= 1000 ? 1.5 : 1);
+      if (zoom !== 1) document.documentElement.style.zoom = String(zoom);
+    })();
+  </script>
   <title>ETCS Kart</title>
   <link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
