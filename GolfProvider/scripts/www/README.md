@@ -24,10 +24,11 @@ modules/GolfProvider/scripts/golf.etcs`.
   comes round again. One that leaves the course, or drops into another hole's cup, goes back
   to its tee with a stroke added. The card shows the hole, its strokes and the round's.
 - **The holes have levels.** The first is flat: a block to play around, a ridge to play over.
-  The second starts on a terrace a unit and a half up and falls down a slope to the cup's
-  level: the ball gathers pace all the way, so the shot is how little to give it. The third
-  climbs a slope to a terrace a unit up, where the cup is -- too soft and the ball rolls back
-  down -- and a sand trap half a unit deep is cut into the green in the straight line.
+  The second starts on a terrace three units up and falls down a slope to the cup's level:
+  the ball gathers pace all the way, so the shot is how little to give it. The third climbs a
+  slope to a terrace two units up, where the cup is -- too soft and the ball rolls back down --
+  and a sand trap half a unit deep is cut into the green in the straight line. The greens are
+  sixteen wide and over fifty long, a unit thick, the bumpers reaching down through them.
 
 From the terminal, while it runs: `game.Card()`, `game.PlayHole(2)`, `game.Strokes()`,
 `game.Reset()`, `game.SetPower(3, 16)`, `game.SetOrbit(10, 30, 50)`, `game.Pull()`,
