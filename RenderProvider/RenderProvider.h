@@ -711,6 +711,24 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetOrder, (int32_t, z))
     self.SetOrder(z);
 }
 
+// SetGlow <strength> -- the node gives light instead of taking it: its colour
+// times `strength` added to what is behind it, soft where it turns edge-on
+// (Scene3D::SetGlow). 0 puts it back to a lit solid.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetGlow, (float, strength))
+{
+    (void)ctx;
+    self.SetGlow(strength);
+}
+
+// SetSmoke <density> -- the node is see-through: its colour laid over what is
+// behind it at `density`, soft where it turns edge-on (Scene3D::SetSmoke).
+// 0 puts it back to a lit solid.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSmoke, (float, density))
+{
+    (void)ctx;
+    self.SetSmoke(density);
+}
+
 // Terminal speed in scene units per SECOND, and how fast motion bleeds off.
 // Held keys are an acceleration, not a displacement, so these two are the whole
 // of the feel: terminal speed is where impulse and drag balance, and damping

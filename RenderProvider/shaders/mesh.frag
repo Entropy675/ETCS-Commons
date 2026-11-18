@@ -3,13 +3,27 @@
 // Lambert, one fixed light in world space, the same lamp the host
 // rasteriser implies when it shades a box's faces -- so a node reads the
 // same on both paths, and the mesh's own normals decide the shading.
+//
+// A GLOWING node (outGlow.w > 0, Scene3D::SetGlow) is not lit: it gives its
+// colour times its strength times how squarely it faces the eye, to the
+// power 1.5, as alpha into an additive blend -- soft at the silhouette, the
+// host raster's sum (Scene3D::glowMesh). SMOKE (SetSmoke) is the same share
+// into a blend over what is behind; its alpha arrives negated, which is how
+// the two are told apart (DeviceFrame.h, device_alpha).
 
 layout(location = 0) in vec3 inNormal;
 layout(location = 1) in vec4 inColor;
+layout(location = 2) flat in vec4 inGlow;
 layout(location = 0) out vec4 outFragColor;
 
 void main()
 {
+    if (inGlow.w > 0.0)
+    {
+        const float f = abs(dot(normalize(inNormal), inGlow.xyz));
+        outFragColor = vec4(inColor.rgb, inGlow.w * f * sqrt(f) * abs(inColor.a));
+        return;
+    }
     const vec3 light = normalize(vec3(0.4, 0.8, 0.45));
     float lit = 0.45 + 0.55 * max(dot(normalize(inNormal), light), 0.0);
     outFragColor = vec4(inColor.rgb * lit, inColor.a);

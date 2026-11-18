@@ -61,13 +61,36 @@ struct DeviceUpload
 };
 
 // One node of a scene: which mesh, where (column-major 4x4, the
-// OrderVector's matrix times the node's extent), what colour.
+// OrderVector's matrix times the node's extent), what colour -- and how much
+// it GLOWS (Scene3D::SetGlow): 0 is a lit solid; above it the node gives
+// light rather than taking it, ADDED to what is behind it and fading where
+// its surface turns away from the eye, so its edges are soft -- and how
+// much it SMOKES (Scene3D::SetSmoke): the same soft share, laid over what is
+// behind it rather than added (a node with both is smoke). A scene's ops come
+// solid first, then the soft ones farthest first (tested against the solids'
+// depth, writing none of their own), so a backend switches pipeline as the
+// soft ones change kind.
 struct DeviceMeshOp
 {
     ETCS::RID mesh = 0;
     float     model[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
     float     color[4]  = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float     glow      = 0.0f;
+    float     smoke     = 0.0f;
 };
+
+// The soft share's strength a backend sends (the model columns' w's carry
+// forward times it), and the colour's alpha -- negated for smoke, which is
+// how the shader tells the two apart (mesh.vert/mesh.frag, the WGSL pass).
+inline float device_soft(const DeviceMeshOp& op) { return op.smoke > 0.0f ? op.smoke : op.glow; }
+inline float device_alpha(const DeviceMeshOp& op) { return op.smoke > 0.0f ? -op.color[3] : op.color[3]; }
+
+// The eye's forward in world space, from a scene's column-major view: its
+// third row. What a glowing surface's edge is measured against.
+inline void device_forward(const float view[16], float out[3])
+{
+    out[0] = view[2]; out[1] = view[6]; out[2] = view[10];
+}
 
 // A camera's projection, for the device to draw: into a texture of its own
 // the size of the camera's plane, cleared to the camera's colour, with a
