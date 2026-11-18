@@ -1,0 +1,123 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE ROOT CEREMONY: a root key made, split 3-of-5 to five custodians, its
+# intermediate certified, and the root forgotten. Run on the offline machine
+# with each custodian's medium mounted at its path below; edit the paths, not
+# the shape. Every custodian is one FileRelation (one stranger) landing on
+# one Custody, listed in one Embassy -- Open is the line that lets anything
+# out. A share never appears in a line: Advertise names the Shard, and the
+# relation fills it in at the file.
+
+spawn NetworkProvider::Embassy embassy
+
+spawn CryptProvider::Custody a
+spawn NetworkProvider::FileRelation to_a
+to_a.Root(/media/custodian-a)
+to_a.Target(Directory)
+to_a.Activate(@a)
+embassy.Advertise(custodian-a file @to_a)
+
+spawn CryptProvider::Custody b
+spawn NetworkProvider::FileRelation to_b
+to_b.Root(/media/custodian-b)
+to_b.Target(Directory)
+to_b.Activate(@b)
+embassy.Advertise(custodian-b file @to_b)
+
+spawn CryptProvider::Custody c
+spawn NetworkProvider::FileRelation to_c
+to_c.Root(/media/custodian-c)
+to_c.Target(Directory)
+to_c.Activate(@c)
+embassy.Advertise(custodian-c file @to_c)
+
+spawn CryptProvider::Custody d
+spawn NetworkProvider::FileRelation to_d
+to_d.Root(/media/custodian-d)
+to_d.Target(Directory)
+to_d.Activate(@d)
+embassy.Advertise(custodian-d file @to_d)
+
+spawn CryptProvider::Custody e
+spawn NetworkProvider::FileRelation to_e
+to_e.Root(/media/custodian-e)
+to_e.Target(Directory)
+to_e.Activate(@e)
+embassy.Advertise(custodian-e file @to_e)
+
+embassy.Open()
+a.SetEmbassy(@embassy)
+a.SetRelation(custodian-a)
+b.SetEmbassy(@embassy)
+b.SetRelation(custodian-b)
+c.SetEmbassy(@embassy)
+c.SetRelation(custodian-c)
+d.SetEmbassy(@embassy)
+d.SetRelation(custodian-d)
+e.SetEmbassy(@embassy)
+e.SetRelation(custodian-e)
+
+# The root and its own certificate.
+spawn CryptProvider::Keypair root_key
+root_key.Generate()
+root_key.PublicKey()
+spawn CryptProvider::Certificate root_cert
+root_cert.Issue(@root_key root @root_key)
+
+# The intermediate, certified by the root. It is the key that stays in use,
+# so it is split as well and kept on the same custodians.
+spawn CryptProvider::Keypair intermediate
+intermediate.Generate()
+spawn CryptProvider::Certificate intermediate_cert
+intermediate_cert.Issue(@root_key intermediate @intermediate)
+intermediate_cert.Verify(@root_cert)
+
+# The root, 3 of 5.
+spawn CryptProvider::Shamir root_split
+root_split.Threshold(3)
+root_split.spawn(CryptProvider::Shard r1)
+root_split.spawn(CryptProvider::Shard r2)
+root_split.spawn(CryptProvider::Shard r3)
+root_split.spawn(CryptProvider::Shard r4)
+root_split.spawn(CryptProvider::Shard r5)
+root_split.Split(@root_key)
+a.Advertise(root shard @r1)
+b.Advertise(root shard @r2)
+c.Advertise(root shard @r3)
+d.Advertise(root shard @r4)
+e.Advertise(root shard @r5)
+
+# The intermediate, 3 of 5.
+spawn CryptProvider::Shamir intermediate_split
+intermediate_split.Threshold(3)
+intermediate_split.spawn(CryptProvider::Shard i1)
+intermediate_split.spawn(CryptProvider::Shard i2)
+intermediate_split.spawn(CryptProvider::Shard i3)
+intermediate_split.spawn(CryptProvider::Shard i4)
+intermediate_split.spawn(CryptProvider::Shard i5)
+intermediate_split.Split(@intermediate)
+a.Advertise(intermediate shard @i1)
+b.Advertise(intermediate shard @i2)
+c.Advertise(intermediate shard @i3)
+d.Advertise(intermediate shard @i4)
+e.Advertise(intermediate shard @i5)
+
+# The certificates are public: every custodian keeps them.
+a.Advertise(root cert @root_cert)
+a.Advertise(intermediate cert @intermediate_cert)
+b.Advertise(root cert @root_cert)
+b.Advertise(intermediate cert @intermediate_cert)
+c.Advertise(root cert @root_cert)
+c.Advertise(intermediate cert @intermediate_cert)
+d.Advertise(root cert @root_cert)
+d.Advertise(intermediate cert @intermediate_cert)
+e.Advertise(root cert @root_cert)
+e.Advertise(intermediate cert @intermediate_cert)
+
+# Forgotten here: the keys and the shares.
+root_key.Delete()
+intermediate.Delete()
+root_split.Delete()
+intermediate_split.Delete()
+embassy.Close()

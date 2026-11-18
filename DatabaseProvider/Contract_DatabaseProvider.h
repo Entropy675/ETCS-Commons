@@ -42,6 +42,14 @@
     #include "DatabaseProvider/Persistence.h"
 
     /*
+     * KEYSTORE -- the OS keystore, a Database that claims Private (the one
+     * place a script may keep a secret). Not a platform fork in its header;
+     * core/Keystore.h is, and a browser answers that it has none.
+     */
+    #include "OS/KeystoreDatabase.h"
+    typedef KeystoreDatabase Keystore;
+
+    /*
      * The postgres leaf goes here, exported alongside rather than instead of:
      *
      *     #include "OS/PostgresRemoteDatabase.h"

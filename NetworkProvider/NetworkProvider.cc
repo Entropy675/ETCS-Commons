@@ -1,7 +1,7 @@
 #include "NetworkProvider.h"
 ETCS_MODULE_EXPORT_MAIN(NetworkProvider,
     "HttpServer ConnectionManager HTTPParser TLSContext SocketConnectionState StaticHtmlPage FileHtmlPage TarpitNode "
-    "LinkHub Room Peer Remote Seal Lobby Ledger Embassy HttpsRelation DnsRelation")
+    "LinkHub Room Peer Remote Seal Lobby Ledger Embassy HttpsRelation DnsRelation FileRelation")
 
 // HttpServer — root-level. A bag of config with Start/Stop; owns its gate and
 // its pages as typed children.
@@ -73,3 +73,4 @@ ETCS_TAG_BLOCK_HYBRID(Ledger, (Append, Head, Since, Checkpoint, Author, Feed, De
 ETCS_TAG_BLOCK_BASIC(Embassy,       Advertise, Withdraw, List, Request, Open, Close, IsOpen, Delete)
 ETCS_TAG_BLOCK_BASIC(HttpsRelation, Origin, Target, SetCaFile, Secret, Activate, Ask, Delete)
 ETCS_TAG_BLOCK_BASIC(DnsRelation,   Target, Activate, Ask, Delete)
+ETCS_TAG_BLOCK_BASIC(FileRelation,  Root, Target, Activate, Ask, Delete)
