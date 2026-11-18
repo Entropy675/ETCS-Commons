@@ -52,6 +52,7 @@ tree.MountFile(KartProvider/scripts/kart_play.etcs ACE_ROOT/modules/KartProvider
 tree.MountFile(KartProvider/scripts/kart_board.etcs ACE_ROOT/modules/KartProvider/scripts/kart_board.etcs)
 tree.MountFile(KartProvider/scripts/kart_board_row.etcs ACE_ROOT/modules/KartProvider/scripts/kart_board_row.etcs)
 tree.MountFile(KartProvider/scripts/kart_keys.etcs ACE_ROOT/modules/KartProvider/scripts/kart_keys.etcs)
+tree.MountFile(KartProvider/scripts/kart_pointer.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pointer.etcs)
 tree.MountFile(KartProvider/scripts/kart_host.etcs ACE_ROOT/modules/KartProvider/scripts/kart_host.etcs)
 tree.MountFile(KartProvider/scripts/kart_join.etcs ACE_ROOT/modules/KartProvider/scripts/kart_join.etcs)
 tree.MountFile(KartProvider/scripts/kart_leave.etcs ACE_ROOT/modules/KartProvider/scripts/kart_leave.etcs)

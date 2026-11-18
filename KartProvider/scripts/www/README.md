@@ -49,6 +49,10 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   six seconds, then the lobby, which keeps them), or the host **abandons** it (**Esc**, or the
   page's button) -- back to the lobby, its scores discarded.
 - **Hold Tab** in a round for the scores on the arena.
+- **Look round the kart** with **Q** and **E**, or by dragging with the right button (up and
+  down too): the eye swings round the kart and, let alone, drifts back behind it. It also keeps
+  to the kart's side of the ground -- down in a pit with it, under a deck with it -- instead of
+  looking at it through a wall.
 - **The maps:** **bowl** (every wall banked, the banks meeting in the corners, a mound in the
   middle, a ring of bumpers);
   **pillars** (a raised plaza in the middle, ramps up from all four sides, pillars round it,

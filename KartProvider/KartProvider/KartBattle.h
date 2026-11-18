@@ -527,7 +527,8 @@ public:
      * turns the kart to the picture's left and D to its right, which is the
      * wheel's -1 and +1 (the camera's right is up x forward: +x for a kart
      * heading +z); SetInvert swaps the two keys for this runtime alone. Tab
-     * holds up the board, this runtime's alone. In the lobby the host's keys
+     * holds up the board and Q and E look round the kart (lookLocked), this
+     * runtime's alone and no line of the record. In the lobby the host's keys
      * move the menu instead: up/down choose, left/right change, Enter
      * changes or starts; each change is a line.
      */
@@ -535,6 +536,12 @@ public:
     {
         std::lock_guard<std::mutex> g(m_mu);
         if (key == 258) { m_board_held = down; return; }
+        if (key == 'Q' || key == 'E')
+        {
+            const unsigned bit = key == 'Q' ? 1u : 2u;
+            if (down) m_look_keys |= bit; else m_look_keys &= ~bit;
+            return;
+        }
         if (down && m_judge && !m_defs.empty())
         {
             if (m_phase == Lobby && menuKeyLocked(key)) return;
@@ -568,6 +575,58 @@ public:
         Key(0, false);
     }
     bool Inverted() { std::lock_guard<std::mutex> g(m_mu); return m_invert; }
+
+    /*
+     * LOOKING ROUND THE KART. The eye rides behind the kart; a drag with the
+     * right button, or Q and E held, swings it round the kart (and a drag up
+     * or down, over it) -- to see beside or behind, or out of a hole the
+     * view behind is no good in. Let alone it comes back behind the kart,
+     * slowly (lookLocked). This runtime's alone: where a driver looks is no
+     * part of the battle, so no line and nothing hashed.
+     */
+    void Pointer(const InputEvent& ev)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        switch (ev.action)
+        {
+            case INPUT_BUTTON_DOWN:
+                if (ev.key == kLookButton) { m_look_drag = true; m_look_x = ev.x; m_look_y = ev.y; }
+                break;
+            case INPUT_MOTION:
+                if (!m_look_drag) break;
+                // Let go outside the window: the platform says it is up.
+                if (input_button_state(ev, kLookButton) == 0) { m_look_drag = false; break; }
+                turnLookLocked((ev.x - m_look_x) * kLookTurn, (ev.y - m_look_y) * kLookTurn);
+                m_look_x = ev.x; m_look_y = ev.y;
+                break;
+            case INPUT_BUTTON_UP:
+                if (ev.key == kLookButton) m_look_drag = false;
+                break;
+            default: break;
+        }
+    }
+    // The look as a verb: this far round the kart and over it, in degrees
+    // (to the picture's right, and up), as a drag would leave it.
+    void Look(float yaw_deg, float pitch_deg)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_look_yaw = m_look_pitch = 0.0f;
+        turnLookLocked(yaw_deg * kPi / 180.0f, pitch_deg * kPi / 180.0f);
+    }
+    // "<eye x> <y> <z> <at x> <y> <z> <look yaw> <pitch>": where this
+    // runtime's eye is headed (the frame edge eases it there) and the look, in
+    // degrees.
+    std::string Eye()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        float eye[3], at[3];
+        viewLocked(eye, at);
+        return fmt3(eye[0]) + " " + fmt3(eye[1]) + " " + fmt3(eye[2]) + " " + fmt3(at[0]) + " " + fmt3(at[1]) + " " + fmt3(at[2]) + " "
+             + fmt3(m_look_yaw * 180.0f / kPi) + " " + fmt3(m_look_pitch * 180.0f / kPi);
+    }
+    // The frame edge by hand, for a script with no window: what a frame
+    // `ms` long does (the host's clock runs with it, as a window's does).
+    void Frame(float ms) { AdvanceConcrete(static_cast<double>(ms)); }
 
     // ── reads ────────────────────────────────────────────────────────────
 
@@ -833,6 +892,18 @@ private:
     static constexpr int      kRespawn    = 3 * kHz;
     static constexpr int      kPickupBack = 8 * kHz;
     static constexpr int      kResults    = 6 * kHz;
+    // The eye's boom behind and over the kart, and the look that swings it.
+    static constexpr float    kPi         = 3.14159265f;
+    static constexpr float    kBoom       = 8.32f;     // its length: 7.5 behind and 3.6 over
+    static constexpr float    kBoomRise   = 0.4475f;   // and that angle over the ground
+    static constexpr int      kBoomSteps  = 16;        // the points along it tried against the ground
+    static constexpr float    kBoomGap    = 0.25f;     // the least it keeps over the ground, or off a deck
+    static constexpr float    kBoomLeast  = 0.2f;      // of its length, however little is clear
+    static constexpr uint16_t kLookButton = 1;         // the right button
+    static constexpr float    kLookTurn   = 0.006f;    // radians a pixel dragged (golf's orbit)
+    static constexpr double   kLookKeyRate = 2.0;      // radians a second, Q or E held
+    static constexpr float    kLookDown   = -0.35f, kLookUp = 0.95f;   // the boom from nearly level to nearly overhead
+    static constexpr double   kLookHoldMs = 700.0, kLookBackMs = 1500.0;
     // The ground's colours, the battle's to give (AddGroundNode, AddSlabNode,
     // AddDomeNode): a mark is drawn between the ground's own and the tyre's.
     static constexpr float kGround[6][3] = { { 0.30f, 0.31f, 0.33f }, { 0.72f, 0.52f, 0.30f }, { 0.33f, 0.52f, 0.27f },
@@ -2361,23 +2432,96 @@ private:
 
     // Behind this runtime's own kart, eased; over the arena in the lobby and
     // for one with no kart in play.
+    void turnLookLocked(float yaw, float pitch)
+    {
+        m_look_yaw += yaw;
+        while (m_look_yaw > kPi)  m_look_yaw -= 2.0f * kPi;
+        while (m_look_yaw < -kPi) m_look_yaw += 2.0f * kPi;
+        m_look_pitch = std::max(kLookDown, std::min(kLookUp, m_look_pitch + pitch));
+        m_look_idle_ms = 0.0;
+    }
+    // Q and E turn the look while held; left alone for kLookHoldMs it goes
+    // back to behind the kart, to about a third of what is left every kLookBackMs.
+    void lookLocked(double dt_ms)
+    {
+        const int keys = ((m_look_keys & 2u) ? 1 : 0) - ((m_look_keys & 1u) ? 1 : 0);
+        if (keys != 0) turnLookLocked(static_cast<float>(keys * kLookKeyRate * dt_ms / 1000.0), 0.0f);
+        if (keys != 0 || m_look_drag) return;
+        m_look_idle_ms += dt_ms;
+        if (m_look_idle_ms < kLookHoldMs || (m_look_yaw == 0.0f && m_look_pitch == 0.0f)) return;
+        const float keep = static_cast<float>(std::exp(-dt_ms / kLookBackMs));
+        m_look_yaw *= keep; m_look_pitch *= keep;
+        if (std::fabs(m_look_yaw) < 1e-3f && std::fabs(m_look_pitch) < 1e-3f) m_look_yaw = m_look_pitch = 0.0f;
+    }
+    /*
+     * WHERE THE EYE SHOULD BE: over the arena in the lobby; in a round on a
+     * boom behind this runtime's kart and over it, swung by the look, looking
+     * past the kart the way the boom points. The boom is shortened to what
+     * it can see along: where the ground comes up through it (a pit's wall,
+     * a ramp, a hill), a deck lies between the kart and the eye, or it would
+     * pass out through the arena's wall below the wall's top, the eye comes
+     * in to this side of it -- into the pit with the kart, under the deck
+     * with it, inside the wall with it -- instead of looking at the kart
+     * through the ground, or at the back of a wall.
+     */
+    void viewLocked(float eye[3], float at[3])
+    {
+        eye[0] = 0.0f; eye[1] = 62.0f; eye[2] = -46.0f;
+        at[0] = at[1] = at[2] = 0.0f;
+        const int i = slotOf(m_me);
+        if (m_phase == Lobby || i < 0 || !alive(m_slots[i])) return;
+        Causal_* k = causal(m_slots[i].body);
+        if (!k) return;
+        float px, py, pz;
+        {
+            std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
+            const OrderVector& r = k->Order4();
+            px = r.x.ToFloat(); py = r.y.ToFloat(); pz = r.z.ToFloat();
+        }
+        const float fx = m_slots[i].hx.ToFloat(), fz = m_slots[i].hz.ToFloat();
+        const float cy = std::cos(m_look_yaw), sy = std::sin(m_look_yaw);
+        const float dx = fx * cy + fz * sy, dz = fz * cy - fx * sy;   // the heading, turned to the picture's right
+        const float rise = kBoomRise + m_look_pitch;
+        const float back = kBoom * std::cos(rise), up = kBoom * std::sin(rise);
+        at[0] = px + dx * 4.0f; at[1] = py + 0.6f; at[2] = pz + dz * 4.0f;
+        // The arena's wall: how far out its inside is, and its top.
+        const float inside = bound().ToFloat() + 1.0f;
+        float wall_top = 0.0f;
+        for (ETCS::RID w : m_walls)
+            if (Causal_* c = causal(w))
+            {
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                wall_top = std::max(wall_top, c->Order4().y.ToFloat() + c->Solid().hy.ToFloat());
+            }
+        // From the kart's top out along the boom, as far as it is clear.
+        const float top = py + 0.9f;
+        const float ex = px - dx * back, ey = py + up, ez = pz - dz * back;
+        float clear = 1.0f;
+        for (int n = 1; n <= kBoomSteps; ++n)
+        {
+            const float t = static_cast<float>(n) / kBoomSteps;
+            const float qx = px + (ex - px) * t, qy = top + (ey - top) * t, qz = pz + (ez - pz) * t;
+            const Fixed x = Fixed::From(qx), z = Fixed::From(qz);
+            bool blocked = KartArena::Solid(m_live, x, z).ToFloat() > qy - kBoomGap
+                        || ((std::fabs(qx) > inside || std::fabs(qz) > inside) && qy < wall_top + kBoomGap);
+            for (const KartArena::Deck& d : m_live.decks)
+            {
+                if (blocked || !KartArena::Over(x, z, d.x, d.z, d.w, d.d)) continue;
+                const float plate = d.h.ToFloat(), under = plate - KartArena::DeckThick().ToFloat();
+                blocked = top < under ? qy > under - kBoomGap : (top > plate && qy < plate + kBoomGap);
+            }
+            if (blocked) { clear = std::max(kBoomLeast, static_cast<float>(n - 1) / kBoomSteps); break; }
+        }
+        eye[0] = px + (ex - px) * clear; eye[1] = top + (ey - top) * clear; eye[2] = pz + (ez - pz) * clear;
+    }
     void cameraLocked(double dt_ms)
     {
+        lookLocked(dt_ms);
         if (!m_camera) return;
         ETCS::Held<Camera_> cam = ETCS::resolve_held<Camera_>("Camera", m_camera);
         if (!cam) return;
-        float eye[3] = { 0.0f, 62.0f, -46.0f }, at[3] = { 0.0f, 0.0f, 0.0f };
-        const int i = slotOf(m_me);
-        if (m_phase != Lobby && i >= 0 && alive(m_slots[i]))
-            if (Causal_* k = causal(m_slots[i].body))
-            {
-                std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
-                const OrderVector& r = k->Order4();
-                const float px = r.x.ToFloat(), py = r.y.ToFloat(), pz = r.z.ToFloat();
-                const float fx = m_slots[i].hx.ToFloat(), fz = m_slots[i].hz.ToFloat();
-                eye[0] = px - fx * 7.5f; eye[1] = py + 3.6f; eye[2] = pz - fz * 7.5f;
-                at[0]  = px + fx * 4.0f; at[1]  = py + 0.6f; at[2]  = pz + fz * 4.0f;
-            }
+        float eye[3], at[3];
+        viewLocked(eye, at);
         const float a = m_eye_set ? static_cast<float>(1.0 - std::exp(-dt_ms / 120.0)) : 1.0f;
         float moved = 0.0f;
         for (int c = 0; c < 3; ++c)
@@ -2720,6 +2864,12 @@ private:
     bool     m_board_held = false;
     float    m_eye[3] = { 0.0f, 0.0f, 0.0f }, m_at[3] = { 0.0f, 0.0f, 0.0f };
     bool     m_eye_set = false;
+    // The look round the kart (lookLocked): how far the boom is swung from
+    // behind the kart and raised, by what, and how long it has been let alone.
+    float    m_look_yaw = 0.0f, m_look_pitch = 0.0f, m_look_x = 0.0f, m_look_y = 0.0f;
+    double   m_look_idle_ms = 0.0;
+    unsigned m_look_keys = 0;      // Q is bit 0, E bit 1
+    bool     m_look_drag = false;
     double   m_card_ms = 0.0;
     std::string m_card_text;
 };

@@ -149,6 +149,14 @@ DEFINE_WORK_FUNC(KartBattle, Give)
 // page's own setting, no line of the record.
 DEFINE_WORK_FUNC_TYPED(KartBattle, SetInvert, (int32_t, on)) { (void)ctx; self.SetInvert(on != 0); }
 // Key <code> <down> -- a GLFW key, for a test or a page.
+// Look <yaw> <pitch> -- this runtime's eye swung this far round its kart, to
+// the picture's right, and over it, in degrees: what a drag with the right
+// button, or Q and E, does. Let alone it comes back behind the kart.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Look, (float, yaw), (float, pitch)) { (void)ctx; self.Look(yaw, pitch); }
+// "<eye x> <y> <z> <at x> <y> <z> <look yaw> <pitch>": where the eye is headed.
+DEFINE_WORK_FUNC(KartBattle, Eye)       { (void)ctx; data.reset(); data.writeString(self.Eye().c_str()); }
+// Frame <ms> -- the frame edge by hand, for a script with no window.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Frame, (float, ms)) { (void)ctx; self.Frame(ms); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, Key, (uint32_t, code), (int32_t, down))
 {
     (void)ctx;
@@ -232,6 +240,22 @@ DEFINE_STREAM_FUNC_CONSUME(KartBattle, Roster)
     while (!ctx.isInterrupted() && stream.readMessage(listing))
         if (!self.Roster(gen, listing)) return;
 }
+// main.ProducePointer() -> battle.ConsumePointer() -- the pointer: a drag with
+// the right button looks round the kart (KartBattle::Pointer).
+DEFINE_STREAM_FUNC_CONSUME(KartBattle, ConsumePointer)
+{
+    (void)data;
+    while (stream.isOpen())
+    {
+        if (ctx.isInterrupted() || ctx.isTerminated()) break;
+        ETCS::Buffer slot;
+        if (!stream.readRaw(slot)) break;
+        InputEvent ev{};
+        slot.readRaw(&ev, sizeof(InputEvent));
+        self.Pointer(ev);
+    }
+}
+
 // main.ProduceEvents() -> battle.ConsumeKeys() -- the keyboard, and the window's
 // pump (golf_keys.etcs on why the key edge has to exist).
 DEFINE_STREAM_FUNC_CONSUME(KartBattle, ConsumeKeys)
