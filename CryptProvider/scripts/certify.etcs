@@ -1,0 +1,70 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# CERTIFY: one more key certified by the active key, which is rebuilt from three
+# custodians' shards for this and forgotten again. For a key that did not exist
+# at the ceremony, or one that replaces another: ROLE (marketplace, release or
+# registrar) for SUBJECT_KEY, written to PUBLIC_DIR as <ROLE>.cert. Any three of
+# the five custodians will do; mount them at the paths below.
+
+spawn NetworkProvider::Embassy embassy
+
+spawn CryptProvider::Custody a
+spawn NetworkProvider::FileRelation to_a
+to_a.Root(/media/custodian-a)
+to_a.Target(Directory)
+to_a.Activate(@a)
+embassy.Advertise(custodian-a file @to_a)
+
+spawn CryptProvider::Custody b
+spawn NetworkProvider::FileRelation to_b
+to_b.Root(/media/custodian-b)
+to_b.Target(Directory)
+to_b.Activate(@b)
+embassy.Advertise(custodian-b file @to_b)
+
+spawn CryptProvider::Custody c
+spawn NetworkProvider::FileRelation to_c
+to_c.Root(/media/custodian-c)
+to_c.Target(Directory)
+to_c.Activate(@c)
+embassy.Advertise(custodian-c file @to_c)
+
+spawn CryptProvider::Custody out
+spawn NetworkProvider::FileRelation to_out
+to_out.Root(PUBLIC_DIR)
+to_out.Target(Directory)
+to_out.Activate(@out)
+embassy.Advertise(public file @to_out)
+
+embassy.Open()
+a.SetEmbassy(@embassy)
+a.SetRelation(custodian-a)
+b.SetEmbassy(@embassy)
+b.SetRelation(custodian-b)
+c.SetEmbassy(@embassy)
+c.SetRelation(custodian-c)
+out.SetEmbassy(@embassy)
+out.SetRelation(public)
+
+spawn CryptProvider::Shamir active_split
+active_split.Threshold(3)
+active_split.spawn(CryptProvider::Shard share1)
+active_split.spawn(CryptProvider::Shard share2)
+active_split.spawn(CryptProvider::Shard share3)
+a.Recall(active @share1)
+b.Recall(active @share2)
+c.Recall(active @share3)
+spawn CryptProvider::Keypair active
+active_split.Combine(@active)
+spawn CryptProvider::Certificate active_cert
+a.Recall(active @active_cert)
+
+spawn CryptProvider::Certificate cert
+cert.Issue(@active ROLE SUBJECT_KEY)
+cert.Verify(@active_cert)
+out.Advertise(ROLE cert @cert)
+
+active.Delete()
+active_split.Delete()
+embassy.Close()
