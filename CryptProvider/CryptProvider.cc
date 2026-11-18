@@ -6,8 +6,9 @@
 // and rebuilds one. Certificate: a link of the chain (core/Signature.h).
 // Custody: the Directory of what one custodian holds, the stand-in for that
 // custodian's FileRelation (NetworkProvider). Envelope: a Wrapper stage that
-// seals under the key its Private child holds.
-ETCS_MODULE_EXPORT_MAIN(CryptProvider, "Keypair Shard Shamir Certificate Custody Envelope")
+// seals under the key its Private child holds. Registrar: the route that hands
+// a loader ACE's half. Upstream: the site, as a loader reads it.
+ETCS_MODULE_EXPORT_MAIN(CryptProvider, "Keypair Shard Shamir Certificate Custody Envelope Registrar Upstream")
 
 ETCS_TAG_BLOCK_BASIC(Keypair,
     Generate, PublicKey, Sign, StoreTo, LoadFrom, Holds, Wipe, Delete
@@ -31,4 +32,12 @@ ETCS_TAG_BLOCK_BASIC(Custody,
 
 ETCS_TAG_BLOCK_BASIC(Envelope,
     Holds, Forget, Delete
+)
+
+ETCS_TAG_BLOCK_BASIC(Registrar,
+    Use, Above, Mount, Key, Filter, Request, Delete
+)
+
+ETCS_TAG_BLOCK_BASIC(Upstream,
+    SetEmbassy, SetRelation, Paths, Register, Check, Update, List, Delete
 )

@@ -15,7 +15,8 @@
  *                                     is its own subject; nothing else may be.
  *   Verify [<issuer cert>]            the signature under the issuer key it names;
  *                                     with the issuer's certificate, also that
- *                                     certificate's subject and a higher role
+ *                                     certificate's subject, and that its role
+ *                                     may certify this one (sig::may_issue)
  */
 class Certificate : public DeletableBase<Certificate>
 {
@@ -78,7 +79,7 @@ public:
         const Certificate* up = etcs_crypt::as<Certificate>(issuer_cert);
         ETCS::sig::Certificate u;
         if (!up || !up->copy(u)) return false;
-        return u.subject == c.issuer && static_cast<uint8_t>(u.role) < static_cast<uint8_t>(c.role);
+        return u.subject == c.issuer && ETCS::sig::may_issue(u.role, c.role);
     }
 
     // --- reads ---------------------------------------------------------------------

@@ -190,4 +190,67 @@ DEFINE_WORK_FUNC(Envelope, Holds)  { (void)ctx; const bool h = self.Holds(); dat
 DEFINE_WORK_FUNC(Envelope, Forget) { (void)ctx; (void)data; self.Forget(); }
 DEFINE_WORK_FUNC(Envelope, Delete) { (void)ctx; (void)data; self.Delete(); }
 
+// ── Registrar ─────────────────────────────────────────────────────────────────
+DEFINE_WORK_FUNC(Registrar, Use)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Use(rid);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Registrar, Above)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Above(rid);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Registrar, Mount)
+{
+    (void)ctx;
+    std::string segment;
+    data >> segment;
+    const bool ok = self.Mount(segment);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Registrar, Key)     { (void)ctx; const std::string k = self.Key(); data.reset(); data.write(k.c_str()); }
+// The route's two halves (HttpServer.AddRoute <rid> Request <rid> Filter): a path in, an answer out.
+DEFINE_WORK_FUNC(Registrar, Filter)  { (void)ctx; self.Accepts(data); }
+DEFINE_WORK_FUNC(Registrar, Request) { (void)ctx; self.Request(data); }
+DEFINE_WORK_FUNC(Registrar, Delete)  { (void)ctx; (void)data; self.Delete(); }
+
+// ── Upstream ──────────────────────────────────────────────────────────────────
+DEFINE_WORK_FUNC(Upstream, SetEmbassy)
+{
+    self.SetRunContext(ctx);
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.SetEmbassy(rid);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Upstream, SetRelation)
+{
+    self.SetRunContext(ctx);
+    std::string name;
+    data >> name;
+    const bool ok = self.SetRelation(name);
+    data.reset(); data << ok;
+}
+// Paths <pki> <dist>
+DEFINE_WORK_FUNC(Upstream, Paths)
+{
+    (void)ctx;
+    std::string pki, dist;
+    data >> pki >> dist;
+    const bool ok = self.Paths(pki, dist);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Upstream, Register) { self.SetRunContext(ctx); const bool ok = self.Register(); data.reset(); data << ok; }
+DEFINE_WORK_FUNC(Upstream, Check)    { self.SetRunContext(ctx); const bool ok = self.Check();    data.reset(); data << ok; }
+DEFINE_WORK_FUNC(Upstream, Update)   { self.SetRunContext(ctx); const bool ok = self.Update();   data.reset(); data << ok; }
+DEFINE_WORK_FUNC(Upstream, List)     { (void)ctx; const std::string r = self.Listing(""); data.reset(); data.write(r.substr(0, 250).c_str()); }
+DEFINE_WORK_FUNC(Upstream, Delete)   { (void)ctx; (void)data; self.Delete(); }
+
 #endif // CRYPTPROVIDER_H__
