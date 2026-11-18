@@ -879,6 +879,19 @@ DEFINE_WORK_FUNC(Scene3D, InheritGravity)
     (void)data; (void)ctx;
     self.InheritGravity();
 }
+// The speed of light inside this node: nothing in it moves faster, and a body
+// pushed past it keeps the difference as heat. Stated, or taken back to
+// inherit the one this node is in -- 65536 units a second where none is.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetLightSpeed, (float, c))
+{
+    (void)ctx;
+    self.SetLightSpeed(c);
+}
+DEFINE_WORK_FUNC(Scene3D, InheritLightSpeed)
+{
+    (void)data; (void)ctx;
+    self.InheritLightSpeed();
+}
 // Meets other solids by its shape: the normal motion kept on a bounce, and the
 // share of the load that rubs, both in [0,1].
 DEFINE_WORK_FUNC_TYPED(Scene3D, SetSolid, (float, restitution), (float, friction))

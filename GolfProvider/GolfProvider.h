@@ -24,6 +24,13 @@ DEFINE_WORK_FUNC_TYPED(GolfGame, BindBallShadow, (ETCS::RID, rid)) { (void)ctx; 
 DEFINE_WORK_FUNC_TYPED(GolfGame, BindHud,    (ETCS::RID, rid))     { (void)ctx; self.BindHud(rid); }
 // Where the ball goes back to, in the world's frame.
 DEFINE_WORK_FUNC_TYPED(GolfGame, SetTee, (float, x), (float, y), (float, z)) { (void)ctx; self.SetTee(x, y, z); }
+// AddHole <cup> <x> <y> <z> -- the course's next hole: its cup, and its tee in
+// the world's frame. Holing out goes on to the next; after the last, the first.
+DEFINE_WORK_FUNC_TYPED(GolfGame, AddHole, (ETCS::RID, cup), (float, x), (float, y), (float, z)) { (void)ctx; self.AddHole(cup, x, y, z); }
+// PlayHole <n> -- the ball on hole n's tee (the first is 1), nothing struck on it.
+DEFINE_WORK_FUNC_TYPED(GolfGame, PlayHole, (uint32_t, n)) { (void)ctx; self.PlayHole(n); }
+// "<hole> <holes> <strokes on it> <strokes on the holes before it>".
+DEFINE_WORK_FUNC(GolfGame, Card) { (void)ctx; data.reset(); data.writeString(self.Card().c_str()); }
 // The longest pull (scene units) and the speed it gives (units per second).
 DEFINE_WORK_FUNC_TYPED(GolfGame, SetPower, (float, max_pull), (float, max_speed)) { (void)ctx; self.SetPower(max_pull, max_speed); }
 // The camera's distance from the ball, its bearing and its pitch, in degrees.
@@ -34,6 +41,11 @@ DEFINE_WORK_FUNC_TYPED(GolfGame, Press,   (float, x), (float, y)) { (void)ctx; s
 DEFINE_WORK_FUNC_TYPED(GolfGame, Drag,    (float, x), (float, y)) { (void)ctx; self.Drag(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfGame, Release, (float, x), (float, y)) { (void)ctx; self.Release(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfGame, Wheel,   (float, notches))       { (void)ctx; self.Wheel(notches); }
+// Cancel -- a pull in hand put down, not shot: what the right button does
+// while the left holds one.
+DEFINE_WORK_FUNC(GolfGame, Cancel) { (void)ctx; (void)data; self.Cancel(); }
+// Key <code> <down> -- a key as a verb (R the round again, N the next hole).
+DEFINE_WORK_FUNC_TYPED(GolfGame, Key, (uint32_t, code), (int32_t, down)) { (void)ctx; self.Key(static_cast<uint16_t>(code), down != 0); }
 // "x y z length mode": the pull as it stands.
 DEFINE_WORK_FUNC(GolfGame, Pull) { (void)ctx; const std::string r = self.PullReport(); data.writeString(r.c_str()); ETCS_LOG("GolfGame", "pull: " << r); }
 DEFINE_WORK_FUNC(GolfGame, Strokes) { (void)ctx; data.writeString(std::to_string(self.Strokes()).c_str()); ETCS_LOG("GolfGame", "strokes: " << self.Strokes()); }

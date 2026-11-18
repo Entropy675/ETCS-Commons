@@ -8,11 +8,11 @@ ETCS_MODULE_EXPORT_MAIN(KartProvider, "KartBattle")
 
 // HYBRID for the edges, as ChessGame's: a guest's proposals out (Emit), the
 // record in (Absorb), the host's judging (Judge), the presence listing
-// (Roster), and the window's keys (ConsumeKeys).
+// (Roster), and the window's keys and pointer (ConsumeKeys, ConsumePointer).
 ETCS_TAG_BLOCK_HYBRID(KartBattle,
     (Create, BindWorld, BindCamera, BindCard, AddKart, AddWall, AddMap, AddRandomMap, AddBlock, AddRamp, AddHill,
-     AddPad, AddSpring, AddDeck, AddPit, AddSpawn, AddPickup, AddBlockNode, AddSlabNode, AddWedgeNode, AddDomeNode,
-     AddPickupNode, AddShotNode, AddBlastNode, AddBoardRow, AddGroundNode, AddMarkNode, AddPadNode, AddSpringNode,
-     Ready, Practice, Host, Join, Leave, Tick, Configure, Reroll, StartRound, Abandon, Give, Key, SetInvert, Run,
-     Status, Scores, Maps, Layout, Faults, Kart, Tyres, Hash, Snapshot, Note, Delete),
-    (Emit, Absorb, Judge, Roster, ConsumeKeys))
+     AddPad, AddSpring, AddDeck, AddPit, AddLava, AddSpawn, AddPickup, AddPickupUp, AddBlockNode, AddSlabNode, AddWedgeNode,
+     AddDomeNode, AddPickupNode, AddShotNode, AddBlastNode, AddBoardRow, AddGroundNode, AddMarkNode, AddPadNode,
+     AddSpringNode, Ready, Practice, Host, Join, Leave, Tick, Configure, Reroll, StartRound, Abandon, Give, Key,
+     SetInvert, Look, Frame, Run, Status, Scores, Maps, Layout, Faults, Kart, Tyres, Eye, Hash, Snapshot, Note, Delete),
+    (Emit, Absorb, Judge, Roster, ConsumeKeys, ConsumePointer))

@@ -3,6 +3,22 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <!--
+    THE PAGE STARTS AT 150%. Zoomed in, the canvas is put on fewer of the
+    screen's pixels, which is cheaper, and at 100% a wide window gives it more
+    than it needs. This is the browser's own zoom stated by the page: the
+    browser's still works on top of it, and `?zoom=1` (or any number) says
+    otherwise. Not in a frame -- the shell inside another page is zoomed with
+    that page -- and not on a narrow screen, where it would crowd the page.
+  -->
+  <script>
+    (function () {
+      if (window !== window.top) return;
+      const asked = parseFloat(new URLSearchParams(location.search).get('zoom'));
+      const zoom = asked > 0 ? asked : (window.innerWidth >= 1000 ? 1.5 : 1);
+      if (zoom !== 1) document.documentElement.style.zoom = String(zoom);
+    })();
+  </script>
   <title>ETCS Kart</title>
   <link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
@@ -81,7 +97,7 @@
 <body>
 <div id="layout">
   <header>
-    <a class="brand" href="/kart/" target="_top">ETCS KART</a>
+    <a class="brand" href="/" target="_top">ETCS KART</a>
     <label for="name" style="color:var(--dim);font-size:12px">you are</label>
     <input id="name" spellcheck="false" title="your name in a battle -- what the hall lists and the record is authored as">
     <span class="spacer"></span>
@@ -140,7 +156,8 @@
       <section>
         <h3>Playing</h3>
         <div class="keys"><b>W</b> go &nbsp; <b>S</b> brake, reverse &nbsp; <b>A</b> <b>D</b> steer &nbsp; <b>Space</b> fire
-        &nbsp; <b>Tab</b> scores. Drive over a gold box for a weapon; ramps throw you, hills slow you going up.
+        &nbsp; <b>Q</b> <b>E</b> or a right-button drag look round &nbsp; <b>Tab</b> scores. Drive over a gold box
+        for a weapon; ramps throw you, hills slow you going up.
         In the lobby the host's arrows move the menu and <b>Enter</b> starts; in a round the host's <b>Esc</b>
         abandons it. Click the arena first so it has the keys.</div>
         <label class="keys" style="display:block;margin-top:6px" title="swap the wheel's keys: A turns right, D left">

@@ -43,3 +43,4 @@ view.Clear(0.02, 0.02, 0.03, 1.0)
 view.Compose(@eye)
 detach RenderProvider/scripts/render_frames.etcs view=view
 detach KartProvider/scripts/kart_keys.etcs window=main battle=battle
+detach KartProvider/scripts/kart_pointer.etcs window=main battle=battle

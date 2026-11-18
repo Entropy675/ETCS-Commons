@@ -249,6 +249,9 @@ public:
     {
         CausalBase<Scene3D>::SetGravity(Fixed::From(gx), Fixed::From(gy), Fixed::From(gz));
     }
+    // The space's speed of light (CausalBase::SetLightSpeed): the fastest
+    // anything inside moves, in scene units per second.
+    void SetLightSpeed(float c) { CausalBase<Scene3D>::SetLightSpeed(Fixed::From(c)); }
     void SetSolid(float restitution, float friction)
     {
         CausalBase<Scene3D>::SetSolid(Fixed::From(restitution), Fixed::From(friction));

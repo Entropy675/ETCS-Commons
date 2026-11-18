@@ -93,7 +93,9 @@
  * wall. The ground has levels -- a pit's floor below the arena's, a deck in
  * the air that a kart is on from above, under from below and through going up
  * -- so which ground is a kart's follows from how high it is; a spring throws
- * it up, a pad pushes it along. A kart is SOLID -- a sphere to everything
+ * it up, a pad pushes it along, both harder the faster it comes. A kart that
+ * comes down in lava is out, and so is one that goes over the arena's wall
+ * and falls outside it. A kart is SOLID -- a sphere to everything
  * (etcs_causal_constraints.md §13) -- and drawn as a body on its four tyres,
  * tilted to the ground, which this battle turns with it after every step
  * (frames are translations). What is drawn for one runtime alone -- its
@@ -225,8 +227,17 @@ public:
         if (m_defs.empty() || width <= 0 || depth <= 0 || deep <= 0) return;
         m_defs.back().pits.push_back({ Fixed::From(x), Fixed::From(z), Fixed::From(width), Fixed::From(depth), Fixed::From(deep) });
     }
+    // A pit of lava: a kart that comes down on its floor is out.
+    void AddLava(float x, float z, float width, float depth, float deep)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (m_defs.empty() || width <= 0 || depth <= 0 || deep <= 0) return;
+        m_defs.back().pits.push_back({ Fixed::From(x), Fixed::From(z), Fixed::From(width), Fixed::From(depth), Fixed::From(deep), true });
+    }
     void AddSpawn(float x, float z)  { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().spawns.push_back({ Fixed::From(x), Fixed::From(z) }); }
     void AddPickup(float x, float z) { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().pickups.push_back({ Fixed::From(x), Fixed::From(z) }); }
+    // A box on top of the deck over the spot: AddPickup's is on the ground under it.
+    void AddPickupUp(float x, float z) { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().pickups.push_back({ Fixed::From(x), Fixed::From(z), true }); }
 
     // The pools the map in play is drawn with: solid blocks, the ground's
     // slabs (a ramp's slope or top) and domes (a hill), power-up boxes, shots,
@@ -281,9 +292,9 @@ public:
         verb(r, "SetAnchored", "1");
         parkNode(r);
     }
-    void AddPickupNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_pickup_nodes.push_back(r); hide(r); }
-    void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); hide(r); }
-    void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); m_blast_until.push_back(0); hide(r); }
+    void AddPickupNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_pickup_nodes.push_back(r); parkNode(r); }
+    void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); parkNode(r); }
+    void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); m_blast_until.push_back(0); parkNode(r); }
     void AddBoardRow(ETCS::RID r)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -291,10 +302,14 @@ public:
         verb(r, "SetHidden", "1");
         m_board.push_back({ r, std::string(), false });
     }
-    // The arena is made: the first map out, the lobby open.
+    // The arena is made: the first map out, the lobby open. Until then the
+    // battle has no maps to offer (Maps) and takes no settings: a page that
+    // lists them the moment the first is added would let a round start on an
+    // arena half made, and this would then put the first map back under it.
     void Ready()
     {
         std::lock_guard<std::mutex> g(m_mu);
+        m_ready = true;
         mapLocked(0, firstLayout(0));
         respawnAllLocked();
     }
@@ -366,19 +381,19 @@ public:
     {
         std::lock_guard<std::mutex> g(m_mu);
         const int m = mapIndex(map);
-        if (!m_judge || m < 0) return false;
+        if (!m_judge || !m_ready || m < 0) return false;
         return configLocked(m, secs, m != m_map);
     }
     bool Reroll()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (!m_judge || m_defs.empty() || !m_defs[m_map].generated) return false;
+        if (!m_judge || !m_ready || m_defs.empty() || !m_defs[m_map].generated) return false;
         return configLocked(m_map, m_round_secs, true);
     }
     bool StartRound()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        return m_judge && roundLocked();
+        return m_judge && m_ready && roundLocked();
     }
     bool Abandon()
     {
@@ -527,7 +542,8 @@ public:
      * turns the kart to the picture's left and D to its right, which is the
      * wheel's -1 and +1 (the camera's right is up x forward: +x for a kart
      * heading +z); SetInvert swaps the two keys for this runtime alone. Tab
-     * holds up the board, this runtime's alone. In the lobby the host's keys
+     * holds up the board and Q and E look round the kart (lookLocked), this
+     * runtime's alone and no line of the record. In the lobby the host's keys
      * move the menu instead: up/down choose, left/right change, Enter
      * changes or starts; each change is a line.
      */
@@ -535,7 +551,13 @@ public:
     {
         std::lock_guard<std::mutex> g(m_mu);
         if (key == 258) { m_board_held = down; return; }
-        if (down && m_judge && !m_defs.empty())
+        if (key == 'Q' || key == 'E')
+        {
+            const unsigned bit = key == 'Q' ? 1u : 2u;
+            if (down) m_look_keys |= bit; else m_look_keys &= ~bit;
+            return;
+        }
+        if (down && m_judge && m_ready && !m_defs.empty())
         {
             if (m_phase == Lobby && menuKeyLocked(key)) return;
             if (m_phase == Playing && key == 256) { takeLocked(m_me, "abandon"); return; }
@@ -569,6 +591,58 @@ public:
     }
     bool Inverted() { std::lock_guard<std::mutex> g(m_mu); return m_invert; }
 
+    /*
+     * LOOKING ROUND THE KART. The eye rides behind the kart; a drag with the
+     * right button, or Q and E held, swings it round the kart (and a drag up
+     * or down, over it) -- to see beside or behind, or out of a hole the
+     * view behind is no good in. Let alone it comes back behind the kart,
+     * slowly (lookLocked). This runtime's alone: where a driver looks is no
+     * part of the battle, so no line and nothing hashed.
+     */
+    void Pointer(const InputEvent& ev)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        switch (ev.action)
+        {
+            case INPUT_BUTTON_DOWN:
+                if (ev.key == kLookButton) { m_look_drag = true; m_look_x = ev.x; m_look_y = ev.y; }
+                break;
+            case INPUT_MOTION:
+                if (!m_look_drag) break;
+                // Let go outside the window: the platform says it is up.
+                if (input_button_state(ev, kLookButton) == 0) { m_look_drag = false; break; }
+                turnLookLocked((ev.x - m_look_x) * kLookTurn, (ev.y - m_look_y) * kLookTurn);
+                m_look_x = ev.x; m_look_y = ev.y;
+                break;
+            case INPUT_BUTTON_UP:
+                if (ev.key == kLookButton) m_look_drag = false;
+                break;
+            default: break;
+        }
+    }
+    // The look as a verb: this far round the kart and over it, in degrees
+    // (to the picture's right, and up), as a drag would leave it.
+    void Look(float yaw_deg, float pitch_deg)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_look_yaw = m_look_pitch = 0.0f;
+        turnLookLocked(yaw_deg * kPi / 180.0f, pitch_deg * kPi / 180.0f);
+    }
+    // "<eye x> <y> <z> <at x> <y> <z> <look yaw> <pitch>": where this
+    // runtime's eye is headed (the frame edge eases it there) and the look, in
+    // degrees.
+    std::string Eye()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        float eye[3], at[3];
+        viewLocked(eye, at);
+        return fmt3(eye[0]) + " " + fmt3(eye[1]) + " " + fmt3(eye[2]) + " " + fmt3(at[0]) + " " + fmt3(at[1]) + " " + fmt3(at[2]) + " "
+             + fmt3(m_look_yaw * 180.0f / kPi) + " " + fmt3(m_look_pitch * 180.0f / kPi);
+    }
+    // The frame edge by hand, for a script with no window: what a frame
+    // `ms` long does (the host's clock runs with it, as a window's does).
+    void Frame(float ms) { AdvanceConcrete(static_cast<double>(ms)); }
+
     // ── reads ────────────────────────────────────────────────────────────
 
     // "<tick> <seq> <mode> <me> <slot> <phase> <secs left> <map> <round secs> <layout>"
@@ -599,12 +673,12 @@ public:
         }
         return out;
     }
-    // The maps, one name a line, in their order.
+    // The maps, one name a line, in their order: none until the arena is made (Ready).
     std::string Maps()
     {
         std::lock_guard<std::mutex> g(m_mu);
         std::string out;
-        for (const KartArena::Map& m : m_defs) out += m.name + "\n";
+        if (m_ready) for (const KartArena::Map& m : m_defs) out += m.name + "\n";
         return out;
     }
     // The map in play: "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads>
@@ -622,7 +696,7 @@ public:
         for (const auto& d : m_live.decks)  { put(d.x); put(d.z); put(d.w); put(d.d); put(d.h); st += "|"; }
         for (const auto& p : m_live.pits)   { put(p.x); put(p.z); put(p.w); put(p.d); put(p.depth); st += "|"; }
         for (const auto& p : m_live.spawns) { put(p.x); put(p.z); }
-        for (const auto& p : m_live.pickups) { put(p.x); put(p.z); }
+        for (const auto& p : m_live.pickups) { put(p.x); put(p.z); if (p.up) st += "u"; }
         char d[17];
         std::snprintf(d, sizeof d, "%016llx", static_cast<unsigned long long>(XXH3_64bits(st.data(), st.size())));
         return m_live.name + " " + std::to_string(m_layout) + " " + std::to_string(m_live.blocks.size()) + " "
@@ -631,8 +705,9 @@ public:
              + std::to_string(m_live.pads.size()) + " " + std::to_string(m_live.springs.size()) + " "
              + std::to_string(m_live.decks.size()) + " " + std::to_string(m_live.pits.size()) + " " + d;
     }
-    // What is wrong with the maps, "<map>: <fault>" a line (KartArena::Faults),
-    // or "none": the hand-made ones as given, one from a seed as it is in
+    // What is wrong with the maps, "<map>: <fault>" a line (KartArena::Faults,
+    // and what a map has more of than the pools draw), or "none": the
+    // hand-made ones as given, one from a seed as it is in
     // play. A verb's answer is 255 characters: past the lines that fit,
     // "+<n> more".
     std::string Faults()
@@ -646,9 +721,10 @@ public:
             if (!m.generated) KartArena::Prepare(m);
             else if (static_cast<int>(i) == m_map) m = m_live;
             else continue;
-            std::istringstream lines(KartArena::Faults(m));
+            std::istringstream lines(KartArena::Faults(m) + "\n" + shortLocked(m));
             for (std::string line; std::getline(lines, line);)
             {
+                if (line.empty()) continue;
                 line = m.name + ": " + line + "\n";
                 if (more == 0 && out.size() + line.size() <= 240) out += line; else ++more;
             }
@@ -788,7 +864,7 @@ private:
         int         thr = 0, steer = 0, fire = 0;
         int         press = 0;                     // a press of the trigger the tick has not yet seen
         Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
-        Fixed       wheel_rate;                    // how fast the wheel is turning now: it gathers pace while held
+        Fixed       wheel_ease;                    // how far past the lock a held wheel has eased: 0 at the press, 1 at the far lock
         int         steer_held = 0;                // the way the wheel was being turned last tick
         Fixed       hx, hz;                        // the heading, level (the body is tilted to the ground)
         Fixed       vy;                            // up: the ground's pace under it, or a flight's
@@ -833,12 +909,25 @@ private:
     static constexpr int      kRespawn    = 3 * kHz;
     static constexpr int      kPickupBack = 8 * kHz;
     static constexpr int      kResults    = 6 * kHz;
+    // The eye's boom behind and over the kart, and the look that swings it.
+    static constexpr float    kPi         = 3.14159265f;
+    static constexpr float    kBoom       = 8.32f;     // its length: 7.5 behind and 3.6 over
+    static constexpr float    kBoomRise   = 0.4475f;   // and that angle over the ground
+    static constexpr int      kBoomSteps  = 16;        // the points along it tried against the ground
+    static constexpr float    kBoomGap    = 0.25f;     // the least it keeps over the ground, or off a deck
+    static constexpr float    kBoomLeast  = 0.2f;      // of its length, however little is clear
+    static constexpr uint16_t kLookButton = 1;         // the right button
+    static constexpr float    kLookTurn   = 0.006f;    // radians a pixel dragged (golf's orbit)
+    static constexpr double   kLookKeyRate = 2.0;      // radians a second, Q or E held
+    static constexpr float    kLookDown   = -0.35f, kLookUp = 0.95f;   // the boom from nearly level to nearly overhead
+    static constexpr double   kLookHoldMs = 700.0, kLookBackMs = 1500.0;
     // The ground's colours, the battle's to give (AddGroundNode, AddSlabNode,
     // AddDomeNode): a mark is drawn between the ground's own and the tyre's.
     static constexpr float kGround[6][3] = { { 0.30f, 0.31f, 0.33f }, { 0.72f, 0.52f, 0.30f }, { 0.33f, 0.52f, 0.27f },
                                              { 0.13f, 0.20f, 0.36f }, { 0.50f, 0.55f, 0.66f }, { 0.22f, 0.21f, 0.24f } };
                                              // floor, ramp, hill, pad, deck, a pit's floor
     static constexpr float kPitWall[3] = { 0.15f, 0.15f, 0.17f };
+    static constexpr float kLava[3]    = { 0.95f, 0.36f, 0.08f };
     static constexpr float kSpring[3] = { 0.42f, 0.12f, 0.34f }, kSpringArrow[3] = { 1.0f, 0.82f, 0.25f };
     static constexpr float kTyre[3] = { 0.06f, 0.06f, 0.07f };
     static constexpr float kColors[kMaxKarts][3] = {
@@ -868,13 +957,13 @@ private:
     static Fixed reverseAcc(){ return F(5); }
     static Fixed reverseTop(){ return F(6); }
     static Fixed coast()     { return F(6, 10); }
-    static Fixed wheelLock() { return F(45, 100); }   // the lock standing still
-    static Fixed steerAccel(){ return F(125, 100); }  // rad/s/s: the pace the wheel's turn gathers while held
-    static Fixed steerMax()  { return F(12, 10); }    // rad/s: the fastest the wheel turns
-    static Fixed steerBack() { return F(15, 10); }    // rad/s: back toward the middle, let go
+    static Fixed wheelLock() { return F(45, 100); }   // the lock standing still: where a press puts the wheel at once
+    static Fixed steerEase() { return F(3, 2); }      // s: a hold eases the wheel on from the lock to twice it in this long
+    static Fixed steerBack() { return F(3); }         // rad/s: back toward the middle, let go
     // The lock at a speed: the full lock standing still, less the faster the
-    // kart goes, so the turn at speed (speed x lock / wheelbase) stays near
-    // 1.7 to 1.9 rad/s from 16 u/s up instead of growing with it.
+    // kart goes, so the turn a press gives at speed (speed x lock /
+    // wheelbase) stays near 1.7 to 1.9 rad/s from 16 u/s up instead of
+    // growing with it. A long hold doubles it.
     static Fixed lockAt(Fixed speed) { return wheelLock() / (Fixed::One() + speed.Abs() / F(10)); }
     static Fixed wheelbase() { return F(16, 10); }
     // The tyres across: the most they pull a slide out (u/s/s), and less
@@ -893,17 +982,22 @@ private:
         return Fixed::Min(Fixed::One(), least + (Fixed::One() - least) * (off - free) / (Fixed::One() - free));
     }
     // A PAD pushes the way it points while a kart's middle is over it:
-    // padPush() (u/s/s) whatever the kart is doing, and padGain() of its
-    // speed that way a second on top, so one taken at speed gives more --
-    // until it is going padTop() that way, the fastest anything goes. Its
-    // arrows run its length in padBeat() ticks, one behind the other.
-    static Fixed padPush()   { return F(120); }
-    static Fixed padGain()   { return F(1); }
+    // padPush() (u/s/s) whatever the kart is doing -- a nudge -- and
+    // padGain() times its speed that way a second on top, so one taken at
+    // speed gives a lot: 60 standing, 140 at 20 u/s -- until the kart is
+    // going padTop() that way, the fastest anything goes. Its arrows run its
+    // length in padBeat() ticks, one behind the other.
+    static Fixed padPush()   { return F(60); }
+    static Fixed padGain()   { return F(4); }
     static Fixed padTop()    { return F(40); }
-    // A SPRING throws a kart up as hard as a pad pushes one along in an
-    // eighth of a second -- 15 u/s, five and a half units high -- and again
-    // when it comes down on it. Its four arrows close on its middle.
-    static Fixed springKick(){ return padPush() / F(8); }
+    // A SPRING throws a kart up: as hard as a pad pushes one along in an
+    // eighth of a second, standing (7.5 u/s, a hop of 1.4), and springGain()
+    // of the kart's speed over the ground on top -- 15 at 15 u/s, which is
+    // five and a half high and onto a storey; 18.5 at the top speed, eight
+    // and a half high and over the arena's wall. Again when it comes down on
+    // it. Its four arrows close on its middle.
+    static Fixed springKick(Fixed speed) { return padPush() / F(8) + speed * springGain(); }
+    static Fixed springGain(){ return Fixed::Half(); }
     static Fixed padArrow()  { return F(9, 10); }    // an arrow's length
     static constexpr int padBeat() { return 40; }
     // The tyres at the body's corners, in its frame: across, ahead.
@@ -927,7 +1021,20 @@ private:
     static Fixed gravity()   { return F(20); }
     static Fixed climb()     { return F(35, 100); }   // more ground than this in one step is a wall
     static Fixed noseRise()  { return F(7, 10); }     // ...and this much under the nose (a slope of ~0.75)
-    static Fixed bound()     { return F(31); }         // the arena's inside, less a kart's reach
+    static Fixed bound()     { return KartArena::Half() - F(1); }   // the arena's inside, less a kart's reach
+    // OVER THE WALL. The walls stop a kart whose feet are below wallRide():
+    // their top (KartArena::WallTop) less what of the kart is under its feet.
+    // One higher goes over -- off a spring, a jump, a storey's edge -- rides
+    // the wall's top while it is over it, and past it has no ground: at
+    // lostAt() it is out, as one that comes down in lava is.
+    static Fixed wallRide()  { return KartArena::WallTop() + kartR() - kartY(); }
+    static Fixed wallOut()   { return KartArena::Half() + F(1) + kartR(); }   // past the wall's far side
+    // The long arms reach across the arena, however big it is: the sniper
+    // corner to corner, a rocket (30 u/s) its width and more.
+    static Fixed sniperReach() { return KartArena::Half() * F(283, 100); }
+    static constexpr int rocketLife() { return 4 * kHz; }
+    static Fixed voidAt()    { return F(-40); }        // where a fall outside ends, between rounds
+    static Fixed lostAt()    { return F(-6); }
 
     // ── the record ──────────────────────────────────────────────────────
 
@@ -1083,7 +1190,7 @@ private:
         for (size_t i = 0; i < m_slots.size(); ++i) pitLocked(i);
         for (Shot& s : m_shots) freeNode(s.node);
         m_shots.clear();
-        for (size_t b = 0; b < m_blast_nodes.size(); ++b) { m_blast_until[b] = 0; hide(m_blast_nodes[b]); }
+        for (size_t b = 0; b < m_blast_nodes.size(); ++b) { m_blast_until[b] = 0; parkNode(m_blast_nodes[b]); }
         m_tick = m_recorded = m_seq = 0;
         m_wall_ms = 0.0;
         m_snaps.clear(); m_snap_tick = 0; m_snap_hash = "-"; m_differed_at = 0;
@@ -1112,7 +1219,7 @@ private:
         const Fixed l = Fixed::Length(dx, Fixed::Zero(), dz);
         if (l.IsPositive()) { s.hx = dx / l; s.hz = dz / l; } else { s.hx = Fixed::Zero(); s.hz = Fixed::One(); }
         Fixed gx, gz;
-        const Fixed y = topAt(x, z, &gx, &gz) + kartY();
+        const Fixed y = KartArena::Solid(m_live, x, z, &gx, &gz) + kartY();   // on the ground, under any deck
         s.sgx = gx; s.sgz = gz; s.vy = Fixed::Zero(); s.air = false;
         std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
         OrderVector& r = k->RowsUnder();
@@ -1131,7 +1238,7 @@ private:
     void parkLocked(size_t i)
     {
         Slot& s = m_slots[i];
-        s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_rate = Fixed::Zero(); s.steer_held = 0;
+        s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
         s.dead_until = -1; s.ram_safe = 0;
         verb(s.body, "SetVisible", "0");
@@ -1165,7 +1272,7 @@ private:
             }
             if (nearest > best) { best = nearest; bx = p.x; bz = p.z; }
         }
-        s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_rate = Fixed::Zero(); s.steer_held = 0;
+        s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
         s.dead_until = -1;
         Fixed dx = -bx, dz = -bz;
@@ -1210,12 +1317,56 @@ private:
         for (const KartArena::Spot& sp : m_live.pickups)
             if (n < m_pickup_nodes.size())
             {
-                Pickup p; p.x = sp.x; p.z = sp.z; p.y = topAt(sp.x, sp.z) + F(7, 10); p.back = 0; p.node = m_pickup_nodes[n++];
+                Pickup p; p.x = sp.x; p.z = sp.z; p.y = (sp.up ? topAt(sp.x, sp.z) : KartArena::Solid(m_live, sp.x, sp.z)) + F(7, 10); p.back = 0; p.node = m_pickup_nodes[n++];
                 m_pickups.push_back(p);
                 placeNode(p.node, p.x, p.y, p.z);
                 verb(p.node, "SetVisible", "1");
             }
-        for (; n < m_pickup_nodes.size(); ++n) hide(m_pickup_nodes[n]);
+        for (; n < m_pickup_nodes.size(); ++n) parkNode(m_pickup_nodes[n]);
+    }
+    // The arena's floor round a map's pits: every piece each pit cuts into
+    // leaves what is left of it, in up to four.
+    struct Rect { Fixed x0, z0, x1, z1; };
+    static std::vector<Rect> floorPieces(const KartArena::Map& m)
+    {
+        const Fixed half = Fixed::Half();
+        const Fixed edge = KartArena::Half() + F(4);   // the floor runs on a little past the walls
+        std::vector<Rect> floor{ { -edge, -edge, edge, edge } };
+        for (const KartArena::Pit& p : m.pits)
+        {
+            const Fixed x0 = p.x - p.w * half, x1 = p.x + p.w * half, z0 = p.z - p.d * half, z1 = p.z + p.d * half;
+            std::vector<Rect> next;
+            for (const Rect& r : floor)
+            {
+                if (r.x1 <= x0 || r.x0 >= x1 || r.z1 <= z0 || r.z0 >= z1) { next.push_back(r); continue; }
+                if (r.x0 < x0) next.push_back({ r.x0, r.z0, x0, r.z1 });
+                if (r.x1 > x1) next.push_back({ x1, r.z0, r.x1, r.z1 });
+                const Fixed a = Fixed::Max(r.x0, x0), b = Fixed::Min(r.x1, x1);
+                if (r.z0 < z0) next.push_back({ a, r.z0, b, z0 });
+                if (r.z1 > z1) next.push_back({ a, z1, b, r.z1 });
+            }
+            floor.swap(next);
+        }
+        return floor;
+    }
+    // What a map needs of each pool to be drawn whole, "" when it has it: a
+    // thing past a pool's end is not drawn, and a block not drawn is not there.
+    std::string shortLocked(const KartArena::Map& m) const
+    {
+        size_t wedges = 0, slabs = m.decks.size() + m.pits.size() * 5 + (m.pits.empty() ? 0 : floorPieces(m).size());
+        for (const KartArena::Ramp& r : m.ramps) { wedges += r.up.IsPositive() + r.down.IsPositive(); slabs += r.flat.IsPositive(); }
+        std::string out;
+        auto need = [&out](const char* what, size_t n, size_t pool) {
+            if (pool != 0 && n > pool) out += std::to_string(n) + " " + what + ", the pool has " + std::to_string(pool) + "\n";
+        };
+        need("blocks", m.blocks.size(), m_block_nodes.size());
+        need("wedges", wedges, m_wedge_nodes.size());
+        need("slabs", slabs, m_slab_nodes.size());
+        need("domes", m.hills.size(), m_dome_nodes.size());
+        need("pads", m.pads.size(), m_pad_nodes.size());
+        need("springs", m.springs.size(), m_spring_nodes.size());
+        need("boxes", m.pickups.size(), m_pickup_nodes.size());
+        return out;
     }
     void drawMapLocked()
     {
@@ -1226,7 +1377,7 @@ private:
             if (nb >= m_block_nodes.size()) break;
             const ETCS::RID node = m_block_nodes[nb++];
             verb(node, "Create", fmt3(b.w.ToFloat()) + ", " + fmt3(b.h.ToFloat()) + ", " + fmt3(b.d.ToFloat()));
-            poseNode(node, b.x, b.h * Fixed::Half(), b.z, b.yaw, Fixed::Zero(), Fixed::One());
+            poseNode(node, b.x, b.base + b.h * Fixed::Half(), b.z, b.yaw, Fixed::Zero(), Fixed::One());
             verb(node, "SetVisible", "1");
             m_live_blocks.push_back(node);
         }
@@ -1266,36 +1417,23 @@ private:
         const Fixed half = Fixed::Half(), thick = KartArena::DeckThick();
         for (const KartArena::Deck& d : m_live.decks)
             slab(d.x, d.h - thick * half, d.z, d.w, thick, d.d, kGround[KartArena::OnDeck]);
-        struct Rect { Fixed x0, z0, x1, z1; };
-        std::vector<Rect> floor{ { F(-36), F(-36), F(36), F(36) } };
         for (const KartArena::Pit& p : m_live.pits)
         {
             const Fixed x0 = p.x - p.w * half, x1 = p.x + p.w * half, z0 = p.z - p.d * half, z1 = p.z + p.d * half;
             const Fixed mid = -p.depth * half - F(1, 100), wall = F(3, 10);
-            slab(p.x, -p.depth - F(5, 100), p.z, p.w, F(1, 10), p.d, kGround[KartArena::InPit]);
+            slab(p.x, -p.depth - F(1, 4), p.z, p.w, F(1, 2), p.d, p.lava ? kLava : kGround[KartArena::InPit]);
             slab(p.x, mid, z1 + wall * half, p.w + wall * F(2), p.depth, wall, kPitWall);
             slab(p.x, mid, z0 - wall * half, p.w + wall * F(2), p.depth, wall, kPitWall);
             slab(x1 + wall * half, mid, p.z, wall, p.depth, p.d, kPitWall);
             slab(x0 - wall * half, mid, p.z, wall, p.depth, p.d, kPitWall);
-            // Every piece of floor the pit cuts into: what is left of it, in up to four.
-            std::vector<Rect> next;
-            for (const Rect& r : floor)
-            {
-                if (r.x1 <= x0 || r.x0 >= x1 || r.z1 <= z0 || r.z0 >= z1) { next.push_back(r); continue; }
-                if (r.x0 < x0) next.push_back({ r.x0, r.z0, x0, r.z1 });
-                if (r.x1 > x1) next.push_back({ x1, r.z0, r.x1, r.z1 });
-                const Fixed a = Fixed::Max(r.x0, x0), b = Fixed::Min(r.x1, x1);
-                if (r.z0 < z0) next.push_back({ a, r.z0, b, z0 });
-                if (r.z1 > z1) next.push_back({ a, z1, b, r.z1 });
-            }
-            floor.swap(next);
         }
+        const std::vector<Rect> floor = floorPieces(m_live);
         if (m_live.pits.empty()) { if (m_floor) verb(m_floor, "SetVisible", "1"); }
         else
         {
             if (m_floor) hide(m_floor);
             for (const Rect& r : floor)
-                slab((r.x0 + r.x1) * half, F(-5, 100), (r.z0 + r.z1) * half, r.x1 - r.x0, F(1, 10), r.z1 - r.z0, kGround[KartArena::Floor]);
+                slab((r.x0 + r.x1) * half, F(-1, 4), (r.z0 + r.z1) * half, r.x1 - r.x0, F(1, 2), r.z1 - r.z0, kGround[KartArena::Floor]);
         }
         for (const KartArena::Hill& k : m_live.hills)
         {
@@ -1303,21 +1441,22 @@ private:
             const ETCS::RID node = m_dome_nodes[nd++];
             const std::string a = fmt3((k.a * F(2)).ToFloat()), b = fmt3((k.b * F(2)).ToFloat());
             verb(node, "Create", a + ", " + b + ", " + a);
-            poseNode(node, k.x, k.y0, k.z, 0, Fixed::Zero(), Fixed::One());
+            poseNode(node, k.x, k.base + k.y0, k.z, 0, Fixed::Zero(), Fixed::One());
             verb(node, "SetVisible", "1");
         }
         for (; nb < m_block_nodes.size(); ++nb) parkNode(m_block_nodes[nb]);
         for (; ns < m_slab_nodes.size(); ++ns) parkNode(m_slab_nodes[ns]);
         for (; nd < m_dome_nodes.size(); ++nd) parkNode(m_dome_nodes[nd]);
-        // The pads: each plate on the floor, under any tyre's mark; the
-        // arrows are put on it every tick (arrowsLocked).
+        // The pads: each plate on its ground -- tilted to a bank's slope --
+        // under any tyre's mark; the arrows are put on it every tick
+        // (arrowsLocked).
         for (size_t n = 0; n < m_pad_nodes.size(); ++n)
         {
             const PadNodes& pn = m_pad_nodes[n];
             if (n < m_live.pads.size())
             {
                 const KartArena::Pad& p = m_live.pads[n];
-                poseNode(pn.plate, p.x, p.y + F(3, 1000), p.z, p.yaw, Fixed::Zero(), Fixed::One());
+                poseNode(pn.plate, p.x, p.y + F(3, 1000), p.z, p.yaw, Fixed::Zero(), Fixed::One(), p.gx, p.gz);
                 verb(pn.plate, "SetVisible", "1");
                 for (ETCS::RID a : pn.arrow) verb(a, "SetVisible", "1");
             }
@@ -1372,7 +1511,7 @@ private:
             }
             if (m_phase != Lobby) pickupsLocked();
             for (size_t b = 0; b < m_blast_nodes.size(); ++b)
-                if (m_blast_until[b] && static_cast<int64_t>(m_tick) >= m_blast_until[b]) { m_blast_until[b] = 0; hide(m_blast_nodes[b]); }
+                if (m_blast_until[b] && static_cast<int64_t>(m_tick) >= m_blast_until[b]) { m_blast_until[b] = 0; parkNode(m_blast_nodes[b]); }
             arrowsLocked();
         }
         if (m_phase == Playing && static_cast<int64_t>(m_tick) >= m_end)
@@ -1415,7 +1554,7 @@ private:
         // the tyres. The work is the Impulse below, with the pedal's.
         if (!s.air)
             if (const KartArena::Pad* pad = KartArena::PadAt(m_live, r.x, r.z))
-                if ((groundFor(s, r, r.x, r.z) - pad->y).Abs() < F(5, 100))
+                if ((groundFor(s, r, r.x, r.z) - KartArena::Solid(m_live, r.x, r.z)).Abs() < F(5, 100))   // on its ground, not on a deck over it
                 {
                     const Fixed along = vx * pad->sx + vz * pad->cz;
                     if (along < padTop())
@@ -1548,27 +1687,28 @@ private:
     }
 
     /*
-     * THE WHEEL, turned by A and D. Held, its turn starts slow and gathers
-     * pace (steerAccel) up to the fastest it turns (steerMax), toward the lock
-     * for the kart's speed (lockAt) -- a tap steers a little, a hold a lot.
-     * Turned the other way, the pace starts again from nothing. Let go, it
-     * goes back to the middle at steerBack; and past a smaller lock (the
-     * kart speeding up with the wheel turned) it eases back to it.
+     * THE WHEEL, turned by A and D. A press puts it at the lock for the
+     * kart's speed (lockAt) at once -- the wheel answers the key, not a
+     * moment after it -- and held, it eases on from there to twice the lock
+     * over steerEase: a tap is a firm turn, a long hold a hard one. Turned
+     * the other way it is at that side's lock at once and eases again from
+     * there. Let go, it goes back to the middle at steerBack; and past where
+     * it should be (the kart speeding up with the wheel turned, so the lock
+     * shrinking) it comes back at that pace too.
      */
     static void wheelTurnLocked(Slot& s, int steer, Fixed speed, Fixed step)
     {
-        const Fixed lock = lockAt(speed);
-        if (steer != s.steer_held) s.wheel_rate = Fixed::Zero();
+        if (steer != s.steer_held) s.wheel_ease = Fixed::Zero();
         s.steer_held = steer;
-        Fixed target = Fixed::Zero(), turn = steerBack() * step;
+        Fixed target = Fixed::Zero();
         if (steer != 0)
         {
-            target = lock * F(steer);
-            s.wheel_rate = Fixed::Min(s.wheel_rate + steerAccel() * step, steerMax());
-            // Toward the lock at the turn's pace; back from past it as when let go.
-            const bool past = (steer > 0 && s.wheel > target) || (steer < 0 && s.wheel < target);
-            turn = past ? steerBack() * step : s.wheel_rate * step;
+            s.wheel_ease = Fixed::Min(s.wheel_ease + step / steerEase(), Fixed::One());
+            target = lockAt(speed) * (Fixed::One() + s.wheel_ease) * F(steer);
+            // Short of it: there at once (the press's jump, and the ease after it).
+            if (((target - s.wheel) * F(steer)).IsPositive()) { s.wheel = target; return; }
         }
+        const Fixed turn = steerBack() * step;
         Fixed d = target - s.wheel;
         if (d > turn) d = turn; else if (d < -turn) d = -turn;
         s.wheel += d;
@@ -1580,7 +1720,8 @@ private:
      * ground falls away faster than gravity can follow (a lip) it flies, and
      * lands where it meets the ground again. Ground rising more than a step
      * can climb, at the kart or under its nose, is a wall: the kart is put
-     * back where the step found it, stopped. The arena's walls bound it all.
+     * back where the step found it, stopped. The arena's walls bound it all
+     * -- for a kart below their top; one over it has left (wallRide).
      */
     void groundLocked(Slot& s)
     {
@@ -1593,8 +1734,19 @@ private:
         Fixed gx, gz;
         Fixed g = groundFor(s, r, r.x, r.z, &gx, &gz) + kartY();
         const Fixed sp = Fixed::Length(vx, Fixed::Zero(), vz);
-        bool wall = g - r.y > climb();
-        if (!wall && sp.IsPositive() && !s.air)
+        // Past the walls' inside: over them (high enough, or out already) or stopped by them.
+        const Fixed far = Fixed::Max(r.x.Abs(), r.z.Abs());
+        const bool over = far > bound()
+                       && (r.y - kartY() >= wallRide() - climb() || Fixed::Max(s.px.Abs(), s.pz.Abs()) > bound() + F(1, 100));
+        if (over)
+        {
+            // On the wall's top -- or a deck laid to it, if that is higher -- or past it all.
+            const bool on_wall = far < wallOut() && r.y - kartY() >= wallRide() - climb();
+            const bool deck = on_wall && far <= KartArena::Half() && g > wallRide() + kartY();
+            if (!deck) { g = (on_wall ? wallRide() : voidAt()) + kartY(); gx = gz = Fixed::Zero(); }
+        }
+        bool wall = !over && g - r.y > climb();
+        if (!wall && !over && sp.IsPositive() && !s.air)
         {
             const Fixed nx = r.x + vx / sp * F(9, 10), nz = r.z + vz / sp * F(9, 10);
             wall = groundFor(s, r, nx, nz) + kartY() - r.y > noseRise();
@@ -1612,7 +1764,7 @@ private:
         // A spring under it throws it up, whatever way it was going.
         if (!s.air)
             if (const KartArena::Spring* up = KartArena::SpringAt(m_live, r.x, r.z))
-                if ((g - kartY() - up->y).Abs() < F(5, 100)) { s.air = true; s.vy = springKick(); }
+                if ((g - kartY() - up->y).Abs() < F(5, 100)) { s.air = true; s.vy = springKick(sp); }
         if (!s.air)
         {
             const Fixed flying = y + s.vy * step - gravity() * step * step * Fixed::Half();
@@ -1626,7 +1778,7 @@ private:
             if (!(y > g)) { y = g; s.air = false; s.vy = Fixed::Zero(); s.sgx = gx; s.sgz = gz; }
         }
         Fixed x = r.x, z = r.z;
-        const bool cx = x.Abs() > bound(), cz = z.Abs() > bound();
+        const bool cx = !over && x.Abs() > bound(), cz = !over && z.Abs() > bound();
         if (cx) x = x.raw > 0 ? bound() : -bound();
         if (cz) z = z.raw > 0 ? bound() : -bound();
         if (cx || cz)
@@ -1637,6 +1789,21 @@ private:
         }
         r.PlaceAt(x, y, z);
         poseLocked(s, r);
+        // Out: down on a lava pit's floor, or far enough down outside the walls.
+        const KartArena::Pit* pit = s.air || over ? nullptr : KartArena::PitAt(m_live, x, z);
+        const bool molten = pit && pit->lava && (y - kartY() + pit->depth).Abs() < F(5, 100);
+        if (molten || (over && y - kartY() < lostAt()))
+            damageLocked(static_cast<size_t>(&s - m_slots.data()), -1, kFullHp, molten ? "the lava" : "the drop");
+    }
+    // Up turned onto the normal of ground that slopes (gx, gz): the half-way
+    // spinor (w, x, 0, z).
+    static void tiltTo(Fixed gx, Fixed gz, Fixed& tw, Fixed& tx, Fixed& tz)
+    {
+        const Fixed nl = Fixed::Length(-gx, Fixed::One(), -gz);
+        const Fixed nx = -gx / nl, ny = Fixed::One() / nl, nz = -gz / nl;
+        tw = Fixed::One() + ny; tx = nz; tz = -nx;
+        const Fixed tl = Fixed::Length(tw, tx, tz);
+        tw = tw / tl; tx = tx / tl; tz = tz / tl;
     }
     // The body's turn: level to the heading, then tilted to the slope it
     // stands on (or last stood on, in the air).
@@ -1644,12 +1811,8 @@ private:
     {
         Fixed yw, yy;   // the heading's turn about +y: +z onto (hx, hz)
         halfTurn(s.hx, s.hz, yw, yy);
-        // Up onto the ground's normal (-gx, 1, -gz): the half-way spinor.
-        const Fixed nl = Fixed::Length(-s.sgx, Fixed::One(), -s.sgz);
-        const Fixed nx = -s.sgx / nl, ny = Fixed::One() / nl, nz = -s.sgz / nl;
-        Fixed tw = Fixed::One() + ny, tx = nz, tz = -nx;
-        const Fixed tl = Fixed::Length(tw, tx, tz);
-        tw = tw / tl; tx = tx / tl; tz = tz / tl;
+        Fixed tw, tx, tz;
+        tiltTo(s.sgx, s.sgz, tw, tx, tz);
         // tilt x yaw: (tw, tx, 0, tz) x (yw, 0, yy, 0).
         r.qw = tw * yw;
         r.qx = tx * yw - tz * yy;
@@ -1722,7 +1885,7 @@ private:
         using namespace KartArms;
         switch (s.weapon)
         {
-            case Rocket:  shootLocked(RocketShot, i, fx, fy, fz, hx * F(30), Fixed::Zero(), hz * F(30), 100); break;
+            case Rocket:  shootLocked(RocketShot, i, fx, fy, fz, hx * F(30), Fixed::Zero(), hz * F(30), rocketLife()); break;
             case Mine:
             {
                 const Fixed mx = x - hx * F(2), mz = z - hz * F(2);
@@ -1778,20 +1941,20 @@ private:
     // shooter's own. 100 dead on, 50 at the very edge of the kart.
     void sniperLocked(size_t i, Fixed x, Fixed y, Fixed z, Fixed hx, Fixed hz)
     {
-        int hit = -1; Fixed best = F(91), miss;
+        int hit = -1; Fixed best = sniperReach() + F(1), miss;
         for (size_t j = 0; j < m_slots.size(); ++j)
         {
             if (j == i || !alive(m_slots[j])) continue;
             Fixed jx, jy, jz;
             if (!where(j, jx, jy, jz)) continue;
             const Fixed along = (jx - x) * hx + (jz - z) * hz;
-            if (along.raw <= 0 || along > F(90)) continue;
+            if (along.raw <= 0 || along > sniperReach()) continue;
             const Fixed px = jx - (x + hx * along), pz = jz - (z + hz * along);
             const Fixed off = Fixed::Length(px, jy - y, pz);
             if (off > kartR() || !(along < best)) continue;
             best = along; hit = static_cast<int>(j); miss = off;
         }
-        Fixed reach = hit >= 0 ? best : F(90);
+        Fixed reach = hit >= 0 ? best : sniperReach();
         for (Fixed t = F(1); t < reach; t += F(1, 2))
         {
             const Fixed sx = x + hx * t, sz = z + hz * t;
@@ -1882,7 +2045,7 @@ private:
 
     // Damage, and what it comes to: at nothing, one to whoever did it, one
     // against the kart, and three seconds out. Only in a round.
-    void damageLocked(size_t victim, int attacker, int amount)
+    void damageLocked(size_t victim, int attacker, int amount, const char* what = "the arena")
     {
         Slot& v = m_slots[victim];
         if (!alive(v) || amount <= 0 || m_phase != Playing) return;
@@ -1894,7 +2057,7 @@ private:
         if (attacker >= 0 && attacker != static_cast<int>(victim)) ++m_slots[attacker].elims;
         Fixed x, y, z;
         if (where(victim, x, y, z)) blastLocked(x, y, z, F(2));
-        const std::string by = attacker >= 0 && attacker != static_cast<int>(victim) ? m_slots[attacker].driver : std::string("the arena");
+        const std::string by = attacker >= 0 && attacker != static_cast<int>(victim) ? m_slots[attacker].driver : std::string(what);
         noteLocked(by + " took out " + v.driver);
         const int64_t back = static_cast<int64_t>(m_tick) + kRespawn;
         parkLocked(victim);
@@ -2041,7 +2204,8 @@ private:
             {
                 Fixed at = (F(k) + beat) / F(3);
                 at = (at - Fixed::Half()) * run;
-                poseNode(m_pad_nodes[n].arrow[k], p.x + p.sx * at, p.y + F(6, 100), p.z + p.cz * at, p.yaw, Fixed::One(), Fixed::Zero());
+                poseNode(m_pad_nodes[n].arrow[k], p.x + p.sx * at, p.y + (p.gx * p.sx + p.gz * p.cz) * at + F(6, 100), p.z + p.cz * at,
+                         p.yaw, Fixed::One(), Fixed::Zero(), p.gx, p.gz);
             }
         }
         // From the rim in: each on its own side (+x, +z, -x, -z), pointing at the middle.
@@ -2243,8 +2407,10 @@ private:
         c->RowsUnder().PlaceAt(x, y, z);
     }
     // A pooled node placed and turned: `yaw` degrees about +y, then pitched
-    // about its own across by the angle whose sine and cosine are given.
-    void poseNode(ETCS::RID node, Fixed x, Fixed y, Fixed z, int yaw, Fixed psin, Fixed pcos)
+    // about its own across by the angle whose sine and cosine are given --
+    // and the whole then tilted onto ground that slopes (gx, gz).
+    void poseNode(ETCS::RID node, Fixed x, Fixed y, Fixed z, int yaw, Fixed psin, Fixed pcos,
+                  Fixed gx = Fixed::Zero(), Fixed gz = Fixed::Zero())
     {
         Causal_* c = causal(node);
         if (!c) return;
@@ -2258,7 +2424,16 @@ private:
         OrderVector& r = c->RowsUnder();
         r.PlaceAt(x, y, z);
         // yaw x pitch: (yc, 0, ys, 0) x (pc, ps, 0, 0)
-        r.qw = yc * pc; r.qx = yc * ps; r.qy = ys * pc; r.qz = -(ys * ps);
+        const Fixed w = yc * pc, qx = yc * ps, qy = ys * pc, qz = -(ys * ps);
+        r.qw = w; r.qx = qx; r.qy = qy; r.qz = qz;
+        if (gx.IsZero() && gz.IsZero()) return;
+        Fixed tw, tx, tz;
+        tiltTo(gx, gz, tw, tx, tz);
+        // tilt x that: (tw, tx, 0, tz) x (w, qx, qy, qz)
+        r.qw = tw * w - tx * qx - tz * qz;
+        r.qx = tw * qx + tx * w - tz * qy;
+        r.qy = tw * qy - tx * qz + tz * qx;
+        r.qz = tw * qz + tx * qy + tz * w;
     }
     // A pooled node laid along (dx, dy, dz) from its middle: its long side
     // (+z) turned onto the way and pitched to its rise.
@@ -2282,12 +2457,33 @@ private:
         r.PlaceAt(x, y, z);
         r.qw = yw * pc; r.qx = yw * ps; r.qy = yy * pc; r.qz = -(yy * ps);
     }
-    // A pooled node not in use: far below, hidden.
+    /*
+     * A pooled node not in use: hidden, far below, IN A BERTH OF ITS OWN. The
+     * pools are members of the world like anything drawn, and members whose
+     * reaches meet are a pair every interaction (etcs_causal_constraints.md
+     * §13): a thousand parked at one point were half a million pairs a tick
+     * -- the battle's whole frame. Each takes the next berth the first time
+     * it is parked (the scripts make the pools in one order, so a berth is
+     * the same on every runtime): a grid kBerth apart, inside the world's
+     * space. One that reaches further than half a berth is made small first:
+     * every pool that large -- blocks, slabs, wedges, domes, marks -- is
+     * made to size again when it is next drawn.
+     */
     void parkNode(ETCS::RID node)
     {
-        placeNode(node, F(0), F(-300), F(0));
+        auto at = m_berths.find(node);
+        if (at == m_berths.end()) at = m_berths.emplace(node, static_cast<uint32_t>(m_berths.size())).first;
+        const int64_t k = at->second, row = 2 * kBerthsOut + 1;
+        if (Causal_* c = causal(node))
+        {
+            Fixed reach;
+            { std::lock_guard<std::recursive_mutex> lk(c->TreeMutex()); reach = c->Order4().radius; }
+            if (reach > F(kBerth, 2) - F(1, 2)) verb(node, "Create", "0.1, 0.1, 0.1");
+        }
+        placeNode(node, F((k % row - kBerthsOut) * kBerth), F(-250), F((k / row % row - kBerthsOut) * kBerth));
         hide(node);
     }
+    static constexpr int64_t kBerth = 10, kBerthsOut = 25;   // 51 x 51 berths, the farthest 433 out
     void nodeAtLocked(const Shot& s)
     {
         if (s.node < 0) return;
@@ -2312,7 +2508,7 @@ private:
     {
         if (n < 0 || n >= static_cast<int>(m_shot_busy.size())) return;
         m_shot_busy[n] = false;
-        hide(m_shot_nodes[n]);
+        parkNode(m_shot_nodes[n]);
     }
     static void hide(ETCS::RID r) { verb(r, "SetVisible", "0"); }
     static void groundColour(ETCS::RID r, KartArena::Surface on)
@@ -2330,7 +2526,7 @@ private:
         for (const Slot& s : m_slots)
         {
             st += "|" + s.driver + " " + std::to_string(s.thr) + std::to_string(s.steer) + std::to_string(s.fire)
-                + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.wheel_rate.raw) + " "
+                + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.wheel_ease.raw) + " "
                 + std::to_string(s.steer_held) + " " + std::to_string(s.hx.raw) + " "
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
                 + std::to_string(s.hp) + " " + std::to_string(s.weapon) + " " + std::to_string(s.ammo) + " "
@@ -2360,23 +2556,98 @@ private:
 
     // Behind this runtime's own kart, eased; over the arena in the lobby and
     // for one with no kart in play.
+    void turnLookLocked(float yaw, float pitch)
+    {
+        m_look_yaw += yaw;
+        while (m_look_yaw > kPi)  m_look_yaw -= 2.0f * kPi;
+        while (m_look_yaw < -kPi) m_look_yaw += 2.0f * kPi;
+        m_look_pitch = std::max(kLookDown, std::min(kLookUp, m_look_pitch + pitch));
+        m_look_idle_ms = 0.0;
+    }
+    // Q and E turn the look while held; left alone for kLookHoldMs it goes
+    // back to behind the kart, to about a third of what is left every kLookBackMs.
+    void lookLocked(double dt_ms)
+    {
+        const int keys = ((m_look_keys & 2u) ? 1 : 0) - ((m_look_keys & 1u) ? 1 : 0);
+        if (keys != 0) turnLookLocked(static_cast<float>(keys * kLookKeyRate * dt_ms / 1000.0), 0.0f);
+        if (keys != 0 || m_look_drag) return;
+        m_look_idle_ms += dt_ms;
+        if (m_look_idle_ms < kLookHoldMs || (m_look_yaw == 0.0f && m_look_pitch == 0.0f)) return;
+        const float keep = static_cast<float>(std::exp(-dt_ms / kLookBackMs));
+        m_look_yaw *= keep; m_look_pitch *= keep;
+        if (std::fabs(m_look_yaw) < 1e-3f && std::fabs(m_look_pitch) < 1e-3f) m_look_yaw = m_look_pitch = 0.0f;
+    }
+    /*
+     * WHERE THE EYE SHOULD BE: over the arena in the lobby; in a round on a
+     * boom behind this runtime's kart and over it, swung by the look, looking
+     * past the kart the way the boom points. The boom is shortened to what
+     * it can see along: where the ground comes up through it (a pit's wall,
+     * a ramp, a hill), a deck lies between the kart and the eye, or it would
+     * pass out through the arena's wall below the wall's top, the eye comes
+     * in to this side of it -- into the pit with the kart, under the deck
+     * with it, inside the wall with it -- instead of looking at the kart
+     * through the ground, or at the back of a wall.
+     */
+    void viewLocked(float eye[3], float at[3])
+    {
+        // The lobby's: over the whole arena, from the south.
+        const float half = KartArena::Half().ToFloat();
+        eye[0] = 0.0f; eye[1] = half * 1.94f; eye[2] = -half * 1.44f;
+        at[0] = at[1] = at[2] = 0.0f;
+        const int i = slotOf(m_me);
+        if (m_phase == Lobby || i < 0 || !alive(m_slots[i])) return;
+        Causal_* k = causal(m_slots[i].body);
+        if (!k) return;
+        float px, py, pz;
+        {
+            std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
+            const OrderVector& r = k->Order4();
+            px = r.x.ToFloat(); py = r.y.ToFloat(); pz = r.z.ToFloat();
+        }
+        const float fx = m_slots[i].hx.ToFloat(), fz = m_slots[i].hz.ToFloat();
+        const float cy = std::cos(m_look_yaw), sy = std::sin(m_look_yaw);
+        const float dx = fx * cy + fz * sy, dz = fz * cy - fx * sy;   // the heading, turned to the picture's right
+        const float rise = kBoomRise + m_look_pitch;
+        const float back = kBoom * std::cos(rise), up = kBoom * std::sin(rise);
+        at[0] = px + dx * 4.0f; at[1] = py + 0.6f; at[2] = pz + dz * 4.0f;
+        // The arena's wall: how far out its inside is, and its top.
+        const float inside = bound().ToFloat() + 1.0f;
+        float wall_top = 0.0f;
+        for (ETCS::RID w : m_walls)
+            if (Causal_* c = causal(w))
+            {
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                wall_top = std::max(wall_top, c->Order4().y.ToFloat() + c->Solid().hy.ToFloat());
+            }
+        // From the kart's top out along the boom, as far as it is clear.
+        const float top = py + 0.9f;
+        const float ex = px - dx * back, ey = py + up, ez = pz - dz * back;
+        float clear = 1.0f;
+        for (int n = 1; n <= kBoomSteps; ++n)
+        {
+            const float t = static_cast<float>(n) / kBoomSteps;
+            const float qx = px + (ex - px) * t, qy = top + (ey - top) * t, qz = pz + (ez - pz) * t;
+            const Fixed x = Fixed::From(qx), z = Fixed::From(qz);
+            bool blocked = KartArena::Solid(m_live, x, z).ToFloat() > qy - kBoomGap
+                        || ((std::fabs(qx) > inside || std::fabs(qz) > inside) && qy < wall_top + kBoomGap);
+            for (const KartArena::Deck& d : m_live.decks)
+            {
+                if (blocked || !KartArena::Over(x, z, d.x, d.z, d.w, d.d)) continue;
+                const float plate = d.h.ToFloat(), under = plate - KartArena::DeckThick().ToFloat();
+                blocked = top < under ? qy > under - kBoomGap : (top > plate && qy < plate + kBoomGap);
+            }
+            if (blocked) { clear = std::max(kBoomLeast, static_cast<float>(n - 1) / kBoomSteps); break; }
+        }
+        eye[0] = px + (ex - px) * clear; eye[1] = top + (ey - top) * clear; eye[2] = pz + (ez - pz) * clear;
+    }
     void cameraLocked(double dt_ms)
     {
+        lookLocked(dt_ms);
         if (!m_camera) return;
         ETCS::Held<Camera_> cam = ETCS::resolve_held<Camera_>("Camera", m_camera);
         if (!cam) return;
-        float eye[3] = { 0.0f, 62.0f, -46.0f }, at[3] = { 0.0f, 0.0f, 0.0f };
-        const int i = slotOf(m_me);
-        if (m_phase != Lobby && i >= 0 && alive(m_slots[i]))
-            if (Causal_* k = causal(m_slots[i].body))
-            {
-                std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
-                const OrderVector& r = k->Order4();
-                const float px = r.x.ToFloat(), py = r.y.ToFloat(), pz = r.z.ToFloat();
-                const float fx = m_slots[i].hx.ToFloat(), fz = m_slots[i].hz.ToFloat();
-                eye[0] = px - fx * 7.5f; eye[1] = py + 3.6f; eye[2] = pz - fz * 7.5f;
-                at[0]  = px + fx * 4.0f; at[1]  = py + 0.6f; at[2]  = pz + fz * 4.0f;
-            }
+        float eye[3], at[3];
+        viewLocked(eye, at);
         const float a = m_eye_set ? static_cast<float>(1.0 - std::exp(-dt_ms / 120.0)) : 1.0f;
         float moved = 0.0f;
         for (int c = 0; c < 3; ++c)
@@ -2680,6 +2951,7 @@ private:
     std::vector<ETCS::RID> m_live_blocks;
     std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_wedge_nodes, m_dome_nodes;
     std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;
+    std::map<ETCS::RID, uint32_t> m_berths;   // a pooled node's parking place (parkNode)
     std::vector<PadNodes> m_pad_nodes;
     std::vector<SpringNodes> m_spring_nodes;
     ETCS::RID m_floor = 0;
@@ -2719,6 +2991,13 @@ private:
     bool     m_board_held = false;
     float    m_eye[3] = { 0.0f, 0.0f, 0.0f }, m_at[3] = { 0.0f, 0.0f, 0.0f };
     bool     m_eye_set = false;
+    bool     m_ready = false;      // the arena is made (Ready): the lobby is open
+    // The look round the kart (lookLocked): how far the boom is swung from
+    // behind the kart and raised, by what, and how long it has been let alone.
+    float    m_look_yaw = 0.0f, m_look_pitch = 0.0f, m_look_x = 0.0f, m_look_y = 0.0f;
+    double   m_look_idle_ms = 0.0;
+    unsigned m_look_keys = 0;      // Q is bit 0, E bit 1
+    bool     m_look_drag = false;
     double   m_card_ms = 0.0;
     std::string m_card_text;
 };
