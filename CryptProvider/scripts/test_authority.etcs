@@ -1,0 +1,52 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A TEST AUTHORITY: the whole chain above one loader, made in one run, so the
+# machinery can be exercised before the real ceremony exists. A super-root, an
+# active key under it, and a marketplace certificate for LOADER_KEY -- the
+# public key of the loader that will sign builds (`etcs --loader-key`).
+#
+# Nothing is kept but the three certificates, written to AUTHORITY_DIR (which
+# must exist and hold none of them: custody never overwrites). Both keys are
+# forgotten when this ends, so this authority can register nothing else. That
+# is the difference from the ceremony (root_ceremony.etcs), which shards them.
+#
+#   K=$(bin/etcs --loader-key | grep -E '^[0-9a-f]{64}$')
+#   mkdir authority
+#   sed -e "s|AUTHORITY_DIR|$PWD/authority|" -e "s|LOADER_KEY|$K|" \
+#       modules/CryptProvider/scripts/test_authority.etcs > authority.etcs
+#   bin/etcs authority.etcs
+#   bin/etcs --registration authority/marketplace.cert authority/active.cert authority/root.cert
+#   ace sign
+
+spawn NetworkProvider::Embassy embassy
+spawn CryptProvider::Custody out
+spawn NetworkProvider::FileRelation to_out
+to_out.Root(AUTHORITY_DIR)
+to_out.Target(Directory)
+to_out.Activate(@out)
+embassy.Advertise(authority file @to_out)
+embassy.Open()
+out.SetEmbassy(@embassy)
+out.SetRelation(authority)
+
+spawn CryptProvider::Keypair super_root
+super_root.Generate()
+spawn CryptProvider::Certificate super_root_cert
+super_root_cert.Issue(@super_root root @super_root)
+
+spawn CryptProvider::Keypair active
+active.Generate()
+spawn CryptProvider::Certificate active_cert
+active_cert.Issue(@super_root intermediate @active)
+
+spawn CryptProvider::Certificate marketplace_cert
+marketplace_cert.Issue(@active marketplace LOADER_KEY)
+
+out.Advertise(marketplace cert @marketplace_cert)
+out.Advertise(active cert @active_cert)
+out.Advertise(root cert @super_root_cert)
+
+super_root.Delete()
+active.Delete()
+embassy.Close()
