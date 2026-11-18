@@ -4,7 +4,7 @@
 # THE GAME ON A COURSE: the card on the camera and the hand on the club. Run by
 # a course script with its pieces (golf_course.etcs):
 #
-#   run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye ball=ball cup=cup arrow=arrow shadow=shadow
+#   run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye ball=ball cup=cup arrow=arrow shadow=shadow under=under
 #
 # The pointer is the session's to wire (golf_pointer.etcs): a window, or a
 # test playing strokes with game.Press/Drag/Release, or nothing at all.
@@ -20,6 +20,7 @@ requires ball [Drawable3D]
 requires cup [Drawable3D]
 requires arrow [Drawable3D]
 requires shadow [Drawable3D]
+requires under [Drawable3D]
 
 # The card, and how to play, drawn on the camera's frame.
 eye.spawn(RenderProvider::TextLabel card)
@@ -45,6 +46,7 @@ game.BindBall(@ball)
 game.BindCup(@cup)
 game.BindArrow(@arrow)
 game.BindShadow(@shadow)
+game.BindBallShadow(@under)
 game.BindCamera(@eye)
 game.BindHud(@card)
 game.SetTee(0.0, 0.15, 0.0)

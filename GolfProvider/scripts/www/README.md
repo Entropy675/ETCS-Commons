@@ -15,6 +15,8 @@ modules/GolfProvider/scripts/golf.etcs`.
   **R** puts the ball back on the tee and clears the card.
 - **The camera's pitch is the loft.** The pull is read on the plane through the ball facing the
   camera, so looking down at the ball is a putt and looking level is a lob.
+- **The ball has a shadow** on whatever is straight under it: the gap between the two is how
+  high the ball is.
 - A ball that drops into the cup is counted and set back on the tee; one that leaves the
   course is set back with a stroke added.
 
