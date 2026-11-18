@@ -31,11 +31,21 @@ battle.AddBlock(-8.0, 8.0, 3.0, 1.2, 0.8, -45.0)
 battle.AddBlock(8.0, -8.0, 3.0, 1.2, 0.8, -45.0)
 battle.AddBlock(-8.0, -8.0, 3.0, 1.2, 0.8, 45.0)
 
-# Pads round the ring between the bumpers and the banks, pointing round it.
+# Pads round the ring between the bumpers and the banks, pointing round it,
+# and one in each pocket between a bank's end and a corner's wall, pointing
+# out of it: a kart wedged there is pushed back onto the floor.
 battle.AddPad(14.7, 8.5, 330.0)
 battle.AddPad(-8.5, 14.7, 240.0)
 battle.AddPad(-14.7, -8.5, 150.0)
 battle.AddPad(8.5, -14.7, 60.0)
+battle.AddPad(19.6, 26.5, 180.0)
+battle.AddPad(26.5, 19.6, 270.0)
+battle.AddPad(-19.6, 26.5, 180.0)
+battle.AddPad(-26.5, 19.6, 90.0)
+battle.AddPad(19.6, -26.5, 0.0)
+battle.AddPad(26.5, -19.6, 270.0)
+battle.AddPad(-19.6, -26.5, 0.0)
+battle.AddPad(-26.5, -19.6, 90.0)
 
 battle.AddSpawn(0.0, -19.0)
 battle.AddSpawn(0.0, 19.0)

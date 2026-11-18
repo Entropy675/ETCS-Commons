@@ -816,10 +816,14 @@ private:
         if (off <= free) return least;
         return Fixed::Min(Fixed::One(), least + (Fixed::One() - least) * (off - free) / (Fixed::One() - free));
     }
-    // A PAD: this much push (u/s/s) the way it points while a kart's middle
-    // is over it, up to a boost's top that way; its arrows run its length in
-    // padBeat() ticks, one behind the other.
-    static Fixed padPush()   { return F(40); }
+    // A PAD pushes the way it points while a kart's middle is over it:
+    // padPush() (u/s/s) whatever the kart is doing, and padGain() of its
+    // speed that way a second on top, so one taken at speed gives more --
+    // until it is going padTop() that way, the fastest anything goes. Its
+    // arrows run its length in padBeat() ticks, one behind the other.
+    static Fixed padPush()   { return F(120); }
+    static Fixed padGain()   { return F(1); }
+    static Fixed padTop()    { return F(40); }
     static Fixed padArrow()  { return F(9, 10); }    // an arrow's length
     static constexpr int padBeat() { return 40; }
     // The tyres at the body's corners, in its frame: across, ahead.
@@ -1272,8 +1276,16 @@ private:
         // the tyres. The work is the Impulse below, with the pedal's.
         if (!s.air)
             if (const KartArena::Pad* pad = KartArena::PadAt(m_live, r.x, r.z))
-                if (groundAt(r.x, r.z).IsZero() && vx * pad->sx + vz * pad->cz < boostSpeed())
-                { vx += pad->sx * padPush() * step; vz += pad->cz * padPush() * step; }
+                if (groundAt(r.x, r.z).IsZero())
+                {
+                    const Fixed along = vx * pad->sx + vz * pad->cz;
+                    if (along < padTop())
+                    {
+                        const Fixed push = (padPush() + (along.IsPositive() ? along * padGain() : Fixed::Zero())) * step;
+                        const Fixed add = Fixed::Min(push, padTop() - along);
+                        vx += pad->sx * add; vz += pad->cz * add;
+                    }
+                }
         Fixed speed = vx * hx + vz * hz;
         wheelTurnLocked(s, steer, speed, step);
         if (s.boost > 0) --s.boost;
@@ -1306,10 +1318,10 @@ private:
         groundAt(r.x, r.z, &gx, &gz);
         const Fixed along = gx * hx + gz * hz;
         if (!along.IsZero()) speed -= gravity() * along / (Fixed::One() + along * along).Sqrt() * step;
-        // Past the kart's own top (a boost run out, a hill run down) it eases
-        // back on the level; nothing goes past a boost's top.
+        // Past the kart's own top (a boost run out, a pad taken, a hill run
+        // down) it eases back on the level; nothing goes past a pad's top.
         if (speed > top && along.raw >= 0) speed = Fixed::Max(top, speed - brake() * Fixed::Half() * step);
-        if (speed > boostSpeed()) speed = boostSpeed();
+        if (speed > padTop()) speed = padTop();
         // The heading turns by speed x wheel / wheelbase, about +y: a turn of
         // +a takes +z toward +x, which with +z ahead is to the picture's right.
         const Fixed yaw = speed * s.wheel / wheelbase() * step;

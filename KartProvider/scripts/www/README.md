@@ -60,9 +60,10 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 - **The ground has slopes.** A kart slows going up and gains going down; off a jump's lip at speed
   it flies and lands beyond it. Ground too steep to climb -- a lip met from the drop side, the side
   of a deck -- is a wall.
-- **Pads** push a kart that drives over them the way their arrows run, up to a boost's speed --
-  along its heading that is speed, across it a slide to catch. Every map has some, the random
-  one too.
+- **Pads** push a kart that drives over them the way their arrows run -- hard, and harder the
+  faster it is already going that way, up to 40 u/s, the fastest anything goes. Along its heading
+  that is speed, across it a slide to catch. Every map has some, the random one too; the bowl
+  has one in each corner pocket, to push out a kart wedged there.
 - Out of a battle, the arena is yours alone: practice, with the lobby yours.
 
 ## How it stays one battle

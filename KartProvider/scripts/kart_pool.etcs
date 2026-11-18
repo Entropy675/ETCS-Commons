@@ -53,7 +53,8 @@ run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
 
-# Eight pads, as many as the busiest map has.
+# Twelve pads, as many as the busiest map has.
+run kart_pads.etcs world=world battle=battle dart=dart
 run kart_pads.etcs world=world battle=battle dart=dart
 run kart_pads.etcs world=world battle=battle dart=dart
 
