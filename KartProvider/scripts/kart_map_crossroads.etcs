@@ -6,8 +6,9 @@
 #   run kart_map_crossroads.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
-# <yaw> (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
-# 90 +x, 180 -z, 270 -x).
+# <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
+# <z> <width> <depth> <deep> (KartArena.h). A ramp rises, and a pad pushes,
+# toward its yaw (0 +z, 90 +x, 180 -z, 270 -x); one in a pit stands on its floor.
 requires battle [KartBattle]
 battle.AddMap(crossroads)
 
@@ -40,6 +41,17 @@ battle.AddPad(26.0, 10.0, 0.0)
 battle.AddPad(-26.0, -10.0, 180.0)
 battle.AddPad(-10.0, 26.0, 270.0)
 battle.AddPad(10.0, -26.0, 90.0)
+
+# A deck over the east street, its box on top and a spring under it; a pit
+# where the ring road turns its north-east corner -- a box at the bottom, a
+# ramp out to the south and a spring; and two springs on the ring.
+battle.AddDeck(16.0, 0.0, 5.0, 16.0, 3.6)
+battle.AddSpring(16.0, 5.0)
+battle.AddPit(26.5, 26.5, 8.0, 8.0, 2.5)
+battle.AddRamp(24.5, 25.75, 180.0, 3.5, 6.5, 0.0, 0.0, 2.5)
+battle.AddSpring(28.5, 28.5)
+battle.AddSpring(27.0, -6.0)
+battle.AddSpring(-27.0, 7.0)
 
 battle.AddSpawn(0.0, -27.0)
 battle.AddSpawn(0.0, 27.0)

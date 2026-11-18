@@ -56,6 +56,22 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddHill, (float, x), (float, z), (float, radi
 // AddPad <x> <z> <yaw> -- a pad on the level ground, pushing karts over it
 // the way it points (a ramp's yaw).
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPad, (float, x), (float, z), (float, yaw)) { (void)ctx; self.AddPad(x, z, yaw); }
+// AddSpring <x> <z> -- a round pad that throws a kart up.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpring, (float, x), (float, z))     { (void)ctx; self.AddSpring(x, z); }
+// AddDeck <x> <z> <width> <depth> <height> -- a level plane in the air: on
+// it from above, under it from below, through it going up.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddDeck, (float, x), (float, z), (float, width), (float, depth), (float, height))
+{
+    (void)ctx;
+    self.AddDeck(x, z, width, depth, height);
+}
+// AddPit <x> <z> <width> <depth> <deep> -- a floor sunk `deep` below the
+// arena's; a ramp put in it rises from that floor.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddPit, (float, x), (float, z), (float, width), (float, depth), (float, deep))
+{
+    (void)ctx;
+    self.AddPit(x, z, width, depth, deep);
+}
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpawn, (float, x), (float, z))      { (void)ctx; self.AddSpawn(x, z); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickup, (float, x), (float, z))     { (void)ctx; self.AddPickup(x, z); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlockNode, (ETCS::RID, node))      { (void)ctx; self.AddBlockNode(node); }
@@ -72,6 +88,14 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddPadNode, (ETCS::RID, plate), (ETCS::RID, a
 {
     (void)ctx;
     self.AddPadNode(plate, a, b, c);
+}
+// AddSpringNode <plate> <arrow> <arrow> <arrow> <arrow> -- a spring of the
+// pool: its round plate and the four arrows that close on its middle.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpringNode, (ETCS::RID, plate), (ETCS::RID, a), (ETCS::RID, b), (ETCS::RID, c),
+                       (ETCS::RID, d))
+{
+    (void)ctx;
+    self.AddSpringNode(plate, a, b, c, d);
 }
 // AddGroundNode <floor> -- the arena's floor, coloured by the battle as its
 // slabs and domes are: a tyre's mark fades into the ground it is on.
@@ -137,7 +161,8 @@ DEFINE_WORK_FUNC(KartBattle, Status)    { (void)ctx; data.reset(); data.writeStr
 DEFINE_WORK_FUNC(KartBattle, Scores)    { (void)ctx; data.reset(); data.writeString(self.Scores().c_str()); }
 // The maps' names, one a line.
 DEFINE_WORK_FUNC(KartBattle, Maps)      { (void)ctx; data.reset(); data.writeString(self.Maps().c_str()); }
-// "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads> <digest>": the map in play.
+// "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads> <springs> <decks> <pits>
+// <digest>": the map in play.
 DEFINE_WORK_FUNC(KartBattle, Layout)    { (void)ctx; data.reset(); data.writeString(self.Layout().c_str()); }
 // "<tick> <hash>": the battle now.
 DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeString(self.Hash().c_str()); }

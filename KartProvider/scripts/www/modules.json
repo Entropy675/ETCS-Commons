@@ -40,6 +40,8 @@
     "KartProvider/scripts/kart_arrow.etcs",
     "KartProvider/scripts/kart_pad.etcs",
     "KartProvider/scripts/kart_pads.etcs",
+    "KartProvider/scripts/kart_spring.etcs",
+    "KartProvider/scripts/kart_springs.etcs",
     "KartProvider/scripts/kart_mark.etcs",
     "KartProvider/scripts/kart_marks.etcs",
     "KartProvider/scripts/kart_rope.etcs",

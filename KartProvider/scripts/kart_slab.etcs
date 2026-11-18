@@ -1,7 +1,8 @@
 #!/usr/bin/env etcs
-# A slab of the ground, of the pool: a ramp's level top, drawn only --
-# the ground is the battle's height (KartArena.h), not a solid. Coloured by
-# the battle, which knows the ground's colours a mark fades into.
+# A slab of the ground, of the pool: a ramp's level top, a deck, a pit's floor
+# or wall, a piece of the arena's floor round a pit -- drawn only: the ground
+# is the battle's height (KartArena.h), not a solid. Sized and coloured by the
+# battle, which knows the ground's colours a mark fades into.
 #   run kart_slab.etcs world=<Scene3D> battle=<KartBattle>
 requires world [Drawable3D]
 requires battle [KartBattle]

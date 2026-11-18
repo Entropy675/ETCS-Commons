@@ -6,8 +6,9 @@
 #   run kart_map_skatepark.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
-# <yaw> (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
-# 90 +x, 180 -z, 270 -x).
+# <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
+# <z> <width> <depth> <deep> (KartArena.h). A ramp rises, and a pad pushes,
+# toward its yaw (0 +z, 90 +x, 180 -z, 270 -x); one in a pit stands on its floor.
 requires battle [KartBattle]
 battle.AddMap(skatepark)
 
@@ -36,6 +37,13 @@ battle.AddPad(-17.0, -12.0, 0.0)
 battle.AddPad(17.0, 12.0, 180.0)
 battle.AddPad(17.0, -12.0, 0.0)
 battle.AddPad(-17.0, 12.0, 180.0)
+
+# A deck high over the gap, the middle's box on it, and a spring under its
+# edge; two more springs to play on.
+battle.AddDeck(0.0, 0.0, 8.0, 6.0, 4.2)
+battle.AddSpring(-3.0, 0.0)
+battle.AddSpring(9.0, 10.0)
+battle.AddSpring(-9.0, -10.0)
 
 battle.AddSpawn(0.0, -22.0)
 battle.AddSpawn(0.0, 22.0)

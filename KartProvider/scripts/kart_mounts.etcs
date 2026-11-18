@@ -29,6 +29,8 @@ tree.MountFile(KartProvider/scripts/kart_dome.etcs ACE_ROOT/modules/KartProvider
 tree.MountFile(KartProvider/scripts/kart_arrow.etcs ACE_ROOT/modules/KartProvider/scripts/kart_arrow.etcs)
 tree.MountFile(KartProvider/scripts/kart_pad.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pad.etcs)
 tree.MountFile(KartProvider/scripts/kart_pads.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pads.etcs)
+tree.MountFile(KartProvider/scripts/kart_spring.etcs ACE_ROOT/modules/KartProvider/scripts/kart_spring.etcs)
+tree.MountFile(KartProvider/scripts/kart_springs.etcs ACE_ROOT/modules/KartProvider/scripts/kart_springs.etcs)
 tree.MountFile(KartProvider/scripts/kart_mark.etcs ACE_ROOT/modules/KartProvider/scripts/kart_mark.etcs)
 tree.MountFile(KartProvider/scripts/kart_marks.etcs ACE_ROOT/modules/KartProvider/scripts/kart_marks.etcs)
 tree.MountFile(KartProvider/scripts/kart_rope.etcs ACE_ROOT/modules/KartProvider/scripts/kart_rope.etcs)
