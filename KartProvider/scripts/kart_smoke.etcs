@@ -1,0 +1,15 @@
+#!/usr/bin/env etcs
+# One puff of the bursts' smoke: see-through (Scene3D.SetSmoke) on the ember
+# shape, held, solid to nothing. The battle sets it where a burst burned,
+# swells and raises it, and thins it to nothing (KartBattle.h).
+#   run kart_smoke.etcs world=<Scene3D> battle=<KartBattle> ember=<Mesh>
+requires world [Drawable3D]
+requires battle [KartBattle]
+requires ember [Mesh]
+world.spawn(RenderProvider::Scene3D smoke)
+smoke.Create(1.0, 0.9, 1.0)
+smoke.SetMesh(@ember)
+smoke.SetColor(0.2, 0.19, 0.18, 1.0)
+smoke.SetSmoke(0.5)
+smoke.SetAnchored(1)
+battle.AddSmokeNode(@smoke)

@@ -1,0 +1,15 @@
+#!/usr/bin/env etcs
+# One spark of the bursts' fire: a glowing puff (Scene3D.SetGlow) on the
+# ember shape, held, solid to nothing. The battle sets it on a step of a
+# burst's tree, sizes and colours it there, and fades it (KartBattle.h).
+#   run kart_spark.etcs world=<Scene3D> battle=<KartBattle> ember=<Mesh>
+requires world [Drawable3D]
+requires battle [KartBattle]
+requires ember [Mesh]
+world.spawn(RenderProvider::Scene3D spark)
+spark.Create(0.5, 0.5, 0.8)
+spark.SetMesh(@ember)
+spark.SetColor(1.0, 0.7, 0.3, 1.0)
+spark.SetGlow(1.6)
+spark.SetAnchored(1)
+battle.AddSparkNode(@spark)

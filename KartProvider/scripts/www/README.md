@@ -29,16 +29,22 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 
   | weapon  | shots | damage |
   |---|---|---|
-  | rocket  | 2  | a burst up to 4.0 at its centre, less further out |
+  | rocket  | 2  | flies until it has crossed the arena; a burst up to 4.0 at its centre |
   | mine    | 2  | dropped behind, armed in half a second: a burst up to 3.0 |
   | shotgun | 2  | five pellets in a short fan, 1.0 each |
   | boost   | 1  | two seconds faster; ramming a kart at speed, 2.0 |
   | bomb    | 2  | tossed up and forward, bursts where it lands: up to 4.0 |
-  | minigun | 30 | while Space is held, 0.4 each |
+  | minigun | 30 | while Space is held, 0.4 each; a round flies until it has crossed the arena |
   | fuse    | 1  | lit on your kart, bursts round it after 2.5 s: up to 5.0, not to you |
   | sniper  | 1  | an instant line: 10.0 dead on, 5.0 at the edge of a kart |
 
-  Nothing hurts the kart that fired it.
+  Nothing hurts the kart that fired it. **A burst is a tree of fire**: branches grow out from
+  it along lines, forking, and bend round what is dense -- a block, a wall, the ground, a
+  deck -- rather than through it, losing strength with every unit they go. A kart is hurt by
+  the strongest branch that reaches it, so in the open that is the old falloff, and **behind
+  a block you are covered**. Every tab grows the same tree. The fire leaves **smoke**: dark
+  puffs where its branches burned and big pale clouds in the gaps between them, which swell as
+  they rise and thin away.
 - **A kart at nothing is eliminated**: one to whoever did it, one against the kart, which is back
   three seconds later at the spawn furthest from everyone, whole and unarmed.
 - **Between rounds is the lobby.** The karts wait parked at their spawns and the arena shows the
