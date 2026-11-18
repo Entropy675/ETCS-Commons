@@ -631,6 +631,33 @@ public:
              + std::to_string(m_live.pads.size()) + " " + std::to_string(m_live.springs.size()) + " "
              + std::to_string(m_live.decks.size()) + " " + std::to_string(m_live.pits.size()) + " " + d;
     }
+    // What is wrong with the maps, "<map>: <fault>" a line (KartArena::Faults),
+    // or "none": the hand-made ones as given, one from a seed as it is in
+    // play. A verb's answer is 255 characters: past the lines that fit,
+    // "+<n> more".
+    std::string Faults()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        std::string out;
+        int more = 0;
+        for (size_t i = 0; i < m_defs.size(); ++i)
+        {
+            KartArena::Map m = m_defs[i];
+            if (!m.generated) KartArena::Prepare(m);
+            else if (static_cast<int>(i) == m_map) m = m_live;
+            else continue;
+            std::istringstream lines(KartArena::Faults(m));
+            for (std::string line; std::getline(lines, line);)
+            {
+                line = m.name + ": " + line + "\n";
+                if (more == 0 && out.size() + line.size() <= 240) out += line; else ++more;
+            }
+        }
+        if (out.empty()) return "none";
+        if (more) return out + "+" + std::to_string(more) + " more";
+        out.pop_back();
+        return out;
+    }
     std::string Hash()     { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_tick) + " " + hashLocked(); }
     std::string Snapshot() { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_snap_tick) + " " + m_snap_hash; }
     std::string Note()     { std::lock_guard<std::mutex> g(m_mu); return m_note; }

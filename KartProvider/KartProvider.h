@@ -164,6 +164,8 @@ DEFINE_WORK_FUNC(KartBattle, Maps)      { (void)ctx; data.reset(); data.writeStr
 // "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads> <springs> <decks> <pits>
 // <digest>": the map in play.
 DEFINE_WORK_FUNC(KartBattle, Layout)    { (void)ctx; data.reset(); data.writeString(self.Layout().c_str()); }
+// What is wrong with the maps (KartArena::Faults), "<map>: <fault>" a line, or "none".
+DEFINE_WORK_FUNC(KartBattle, Faults)    { (void)ctx; data.reset(); data.writeString(self.Faults().c_str()); }
 // "<tick> <hash>": the battle now.
 DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeString(self.Hash().c_str()); }
 // "<tick> <hash>": the last snapshot, what presence carries.

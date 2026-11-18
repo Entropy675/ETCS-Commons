@@ -5,6 +5,7 @@
 #include "KartArms.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -213,17 +214,145 @@ namespace KartArena
     }
 
     /*
+     * WHAT IS WRONG WITH A MAP, a fault a line, "" for a sound one (Prepare it
+     * first). A map's maker -- a script's author, or Generate -- keeps these
+     * so that what is on it can be reached and does what it shows:
+     *
+     *   pad      level solid ground under the whole plate (off its level it
+     *            pushes nothing); its middle clear of blocks -- an edge may
+     *            run under a wall, as in a corner it is there to empty; no
+     *            other pad over it, no spawn at it
+     *   spring   the same, and no pad at it
+     *   deck     room to drive under it; no spawn under it (a kart is put on
+     *            the top of what is at its spawn)
+     *   pit      no block, hill or spawn at its edge; a ramp wholly in it or
+     *            wholly out; a way out -- a spring in it, or a ramp in it as
+     *            high as it is deep
+     */
+    inline Fixed Headroom() { return F(3, 2); }       // under a deck, over the highest thing below it
+    inline std::string Faults(const Map& m)
+    {
+        std::string out;
+        auto say = [&out](const char* what, Fixed x, Fixed z, const char* fault) {
+            char line[96];
+            std::snprintf(line, sizeof line, "%s %g %g: %s\n", what, static_cast<double>(x.ToFloat()), static_cast<double>(z.ToFloat()), fault);
+            out += line;
+        };
+        struct Turned { Fixed s, c; };
+        std::vector<Turned> turn(m.blocks.size());
+        for (size_t i = 0; i < m.blocks.size(); ++i) Turn(m.blocks[i].yaw, turn[i].s, turn[i].c);
+        // The height of the block a point is in (or within `margin` of), else 0.
+        auto block = [&](Fixed x, Fixed z, Fixed margin) {
+            Fixed h = Fixed::Zero();
+            for (size_t i = 0; i < m.blocks.size(); ++i)
+            {
+                const Block& b = m.blocks[i];
+                const Fixed dx = x - b.x, dz = z - b.z;
+                if ((dx * turn[i].c - dz * turn[i].s).Abs() < b.w * Fixed::Half() + margin
+                    && (dx * turn[i].s + dz * turn[i].c).Abs() < b.d * Fixed::Half() + margin) h = Fixed::Max(h, b.h);
+            }
+            return h;
+        };
+        auto within = [](const Spot& a, Fixed x, Fixed z, Fixed d) { return (a.x - x) * (a.x - x) + (a.z - z) * (a.z - z) < d * d; };
+        // A plate about (x, z), `along` and `across` its half extents the way
+        // (sx, cz) points -- round, a disc of `along`: what it lies on, tried
+        // at a grid of points over it.
+        auto plate = [&](const char* what, Fixed x, Fixed z, Fixed sx, Fixed cz, Fixed along, Fixed across, bool round, const Pad* self) {
+            bool level = true, alone = true;
+            const Fixed y = Solid(m, x, z);
+            for (int i = -2; i <= 2; ++i)
+                for (int j = -2; j <= 2; ++j)
+                {
+                    if (round && i * i + j * j > 4) continue;
+                    const Fixed u = along * F(i, 2), v = across * F(j, 2);
+                    const Fixed px = x + sx * u + cz * v, pz = z + cz * u - sx * v;
+                    level = level && Solid(m, px, pz) == y;
+                    const Pad* on = PadAt(m, px, pz);
+                    alone = alone && (!on || on == self);
+                }
+            if (!level) say(what, x, z, "not on level ground");
+            if (block(x, z, F(1, 5)).IsPositive()) say(what, x, z, "in a block");
+            if (!alone) say(what, x, z, self ? "over another pad" : "at a pad");
+        };
+        for (const Pad& p : m.pads)
+        {
+            plate("pad", p.x, p.z, p.sx, p.cz, PadLength() * Fixed::Half(), PadWidth() * Fixed::Half(), false, &p);
+            for (const Spot& a : m.spawns) if (within(a, p.x, p.z, F(9, 2))) say("pad", p.x, p.z, "at a spawn");
+        }
+        for (const Spring& p : m.springs)
+        {
+            plate("spring", p.x, p.z, Fixed::Zero(), Fixed::One(), SpringRadius(), SpringRadius(), true, nullptr);
+            for (const Spot& a : m.spawns) if (within(a, p.x, p.z, F(7, 2))) say("spring", p.x, p.z, "at a spawn");
+        }
+        // The highest of the solid ground and the blocks over a rectangle.
+        auto tallest = [&](Fixed x, Fixed z, Fixed w, Fixed d, bool blocks_only) {
+            Fixed top = Fixed::Zero();
+            for (int i = -10; i <= 10; ++i)
+                for (int j = -10; j <= 10; ++j)
+                {
+                    const Fixed px = x + w * F(i, 20), pz = z + d * F(j, 20);
+                    top = Fixed::Max(top, block(px, pz, Fixed::Zero()));
+                    if (!blocks_only) top = Fixed::Max(top, Solid(m, px, pz));
+                }
+            return top;
+        };
+        for (const Deck& d : m.decks)
+        {
+            if (tallest(d.x, d.z, d.w, d.d, false) > d.h - Headroom()) say("deck", d.x, d.z, "no room to drive under it");
+            for (const Spot& a : m.spawns) if (Over(a.x, a.z, d.x, d.z, d.w + F(2), d.d + F(2))) say("deck", d.x, d.z, "over a spawn");
+        }
+        for (const Pit& p : m.pits)
+        {
+            const Fixed hair = F(1, 50);   // a ramp laid to a pit's edge is in it
+            if (tallest(p.x, p.z, p.w + F(3, 5), p.d + F(3, 5), true).IsPositive()) say("pit", p.x, p.z, "a block at its edge");
+            for (const Spot& a : m.spawns) if (Over(a.x, a.z, p.x, p.z, p.w + F(4), p.d + F(4))) say("pit", p.x, p.z, "a spawn at its edge");
+            for (const Hill& k : m.hills)
+            {
+                const Fixed dx = Fixed::Max((k.x - p.x).Abs() - p.w * Fixed::Half(), Fixed::Zero());
+                const Fixed dz = Fixed::Max((k.z - p.z).Abs() - p.d * Fixed::Half(), Fixed::Zero());
+                if (dx * dx + dz * dz < k.radius * k.radius) say("pit", p.x, p.z, "a hill at its edge");
+            }
+            bool out_by = false;
+            for (const Spring& q : m.springs) out_by = out_by || Over(q.x, q.z, p.x, p.z, p.w, p.d);
+            for (const Ramp& r : m.ramps)
+            {
+                const Fixed hl = r.length() * Fixed::Half(), hw = r.width * Fixed::Half();
+                int in = 0;
+                for (int i = -1; i <= 1; i += 2)
+                    for (int j = -1; j <= 1; j += 2)
+                        in += Over(r.x + r.sx * hl * F(i) + r.cz * hw * F(j), r.z + r.cz * hl * F(i) - r.sx * hw * F(j), p.x, p.z, p.w + hair, p.d + hair);
+                const bool mine = Over(r.x, r.z, p.x, p.z, p.w, p.d);
+                bool touched = in != 0;
+                if (!mine && !touched)   // none of its corners in the pit: is any of the pit under it?
+                {
+                    Fixed h, gx, gz;
+                    for (int i = -10; i <= 10 && !touched; ++i)
+                        for (int j = -10; j <= 10 && !touched; ++j)
+                            touched = RampAt(r, p.x + p.w * F(i, 20), p.z + p.d * F(j, 20), h, gx, gz);
+                }
+                if (mine ? in != 4 : touched) say("pit", p.x, p.z, "a ramp across its edge");
+                out_by = out_by || (mine && in == 4 && !(r.height < p.depth));
+            }
+            if (!out_by) say("pit", p.x, p.z, "no way out");
+        }
+        if (!out.empty()) out.pop_back();
+        return out;
+    }
+
+    /*
      * A MAP FROM A SEED. First what keeps the arena playable: eight spawns on
      * a ring and the middle's box. Then, from the dice: banks on up to two
      * walls (a ramp up to the wall, ridden up and rolled back down from), and
      * nothing else within reach of a banked wall; a pit, one map in two, in
      * the middle, with a ramp out of it and a spring in it; a deck or two in
-     * the air, each with a spring beside it and a box on top; hills; ramps of three kinds
-     * -- jumps, decks (up, a level top, down) and small kickers; pads,
-     * pointing any of eight ways; springs; blocks; and the power-up boxes.
-     * Each is kept clear of everything placed before it, so a ramp never
-     * runs into a block and nobody spawns in a wall. The dice are
-     * KartArms::Next, so the same seed is the same map anywhere.
+     * the air, each with a spring beside it and a box on top; hills; ramps of
+     * three kinds -- jumps, decks (up, a level top, down) and small kickers;
+     * pads, pointing any of eight ways; springs; blocks; and the power-up
+     * boxes. Each is kept clear of everything placed before it, so a ramp
+     * never runs into a block and nobody spawns in a wall: a map from any
+     * seed is sound (Faults), which loaders/KartMapsTesterLoader holds it to
+     * over many seeds. The dice are KartArms::Next, so the same seed is the
+     * same map anywhere.
      */
     inline void Generate(uint64_t seed, Map& m)
     {
