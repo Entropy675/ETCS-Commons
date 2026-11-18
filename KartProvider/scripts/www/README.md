@@ -53,7 +53,7 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   down too): the eye swings round the kart and, let alone, drifts back behind it. It also keeps
   to the kart's side of the ground -- down in a pit with it, under a deck with it -- instead of
   looking at it through a wall.
-- **The arena** is 128 units across inside its walls, which are four high: below their top they
+- **The arena** is 192 units across inside its walls, which are four high: below their top they
   stop you; over it -- off a spring at speed, a jump, a storey's edge -- you have left the
   arena, and a kart that falls outside it is out, as one that comes down in lava is.
 - **The maps:** **bowl** (every wall banked, the banks meeting in the corners with a pad on each
