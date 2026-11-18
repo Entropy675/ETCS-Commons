@@ -210,6 +210,9 @@ public:
     // bursts, and the rows of the menu and the board on the camera.
     void AddBlockNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_block_nodes.push_back(r); parkNode(r); }
     void AddSlabNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_slab_nodes.push_back(r); groundColour(r, KartArena::OnRamp); parkNode(r); }
+    // A wedge of the pool: a ramp's slope, solid down to the ground (its mesh
+    // rises toward its own +z: kart_wedge_shape.etcs).
+    void AddWedgeNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_wedge_nodes.push_back(r); groundColour(r, KartArena::OnRamp); parkNode(r); }
     void AddDomeNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_dome_nodes.push_back(r); groundColour(r, KartArena::OnHill); parkNode(r); }
     // The arena's floor: coloured here, as the slabs and domes are, so a
     // mark fades into the ground it is on.
@@ -1102,7 +1105,7 @@ private:
 
     /*
      * A MAP OUT, drawn with the pools: each block a pooled solid box sized
-     * and placed, each ramp's slopes and top a pooled slab, each hill a
+     * and placed, each ramp's slopes a pooled wedge and its top a slab, each hill a
      * pooled dome; what a pool has left over waits far below, hidden. The
      * boxes are set out on the ground, and the shots go.
      */
@@ -1143,39 +1146,26 @@ private:
             verb(node, "SetVisible", "1");
             m_live_blocks.push_back(node);
         }
-        // A ramp: its slope up (a slab tilted by the rise), its top (a box
-        // down to the ground), its slope down; a jump has no slope down -- its
-        // lip stands over the drop.
-        const Fixed T = F(3, 10);
+        // A ramp, solid to the ground: its slope up a wedge, its top a box,
+        // its slope down a wedge turned about; a jump has no slope down -- its
+        // lip is a wall's top. Nothing is hollow, so nothing is under one.
+        size_t nw = 0;
         for (const KartArena::Ramp& r : m_live.ramps)
         {
             const Fixed len = r.length();
-            auto slab = [&](Fixed from, Fixed run, bool rising) {
-                if (ns >= m_slab_nodes.size() || !run.IsPositive()) return;
-                const ETCS::RID node = m_slab_nodes[ns++];
-                const Fixed slope = Fixed::Length(run, r.height, Fixed::Zero());
-                const Fixed sn = r.height / slope, cs = run / slope;
-                // The top face's middle, lowered half the slab along its normal.
+            auto part = [&](std::vector<ETCS::RID>& pool, size_t& n, Fixed from, Fixed run, int turn) {
+                if (n >= pool.size() || !run.IsPositive()) return;
+                const ETCS::RID node = pool[n++];
                 const Fixed mid = from + run * Fixed::Half() - len * Fixed::Half();
-                const Fixed off = T * Fixed::Half() * sn;
-                const Fixed along = rising ? mid + off : mid - off;
-                const Fixed y = r.height * Fixed::Half() - T * Fixed::Half() * cs;
-                verb(node, "Create", fmt3(r.width.ToFloat()) + ", " + fmt3(T.ToFloat()) + ", " + fmt3(slope.ToFloat()));
-                // Pitched about its own across: its far end up when rising.
-                poseNode(node, r.x + r.sx * along, y, r.z + r.cz * along, r.yaw, rising ? -sn : sn, cs);
+                verb(node, "Create", fmt3(r.width.ToFloat()) + ", " + fmt3(r.height.ToFloat()) + ", " + fmt3(run.ToFloat()));
+                poseNode(node, r.x + r.sx * mid, r.height * Fixed::Half(), r.z + r.cz * mid, r.yaw + turn, Fixed::Zero(), Fixed::One());
                 verb(node, "SetVisible", "1");
             };
-            slab(Fixed::Zero(), r.up, true);
-            if (r.flat.IsPositive() && ns < m_slab_nodes.size())
-            {
-                const ETCS::RID node = m_slab_nodes[ns++];
-                const Fixed mid = r.up + r.flat * Fixed::Half() - len * Fixed::Half();
-                verb(node, "Create", fmt3(r.width.ToFloat()) + ", " + fmt3(r.height.ToFloat()) + ", " + fmt3(r.flat.ToFloat()));
-                poseNode(node, r.x + r.sx * mid, r.height * Fixed::Half(), r.z + r.cz * mid, r.yaw, Fixed::Zero(), Fixed::One());
-                verb(node, "SetVisible", "1");
-            }
-            slab(r.up + r.flat, r.down, false);
+            part(m_wedge_nodes, nw, Fixed::Zero(), r.up, 0);
+            part(m_slab_nodes, ns, r.up, r.flat, 0);
+            part(m_wedge_nodes, nw, r.up + r.flat, r.down, 180);
         }
+        for (; nw < m_wedge_nodes.size(); ++nw) parkNode(m_wedge_nodes[nw]);
         for (const KartArena::Hill& k : m_live.hills)
         {
             if (nd >= m_dome_nodes.size()) break;
@@ -2509,7 +2499,7 @@ private:
     std::vector<KartArena::Map> m_defs;
     KartArena::Map m_live;
     std::vector<ETCS::RID> m_live_blocks;
-    std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_dome_nodes;
+    std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_wedge_nodes, m_dome_nodes;
     std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;
     std::vector<PadNodes> m_pad_nodes;
     std::vector<bool> m_shot_busy;

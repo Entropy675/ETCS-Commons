@@ -60,6 +60,7 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpawn, (float, x), (float, z))      { (voi
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickup, (float, x), (float, z))     { (void)ctx; self.AddPickup(x, z); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlockNode, (ETCS::RID, node))      { (void)ctx; self.AddBlockNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSlabNode, (ETCS::RID, node))       { (void)ctx; self.AddSlabNode(node); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddWedgeNode, (ETCS::RID, node))      { (void)ctx; self.AddWedgeNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddDomeNode, (ETCS::RID, node))       { (void)ctx; self.AddDomeNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickupNode, (ETCS::RID, node))     { (void)ctx; self.AddPickupNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddShotNode, (ETCS::RID, node))       { (void)ctx; self.AddShotNode(node); }

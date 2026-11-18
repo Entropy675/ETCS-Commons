@@ -20,6 +20,9 @@ ball.Sphere(12)
 world.spawn(RenderProvider::Mesh dart)
 dart.Create()
 dart.Arrow(0.45, 0.55)
+# ...and one wedge for every ramp's slopes.
+world.spawn(RenderProvider::Mesh slope)
+run kart_wedge_shape.etcs shape=slope
 
 run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
@@ -30,11 +33,15 @@ run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
 
-# The map in play: twenty-four blocks, twenty-four slabs (a ramp takes up
-# to three), six domes.
+# The map in play: twenty-four blocks, twenty-four wedges (a ramp's slopes,
+# up to two), twenty-four slabs (its level top), six domes.
 run kart_blocks.etcs world=world battle=battle
 run kart_blocks.etcs world=world battle=battle
 run kart_blocks.etcs world=world battle=battle
+run kart_wedges.etcs world=world battle=battle shape=slope
+run kart_wedges.etcs world=world battle=battle shape=slope
+run kart_wedges.etcs world=world battle=battle shape=slope
+run kart_wedges.etcs world=world battle=battle shape=slope
 run kart_slabs.etcs world=world battle=battle
 run kart_slabs.etcs world=world battle=battle
 run kart_slabs.etcs world=world battle=battle

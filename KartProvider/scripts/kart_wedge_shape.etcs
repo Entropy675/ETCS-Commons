@@ -1,0 +1,39 @@
+#!/usr/bin/env etcs
+# A WEDGE in the unit box: a ramp's slope, solid down to the ground -- low
+# along the edge at -z, rising to the box's full height at +z, where its back
+# stands. Five faces, each with its own normal; the slope's leans as a ramp's
+# does (about one up in three and a half along), since a node's size does not
+# turn a normal. `run kart_wedge_shape.etcs shape=<Mesh>`
+requires shape [Mesh]
+shape.Create()
+shape.Clear()
+# the bottom
+shape.AddVertex(-0.5, -0.5, -0.5, 0.0, -1.0, 0.0)
+shape.AddVertex(0.5, -0.5, -0.5, 0.0, -1.0, 0.0)
+shape.AddVertex(0.5, -0.5, 0.5, 0.0, -1.0, 0.0)
+shape.AddVertex(-0.5, -0.5, 0.5, 0.0, -1.0, 0.0)
+shape.AddTriangle(0, 1, 2)
+shape.AddTriangle(0, 2, 3)
+# the back
+shape.AddVertex(-0.5, -0.5, 0.5, 0.0, 0.0, 1.0)
+shape.AddVertex(0.5, -0.5, 0.5, 0.0, 0.0, 1.0)
+shape.AddVertex(0.5, 0.5, 0.5, 0.0, 0.0, 1.0)
+shape.AddVertex(-0.5, 0.5, 0.5, 0.0, 0.0, 1.0)
+shape.AddTriangle(4, 5, 6)
+shape.AddTriangle(4, 6, 7)
+# the slope
+shape.AddVertex(-0.5, -0.5, -0.5, 0.0, 0.957, -0.29)
+shape.AddVertex(0.5, -0.5, -0.5, 0.0, 0.957, -0.29)
+shape.AddVertex(0.5, 0.5, 0.5, 0.0, 0.957, -0.29)
+shape.AddVertex(-0.5, 0.5, 0.5, 0.0, 0.957, -0.29)
+shape.AddTriangle(8, 9, 10)
+shape.AddTriangle(8, 10, 11)
+# the two sides
+shape.AddVertex(-0.5, -0.5, -0.5, -1.0, 0.0, 0.0)
+shape.AddVertex(-0.5, -0.5, 0.5, -1.0, 0.0, 0.0)
+shape.AddVertex(-0.5, 0.5, 0.5, -1.0, 0.0, 0.0)
+shape.AddTriangle(12, 13, 14)
+shape.AddVertex(0.5, -0.5, -0.5, 1.0, 0.0, 0.0)
+shape.AddVertex(0.5, -0.5, 0.5, 1.0, 0.0, 0.0)
+shape.AddVertex(0.5, 0.5, 0.5, 1.0, 0.0, 0.0)
+shape.AddTriangle(15, 16, 17)
