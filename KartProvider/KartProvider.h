@@ -72,6 +72,14 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddPit, (float, x), (float, z), (float, width
     (void)ctx;
     self.AddPit(x, z, width, depth, deep);
 }
+// AddLava <x> <z> <width> <depth> <deep> -- a pit of lava: a kart that comes
+// down on its floor is out. What stands in it as high as it is deep (a ramp
+// all level top) is an island, or a causeway.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddLava, (float, x), (float, z), (float, width), (float, depth), (float, deep))
+{
+    (void)ctx;
+    self.AddLava(x, z, width, depth, deep);
+}
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpawn, (float, x), (float, z))      { (void)ctx; self.AddSpawn(x, z); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickup, (float, x), (float, z))     { (void)ctx; self.AddPickup(x, z); }
 // AddPickupUp <x> <z> -- a box on top of the deck over the spot (AddPickup's is on the ground under it).

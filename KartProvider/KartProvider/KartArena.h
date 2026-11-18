@@ -30,22 +30,26 @@
  *          radius across, sunk so it meets the ground at a slope of about
  *          2.2 x height / radius, never a wall
  *
- * A PAD lies on the level ground and pushes what drives over it the way it
- * points (yaw, as a ramp's): PadWidth() across, PadLength() along. A SPRING
- * is a round one, SpringRadius() about its middle, that throws a kart up.
+ * A PAD lies on the ground -- level, or one slope: a bank's -- and pushes
+ * what drives over it the way it points (yaw, as a ramp's): PadWidth() across,
+ * PadLength() along. A SPRING is a round one, SpringRadius() about its middle,
+ * on level ground, that throws a kart up.
  *
  * THE GROUND HAS LEVELS, and they are meant big: half a map sunk, a storey
  * over a third of it. A PIT is a floor sunk below the arena's, its sides
  * walls (ground a kart cannot climb): what is in a pit stands on its floor --
  * a block, a hill, a ramp that rises from it; and a ramp as high as the pit
- * is deep, its lip at the pit's edge, is a way out. A DECK is a level plane
- * in the air with nothing under it but what is on the ground there: a kart
- * at or above its top stands on it, one below drives under it, and one
- * thrown up from below goes through it and comes down on top; a ramp as
- * high as the deck, its top at the deck's edge (a deck is laid in pieces
- * round a ramp that comes up through it), is a way up. So the ground under
- * a kart depends on how high the kart is (Height's `feet`); the SOLID ground
- * -- the floor, the pits, the ramps and hills -- does not (Solid).
+ * is deep, its lip at the pit's edge, is a way out. A pit of LAVA has no way
+ * out and needs none: a kart that comes down on its floor is out. What stands
+ * in it as high as it is deep -- a ramp all level top -- is an island, or a
+ * causeway across. A DECK is a level plane in the air with nothing under it
+ * but what is on the ground there: a kart at or above its top stands on it,
+ * one below drives under it, and one thrown up from below goes through it
+ * and comes down on top; a ramp as high as the deck, its top at the deck's
+ * edge (a deck is laid in pieces round a ramp that comes up through it), is
+ * a way up. So the ground under a kart depends on how high the kart is
+ * (Height's `feet`); the SOLID ground -- the floor, the pits, the ramps and
+ * hills -- does not (Solid).
  *
  * Every number is the rows' own integers (Fixed), the generator's too, so
  * the ground under a kart is the same on every runtime.
@@ -72,11 +76,11 @@ namespace KartArena
     {
         Fixed x, z; int yaw = 0;
         Fixed sx, cz;                  // derived: the way it pushes (sin yaw, cos yaw)
-        Fixed y;                       // derived: the ground it lies on
+        Fixed y, gx, gz;               // derived: the ground it lies on at its middle, and that ground's slope
     };
     struct Spring { Fixed x, z; Fixed y; };          // y derived, as a pad's
     struct Deck   { Fixed x, z, w, d, h; };          // its top at h, w along x, d along z
-    struct Pit    { Fixed x, z, w, d, depth; };      // its floor at -depth
+    struct Pit    { Fixed x, z, w, d, depth; bool lava = false; };   // its floor at -depth; lava: a kart on that floor is out
     struct Map
     {
         std::string        name;
@@ -96,7 +100,11 @@ namespace KartArena
     inline Fixed PadWidth()  { return F(3); }
     inline Fixed PadLength() { return F(4); }
     inline Fixed SpringRadius() { return F(3, 2); }
-    inline Fixed DeckThick() { return F(1, 4); }      // as drawn; nothing is under its top but air
+    inline Fixed DeckThick() { return F(3, 4); }      // as drawn; nothing is under its top but air
+    // THE ARENA: square, its walls' inside this far from the middle each way,
+    // their top this high (kart_arena.etcs builds them to these).
+    inline Fixed Half() { return F(64); }
+    inline Fixed WallTop() { return F(4); }
 
     // A ramp's height at a point, and its slope there (rise per unit, along x
     // and z); false off its footprint.
@@ -127,7 +135,7 @@ namespace KartArena
         gx = per * dx; gz = per * dz;
         return true;
     }
-    // The pad a point is over, or null (a kart is on it only at its level: Pad::y).
+    // The pad a point is over, or null (a kart is on it only on its ground, not a deck over it).
     inline const Pad* PadAt(const Map& m, Fixed x, Fixed z)
     {
         for (const Pad& p : m.pads)
@@ -217,7 +225,7 @@ namespace KartArena
             h.b  = h.height / (Fixed::One() - half_root3);
             h.y0 = -h.b * half_root3;
         }
-        for (Pad& p : m.pads)       p.y = Solid(m, p.x, p.z);
+        for (Pad& p : m.pads)       p.y = Solid(m, p.x, p.z, &p.gx, &p.gz);
         for (Spring& p : m.springs) p.y = Solid(m, p.x, p.z);
     }
 
@@ -226,10 +234,10 @@ namespace KartArena
      * first). A map's maker -- a script's author, or Generate -- keeps these
      * so that what is on it can be reached and does what it shows:
      *
-     *   pad      level solid ground under the whole plate (off its level it
-     *            pushes nothing); its middle clear of blocks; no other pad
-     *            over it, no spawn at it
-     *   spring   the same, and no pad at it
+     *   pad      solid ground in one piece under the whole plate -- level, or
+     *            one slope; its middle clear of blocks; no other pad over
+     *            it, no spawn at it
+     *   spring   the same on level ground, and no pad at it
      *   block    level solid ground under it: not on a ramp or a hill, and
      *            wholly in a pit or wholly out
      *   deck     room to drive under it, over the ground there (a block
@@ -239,6 +247,8 @@ namespace KartArena
      *            ground and would show in the pit); no spawn at its edge;
      *            a way out -- a spring in it, or a ramp in it as high as
      *            it is deep
+     *   lava     a pit that needs no way out; no spawn, box, pad or spring
+     *            on its floor
      */
     inline Fixed Headroom() { return F(3, 2); }       // under a deck, over the highest ground below it
     inline Fixed HillSkirt() { return F(8, 5); }      // of a hill's radius: how far its dome runs on under the ground
@@ -270,18 +280,21 @@ namespace KartArena
         // at a grid of points over it.
         auto plate = [&](const char* what, Fixed x, Fixed z, Fixed sx, Fixed cz, Fixed along, Fixed across, bool round, const Pad* self) {
             bool level = true, alone = true;
-            const Fixed y = Solid(m, x, z);
+            Fixed gx, gz;
+            const Fixed y = Solid(m, x, z, &gx, &gz);
+            if (!self && (!gx.IsZero() || !gz.IsZero())) level = false;   // a spring: level ground only
             for (int i = -2; i <= 2; ++i)
                 for (int j = -2; j <= 2; ++j)
                 {
                     if (round && i * i + j * j > 4) continue;
                     const Fixed u = along * F(i, 2), v = across * F(j, 2);
                     const Fixed px = x + sx * u + cz * v, pz = z + cz * u - sx * v;
-                    level = level && Solid(m, px, pz) == y;
+                    // The one slope its middle is on, carried out to here.
+                    level = level && (Solid(m, px, pz) - (y + gx * (px - x) + gz * (pz - z))).Abs() < F(1, 100);
                     const Pad* on = PadAt(m, px, pz);
                     alone = alone && (!on || on == self);
                 }
-            if (!level) say(what, x, z, "not on level ground");
+            if (!level) say(what, x, z, self ? "not on one piece of ground" : "not on level ground");
             if (blocked(x, z, F(1, 5))) say(what, x, z, "in a block");
             if (!alone) say(what, x, z, self ? "over another pad" : "at a pad");
         };
@@ -333,7 +346,12 @@ namespace KartArena
                 const Fixed back = k.radius * HillSkirt();
                 if (dx * dx + dz * dz < back * back) say("pit", p.x, p.z, "a hill too near its edge");
             }
-            bool out_by = false;
+            bool out_by = p.lava;
+            auto molten = [&](Fixed x, Fixed z) { return p.lava && Over(x, z, p.x, p.z, p.w, p.d) && Solid(m, x, z) == -p.depth; };
+            for (const Spot& a : m.spawns)  if (molten(a.x, a.z)) say("lava", a.x, a.z, "a spawn in it");
+            for (const Spot& a : m.pickups) if (!a.up && molten(a.x, a.z)) say("lava", a.x, a.z, "a box in it");
+            for (const Pad& q : m.pads)     if (molten(q.x, q.z)) say("lava", q.x, q.z, "a pad in it");
+            for (const Spring& q : m.springs) if (molten(q.x, q.z)) say("lava", q.x, q.z, "a spring in it");
             for (const Spring& q : m.springs) out_by = out_by || Over(q.x, q.z, p.x, p.z, p.w, p.d);
             for (const Ramp& r : m.ramps)
             {
@@ -384,14 +402,38 @@ namespace KartArena
      * spawns in a wall: a map from any seed is sound (Faults), which
      * loaders/KartMapsTesterLoader holds it to over many seeds. The dice are
      * KartArms::Next, so the same seed is the same map anywhere.
+     *
+     * The numbers below are of a plan 64 across; the map is then stretched to
+     * the arena (Stretch), which keeps everything in it as clear of everything
+     * else as the plan had it, and more. Heights are not stretched: they are
+     * the map's as given, and nothing that may land under the storey is too
+     * high to leave room there (Headroom).
      */
-    inline Fixed StoreyHeight() { return F(9, 2); }
+    inline Fixed StoreyHeight() { return F(5); }
     inline Fixed LowDepth()     { return F(5, 2); }
+    // A map made `k` times as far across: where things are and how far they
+    // reach over the ground, not how high they stand. A pad, a spring, a box
+    // and a spawn stay the size they are, further apart.
+    inline void Stretch(Map& m, int k)
+    {
+        const Fixed f = F(k);
+        for (Block& b : m.blocks)   { b.x = b.x * f; b.z = b.z * f; b.w = b.w * f; b.d = b.d * f; }
+        for (Ramp& r : m.ramps)     { r.x = r.x * f; r.z = r.z * f; r.width = r.width * f; r.up = r.up * f; r.flat = r.flat * f; r.down = r.down * f; }
+        for (Hill& h : m.hills)     { h.x = h.x * f; h.z = h.z * f; h.radius = h.radius * f; }
+        for (Deck& d : m.decks)     { d.x = d.x * f; d.z = d.z * f; d.w = d.w * f; d.d = d.d * f; }
+        for (Pit& p : m.pits)       { p.x = p.x * f; p.z = p.z * f; p.w = p.w * f; p.d = p.d * f; }
+        for (Pad& p : m.pads)       { p.x = p.x * f; p.z = p.z * f; }
+        for (Spring& p : m.springs) { p.x = p.x * f; p.z = p.z * f; }
+        for (Spot& p : m.spawns)    { p.x = p.x * f; p.z = p.z * f; }
+        for (Spot& p : m.pickups)   { p.x = p.x * f; p.z = p.z * f; }
+    }
     inline void Generate(uint64_t seed, Map& m)
     {
         m.blocks.clear(); m.ramps.clear(); m.hills.clear(); m.pads.clear(); m.spawns.clear(); m.pickups.clear();
         m.springs.clear(); m.decks.clear(); m.pits.clear();
         m.generated = true;
+        const int stretch = static_cast<int>((Half() / F(32)).ToInt());
+        const Fixed lip = (Half() - F(1)) / F(stretch);   // the karts' bound, on the plan
         uint64_t r = seed | 1;
         auto pick = [&r](int lo, int hi) { return lo + static_cast<int>(KartArms::Next(r) % static_cast<uint64_t>(hi - lo + 1)); };
         struct Room { Fixed x, z, rad; };
@@ -470,15 +512,15 @@ namespace KartArena
         {
             const int side = (first + b * pick(1, 3)) % 4;
             Ramp a; a.yaw = sides[side][0]; a.width = F(pick(20, 34)); a.up = F(pick(5, 7));
-            a.flat = a.down = Fixed::Zero(); a.height = F(pick(15, 22), 10);
-            const Fixed at = F(31) - a.up * Fixed::Half();   // its lip on the karts' bound
+            a.flat = a.down = Fixed::Zero(); a.height = F(pick(20, 30), 10);
+            const Fixed at = lip - a.up * Fixed::Half();     // its lip on the karts' bound
             const Fixed along = F(pick(-4, 4));
             if (reach[side] < F(30)) continue;               // the same side twice: one bank
             if (sunk && (side < 2) != (toward < 2)) continue;
             a.x = side == 0 ? at : side == 1 ? -at : along;
             a.z = side == 2 ? at : side == 3 ? -at : along;
             m.ramps.push_back(a);
-            reach[side] = F(31) - a.up - F(1);
+            reach[side] = lip - a.up - F(1);
         }
         // Out of the low ground: up to four ramps over its line, as high as
         // it is deep; and two springs in it.
@@ -587,7 +629,7 @@ namespace KartArena
             for (int i = -1; i <= 1; i += 2)
                 for (int j = -1; j <= 1; j += 2)
                 {
-                    Block b; b.w = b.d = post; b.h = StoreyHeight() - DeckThick(); b.yaw = 0;
+                    Block b; b.w = b.d = post; b.h = StoreyHeight() - DeckThick() * Fixed::Half(); b.yaw = 0;   // up into the deck
                     b.x = cx + (w * Fixed::Half() - F(3, 2)) * F(i); b.z = cz + (d * Fixed::Half() - F(3, 2)) * F(j);
                     if (!clear(b.x, b.z, post * F(71, 100), Fixed::Zero(), F(1, 4))) continue;
                     m.blocks.push_back(b); taken.push_back({ b.x, b.z, post });
@@ -603,7 +645,7 @@ namespace KartArena
             for (const auto& o : on) m.pickups.push_back({ cx + w * F(o[0], 100), cz + d * F(o[1], 100), true });
         }
         // Then, on either level and under the storey, smallest first.
-        const int pads = pick(2, 4);
+        const int pads = pick(4, 7);
         for (int t = 0; t < 200 && static_cast<int>(m.pads.size()) < pads; ++t)
         {
             Pad p; p.yaw = pick(0, 7) * 45;
@@ -612,7 +654,7 @@ namespace KartArena
             if (!clear(p.x, p.z, rad)) continue;
             m.pads.push_back(p); taken.push_back({ p.x, p.z, rad });
         }
-        const int springs = static_cast<int>(m.springs.size()) + pick(1, 2);
+        const int springs = static_cast<int>(m.springs.size()) + pick(2, 4);
         for (int t = 0; t < 200 && static_cast<int>(m.springs.size()) < springs; ++t)
         {
             const Fixed x = F(pick(-24, 24)), z = F(pick(-24, 24));
@@ -622,8 +664,11 @@ namespace KartArena
         const int hills = pick(1, 3);
         for (int t = 0; t < 200 && static_cast<int>(m.hills.size()) < hills; ++t)
         {
-            Hill k; k.radius = F(pick(5, 8)); k.height = F(pick(10, 16), 10);
+            Hill k; k.radius = F(pick(5, 8)); k.height = F(pick(14, 24), 10);
             k.x = F(pick(-24, 24)); k.z = F(pick(-24, 24));
+            // Its dome, drawn on under the ground twice its radius out, kept over the floor (Half + 4).
+            const Fixed floor = (Half() + F(4)) / F(stretch) - k.radius * F(2);
+            if (k.x.Abs() > floor || k.z.Abs() > floor) continue;
             if (!clear(k.x, k.z, k.radius, k.radius)) continue;
             m.hills.push_back(k); taken.push_back({ k.x, k.z, k.radius });
         }
@@ -645,25 +690,26 @@ namespace KartArena
             {
                 case 0:   // a jump
                     a.width = F(pick(3, 5)); a.up = F(pick(5, 7)); a.flat = a.down = Fixed::Zero();
-                    a.height = F(pick(10, 18), 10); break;
+                    a.height = F(pick(15, 27), 10); break;
                 case 1:   // a deck
                     a.width = F(pick(4, 6)); a.up = F(pick(4, 6)); a.flat = F(pick(3, 6)); a.down = F(pick(4, 6));
-                    a.height = F(pick(12, 20), 10); break;
+                    a.height = F(pick(16, 26), 10); break;
                 default:  // a kicker
                     a.width = F(3); a.up = F(pick(3, 4)); a.flat = a.down = Fixed::Zero();
-                    a.height = F(pick(8, 12), 10); break;
+                    a.height = F(pick(12, 18), 10); break;
             }
             a.x = F(pick(-22, 22)); a.z = F(pick(-22, 22));
             const Fixed rad = a.length() * Fixed::Half() + a.width * Fixed::Half();
             if (!clear(a.x, a.z, rad)) continue;
             m.ramps.push_back(a); taken.push_back({ a.x, a.z, rad });
         }
-        for (int t = 0; t < 200 && m.pickups.size() < 8; ++t)
+        for (int t = 0; t < 200 && m.pickups.size() < 11; ++t)
         {
             const Fixed x = F(pick(-24, 24)), z = F(pick(-24, 24));
             if (!clear(x, z, F(1))) continue;
             m.pickups.push_back({ x, z }); taken.push_back({ x, z, F(1) });
         }
+        Stretch(m, stretch);
         Prepare(m);
     }
 }

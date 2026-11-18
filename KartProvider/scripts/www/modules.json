@@ -34,6 +34,7 @@
     "KartProvider/scripts/kart_map_crossroads.etcs",
     "KartProvider/scripts/kart_map_hills.etcs",
     "KartProvider/scripts/kart_map_skatepark.etcs",
+    "KartProvider/scripts/kart_map_lava.etcs",
     "KartProvider/scripts/kart_pool.etcs",
     "KartProvider/scripts/kart_car.etcs",
     "KartProvider/scripts/kart_wheel.etcs",

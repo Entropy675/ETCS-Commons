@@ -1,8 +1,9 @@
 #!/usr/bin/env etcs
 # BOWL: a basin in a basin -- every wall banked, the banks meeting in the
-# corners, a ring road round the top, and the whole middle sunk: down there
-# a mound with a box on it, bumpers to dodge behind, a ramp up each side and
-# springs up to a deck in the air over the mound.
+# corners with pads on them to send a kart round, a ring road round the top,
+# and the whole middle sunk: down there a mound with a box on it, bumpers to
+# dodge behind, a ramp up each side and springs up to a deck in the air over
+# the mound.
 #   run kart_map_bowl.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
@@ -16,52 +17,64 @@ battle.AddMap(bowl)
 # The banks: up to the wall, their lips on it, each the whole wall long, so
 # two meet in every corner and the corner is ground like the rest -- a kart
 # driven into one rides up and rolls back, with nothing to wedge against.
-battle.AddRamp(0.0, 27.5, 0.0, 64.0, 7.0, 0.0, 0.0, 2.0)
-battle.AddRamp(0.0, -27.5, 180.0, 64.0, 7.0, 0.0, 0.0, 2.0)
-battle.AddRamp(27.5, 0.0, 90.0, 64.0, 7.0, 0.0, 0.0, 2.0)
-battle.AddRamp(-27.5, 0.0, 270.0, 64.0, 7.0, 0.0, 0.0, 2.0)
-# The low ground: the middle, thirty-four square, and a ramp out of it at
+battle.AddRamp(0.0, 56.0, 0.0, 128.0, 14.0, 0.0, 0.0, 3.0)
+battle.AddRamp(56.0, 0.0, 90.0, 128.0, 14.0, 0.0, 0.0, 3.0)
+battle.AddRamp(0.0, -56.0, 180.0, 128.0, 14.0, 0.0, 0.0, 3.0)
+battle.AddRamp(-56.0, 0.0, 270.0, 128.0, 14.0, 0.0, 0.0, 3.0)
+# On them, either side of every corner, a pad pointing away from it along its
+# bank: a kart that drifts up into a corner is sent round the bowl the way of
+# whichever it comes down on -- clockwise off one, the other way off the other.
+battle.AddPad(40.0, 56.0, 270.0)
+battle.AddPad(56.0, -40.0, 0.0)
+battle.AddPad(-40.0, -56.0, 90.0)
+battle.AddPad(-56.0, 40.0, 180.0)
+battle.AddPad(56.0, 40.0, 180.0)
+battle.AddPad(40.0, -56.0, 270.0)
+battle.AddPad(-56.0, -40.0, 0.0)
+battle.AddPad(-40.0, 56.0, 90.0)
+# The low ground: the middle, sixty-eight square, and a ramp out of it at
 # the middle of each side -- the way down into it too.
-battle.AddPit(0.0, 0.0, 34.0, 34.0, 2.5)
-battle.AddRamp(0.0, 13.75, 0.0, 5.0, 6.5, 0.0, 0.0, 2.5)
-battle.AddRamp(0.0, -13.75, 180.0, 5.0, 6.5, 0.0, 0.0, 2.5)
-battle.AddRamp(13.75, 0.0, 90.0, 5.0, 6.5, 0.0, 0.0, 2.5)
-battle.AddRamp(-13.75, 0.0, 270.0, 5.0, 6.5, 0.0, 0.0, 2.5)
+battle.AddPit(0.0, 0.0, 68.0, 68.0, 2.5)
+battle.AddRamp(0.0, 27.5, 0.0, 10.0, 13.0, 0.0, 0.0, 2.5)
+battle.AddRamp(27.5, 0.0, 90.0, 10.0, 13.0, 0.0, 0.0, 2.5)
+battle.AddRamp(0.0, -27.5, 180.0, 10.0, 13.0, 0.0, 0.0, 2.5)
+battle.AddRamp(-27.5, 0.0, 270.0, 10.0, 13.0, 0.0, 0.0, 2.5)
 # Down there: the mound, a bumper before each ramp, springs between.
-battle.AddHill(0.0, 0.0, 7.0, 1.4)
-battle.AddBlock(0.0, 7.7, 4.0, 1.2, 0.8, 0.0)
-battle.AddBlock(0.0, -7.7, 4.0, 1.2, 0.8, 0.0)
-battle.AddBlock(7.7, 0.0, 1.2, 4.0, 0.8, 0.0)
-battle.AddBlock(-7.7, 0.0, 1.2, 4.0, 0.8, 0.0)
-battle.AddSpring(6.5, 6.5)
-battle.AddSpring(-6.5, 6.5)
-battle.AddSpring(6.5, -6.5)
-battle.AddSpring(-6.5, -6.5)
-# A deck over the mound, two above the ring road: off a spring and onto it.
-battle.AddDeck(0.0, 0.0, 10.0, 10.0, 2.0)
+battle.AddHill(0.0, 0.0, 14.0, 2.1)
+battle.AddBlock(0.0, 15.4, 8.0, 2.4, 0.8, 0.0)
+battle.AddBlock(0.0, -15.4, 8.0, 2.4, 0.8, 0.0)
+battle.AddBlock(15.4, 0.0, 2.4, 8.0, 0.8, 0.0)
+battle.AddBlock(-15.4, 0.0, 2.4, 8.0, 0.8, 0.0)
+battle.AddSpring(13.0, 13.0)
+battle.AddSpring(-13.0, 13.0)
+battle.AddSpring(13.0, -13.0)
+battle.AddSpring(-13.0, -13.0)
+# A deck over the mound, two and a half above the ring road: off a spring
+# at speed and onto it.
+battle.AddDeck(0.0, 0.0, 20.0, 20.0, 2.5)
 
 # Pads round the ring road, pointing round it, and springs in two corners.
-battle.AddPad(20.5, 9.0, 0.0)
-battle.AddPad(-9.0, 20.5, 270.0)
-battle.AddPad(-20.5, -9.0, 180.0)
-battle.AddPad(9.0, -20.5, 90.0)
-battle.AddSpring(20.5, -20.5)
-battle.AddSpring(-20.5, 20.5)
+battle.AddPad(41.0, 18.0, 0.0)
+battle.AddPad(-18.0, 41.0, 270.0)
+battle.AddPad(-41.0, -18.0, 180.0)
+battle.AddPad(18.0, -41.0, 90.0)
+battle.AddSpring(41.0, -41.0)
+battle.AddSpring(-41.0, 41.0)
 
-battle.AddSpawn(0.0, -20.5)
-battle.AddSpawn(0.0, 20.5)
-battle.AddSpawn(20.5, 0.0)
-battle.AddSpawn(-20.5, 0.0)
-battle.AddSpawn(12.0, -12.0)
-battle.AddSpawn(-12.0, 12.0)
-battle.AddSpawn(12.0, 12.0)
-battle.AddSpawn(-12.0, -12.0)
+battle.AddSpawn(0.0, -41.0)
+battle.AddSpawn(0.0, 41.0)
+battle.AddSpawn(41.0, 0.0)
+battle.AddSpawn(-41.0, 0.0)
+battle.AddSpawn(24.0, -24.0)
+battle.AddSpawn(-24.0, 24.0)
+battle.AddSpawn(24.0, 24.0)
+battle.AddSpawn(-24.0, -24.0)
 
 battle.AddPickup(0.0, 0.0)
 battle.AddPickupUp(0.0, 0.0)
-battle.AddPickup(0.0, 27.0)
-battle.AddPickup(0.0, -27.0)
-battle.AddPickup(27.0, 0.0)
-battle.AddPickup(-27.0, 0.0)
-battle.AddPickup(13.5, -6.0)
-battle.AddPickup(-13.5, 6.0)
+battle.AddPickup(0.0, 54.0)
+battle.AddPickup(0.0, -54.0)
+battle.AddPickup(54.0, 0.0)
+battle.AddPickup(-54.0, 0.0)
+battle.AddPickup(27.0, -12.0)
+battle.AddPickup(-27.0, 12.0)

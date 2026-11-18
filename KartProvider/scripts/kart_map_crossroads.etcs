@@ -14,66 +14,66 @@
 requires battle [KartBattle]
 battle.AddMap(crossroads)
 
-# The buildings: two to a quarter, an alley four wide between them.
-battle.AddBlock(10.5, 15.0, 5.0, 14.0, 3.0, 0.0)
-battle.AddBlock(19.5, 15.0, 5.0, 14.0, 2.2, 0.0)
-battle.AddBlock(-15.0, 10.5, 14.0, 5.0, 2.5, 0.0)
-battle.AddBlock(-15.0, 19.5, 14.0, 5.0, 3.5, 0.0)
-battle.AddBlock(15.0, -10.5, 14.0, 5.0, 3.5, 0.0)
-battle.AddBlock(15.0, -19.5, 14.0, 5.0, 2.0, 0.0)
-battle.AddBlock(-10.5, -15.0, 5.0, 14.0, 2.0, 0.0)
-battle.AddBlock(-19.5, -15.0, 5.0, 14.0, 3.0, 0.0)
+# The buildings: two to a quarter, an alley eight wide between them.
+battle.AddBlock(21.0, 30.0, 10.0, 28.0, 3.0, 0.0)
+battle.AddBlock(39.0, 30.0, 10.0, 28.0, 2.2, 0.0)
+battle.AddBlock(-30.0, 21.0, 28.0, 10.0, 2.5, 0.0)
+battle.AddBlock(-30.0, 39.0, 28.0, 10.0, 3.5, 0.0)
+battle.AddBlock(30.0, -21.0, 28.0, 10.0, 3.5, 0.0)
+battle.AddBlock(30.0, -39.0, 28.0, 10.0, 2.0, 0.0)
+battle.AddBlock(-21.0, -30.0, 10.0, 28.0, 2.0, 0.0)
+battle.AddBlock(-39.0, -30.0, 10.0, 28.0, 3.0, 0.0)
 # Planters on the junction's corners, clear of both roads' middles.
-battle.AddBlock(6.0, 6.0, 2.0, 2.0, 1.0, 0.0)
-battle.AddBlock(-6.0, 6.0, 2.0, 2.0, 1.0, 0.0)
-battle.AddBlock(6.0, -6.0, 2.0, 2.0, 1.0, 0.0)
-battle.AddBlock(-6.0, -6.0, 2.0, 2.0, 1.0, 0.0)
+battle.AddBlock(12.0, 12.0, 4.0, 4.0, 1.0, 0.0)
+battle.AddBlock(-12.0, 12.0, 4.0, 4.0, 1.0, 0.0)
+battle.AddBlock(12.0, -12.0, 4.0, 4.0, 1.0, 0.0)
+battle.AddBlock(-12.0, -12.0, 4.0, 4.0, 1.0, 0.0)
 # Up to the roof: on the north ring road, a ramp in from each end of it,
-# twelve long, toward the middle.
-battle.AddRamp(19.0, 24.0, 270.0, 4.0, 12.0, 0.0, 0.0, 4.6)
-battle.AddRamp(-19.0, 24.0, 90.0, 4.0, 12.0, 0.0, 0.0, 4.6)
-# The roof: fifty by twenty-two over the north road, both northern quarters
-# and their alleys, its two north corners cut away over the ramps.
-battle.AddDeck(0.0, 13.0, 50.0, 18.0, 4.6)
-battle.AddDeck(0.0, 24.0, 26.0, 4.0, 4.6)
+# twenty-four long, toward the middle.
+battle.AddRamp(38.0, 48.0, 270.0, 8.0, 24.0, 0.0, 0.0, 5.1)
+battle.AddRamp(-38.0, 48.0, 90.0, 8.0, 24.0, 0.0, 0.0, 5.1)
+# The roof: a hundred by forty-four over the north road, both northern
+# quarters and their alleys, its two north corners cut away over the ramps.
+battle.AddDeck(0.0, 26.0, 100.0, 36.0, 5.1)
+battle.AddDeck(0.0, 48.0, 52.0, 8.0, 5.1)
 # Up through it: springs on the north road and in each alley.
-battle.AddSpring(0.0, 20.0)
-battle.AddSpring(15.0, 11.0)
-battle.AddSpring(-9.0, 15.0)
+battle.AddSpring(0.0, 40.0)
+battle.AddSpring(30.0, 22.0)
+battle.AddSpring(-18.0, 30.0)
 # A jump on each side of the ring road, all the same way round.
-battle.AddRamp(27.0, -16.0, 0.0, 4.0, 5.0, 0.0, 0.0, 1.2)
-battle.AddRamp(-27.0, 16.0, 180.0, 4.0, 5.0, 0.0, 0.0, 1.2)
-battle.AddRamp(16.0, 28.5, 270.0, 4.0, 5.0, 0.0, 0.0, 1.2)
-battle.AddRamp(-16.0, -27.0, 90.0, 4.0, 5.0, 0.0, 0.0, 1.2)
+battle.AddRamp(54.0, -32.0, 0.0, 8.0, 10.0, 0.0, 0.0, 2.4)
+battle.AddRamp(-54.0, 32.0, 180.0, 8.0, 10.0, 0.0, 0.0, 2.4)
+battle.AddRamp(32.0, 57.0, 270.0, 8.0, 10.0, 0.0, 0.0, 2.4)
+battle.AddRamp(-32.0, -54.0, 90.0, 8.0, 10.0, 0.0, 0.0, 2.4)
 
 # On the roads, each facing the middle down its road: the corners face a
 # block, so none is a spawn.
-battle.AddSpawn(0.0, -27.0)
-battle.AddSpawn(0.0, 27.0)
-battle.AddSpawn(-27.0, 0.0)
-battle.AddSpawn(27.0, 0.0)
-battle.AddSpawn(0.0, -12.0)
-battle.AddSpawn(0.0, 12.0)
-battle.AddSpawn(-12.0, 0.0)
-battle.AddSpawn(12.0, 0.0)
+battle.AddSpawn(0.0, -54.0)
+battle.AddSpawn(0.0, 54.0)
+battle.AddSpawn(-54.0, 0.0)
+battle.AddSpawn(54.0, 0.0)
+battle.AddSpawn(0.0, -24.0)
+battle.AddSpawn(0.0, 24.0)
+battle.AddSpawn(-24.0, 0.0)
+battle.AddSpawn(24.0, 0.0)
 
 # Pads on the cross street toward the junction, and round the ring road.
-battle.AddPad(-21.0, 0.0, 90.0)
-battle.AddPad(21.0, 0.0, 270.0)
-battle.AddPad(26.0, 10.0, 0.0)
-battle.AddPad(-26.0, -10.0, 180.0)
-battle.AddPad(5.0, 28.0, 270.0)
-battle.AddPad(10.0, -26.0, 90.0)
+battle.AddPad(-42.0, 0.0, 90.0)
+battle.AddPad(42.0, 0.0, 270.0)
+battle.AddPad(52.0, 20.0, 0.0)
+battle.AddPad(-52.0, -20.0, 180.0)
+battle.AddPad(10.0, 56.0, 270.0)
+battle.AddPad(20.0, -52.0, 90.0)
 # Springs on the ring road.
-battle.AddSpring(27.0, -6.0)
-battle.AddSpring(-27.0, 7.0)
+battle.AddSpring(54.0, -12.0)
+battle.AddSpring(-54.0, 14.0)
 
 # Boxes on the roads, and on the roof.
 battle.AddPickup(0.0, 0.0)
-battle.AddPickup(15.0, 0.0)
-battle.AddPickup(-15.0, 0.0)
-battle.AddPickup(0.0, 15.0)
-battle.AddPickup(0.0, -15.0)
-battle.AddPickup(-15.0, -15.0)
-battle.AddPickupUp(15.0, 15.0)
-battle.AddPickupUp(-15.0, 15.0)
+battle.AddPickup(30.0, 0.0)
+battle.AddPickup(-30.0, 0.0)
+battle.AddPickup(0.0, 30.0)
+battle.AddPickup(0.0, -30.0)
+battle.AddPickup(-30.0, -30.0)
+battle.AddPickupUp(30.0, 30.0)
+battle.AddPickupUp(-30.0, 30.0)
