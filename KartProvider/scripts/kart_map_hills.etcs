@@ -1,48 +1,57 @@
 #!/usr/bin/env etcs
-# HILLS: six rolling hills with a box on every top, a ridge across the
-# middle with a box on its crest, two jumps, and boulders to hide behind --
-# what you can see over is what can see you.
+# HILLS: high ground and low. The south half of the arena is sunk -- hills
+# and boulders down there too, three ramps up its north edge and springs
+# -- and on the high ground a ridge to ride over, two jumps, and a deck in
+# the air over the north-east with a hill under it.
 #   run kart_map_hills.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
 # <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
-# <z> <width> <depth> <deep> (KartArena.h). A ramp rises, and a pad pushes,
-# toward its yaw (0 +z, 90 +x, 180 -z, 270 -x); one in a pit stands on its floor.
+# <z> <width> <depth> <deep>; AddPickupUp <x> <z>, a box on the deck over the
+# spot (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
+# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor.
 requires battle [KartBattle]
 battle.AddMap(hills)
 
-battle.AddHill(-11.0, -9.0, 9.0, 1.8)
-battle.AddHill(13.0, 7.0, 9.0, 2.0)
-battle.AddHill(-9.0, 15.0, 7.0, 1.4)
+# The low ground: the south, the whole arena wide.
+battle.AddPit(0.0, -18.0, 64.0, 28.0, 2.5)
+# Out of it: ramps up its north edge, west, middle and east.
+battle.AddRamp(-26.0, -7.25, 0.0, 5.0, 6.5, 0.0, 0.0, 2.5)
+battle.AddRamp(0.0, -7.25, 0.0, 5.0, 6.5, 0.0, 0.0, 2.5)
+battle.AddRamp(24.0, -7.25, 0.0, 5.0, 6.5, 0.0, 0.0, 2.5)
+# Hills: three down there, three up here.
+battle.AddHill(-11.0, -14.0, 9.0, 1.8)
 battle.AddHill(11.0, -15.0, 7.0, 1.3)
 battle.AddHill(25.0, -25.0, 6.0, 1.2)
+battle.AddHill(14.0, 12.0, 7.0, 1.8)
+battle.AddHill(-9.0, 15.0, 7.0, 1.4)
 battle.AddHill(-25.0, 25.0, 6.0, 1.2)
 # The ridge: a deck on the diagonal, up from the south-east, down to the north-west.
-battle.AddRamp(0.0, 0.0, 315.0, 4.0, 5.0, 6.0, 5.0, 1.6)
+battle.AddRamp(-2.0, 8.0, 315.0, 4.0, 5.0, 6.0, 5.0, 1.6)
+# Jumps, toward the middle.
 battle.AddRamp(-20.0, 2.0, 90.0, 4.0, 6.0, 0.0, 0.0, 1.4)
-battle.AddRamp(20.0, -2.0, 270.0, 4.0, 6.0, 0.0, 0.0, 1.4)
+battle.AddRamp(20.0, 0.0, 270.0, 4.0, 6.0, 0.0, 0.0, 1.4)
 # Boulders.
-battle.AddBlock(-4.0, -20.0, 2.5, 2.5, 1.5, 45.0)
+battle.AddBlock(-2.0, -22.0, 2.5, 2.5, 1.5, 45.0)
 battle.AddBlock(4.0, 20.0, 2.5, 2.5, 1.5, 45.0)
-battle.AddBlock(22.0, 14.0, 2.5, 2.5, 1.5, 45.0)
+battle.AddBlock(25.0, 3.0, 2.5, 2.5, 1.5, 45.0)
 battle.AddBlock(-22.0, -12.0, 2.5, 2.5, 1.5, 45.0)
-
-# Pads on the flats between the hills.
-battle.AddPad(16.0, 26.0, 270.0)
-battle.AddPad(-12.0, -25.0, 90.0)
+# Up to the storey: a ramp twelve long in from its north edge, a pad at its foot.
+battle.AddRamp(24.0, 20.0, 180.0, 4.0, 12.0, 0.0, 0.0, 4.5)
+battle.AddPad(24.0, 28.5, 180.0)
+# The upper storey: over the north-east, the east hill under it, its
+# north-east corner cut away over the ramp.
+battle.AddDeck(14.0, 8.0, 24.0, 12.0, 4.5)
+battle.AddDeck(12.0, 20.0, 20.0, 12.0, 4.5)
+# Springs: under the deck, and down in the low ground.
+battle.AddSpring(7.0, 23.0)
+battle.AddSpring(22.0, 5.0)
+battle.AddSpring(10.0, -26.0)
+battle.AddSpring(-6.0, -27.0)
+# Pads on the flats: one up here, and down there one toward the east ramp.
 battle.AddPad(-23.0, 9.0, 0.0)
-battle.AddPad(24.0, -11.0, 180.0)
-
-# A pit in the north-east corner, a ramp out of it to the south and a spring
-# in it; a deck over the east hill's foot and one in the south-west, a spring
-# beside each.
-battle.AddPit(25.0, 25.0, 8.0, 8.0, 2.5)
-battle.AddRamp(23.0, 24.25, 180.0, 3.5, 6.5, 0.0, 0.0, 2.5)
-battle.AddSpring(27.0, 27.0)
-battle.AddDeck(21.0, 8.0, 6.0, 7.0, 3.8)
-battle.AddSpring(26.5, 8.0)
-battle.AddDeck(-24.0, -22.0, 7.0, 7.0, 3.6)
-battle.AddSpring(-24.0, -16.0)
+battle.AddPad(-12.0, -25.0, 90.0)
+battle.AddPad(24.0, -13.5, 0.0)
 
 battle.AddSpawn(0.0, -26.0)
 battle.AddSpawn(0.0, 26.0)
@@ -51,13 +60,14 @@ battle.AddSpawn(26.0, 0.0)
 battle.AddSpawn(18.0, -18.0)
 battle.AddSpawn(-18.0, 18.0)
 battle.AddSpawn(18.0, 18.0)
-battle.AddSpawn(-18.0, -18.0)
+battle.AddSpawn(-22.0, -22.0)
 
-battle.AddPickup(0.0, 0.0)
-battle.AddPickup(-11.0, -9.0)
-battle.AddPickup(13.0, 7.0)
+# Boxes: on the hills, and on the deck.
+battle.AddPickup(-11.0, -14.0)
+battle.AddPickup(14.0, 12.0)
 battle.AddPickup(-9.0, 15.0)
 battle.AddPickup(11.0, -15.0)
 battle.AddPickup(25.0, -25.0)
 battle.AddPickup(-25.0, 25.0)
-battle.AddPickup(0.0, -14.0)
+battle.AddPickupUp(14.0, 8.0)
+battle.AddPickupUp(12.0, 20.0)

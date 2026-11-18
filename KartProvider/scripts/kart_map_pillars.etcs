@@ -1,27 +1,56 @@
 #!/usr/bin/env etcs
-# PILLARS: a raised plaza in the middle -- a cross with a ramp at each end
-# and a box on every arm -- eight pillars round it to break a line of fire,
-# deflectors in the corners, and kickers on the outer ring.
+# PILLARS: two storeys. On the ground a raised plaza in the middle -- a
+# cross with a ramp at each end and a box on every arm -- and eight pillars
+# round it; on the pillars, a deck over all of it. From each side a long
+# ramp runs in under the deck and up through a cut in it, springs go up
+# through it, and any edge is the way down. Deflectors in the corners,
+# kickers on the outer ring.
 #   run kart_map_pillars.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
 # <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
-# <z> <width> <depth> <deep> (KartArena.h). A ramp rises, and a pad pushes,
-# toward its yaw (0 +z, 90 +x, 180 -z, 270 -x); one in a pit stands on its floor.
+# <z> <width> <depth> <deep>; AddPickupUp <x> <z>, a box on the deck over the
+# spot (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
+# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor.
 requires battle [KartBattle]
 battle.AddMap(pillars)
 
 # The plaza: two decks crossing, level at the top.
 battle.AddRamp(0.0, 0.0, 0.0, 7.0, 5.0, 8.0, 5.0, 1.6)
 battle.AddRamp(0.0, 0.0, 90.0, 7.0, 5.0, 8.0, 5.0, 1.6)
-battle.AddBlock(-14.0, -14.0, 3.0, 3.0, 2.5, 0.0)
-battle.AddBlock(0.0, -14.0, 3.0, 3.0, 2.5, 0.0)
-battle.AddBlock(14.0, -14.0, 3.0, 3.0, 2.5, 0.0)
-battle.AddBlock(-14.0, 0.0, 3.0, 3.0, 2.5, 0.0)
-battle.AddBlock(14.0, 0.0, 3.0, 3.0, 2.5, 0.0)
-battle.AddBlock(-14.0, 14.0, 3.0, 3.0, 2.5, 0.0)
-battle.AddBlock(0.0, 14.0, 3.0, 3.0, 2.5, 0.0)
-battle.AddBlock(14.0, 14.0, 3.0, 3.0, 2.5, 0.0)
+# The pillars, up to the deck.
+battle.AddBlock(-14.0, -14.0, 3.0, 3.0, 4.35, 0.0)
+battle.AddBlock(0.0, -14.0, 3.0, 3.0, 4.35, 0.0)
+battle.AddBlock(14.0, -14.0, 3.0, 3.0, 4.35, 0.0)
+battle.AddBlock(-14.0, 0.0, 3.0, 3.0, 4.35, 0.0)
+battle.AddBlock(14.0, 0.0, 3.0, 3.0, 4.35, 0.0)
+battle.AddBlock(-14.0, 14.0, 3.0, 3.0, 4.35, 0.0)
+battle.AddBlock(0.0, 14.0, 3.0, 3.0, 4.35, 0.0)
+battle.AddBlock(14.0, 14.0, 3.0, 3.0, 4.35, 0.0)
+# Up to the deck: from each side a ramp twelve long, in from the edge and up
+# to the deck's height, each the way round the ring goes; a pad at its foot.
+battle.AddRamp(12.0, 8.0, 270.0, 4.0, 12.0, 0.0, 0.0, 4.6)
+battle.AddRamp(-8.0, 12.0, 180.0, 4.0, 12.0, 0.0, 0.0, 4.6)
+battle.AddRamp(-12.0, -8.0, 90.0, 4.0, 12.0, 0.0, 0.0, 4.6)
+battle.AddRamp(8.0, -12.0, 0.0, 4.0, 12.0, 0.0, 0.0, 4.6)
+battle.AddPad(20.5, 8.0, 270.0)
+battle.AddPad(-8.0, 20.5, 180.0)
+battle.AddPad(-20.5, -8.0, 90.0)
+battle.AddPad(8.0, -20.5, 0.0)
+# The upper storey: thirty-six square, a third of the arena, laid in pieces
+# round the four ramps -- a cross over the plaza, and what is left of each
+# corner beside its ramp.
+battle.AddDeck(0.0, 0.0, 12.0, 36.0, 4.6)
+battle.AddDeck(12.0, 0.0, 12.0, 12.0, 4.6)
+battle.AddDeck(-12.0, 0.0, 12.0, 12.0, 4.6)
+battle.AddDeck(12.0, 14.0, 12.0, 8.0, 4.6)
+battle.AddDeck(-14.0, 12.0, 8.0, 12.0, 4.6)
+battle.AddDeck(-12.0, -14.0, 12.0, 8.0, 4.6)
+battle.AddDeck(14.0, -12.0, 8.0, 12.0, 4.6)
+# Up through it: a spring on the plaza and two on the floor under it.
+battle.AddSpring(0.0, 0.0)
+battle.AddSpring(10.5, 12.5)
+battle.AddSpring(-10.5, -12.5)
 # Low deflectors across each corner: cover for whoever spawns behind.
 battle.AddBlock(20.0, 20.0, 6.0, 1.0, 1.4, 45.0)
 battle.AddBlock(-20.0, 20.0, 6.0, 1.0, 1.4, -45.0)
@@ -33,22 +62,6 @@ battle.AddRamp(-26.0, -10.0, 180.0, 3.0, 4.0, 0.0, 0.0, 1.0)
 battle.AddRamp(-10.0, 26.0, 90.0, 3.0, 4.0, 0.0, 0.0, 1.0)
 battle.AddRamp(10.0, -26.0, 270.0, 3.0, 4.0, 0.0, 0.0, 1.0)
 
-# Pads on the outer lanes, pointing round the ring.
-battle.AddPad(21.0, -8.0, 0.0)
-battle.AddPad(-21.0, 8.0, 180.0)
-battle.AddPad(8.0, 21.0, 270.0)
-battle.AddPad(-8.0, -21.0, 90.0)
-
-# A deck over the plaza's middle, reached by the spring under it (up through
-# it, down onto it), and one over each side lane with a spring before it: off
-# the pad, onto the spring, up to the box.
-battle.AddDeck(0.0, 0.0, 7.0, 7.0, 4.6)
-battle.AddSpring(0.0, 0.0)
-battle.AddDeck(21.0, 8.0, 6.0, 8.0, 3.5)
-battle.AddSpring(21.0, 1.5)
-battle.AddDeck(-21.0, -8.0, 6.0, 8.0, 3.5)
-battle.AddSpring(-21.0, -1.5)
-
 battle.AddSpawn(-26.0, -26.0)
 battle.AddSpawn(26.0, 26.0)
 battle.AddSpawn(26.0, -26.0)
@@ -58,10 +71,12 @@ battle.AddSpawn(0.0, 26.0)
 battle.AddSpawn(26.0, 0.0)
 battle.AddSpawn(-26.0, 0.0)
 
-battle.AddPickup(0.0, 0.0)
+# Boxes on the plaza, and on the deck over it.
 battle.AddPickup(0.0, 6.0)
 battle.AddPickup(0.0, -6.0)
 battle.AddPickup(6.0, 0.0)
 battle.AddPickup(-6.0, 0.0)
-battle.AddPickup(21.0, 7.0)
-battle.AddPickup(-21.0, -7.0)
+battle.AddPickup(0.0, 0.0)
+battle.AddPickupUp(0.0, 0.0)
+battle.AddPickupUp(12.0, -12.0)
+battle.AddPickupUp(-12.0, 12.0)

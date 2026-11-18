@@ -227,6 +227,8 @@ public:
     }
     void AddSpawn(float x, float z)  { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().spawns.push_back({ Fixed::From(x), Fixed::From(z) }); }
     void AddPickup(float x, float z) { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().pickups.push_back({ Fixed::From(x), Fixed::From(z) }); }
+    // A box on top of the deck over the spot: AddPickup's is on the ground under it.
+    void AddPickupUp(float x, float z) { std::lock_guard<std::mutex> g(m_mu); if (!m_defs.empty()) m_defs.back().pickups.push_back({ Fixed::From(x), Fixed::From(z), true }); }
 
     // The pools the map in play is drawn with: solid blocks, the ground's
     // slabs (a ramp's slope or top) and domes (a hill), power-up boxes, shots,
@@ -681,7 +683,7 @@ public:
         for (const auto& d : m_live.decks)  { put(d.x); put(d.z); put(d.w); put(d.d); put(d.h); st += "|"; }
         for (const auto& p : m_live.pits)   { put(p.x); put(p.z); put(p.w); put(p.d); put(p.depth); st += "|"; }
         for (const auto& p : m_live.spawns) { put(p.x); put(p.z); }
-        for (const auto& p : m_live.pickups) { put(p.x); put(p.z); }
+        for (const auto& p : m_live.pickups) { put(p.x); put(p.z); if (p.up) st += "u"; }
         char d[17];
         std::snprintf(d, sizeof d, "%016llx", static_cast<unsigned long long>(XXH3_64bits(st.data(), st.size())));
         return m_live.name + " " + std::to_string(m_layout) + " " + std::to_string(m_live.blocks.size()) + " "
@@ -690,8 +692,9 @@ public:
              + std::to_string(m_live.pads.size()) + " " + std::to_string(m_live.springs.size()) + " "
              + std::to_string(m_live.decks.size()) + " " + std::to_string(m_live.pits.size()) + " " + d;
     }
-    // What is wrong with the maps, "<map>: <fault>" a line (KartArena::Faults),
-    // or "none": the hand-made ones as given, one from a seed as it is in
+    // What is wrong with the maps, "<map>: <fault>" a line (KartArena::Faults,
+    // and what a map has more of than the pools draw), or "none": the
+    // hand-made ones as given, one from a seed as it is in
     // play. A verb's answer is 255 characters: past the lines that fit,
     // "+<n> more".
     std::string Faults()
@@ -705,9 +708,10 @@ public:
             if (!m.generated) KartArena::Prepare(m);
             else if (static_cast<int>(i) == m_map) m = m_live;
             else continue;
-            std::istringstream lines(KartArena::Faults(m));
+            std::istringstream lines(KartArena::Faults(m) + "\n" + shortLocked(m));
             for (std::string line; std::getline(lines, line);)
             {
+                if (line.empty()) continue;
                 line = m.name + ": " + line + "\n";
                 if (more == 0 && out.size() + line.size() <= 240) out += line; else ++more;
             }
@@ -1183,7 +1187,7 @@ private:
         const Fixed l = Fixed::Length(dx, Fixed::Zero(), dz);
         if (l.IsPositive()) { s.hx = dx / l; s.hz = dz / l; } else { s.hx = Fixed::Zero(); s.hz = Fixed::One(); }
         Fixed gx, gz;
-        const Fixed y = topAt(x, z, &gx, &gz) + kartY();
+        const Fixed y = KartArena::Solid(m_live, x, z, &gx, &gz) + kartY();   // on the ground, under any deck
         s.sgx = gx; s.sgz = gz; s.vy = Fixed::Zero(); s.air = false;
         std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
         OrderVector& r = k->RowsUnder();
@@ -1281,12 +1285,55 @@ private:
         for (const KartArena::Spot& sp : m_live.pickups)
             if (n < m_pickup_nodes.size())
             {
-                Pickup p; p.x = sp.x; p.z = sp.z; p.y = topAt(sp.x, sp.z) + F(7, 10); p.back = 0; p.node = m_pickup_nodes[n++];
+                Pickup p; p.x = sp.x; p.z = sp.z; p.y = (sp.up ? topAt(sp.x, sp.z) : KartArena::Solid(m_live, sp.x, sp.z)) + F(7, 10); p.back = 0; p.node = m_pickup_nodes[n++];
                 m_pickups.push_back(p);
                 placeNode(p.node, p.x, p.y, p.z);
                 verb(p.node, "SetVisible", "1");
             }
         for (; n < m_pickup_nodes.size(); ++n) hide(m_pickup_nodes[n]);
+    }
+    // The arena's floor round a map's pits: every piece each pit cuts into
+    // leaves what is left of it, in up to four.
+    struct Rect { Fixed x0, z0, x1, z1; };
+    static std::vector<Rect> floorPieces(const KartArena::Map& m)
+    {
+        const Fixed half = Fixed::Half();
+        std::vector<Rect> floor{ { F(-36), F(-36), F(36), F(36) } };
+        for (const KartArena::Pit& p : m.pits)
+        {
+            const Fixed x0 = p.x - p.w * half, x1 = p.x + p.w * half, z0 = p.z - p.d * half, z1 = p.z + p.d * half;
+            std::vector<Rect> next;
+            for (const Rect& r : floor)
+            {
+                if (r.x1 <= x0 || r.x0 >= x1 || r.z1 <= z0 || r.z0 >= z1) { next.push_back(r); continue; }
+                if (r.x0 < x0) next.push_back({ r.x0, r.z0, x0, r.z1 });
+                if (r.x1 > x1) next.push_back({ x1, r.z0, r.x1, r.z1 });
+                const Fixed a = Fixed::Max(r.x0, x0), b = Fixed::Min(r.x1, x1);
+                if (r.z0 < z0) next.push_back({ a, r.z0, b, z0 });
+                if (r.z1 > z1) next.push_back({ a, z1, b, r.z1 });
+            }
+            floor.swap(next);
+        }
+        return floor;
+    }
+    // What a map needs of each pool to be drawn whole, "" when it has it: a
+    // thing past a pool's end is not drawn, and a block not drawn is not there.
+    std::string shortLocked(const KartArena::Map& m) const
+    {
+        size_t wedges = 0, slabs = m.decks.size() + m.pits.size() * 5 + (m.pits.empty() ? 0 : floorPieces(m).size());
+        for (const KartArena::Ramp& r : m.ramps) { wedges += r.up.IsPositive() + r.down.IsPositive(); slabs += r.flat.IsPositive(); }
+        std::string out;
+        auto need = [&out](const char* what, size_t n, size_t pool) {
+            if (pool != 0 && n > pool) out += std::to_string(n) + " " + what + ", the pool has " + std::to_string(pool) + "\n";
+        };
+        need("blocks", m.blocks.size(), m_block_nodes.size());
+        need("wedges", wedges, m_wedge_nodes.size());
+        need("slabs", slabs, m_slab_nodes.size());
+        need("domes", m.hills.size(), m_dome_nodes.size());
+        need("pads", m.pads.size(), m_pad_nodes.size());
+        need("springs", m.springs.size(), m_spring_nodes.size());
+        need("boxes", m.pickups.size(), m_pickup_nodes.size());
+        return out;
     }
     void drawMapLocked()
     {
@@ -1297,7 +1344,7 @@ private:
             if (nb >= m_block_nodes.size()) break;
             const ETCS::RID node = m_block_nodes[nb++];
             verb(node, "Create", fmt3(b.w.ToFloat()) + ", " + fmt3(b.h.ToFloat()) + ", " + fmt3(b.d.ToFloat()));
-            poseNode(node, b.x, b.h * Fixed::Half(), b.z, b.yaw, Fixed::Zero(), Fixed::One());
+            poseNode(node, b.x, b.base + b.h * Fixed::Half(), b.z, b.yaw, Fixed::Zero(), Fixed::One());
             verb(node, "SetVisible", "1");
             m_live_blocks.push_back(node);
         }
@@ -1337,8 +1384,6 @@ private:
         const Fixed half = Fixed::Half(), thick = KartArena::DeckThick();
         for (const KartArena::Deck& d : m_live.decks)
             slab(d.x, d.h - thick * half, d.z, d.w, thick, d.d, kGround[KartArena::OnDeck]);
-        struct Rect { Fixed x0, z0, x1, z1; };
-        std::vector<Rect> floor{ { F(-36), F(-36), F(36), F(36) } };
         for (const KartArena::Pit& p : m_live.pits)
         {
             const Fixed x0 = p.x - p.w * half, x1 = p.x + p.w * half, z0 = p.z - p.d * half, z1 = p.z + p.d * half;
@@ -1348,19 +1393,8 @@ private:
             slab(p.x, mid, z0 - wall * half, p.w + wall * F(2), p.depth, wall, kPitWall);
             slab(x1 + wall * half, mid, p.z, wall, p.depth, p.d, kPitWall);
             slab(x0 - wall * half, mid, p.z, wall, p.depth, p.d, kPitWall);
-            // Every piece of floor the pit cuts into: what is left of it, in up to four.
-            std::vector<Rect> next;
-            for (const Rect& r : floor)
-            {
-                if (r.x1 <= x0 || r.x0 >= x1 || r.z1 <= z0 || r.z0 >= z1) { next.push_back(r); continue; }
-                if (r.x0 < x0) next.push_back({ r.x0, r.z0, x0, r.z1 });
-                if (r.x1 > x1) next.push_back({ x1, r.z0, r.x1, r.z1 });
-                const Fixed a = Fixed::Max(r.x0, x0), b = Fixed::Min(r.x1, x1);
-                if (r.z0 < z0) next.push_back({ a, r.z0, b, z0 });
-                if (r.z1 > z1) next.push_back({ a, z1, b, r.z1 });
-            }
-            floor.swap(next);
         }
+        const std::vector<Rect> floor = floorPieces(m_live);
         if (m_live.pits.empty()) { if (m_floor) verb(m_floor, "SetVisible", "1"); }
         else
         {
@@ -1374,7 +1408,7 @@ private:
             const ETCS::RID node = m_dome_nodes[nd++];
             const std::string a = fmt3((k.a * F(2)).ToFloat()), b = fmt3((k.b * F(2)).ToFloat());
             verb(node, "Create", a + ", " + b + ", " + a);
-            poseNode(node, k.x, k.y0, k.z, 0, Fixed::Zero(), Fixed::One());
+            poseNode(node, k.x, k.base + k.y0, k.z, 0, Fixed::Zero(), Fixed::One());
             verb(node, "SetVisible", "1");
         }
         for (; nb < m_block_nodes.size(); ++nb) parkNode(m_block_nodes[nb]);

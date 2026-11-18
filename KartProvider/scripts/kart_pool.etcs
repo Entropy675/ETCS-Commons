@@ -34,8 +34,9 @@ run kart_car.etcs world=world battle=battle tyre=tyre
 run kart_car.etcs world=world battle=battle tyre=tyre
 
 # The map in play: twenty-four blocks, twenty-four wedges (a ramp's slopes,
-# up to two), thirty-six slabs (a ramp's level top, a deck, a pit's floor and
-# walls, the floor laid round a pit), six domes.
+# up to two), thirty-six slabs (a ramp's level top, each piece of a deck, a
+# pit's floor and walls, the floor laid round a pit), six domes. A map that
+# needs more of one than this is told so by battle.Faults().
 run kart_blocks.etcs world=world battle=battle
 run kart_blocks.etcs world=world battle=battle
 run kart_blocks.etcs world=world battle=battle
@@ -65,7 +66,8 @@ run kart_pads.etcs world=world battle=battle dart=dart
 run kart_springs.etcs world=world battle=battle disc=tyre dart=dart
 run kart_springs.etcs world=world battle=battle disc=tyre dart=dart
 
-# As many boxes as the busiest map has spots: eight.
+# As many boxes as the busiest map has spots: twelve.
+run kart_pickups.etcs world=world battle=battle
 run kart_pickups.etcs world=world battle=battle
 run kart_pickups.etcs world=world battle=battle
 

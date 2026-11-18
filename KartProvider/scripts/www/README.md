@@ -53,23 +53,30 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   down too): the eye swings round the kart and, let alone, drifts back behind it. It also keeps
   to the kart's side of the ground -- down in a pit with it, under a deck with it -- instead of
   looking at it through a wall.
-- **The maps:** **bowl** (every wall banked, the banks meeting in the corners, a mound in the
-  middle, a ring of bumpers);
-  **pillars** (a raised plaza in the middle, ramps up from all four sides, pillars round it,
-  kickers at the edge); **crossroads** (a cross of roads and a ring road between buildings of
-  different heights, jumps round the outside); **hills** (six hills, a ridge to ride over, two
-  jumps, boulders); **skatepark** (two jumps down the middle, a gap jump across it, a raised deck
-  either side, the end walls banked, kickers in the corners); each with pads, springs and a deck
-  or more in the air, crossroads and hills with a pit; and **random** -- a new layout from a seed
-  each time it is chosen (**new layout** on the page, or **Enter** on the map in the menu), the
-  same on every tab: banked walls, hills, jumps, raised decks and kickers, pads, springs, a deck
-  or two in the air, sometimes a pit in the middle, and blocks.
+- **The maps:** **bowl** (every wall banked, the banks meeting in the corners, a ring road, and
+  the whole middle sunk: a mound, bumpers, a ramp up each side, a deck in the air over the
+  mound); **pillars** (two storeys: a raised plaza and eight pillars on the ground, a deck over
+  a third of the arena on the pillars, a long ramp up through it from each side); **crossroads**
+  (a cross of roads and a ring road between buildings of different heights, and a roof over the
+  whole north half, a ramp up to it from each end of the north ring road); **hills** (the south
+  half sunk, hills and boulders on both levels, three ramps up, a ridge, two jumps, and a deck
+  in the air over the north-east); **skatepark** (two jumps down the middle, a gap jump across
+  it, a raised deck either side, the end walls banked, and a gallery in the air along each side
+  wall with a long ramp up to each end); each with pads and springs; and **random** -- a new
+  layout from a seed each time it is chosen (**new layout** on the page, or **Enter** on the
+  map in the menu), the same on every tab: a storey on pillars with ramps up through it, one
+  time in two a third to two thirds of the arena sunk with ramps out, banked walls, hills,
+  jumps, raised decks and kickers, pads, springs and blocks.
 - **The ground has slopes.** A kart slows going up and gains going down; off a jump's lip at speed
   it flies and lands beyond it. Ground too steep to climb -- a lip met from the drop side, the side
   of a raised deck -- is a wall. Ramps are solid to the ground: nothing is under one.
-- **The ground has levels.** A **deck** is a level plate in the air: drive under it, land on it
-  from above, and go up through it from below. A **pit** is a floor sunk below the arena's, its
-  sides walls: the ramp in it (as high as the pit is deep) or a spring is the way back up.
+- **The ground has levels, and they are big**: a storey over a third of a map, half a map sunk.
+  A **deck** is a level plate in the air with the floor still there under it: drive under it,
+  land on it from above, go up through it from below off a spring, or drive up a ramp that
+  comes up through a cut in it or meets its edge; any edge is a way down. **Low ground** is a
+  floor sunk below the arena's, its sides walls, with whatever a floor has -- hills, blocks,
+  pads, boxes, spawns: a ramp in it as high as it is deep, its top at the edge, is a way out
+  (several, on every map that has any), and so is a spring.
 - **Springs** -- round, their arrows closing on the middle -- throw a kart up five and a half
   units, as hard as a pad pushes one along, and again when it comes down on one. The way onto a
   deck, out of a pit, or just up.
@@ -97,7 +104,9 @@ the walls and the maps' blocks with the family's own contact, and a shot stops o
 block. The ground is not a solid: a map's ramps, hills, pits and decks are a height the battle
 keeps each kart at, by how high the kart is (`KartArena.h`). A map is data; the battle draws the
 one in play with pools of blocks, wedges, slabs, domes, pads and springs made at boot, so a change
-of map is one line of the record. What you see of a kart is a body on four tyres, tilted to the
+of map is one line of the record. `battle.Faults()` says what is wrong with a map -- a pad off
+level ground, a block across a low ground's edge, low ground with no way out, more of a thing
+than its pool draws -- or `none`. What you see of a kart is a body on four tyres, tilted to the
 ground, and an HP bar. The tyres are the body's members, anchored in its frame, so they go where it
 goes; frames are translations, so the battle turns them with it after every step, and turns each
 tab's bars to that tab's own eye. What the brake and a slide take from a kart's motion is heat in
