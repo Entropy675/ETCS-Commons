@@ -83,7 +83,8 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 - **Pads** push a kart that drives over them the way their arrows run -- hard, and harder the
   faster it is already going that way, up to 40 u/s, the fastest anything goes. Along its heading
   that is speed, across it a slide to catch. Every map has some, the random one too.
-- Out of a battle, the arena is yours alone: practice, with the lobby yours.
+- Out of a battle, the arena is yours alone: practice, with the lobby yours. The lobby opens
+  when the arena is made: until then the page offers no maps.
 
 ## How it stays one battle
 

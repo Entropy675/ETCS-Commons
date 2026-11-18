@@ -293,10 +293,14 @@ public:
         verb(r, "SetHidden", "1");
         m_board.push_back({ r, std::string(), false });
     }
-    // The arena is made: the first map out, the lobby open.
+    // The arena is made: the first map out, the lobby open. Until then the
+    // battle has no maps to offer (Maps) and takes no settings: a page that
+    // lists them the moment the first is added would let a round start on an
+    // arena half made, and this would then put the first map back under it.
     void Ready()
     {
         std::lock_guard<std::mutex> g(m_mu);
+        m_ready = true;
         mapLocked(0, firstLayout(0));
         respawnAllLocked();
     }
@@ -368,19 +372,19 @@ public:
     {
         std::lock_guard<std::mutex> g(m_mu);
         const int m = mapIndex(map);
-        if (!m_judge || m < 0) return false;
+        if (!m_judge || !m_ready || m < 0) return false;
         return configLocked(m, secs, m != m_map);
     }
     bool Reroll()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (!m_judge || m_defs.empty() || !m_defs[m_map].generated) return false;
+        if (!m_judge || !m_ready || m_defs.empty() || !m_defs[m_map].generated) return false;
         return configLocked(m_map, m_round_secs, true);
     }
     bool StartRound()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        return m_judge && roundLocked();
+        return m_judge && m_ready && roundLocked();
     }
     bool Abandon()
     {
@@ -544,7 +548,7 @@ public:
             if (down) m_look_keys |= bit; else m_look_keys &= ~bit;
             return;
         }
-        if (down && m_judge && !m_defs.empty())
+        if (down && m_judge && m_ready && !m_defs.empty())
         {
             if (m_phase == Lobby && menuKeyLocked(key)) return;
             if (m_phase == Playing && key == 256) { takeLocked(m_me, "abandon"); return; }
@@ -660,12 +664,12 @@ public:
         }
         return out;
     }
-    // The maps, one name a line, in their order.
+    // The maps, one name a line, in their order: none until the arena is made (Ready).
     std::string Maps()
     {
         std::lock_guard<std::mutex> g(m_mu);
         std::string out;
-        for (const KartArena::Map& m : m_defs) out += m.name + "\n";
+        if (m_ready) for (const KartArena::Map& m : m_defs) out += m.name + "\n";
         return out;
     }
     // The map in play: "<name> <layout> <blocks> <ramps> <hills> <spawns> <pickups> <pads>
@@ -2898,6 +2902,7 @@ private:
     bool     m_board_held = false;
     float    m_eye[3] = { 0.0f, 0.0f, 0.0f }, m_at[3] = { 0.0f, 0.0f, 0.0f };
     bool     m_eye_set = false;
+    bool     m_ready = false;      // the arena is made (Ready): the lobby is open
     // The look round the kart (lookLocked): how far the boom is swung from
     // behind the kart and raised, by what, and how long it has been let alone.
     float    m_look_yaw = 0.0f, m_look_pitch = 0.0f, m_look_x = 0.0f, m_look_y = 0.0f;
