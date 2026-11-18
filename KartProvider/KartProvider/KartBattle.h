@@ -283,9 +283,9 @@ public:
         verb(r, "SetAnchored", "1");
         parkNode(r);
     }
-    void AddPickupNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_pickup_nodes.push_back(r); hide(r); }
-    void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); hide(r); }
-    void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); m_blast_until.push_back(0); hide(r); }
+    void AddPickupNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_pickup_nodes.push_back(r); parkNode(r); }
+    void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); parkNode(r); }
+    void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); m_blast_until.push_back(0); parkNode(r); }
     void AddBoardRow(ETCS::RID r)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -1162,7 +1162,7 @@ private:
         for (size_t i = 0; i < m_slots.size(); ++i) pitLocked(i);
         for (Shot& s : m_shots) freeNode(s.node);
         m_shots.clear();
-        for (size_t b = 0; b < m_blast_nodes.size(); ++b) { m_blast_until[b] = 0; hide(m_blast_nodes[b]); }
+        for (size_t b = 0; b < m_blast_nodes.size(); ++b) { m_blast_until[b] = 0; parkNode(m_blast_nodes[b]); }
         m_tick = m_recorded = m_seq = 0;
         m_wall_ms = 0.0;
         m_snaps.clear(); m_snap_tick = 0; m_snap_hash = "-"; m_differed_at = 0;
@@ -1294,7 +1294,7 @@ private:
                 placeNode(p.node, p.x, p.y, p.z);
                 verb(p.node, "SetVisible", "1");
             }
-        for (; n < m_pickup_nodes.size(); ++n) hide(m_pickup_nodes[n]);
+        for (; n < m_pickup_nodes.size(); ++n) parkNode(m_pickup_nodes[n]);
     }
     // The arena's floor round a map's pits: every piece each pit cuts into
     // leaves what is left of it, in up to four.
@@ -1481,7 +1481,7 @@ private:
             }
             if (m_phase != Lobby) pickupsLocked();
             for (size_t b = 0; b < m_blast_nodes.size(); ++b)
-                if (m_blast_until[b] && static_cast<int64_t>(m_tick) >= m_blast_until[b]) { m_blast_until[b] = 0; hide(m_blast_nodes[b]); }
+                if (m_blast_until[b] && static_cast<int64_t>(m_tick) >= m_blast_until[b]) { m_blast_until[b] = 0; parkNode(m_blast_nodes[b]); }
             arrowsLocked();
         }
         if (m_phase == Playing && static_cast<int64_t>(m_tick) >= m_end)
@@ -2392,12 +2392,33 @@ private:
         r.PlaceAt(x, y, z);
         r.qw = yw * pc; r.qx = yw * ps; r.qy = yy * pc; r.qz = -(yy * ps);
     }
-    // A pooled node not in use: far below, hidden.
+    /*
+     * A pooled node not in use: hidden, far below, IN A BERTH OF ITS OWN. The
+     * pools are members of the world like anything drawn, and members whose
+     * reaches meet are a pair every interaction (etcs_causal_constraints.md
+     * §13): a thousand parked at one point were half a million pairs a tick
+     * -- the battle's whole frame. Each takes the next berth the first time
+     * it is parked (the scripts make the pools in one order, so a berth is
+     * the same on every runtime): a grid kBerth apart, inside the world's
+     * space. One that reaches further than half a berth is made small first:
+     * every pool that large -- blocks, slabs, wedges, domes, marks -- is
+     * made to size again when it is next drawn.
+     */
     void parkNode(ETCS::RID node)
     {
-        placeNode(node, F(0), F(-300), F(0));
+        auto at = m_berths.find(node);
+        if (at == m_berths.end()) at = m_berths.emplace(node, static_cast<uint32_t>(m_berths.size())).first;
+        const int64_t k = at->second, row = 2 * kBerthsOut + 1;
+        if (Causal_* c = causal(node))
+        {
+            Fixed reach;
+            { std::lock_guard<std::recursive_mutex> lk(c->TreeMutex()); reach = c->Order4().radius; }
+            if (reach > F(kBerth, 2) - F(1, 2)) verb(node, "Create", "0.1, 0.1, 0.1");
+        }
+        placeNode(node, F((k % row - kBerthsOut) * kBerth), F(-250), F((k / row % row - kBerthsOut) * kBerth));
         hide(node);
     }
+    static constexpr int64_t kBerth = 10, kBerthsOut = 25;   // 51 x 51 berths, the farthest 433 out
     void nodeAtLocked(const Shot& s)
     {
         if (s.node < 0) return;
@@ -2422,7 +2443,7 @@ private:
     {
         if (n < 0 || n >= static_cast<int>(m_shot_busy.size())) return;
         m_shot_busy[n] = false;
-        hide(m_shot_nodes[n]);
+        parkNode(m_shot_nodes[n]);
     }
     static void hide(ETCS::RID r) { verb(r, "SetVisible", "0"); }
     static void groundColour(ETCS::RID r, KartArena::Surface on)
@@ -2863,6 +2884,7 @@ private:
     std::vector<ETCS::RID> m_live_blocks;
     std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_wedge_nodes, m_dome_nodes;
     std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;
+    std::map<ETCS::RID, uint32_t> m_berths;   // a pooled node's parking place (parkNode)
     std::vector<PadNodes> m_pad_nodes;
     std::vector<SpringNodes> m_spring_nodes;
     ETCS::RID m_floor = 0;
