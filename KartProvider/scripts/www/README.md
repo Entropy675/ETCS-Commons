@@ -54,7 +54,8 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 - **A round's settings are locked** until it is over: the clock runs out (the results stand for
   six seconds, then the lobby, which keeps them), or the host **abandons** it (**Esc**, or the
   page's button) -- back to the lobby, its scores discarded.
-- **Hold Tab** in a round for the scores on the arena.
+- **Hold Tab** in a round for the scores on the arena. The top right corner counts this tab's
+  **frames a second**.
 - **Look round the kart** with **Q** and **E**, or by dragging with the right button (up and
   down too): the eye swings round the kart and, let alone, drifts back behind it. It also keeps
   to the kart's side of the ground -- down in a pit with it, under a deck with it -- instead of

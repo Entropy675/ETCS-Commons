@@ -18,6 +18,8 @@ DEFINE_WORK_FUNC(KartBattle, Create)                                 { (void)ctx
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindWorld,  (ETCS::RID, rid))    { (void)ctx; self.BindWorld(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCamera, (ETCS::RID, rid))    { (void)ctx; self.BindCamera(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCard,   (ETCS::RID, rid))    { (void)ctx; self.BindCard(rid); }
+// BindFps <label> -- the frame counter: this runtime's pictures a second, said on the label.
+DEFINE_WORK_FUNC_TYPED(KartBattle, BindFps,    (ETCS::RID, rid))    { (void)ctx; self.BindFps(rid); }
 // AddKart <body> <fr> <fl> <rr> <rl> <bar back> <bar fill> -- a kart of the
 // pool, its four wheels (the right ones first, as the picture shows them)
 // and its HP bar.

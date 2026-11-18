@@ -116,6 +116,9 @@ public:
     void BindWorld(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_world = r; }
     void BindCamera(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_camera = r; m_eye_set = false; }
     void BindCard(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_card = r; m_card_text.clear(); }
+    // The frame counter: a label this runtime shows its pictures a second on
+    // (fpsLocked). This runtime's alone, never a line.
+    void BindFps(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_fps = r; m_fps_ms = 0.0; m_fps_seen = -1; }
 
     // ── the arena: what the scripts hand over ────────────────────────────
 
@@ -828,6 +831,7 @@ public:
         barsLocked();
         cardLocked(dt_ms);
         boardLocked();
+        fpsLocked(dt_ms);
     }
 
 private:
@@ -3032,6 +3036,24 @@ private:
             }
         }
     }
+    // The frame counter: the camera's own count of the pictures it made
+    // (Camera3D.Renders), over each second of frames -- what was drawn, not
+    // how often the frame edge came round.
+    void fpsLocked(double dt_ms)
+    {
+        if (!m_fps || !m_camera) return;
+        m_fps_ms += dt_ms;
+        if (m_fps_ms < 1000.0 && m_fps_seen >= 0) return;
+        const std::string said = answer(m_camera, "Renders");
+        const int64_t now = said.empty() ? -1 : std::atoll(said.c_str());
+        if (now >= 0 && m_fps_seen >= 0 && m_fps_ms > 0.0)
+        {
+            const int fps = static_cast<int>(static_cast<double>(now - m_fps_seen) * 1000.0 / m_fps_ms + 0.5);
+            verb(m_fps, "SetText", std::to_string(fps) + " fps");
+        }
+        m_fps_seen = now;
+        m_fps_ms = 0.0;
+    }
     // The card: this runtime's health, weapon, eliminations and the clock --
     // or, in the lobby, what the next round is and who starts it.
     void cardLocked(double dt_ms)
@@ -3235,6 +3257,17 @@ private:
         ETCS::Entity* e = rid ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid) : nullptr;
         if (e) e->call(ETCS::Buffer(v), arg);
     }
+    // A verb's answer, "" when there is none.
+    static std::string answer(ETCS::RID node, const char* name)
+    {
+        if (!node) return std::string();
+        ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), node);
+        if (!e) return std::string();
+        ETCS::Buffer action((e->getSourceTag().toString() + "." + name).c_str());
+        ETCS::Buffer payload("");
+        try { e->call(action, payload); } catch (...) { return std::string(); }
+        return payload.c_str();
+    }
     static bool verb(ETCS::RID node, const char* name, const std::string& args)
     {
         if (!node) return false;
@@ -3310,6 +3343,9 @@ private:
     bool     m_look_drag = false;
     double   m_card_ms = 0.0;
     std::string m_card_text;
+    ETCS::RID   m_fps = 0;          // BindFps: the frame counter's label
+    double      m_fps_ms = 0.0;     // ...the frames' time since it was last said
+    int64_t     m_fps_seen = -1;    // ...the camera's pictures then
 };
 
 #endif // KARTPROVIDER_KARTBATTLE_H__
