@@ -1,7 +1,7 @@
 #!/usr/bin/env etcs
 # BOWL: a basin -- every wall banked, so you can ride up any side and drop
-# back in, the corners walled off, a mound in the middle with a box on top,
-# and a ring of low bumpers round it to dodge behind.
+# back in, the banks meeting in the corners, a mound in the middle with a
+# box on top, and a ring of low bumpers round it to dodge behind.
 #   run kart_map_bowl.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
@@ -11,16 +11,13 @@
 requires battle [KartBattle]
 battle.AddMap(bowl)
 
-# The banks: up to the wall, their lips on it.
-battle.AddRamp(0.0, 27.5, 0.0, 36.0, 7.0, 0.0, 0.0, 2.0)
-battle.AddRamp(0.0, -27.5, 180.0, 36.0, 7.0, 0.0, 0.0, 2.0)
-battle.AddRamp(27.5, 0.0, 90.0, 36.0, 7.0, 0.0, 0.0, 2.0)
-battle.AddRamp(-27.5, 0.0, 270.0, 36.0, 7.0, 0.0, 0.0, 2.0)
-# The corners, walled off as tall as the banks are high.
-battle.AddBlock(24.5, 24.5, 1.2, 22.0, 3.0, -45.0)
-battle.AddBlock(24.5, -24.5, 1.2, 22.0, 3.0, 45.0)
-battle.AddBlock(-24.5, 24.5, 1.2, 22.0, 3.0, 45.0)
-battle.AddBlock(-24.5, -24.5, 1.2, 22.0, 3.0, -45.0)
+# The banks: up to the wall, their lips on it, each the whole wall long, so
+# two meet in every corner and the corner is ground like the rest -- a kart
+# driven into one rides up and rolls back, with nothing to wedge against.
+battle.AddRamp(0.0, 27.5, 0.0, 64.0, 7.0, 0.0, 0.0, 2.0)
+battle.AddRamp(0.0, -27.5, 180.0, 64.0, 7.0, 0.0, 0.0, 2.0)
+battle.AddRamp(27.5, 0.0, 90.0, 64.0, 7.0, 0.0, 0.0, 2.0)
+battle.AddRamp(-27.5, 0.0, 270.0, 64.0, 7.0, 0.0, 0.0, 2.0)
 # The mound, and the bumpers round it.
 battle.AddHill(0.0, 0.0, 7.0, 1.4)
 battle.AddBlock(0.0, 11.0, 4.0, 1.2, 0.8, 0.0)
@@ -32,21 +29,11 @@ battle.AddBlock(-8.0, 8.0, 3.0, 1.2, 0.8, -45.0)
 battle.AddBlock(8.0, -8.0, 3.0, 1.2, 0.8, -45.0)
 battle.AddBlock(-8.0, -8.0, 3.0, 1.2, 0.8, 45.0)
 
-# Pads round the ring between the bumpers and the banks, pointing round it,
-# and one in each pocket between a bank's end and a corner's wall, pointing
-# out of it: a kart wedged there is pushed back onto the floor.
+# Pads round the ring between the bumpers and the banks, pointing round it.
 battle.AddPad(14.7, 8.5, 330.0)
 battle.AddPad(-8.5, 14.7, 240.0)
 battle.AddPad(-14.7, -8.5, 150.0)
 battle.AddPad(8.5, -14.7, 60.0)
-battle.AddPad(19.6, 26.5, 180.0)
-battle.AddPad(26.5, 19.6, 270.0)
-battle.AddPad(-19.6, 26.5, 180.0)
-battle.AddPad(-26.5, 19.6, 90.0)
-battle.AddPad(19.6, -26.5, 0.0)
-battle.AddPad(26.5, -19.6, 270.0)
-battle.AddPad(-19.6, -26.5, 0.0)
-battle.AddPad(-26.5, -19.6, 90.0)
 
 # A deck in the air over the mound, the middle's box on it, and springs to
 # reach it from the ring, and to play on.

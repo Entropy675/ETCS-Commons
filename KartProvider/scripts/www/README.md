@@ -49,7 +49,8 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   six seconds, then the lobby, which keeps them), or the host **abandons** it (**Esc**, or the
   page's button) -- back to the lobby, its scores discarded.
 - **Hold Tab** in a round for the scores on the arena.
-- **The maps:** **bowl** (every wall banked, a mound in the middle, a ring of bumpers);
+- **The maps:** **bowl** (every wall banked, the banks meeting in the corners, a mound in the
+  middle, a ring of bumpers);
   **pillars** (a raised plaza in the middle, ramps up from all four sides, pillars round it,
   kickers at the edge); **crossroads** (a cross of roads and a ring road between buildings of
   different heights, jumps round the outside); **hills** (six hills, a ridge to ride over, two
@@ -70,8 +71,7 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   deck, out of a pit, or just up.
 - **Pads** push a kart that drives over them the way their arrows run -- hard, and harder the
   faster it is already going that way, up to 40 u/s, the fastest anything goes. Along its heading
-  that is speed, across it a slide to catch. Every map has some, the random one too; the bowl
-  has one in each corner pocket, to push out a kart wedged there.
+  that is speed, across it a slide to catch. Every map has some, the random one too.
 - Out of a battle, the arena is yours alone: practice, with the lobby yours.
 
 ## How it stays one battle
