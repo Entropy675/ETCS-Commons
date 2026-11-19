@@ -19,7 +19,10 @@
  *   Paths <p> <d>   where the registrar and the binaries are; /pki and /dist unless said
  *
  * What Register and Update put in place is the next session's: this one keeps
- * what it mapped.
+ * what it mapped. Except a RE-SYNC (core/Trust.h): when the list is a sibling
+ * marketplace's -- this loader's marketplace key retired -- Check, whenever it
+ * sees one, fetches the successor, has the loader put it in place, and asks
+ * the loader to restart on it where this session left off.
  */
 class Upstream : public DirectoryBase<Upstream>, public DeletableBase<Upstream>
 {
@@ -72,9 +75,12 @@ public:
         const bool ok = survey();
         std::istringstream lines(survey.out);
         for (std::string line; std::getline(lines, line); ) ETCS_LOG("Upstream", "Check: " << line);
-        std::lock_guard<std::mutex> l(mu_);
-        list_   = ok ? list : std::string();
-        report_ = survey.out;
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            list_   = ok ? list : std::string();
+            report_ = survey.out;
+        }
+        if (ok) resync(list, survey.out, dist);
         return ok;
     }
 
@@ -99,6 +105,29 @@ public:
         ETCS_LOG("Upstream", "Update: " << placed << " put in place, " << failed << " not"
                  << (placed ? "; the next session reads them" : ""));
         return failed == 0;
+    }
+
+    // The report's "resync etcs <file>": fetch it, have the loader put it in
+    // place (bridged), then restart on it. Nothing else of the list is taken.
+    bool resync(const std::string& list, const std::string& report, const std::string& dist)
+    {
+        std::istringstream lines(report);
+        for (std::string line; std::getline(lines, line); )
+        {
+            std::istringstream ls(line);
+            std::string verb, name, file, bytes;
+            if (!(ls >> verb >> name >> file) || verb != "resync") continue;
+            ETCS_LOG("Upstream", "re-sync: this loader's identity moved; fetching its successor");
+            if (!get(dist + "/" + file, bytes)) return false;
+            ETCS::TrustEvent put(ETCS::TrustEvent::Op::Replace);
+            put.a = list; put.b = std::move(bytes); put.name = name;
+            if (!put()) { ETCS_LOG("Upstream", "re-sync: the successor was refused: " << put.out); return false; }
+            ETCS::TrustEvent go(ETCS::TrustEvent::Op::Resync);
+            const bool ok = go();
+            ETCS_LOG("Upstream", "re-sync: " << go.out);
+            return ok;
+        }
+        return true;
     }
 
     bool Paths(const std::string& pki, const std::string& dist)

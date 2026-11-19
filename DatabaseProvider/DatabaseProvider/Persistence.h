@@ -166,7 +166,12 @@ public:
             if (st != state.end()) hash = st->second;
             expected += name + " " + type + " " + hash + "\n";
         }
-        Keeper::get().expect(expected);
+        // The kernel it was saved under (BASE_SOURCE_STRING): a re-sync resumes
+        // on a newer one, where a module's build, and so its roots' state
+        // hashes, moved with it.
+        std::string saved_kernel;
+        if (script.rfind("# kernel ", 0) == 0) saved_kernel = script.substr(9, script.find('\n') - 9);
+        Keeper::get().expect(expected, saved_kernel);
         std::string body = "# The scene this loader left (keyid " + store.keyid() + "), saved "
                          + std::to_string(at) + ". Written by Persistence.Resume.\n" + script;
         if (!store.writeFile("resume.etcs", body)) { Keeper::get().release(); ETCS_LOG("Persistence", "Resume: cannot write the script."); return false; }
@@ -330,11 +335,12 @@ private:
         }
         void remove(Persistence* p) { std::lock_guard<std::mutex> lock(mu_); live_.erase(p); }
 
-        void expect(const std::string& roots)
+        void expect(const std::string& roots, const std::string& kernel = std::string())
         {
             std::lock_guard<std::mutex> lock(save_mu_);
             restoring_.store(true);
             expected_.clear();
+            saved_kernel_ = kernel;
             std::istringstream in(roots);
             std::string name, type, hash;
             while (in >> name >> type >> hash) expected_[name] = { type, hash };
@@ -344,9 +350,15 @@ private:
         std::vector<std::string> check()
         {
             std::map<std::string, std::pair<std::string, std::string>> want;
-            { std::lock_guard<std::mutex> lock(save_mu_); want = expected_; }
+            std::string saved;
+            { std::lock_guard<std::mutex> lock(save_mu_); want = expected_; saved = saved_kernel_; }
+            // ACROSS A KERNEL CHANGE (a re-sync) a rebuilt module's roots hash
+            // otherwise even when they replayed exactly: the state hash carries
+            // the build. What came back is then each type's own replay to say,
+            // and a difference is reported, not counted against the resume.
+            const bool across = !saved.empty() && saved != BASE_SOURCE_STRING;
             std::vector<std::string> out;
-            size_t same = 0;
+            size_t same = 0, replayed = 0;
             for (auto& [rid, prid] : roots())
             {
                 (void)prid;
@@ -362,6 +374,7 @@ private:
                 etcs_freeze(r, t);
                 const std::string now = hex64(t.state_hash);
                 if (now == it->second.second) { ++same; want.erase(it); continue; }
+                if (across) { ++replayed; want.erase(it); continue; }
                 const size_t off = valuesOff(t);
                 if (off) out.push_back("'" + name + "' came back different: " + std::to_string(off)
                                        + " value(s) under it differ from the record (state " + now + ", was "
@@ -371,7 +384,10 @@ private:
                 want.erase(it);
             }
             for (auto& [name, th] : want) out.push_back("'" + name + "' (" + th.first + ") did not come back");
-            out.insert(out.begin(), "resumed: " + std::to_string(same) + " root(s) as they were"
+            const std::string head = across ? "resumed across a kernel change (" + saved + " -> " BASE_SOURCE_STRING "): "
+                                            : std::string("resumed: ");
+            out.insert(out.begin(), head + std::to_string(same) + " root(s) as they were"
+                       + (replayed ? ", " + std::to_string(replayed) + " replayed as their types define" : std::string())
                        + (out.empty() ? "." : ", " + std::to_string(out.size()) + " not:"));
             return out;
         }
@@ -435,6 +451,7 @@ private:
             std::vector<std::pair<ETCS::Entity*, ETCS::LifetimeHold>> held;
             std::map<ETCS::RID, std::string> names;
             std::set<std::string> used;
+            sc.script = "# kernel " BASE_SOURCE_STRING "\n";
             for (auto& [rid, prid] : rs)
             {
                 (void)prid;
@@ -802,6 +819,7 @@ private:
         uint64_t                 scene_written_ = 0;
         std::string              last_warn_;
         std::map<std::string, std::pair<std::string, std::string>> expected_;   // name -> (type, hash)
+        std::string saved_kernel_;                                               // the kernel the expected scene was saved under
     };
 
     friend struct PersistenceModuleGuard;
