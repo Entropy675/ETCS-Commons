@@ -64,6 +64,43 @@ window.EtcsSessionPage = function (cfg) {
     let menu = '';
     try { menu = mod.ccall('etcs_web_shell_menu', 'string', [], []); } catch (e) { menu = ''; }
     if (menu && menu !== lastMenuJson) { lastMenuJson = menu; toShell({ etcs: 'menu', json: menu }); }
+    takeNotice(mod);
+  }
+
+  /*
+   * A NOTICE FROM THE RUNTIME (etcs_web_notice, core/CommandExecutor.h): a
+   * re-sync, said above the ETCS loading mark while the mark is up, in the
+   * ring's blue and violet, fading after 8s. With the mark gone the terminal
+   * has the same line, in colour, and nothing more is shown. Its look is here
+   * rather than in each game's CSS, so every session page has the same one.
+   */
+  let noticeSerial = 0;
+  function takeNotice(mod) {
+    let json = '';
+    try { json = mod.ccall('etcs_web_notice', 'string', [], []); } catch (e) { return; }
+    if (!json) return;
+    let n = null;
+    try { n = JSON.parse(json); } catch (e) { return; }
+    if (!n || n.serial === noticeSerial) return;
+    noticeSerial = n.serial;
+    const mark = $('bootthrob');
+    if (!mark || !mark.parentNode) return;
+    if (!$('bootnotice-style')) {
+      const st = document.createElement('style');
+      st.id = 'bootnotice-style';
+      st.textContent = '#bootnotice { position: absolute; left: 50%; bottom: calc(50% + 60px); transform: translateX(-50%);'
+        + ' max-width: 80%; padding: 8px 12px; z-index: 6; pointer-events: none; background: rgba(27, 28, 20, 0.92);'
+        + ' color: rgb(240, 227, 199); border: 1px solid rgb(100, 0, 228); box-shadow: 0 0 0 1px rgba(0, 0, 255, 0.35);'
+        + ' border-radius: 6px; font-size: 13px; line-height: 1.35; text-align: center; transition: opacity 0.6s; opacity: 1; }'
+        + ' #bootnotice.gone { opacity: 0; }';
+      document.head.appendChild(st);
+    }
+    let el = $('bootnotice');
+    if (!el) { el = document.createElement('div'); el.id = 'bootnotice'; mark.parentNode.appendChild(el); }
+    el.textContent = String(n.text || '');
+    el.classList.remove('gone');
+    clearTimeout(el.hideTimer);
+    el.hideTimer = setTimeout(function () { el.classList.add('gone'); }, 8000);
   }
   function startShellDrain() { if (!shellDrainTimer) shellDrainTimer = setInterval(drainShellOutput, SHELL_DRAIN_MS); }
   function pushLine(line) {

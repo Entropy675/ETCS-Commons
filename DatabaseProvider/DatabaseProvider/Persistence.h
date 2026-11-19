@@ -707,7 +707,10 @@ private:
             std::istringstream in(sc.roots);
             std::string n, t;
             while (in >> n >> t) summary += (summary.empty() ? "" : ", ") + n + " (" + t + ")";
-            if (scene_moved) store.writeFile("scene", std::to_string(sc.nroots) + " root(s): " + summary + "\n");
+            // The summary a start offers back, and the kernel it was saved under:
+            // a start under another kernel is a re-sync to the one asking.
+            if (scene_moved) store.writeFile("scene", std::to_string(sc.nroots) + " root(s): " + summary + "\n"
+                                                      "kernel " BASE_SOURCE_STRING "\n");
             if (!changed.empty() || !gone.empty() || scene_moved || !states.empty()) store.flush();
             if (sc.print != last_print_)
                 ETCS_LOG("Persistence", "scene saved: " << summary << " -- " << sc.recs.size() << " record(s)");
