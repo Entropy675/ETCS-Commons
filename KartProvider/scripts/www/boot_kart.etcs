@@ -2,8 +2,8 @@
 
 # KART, IN A BROWSER: the arena, its maps, the pool of karts and the battle, on
 # the page served by ETCS (index.html beside this). The page names you, then
-# practises, hosts or joins through the battle (KartProvider/scripts/
-# kart_host.etcs, kart_join.etcs) -- this file only builds what every one of
+# practises, hosts or joins through the battle (NetworkProvider/scripts/
+# session_host.etcs, session_join.etcs) -- this file only builds what every one of
 # those starts from, the same on every runtime that will share a battle.
 #
 # The substrate is RenderProvider's 3D page's: no main.Run (the browser's loop

@@ -17,14 +17,14 @@
 #   the karts are solid                        spheres to everything, drawn
 #                                              as a body on four wheels
 #   the world is driven                        SetDriven: only the battle steps
-#                                              it, from its record -- never a
+#                                              it, from its trace -- never a
 #                                              picture, so every runtime's copy
 #                                              is the same world
 #
 # No field: the battle is the karts' gravity, on the ground it knows. A map is
 # data (kart_map_*.etcs) and the battle draws the one in play with the pools
 # made here (KartBattle::mapLocked), so a change of map is a line of the
-# record, not a script -- and a map made from a seed is the same everywhere.
+# trace, not a script -- and a map made from a seed is the same everywhere.
 # Parts are run by bare name (a script's own folder first: the same path in a
 # window and on a page).
 

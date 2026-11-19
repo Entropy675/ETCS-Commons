@@ -22,15 +22,17 @@
 /*
  * ── KartBattle: karts in an arena, one per player, between runtimes ───────
  *
- * THE RECORD IS THE BATTLE, as it is the game in chess (ChessGame's header
- * note). Every runtime holds its own copy of the world -- the same arena
- * script built it -- and steps it from the record alone:
+ * THE TRACE IS THE BATTLE, as the record is the game in chess (ChessGame's
+ * header note). Every runtime holds its own copy of the world -- the same
+ * arena script built it -- and steps it from the host's trace alone:
  *
  *   join                     the author takes the next free kart, at a spawn
+ *                            (a seat's first line, taken as it sits)
+ *   leave                    the author's kart back in the pit (its seat's
+ *                            stream ended, however it did)
  *   drive <t> <s> <f>        the author's pedal, wheel and trigger: -1 0 1, 0 1
  *   tick <n>                 every kart driven, every shot flown, the world
  *                            stepped, up to tick n
- *   leave <who>              (the host's) that kart back in the pit
  *   config <map> <secs> [<layout>]   (the host's, in the lobby only) the next
  *                            round's map and length; a map made from a seed
  *                            carries its seed, so it is the same everywhere
@@ -41,27 +43,33 @@
  *                            round's scores discarded
  *   give <who> <weapon>      (the host's) a weapon handed over outright
  *
- * Lines apply in the record's order, and a tick is a line, so where an input
- * falls between two ticks is the record's to say and the same everywhere.
+ * Lines apply in the trace's order, and a tick is a line, so where an input
+ * falls between two ticks is the trace's to say and the same everywhere.
  * The world is Scene3D marked driven (SetDriven): no picture steps it. The
  * karts' rows, the ground under them, the shots, the damage and the dice are
  * all in the rows' own integers (Fixed, KartArms.h, KartArena.h), so two
  * runtimes fed the same lines are the same battle (etcs_causal_constraints.md
- * §2). Lockstep, with the record as the lock: nobody negotiates anything.
+ * §2). Lockstep, with the trace as the lock: nobody negotiates anything.
  *
- * ONE BATTLE JUDGES (the host's). A guest's keys go to the host's proposals
- * ledger (`battle.Emit() -> proposals.Take()`, authored by its link); the
- * judge applies each line it takes and appends it to the record. The host's
- * clock is the battle's: its frame edge steps the world in real time and puts
- * `tick` lines into the record in pairs, and always before any other line,
- * so a line lands at the tick the host applied it at. A guest follows the
- * record (`record.Follow(0) -> battle.Absorb()`): it sees the arena one trip
- * behind the host, and its own keys a round trip late. Alone (Practice) the
- * battle is its own judge with no record.
+ * THE HOST'S BATTLE IS THE AUTHORITY. A guest's keys go to it on the guest's
+ * own seat (`battle.Emit() -> host.Take()`, a stream into a surface of the
+ * host's battle): the stream is who said it, and the order the host reads
+ * the seats in is the order. The host's clock is the battle's: its frame edge
+ * steps the world in real time and keeps `tick` lines in pairs, and always
+ * before any other line, so a line lands at the tick the host applied it at.
+ * A guest's battle mirrors the host's (`host.Trace(0) -> battle.Follow()`): it
+ * sees the arena one trip behind the host, and its own keys a round trip
+ * late. Alone (Practice) the battle is the authority of a trace nobody
+ * follows.
  *
  * A BATTLE THAT DIFFERS is reported, not repaired (ChessShare's rule): every
- * kSnapEvery ticks each runtime hashes it and advertises the hash with its
- * presence; a guest whose hash is not the host's at that tick says so.
+ * kSnapEvery ticks the host keeps its hash as a line, and a guest reaching
+ * that line whose own hash is not the host's says so.
+ *
+ * THE SESSION IS THE FAMILIES': the trace and its mirrors (Trace), time as
+ * `tick` lines (Lockstep), and the streams' edges and the hall (Present) --
+ * ontology/Trace.h, Lockstep.h, Present.h. What is written here is what a
+ * battle is.
  *
  * THE GAME. Between rounds is the LOBBY: the karts wait parked at their
  * spawns, and the host sets the next round on the menu (the map, the length,
@@ -102,7 +110,9 @@
  * camera, its card, the menu and the board, the HP bars turned to face its
  * eye -- is set on the frame edge and is not a line.
  */
-class KartBattle : public AnimatedBase<KartBattle>,
+class KartBattle : public LockstepBase<KartBattle>,
+                   public PresentBase<KartBattle>,
+                   public AnimatedBase<KartBattle>,
                    public DeletableBase<KartBattle>
 {
 public:
@@ -320,61 +330,79 @@ public:
     }
 
     // ── sessions ──────────────────────────────────────────────────────────
+    //
+    // The session is the families' (ontology/Trace.h, Present.h): these say
+    // only what a battle adds -- its hall line, and its note.
 
-    // Alone: this battle is its own judge, nothing recorded.
+    // Alone: the authority of a trace nobody follows.
     void Practice(const std::string& name)
     {
-        Leave();
-        std::lock_guard<std::mutex> g(m_mu);
-        restartLocked();
-        m_me = name; m_owner = name; m_judge = true;
-        takeLocked(m_me, "join");
+        Absent();
+        LockstepBase<KartBattle>::Practice(name);
+        std::lock_guard<std::mutex> g(m_mu); m_note.clear();
     }
-    // Host: the record is here and this battle judges it; the hall (a Lobby)
-    // lists it as `kart <id>` for as long as it lasts.
-    bool Host(ETCS::RID record, ETCS::RID proposals, ETCS::RID presence, const std::string& name,
-              ETCS::RID hall, const std::string& id)
+    // Host: the authority; the hall (a Lobby) lists it as `kart <id>` for as
+    // long as it lasts.
+    bool Host(const std::string& name, ETCS::RID hall, const std::string& id)
     {
-        if (name.empty() || !record) return false;
-        Leave();
-        {
-            std::lock_guard<std::mutex> g(m_mu);
-            restartLocked();
-            m_me = name; m_owner = name; m_judge = true; m_session = true;
-            m_record = record; m_proposals = proposals; m_presence = presence; m_hall = hall; m_id = id;
-            takeLocked(m_me, "join");
-        }
+        Absent();
+        if (!LockstepBase<KartBattle>::Host(name)) return false;
+        { std::lock_guard<std::mutex> g(m_mu); m_note.clear(); }
+        Attend(hall, name, id);
         ETCS_LOG("KartBattle", "hosting a battle as " << name);
-        Tick();
+        Announce();
         return true;
     }
-    // Join: this battle follows the host's record from its first line, and
+    // Join: this battle mirrors the host's from its first line, and its seat
     // asks for a kart.
-    bool Join(ETCS::RID presence, const std::string& name, const std::string& owner)
+    bool Join(const std::string& name, const std::string& owner)
     {
-        if (name.empty()) return false;
-        Leave();
-        std::lock_guard<std::mutex> g(m_mu);
-        restartLocked();
-        m_me = name; m_owner = owner; m_judge = false; m_session = true; m_presence = presence;
-        m_outbox.push_back("join");
+        Absent();
+        if (!LockstepBase<KartBattle>::Join(name, owner)) return false;
+        { std::lock_guard<std::mutex> g(m_mu); m_note.clear(); }
         ETCS_LOG("KartBattle", "joined " << owner << "'s battle as " << name);
         return true;
     }
     void Leave()
     {
-        ETCS::RID hall = 0;
-        std::string me;
-        {
-            std::lock_guard<std::mutex> g(m_mu);
-            ++m_gen;   // the streams of the session going end with it (below)
-            if (m_me.empty()) return;
-            if (m_session && m_judge) { hall = m_hall; me = m_me; }
-            m_me.clear(); m_owner.clear(); m_judge = false; m_session = false;
-            m_record = m_proposals = m_presence = m_hall = 0; m_id.clear();
-            m_outbox.clear(); m_here.clear(); m_sent.clear(); m_advertised.clear(); m_note.clear();
-        }
-        if (hall) { ETCS::Buffer a; a.writeString(me.c_str()); callOn(hall, "Lobby.Withdraw", a); }
+        LockstepBase<KartBattle>::Leave();
+        Absent();
+        std::lock_guard<std::mutex> g(m_mu); m_note.clear();
+    }
+    // The beat: on the host, its hall line, when it changed (Present::Announce).
+    void Tick() { Announce(); }
+
+    // ── what the families ask of a battle ─────────────────────────────────
+
+    // Trace: a line, as its author (applyLocked), what "as made" is, the hash;
+    // a seat opens with `join` and its stream's end is its `leave`.
+    bool ApplyConcrete(const std::string& author, const std::string& line) override { return applyLocked(author, line); }
+    void RestartConcrete() override { restartLocked(); }
+    std::string HashConcrete() override { return hashLocked(); }
+    void EndedConcrete() override { noteLocked("the battle is over -- " + m_owner + " closed it"); }
+    std::string OpeningConcrete() override { return "join"; }
+    std::string LeavingConcrete() override { return "leave"; }
+    void DiffersConcrete(uint64_t at, const std::string& mine, const std::string& theirs) override
+    {
+        ETCS_LOG("KartBattle", "this battle (" << mine << ") is not the host's (" << theirs << ") at tick " << at);
+        noteLocked("the battle differs from the host's at tick " + std::to_string(at));
+    }
+    // Lockstep: one tick, at kHz; ticks kept in pairs; a hash every kSnapEvery.
+    void StepConcrete() override { stepLocked(); }
+    Rate RateConcrete() const override { return { kHz, kMaxCatchUp, kBatch, kSnapEvery }; }
+    // Present: listed as `kart`, its drivers and karts in the hall; a seat's
+    // stream opening and ending.
+    std::string KindConcrete() const override { return "kart"; }
+    std::string HallConcrete() override
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        return std::to_string(driversLocked()) + " " + std::to_string(m_slots.size());
+    }
+    void ArrivedConcrete(const std::string& who) override { std::lock_guard<std::mutex> g(m_mu); noteLocked(who + " is here"); }
+    void DepartedConcrete(const std::string& who) override
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (who != m_owner) noteLocked(who + " left");
     }
 
     // ── the host's lobby and round, as lines ─────────────────────────────
@@ -386,158 +414,30 @@ public:
     {
         std::lock_guard<std::mutex> g(m_mu);
         const int m = mapIndex(map);
-        if (!m_judge || !m_ready || m < 0) return false;
+        if (!m_authority || !m_ready || m < 0) return false;
         return configLocked(m, secs, m != m_map);
     }
     bool Reroll()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (!m_judge || !m_ready || m_defs.empty() || !m_defs[m_map].generated) return false;
+        if (!m_authority || !m_ready || m_defs.empty() || !m_defs[m_map].generated) return false;
         return configLocked(m_map, m_round_secs, true);
     }
     bool StartRound()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        return m_judge && m_ready && roundLocked();
+        return m_authority && m_ready && roundLocked();
     }
     bool Abandon()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        return m_judge && takeLocked(m_me, "abandon");
+        return m_authority && takeLocked(m_me, "abandon");
     }
     bool Give(const std::string& who, const std::string& weapon)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (!m_judge) return false;
+        if (!m_authority) return false;
         return takeLocked(m_me, "give " + who + " " + weapon);
-    }
-
-    /*
-     * PRESENCE AND THE HALL, each when it changed: "<name> kart <tick> <hash>"
-     * -- this battle's latest snapshot -- and, on the host, "<name> kart <id>
-     * <drivers> <karts>" in the hall. Calls go out with no lock held: a
-     * guest's presence is a surface of the host's, so an advert is a trip.
-     */
-    void Tick()
-    {
-        std::string line, ad;
-        ETCS::RID presence = 0, hall = 0;
-        {
-            std::lock_guard<std::mutex> g(m_mu);
-            if (!m_session || m_me.empty()) return;
-            presence = m_presence;
-            const std::string mine = m_me + " kart " + std::to_string(m_snap_tick) + " " + m_snap_hash;
-            if (mine != m_sent) { m_sent = mine; line = mine; }
-            if (m_judge && m_hall)
-            {
-                const std::string a = m_me + " kart " + (m_id.empty() ? "-" : m_id) + " "
-                                    + std::to_string(driversLocked()) + " " + std::to_string(m_slots.size());
-                if (a != m_advertised) { m_advertised = a; ad = a; hall = m_hall; }
-            }
-        }
-        if (!line.empty() && presence) { ETCS::Buffer a; a.writeString(line.c_str()); callOn(presence, "Lobby.Advertise", a); }
-        if (!ad.empty() && hall)       { ETCS::Buffer a; a.writeString(ad.c_str());   callOn(hall, "Lobby.Advertise", a); }
-    }
-
-    // ── the streams ──────────────────────────────────────────────────────
-    //
-    // EACH STREAM IS ITS SESSION'S. A stream takes the session's number when
-    // it starts (a template detaches it after Host or Join), and is stale once
-    // the battle is in another: a guest's emitter left over from a link that
-    // went would otherwise take the next session's first line -- its `join`
-    // -- and write it to the closed link, and a follower would feed an old
-    // record into the new battle. A stale stream is told so, and ends.
-
-    uint64_t Generation() { std::lock_guard<std::mutex> g(m_mu); return m_gen; }
-
-    // A line for the host, or nothing yet; false (and `stale`) once the
-    // session is another's.
-    bool nextEmit(uint64_t gen, std::string& out, bool& stale)
-    {
-        std::lock_guard<std::mutex> g(m_mu);
-        stale = gen != m_gen;
-        if (stale || m_outbox.empty()) return false;
-        out = std::move(m_outbox.front());
-        m_outbox.pop_front();
-        return true;
-    }
-    // A line of the record, followed: "<seq> <author> <line>". False once
-    // the session is another's.
-    bool Absorb(uint64_t gen, const std::string& msg)
-    {
-        std::lock_guard<std::mutex> g(m_mu);
-        if (gen != m_gen) return false;
-        if (m_judge || msg.compare(0, 2, "~ ") == 0) return true;
-        uint64_t seq = 0; std::string author, line;
-        if (!parseLine(msg, seq, author, line)) return true;
-        if (!applyLocked(author, line) && line.compare(0, 4, "tick") != 0)
-            ETCS_LOG("KartBattle", "line " << seq << " (" << author << " " << line << ") refused here -- this battle is not the record's.");
-        m_seq = seq + 1;
-        return true;
-    }
-    // The record ended under a guest still in the battle: the host closed it
-    // (or its link went). The world stays where the last line left it.
-    void RecordEnded(uint64_t gen)
-    {
-        std::lock_guard<std::mutex> g(m_mu);
-        if (gen == m_gen && m_session && !m_judge) noteLocked("the battle is over -- " + m_owner + " closed it");
-    }
-    // A proposal, judged: applied as its author and recorded if taken. A
-    // guest proposes its own seat and its own controls, nothing else.
-    bool JudgeLine(uint64_t gen, const std::string& msg)
-    {
-        ETCS::RID proposals = 0; uint64_t seq = 0;
-        {
-            std::lock_guard<std::mutex> g(m_mu);
-            if (gen != m_gen) return false;
-            if (!m_judge || !m_session || msg.compare(0, 2, "~ ") == 0) return true;
-            std::string author, line;
-            if (!parseLine(msg, seq, author, line) || author.empty()) return true;
-            if (line == "join" || line.compare(0, 6, "drive ") == 0) takeLocked(author, line);
-            proposals = m_proposals;
-        }
-        if (Record_* p = recordOf(proposals)) p->Checkpoint(seq + 1);
-        return true;
-    }
-    // The presence listing, whole, on every change: arrivals and departures,
-    // a departed driver's kart back to the pit (the host's line), and this
-    // battle's snapshots against the host's.
-    bool Roster(uint64_t gen, const std::string& listing)
-    {
-        std::lock_guard<std::mutex> g(m_mu);
-        if (gen != m_gen) return false;
-        if (!m_session) return true;
-        std::map<std::string, std::pair<uint64_t, std::string>> now;
-        std::istringstream in(listing);
-        std::string row;
-        while (std::getline(in, row))
-        {
-            std::istringstream ls(row);
-            std::string who, kind, hash; uint64_t tick = 0;
-            if (!(ls >> who >> kind >> tick >> hash) || kind != "kart") continue;
-            now[who] = { tick, hash };
-        }
-        for (auto& [who, at] : now) if (!m_here.count(who) && who != m_me) noteLocked(who + " is here");
-        for (auto& [who, at] : m_here)
-            if (!now.count(who))
-            {
-                noteLocked(who + " left");
-                if (m_judge && slotOf(who) >= 0) takeLocked(m_me, "leave " + who);
-            }
-        m_here.clear();
-        for (auto& [who, at] : now) m_here[who] = at;
-        if (!m_judge && now.count(m_owner))
-        {
-            const auto& host = now[m_owner];
-            for (auto& [t, h] : m_snaps)
-                if (t == host.first && host.first && h != host.second && m_differed_at != t)
-                {
-                    m_differed_at = t;
-                    ETCS_LOG("KartBattle", "this battle (" << h << ") is not the host's (" << host.second << ") at tick " << t);
-                    noteLocked("the battle differs from the host's at tick " + std::to_string(t));
-                }
-        }
-        return true;
     }
 
     /*
@@ -548,7 +448,7 @@ public:
      * wheel's -1 and +1 (the camera's right is up x forward: +x for a kart
      * heading +z); SetInvert swaps the two keys for this runtime alone. Tab
      * holds up the board and Q and E look round the kart (lookLocked), this
-     * runtime's alone and no line of the record. In the lobby the host's keys
+     * runtime's alone and no line of the trace. In the lobby the host's keys
      * move the menu instead: up/down choose, left/right change, Enter
      * changes or starts; each change is a line.
      */
@@ -562,7 +462,7 @@ public:
             if (down) m_look_keys |= bit; else m_look_keys &= ~bit;
             return;
         }
-        if (down && m_judge && m_ready && !m_defs.empty())
+        if (down && m_authority && m_ready && !m_defs.empty())
         {
             if (m_phase == Lobby && menuKeyLocked(key)) return;
             if (m_phase == Playing && key == 256) { takeLocked(m_me, "abandon"); return; }
@@ -583,8 +483,7 @@ public:
         m_sent_t = t; m_sent_s = s; m_sent_f = f;
         if (m_me.empty()) return;
         const std::string line = driveLine(t, s, f);
-        if (m_judge) takeLocked(m_me, line);
-        else m_outbox.push_back(line);
+        proposeLocked(line);
     }
 
     // The wheel's keys swapped, for this runtime alone: the keys held are
@@ -650,14 +549,14 @@ public:
 
     // ── reads ────────────────────────────────────────────────────────────
 
-    // "<tick> <seq> <mode> <me> <slot> <phase> <secs left> <map> <round secs> <layout>"
+    // "<tick> <lines> <mode> <me> <slot> <phase> <secs left> <map> <round secs> <layout>"
     // mode: host | guest | practice | idle; phase: lobby | playing | results;
     // layout: the seed of a map made from one, 0 for a hand-made map.
     std::string Status()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        const char* mode = m_me.empty() ? "idle" : !m_session ? "practice" : m_judge ? "host" : "guest";
-        return std::to_string(m_tick) + " " + std::to_string(m_seq) + " " + mode + " "
+        const char* mode = m_me.empty() ? "idle" : !m_session ? "practice" : m_authority ? "host" : "guest";
+        return std::to_string(m_tick) + " " + std::to_string(m_lines.size()) + " " + mode + " "
              + (m_me.empty() ? "-" : m_me) + " " + std::to_string(slotOf(m_me)) + " " + phaseName() + " "
              + std::to_string(secsLeft()) + " " + mapName(m_map) + " " + std::to_string(m_round_secs) + " "
              + std::to_string(m_layout);
@@ -740,7 +639,6 @@ public:
         return out;
     }
     std::string Hash()     { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_tick) + " " + hashLocked(); }
-    std::string Snapshot() { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_snap_tick) + " " + m_snap_hash; }
     std::string Note()     { std::lock_guard<std::mutex> g(m_mu); return m_note; }
     // "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel> <slide>",
     // or "-"; the wheel and the slide (the way across the heading) are + to
@@ -793,40 +691,14 @@ public:
         }
         return out;
     }
-    /*
-     * THE JUDGE'S CLOCK BY HAND: `ticks` ticks stepped and recorded, as the
-     * frame edge does in real time -- what a headless run or a test drives a
-     * battle with (Scene3D::Run's counterpart).
-     */
-    void Run(uint32_t ticks)
-    {
-        std::lock_guard<std::mutex> g(m_mu);
-        if (!m_judge) return;
-        for (uint32_t i = 0; i < ticks; ++i)
-        {
-            stepLocked();
-            if (m_tick >= m_recorded + kBatch) flushTicksLocked();
-        }
-        flushTicksLocked();
-    }
-
     // ── Animated: the frame edge ────────────────────────────────────────
 
     bool AnimatingConcrete() override { return m_world != 0; }
     void AdvanceConcrete(double dt_ms) override
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (m_judge)
-        {
-            // The host's clock is the battle's: whole ticks of wall time, at
-            // most a few at once (a stalled frame is time lost, not a lurch).
-            m_wall_ms += dt_ms;
-            int due = static_cast<int>(m_wall_ms / kTickMs);
-            m_wall_ms -= due * kTickMs;
-            if (due > kMaxCatchUp) due = kMaxCatchUp;
-            for (int i = 0; i < due; ++i) stepLocked();
-            if (m_tick >= m_recorded + kBatch) flushTicksLocked();
-        }
+        // The host's clock is the battle's (Lockstep): on a guest, nothing.
+        clockLocked(dt_ms);
         cameraLocked(dt_ms);
         barsLocked();
         cardLocked(dt_ms);
@@ -907,7 +779,6 @@ private:
 
     static constexpr size_t   kMaxKarts   = 8;
     static constexpr int      kHz         = 50;
-    static constexpr double   kTickMs     = 1000.0 / kHz;
     static constexpr int      kMaxCatchUp = 5;
     static constexpr uint64_t kBatch      = 2;
     static constexpr uint64_t kSnapEvery  = 250;
@@ -1044,29 +915,8 @@ private:
     static Fixed voidAt()    { return F(-40); }        // where a fall outside ends, between rounds
     static Fixed lostAt()    { return F(-6); }
 
-    // ── the record ──────────────────────────────────────────────────────
+    // ── the trace ───────────────────────────────────────────────────────
 
-    bool takeLocked(const std::string& author, const std::string& line)
-    {
-        if (line.compare(0, 5, "tick ") != 0) flushTicksLocked();
-        if (!applyLocked(author, line)) return false;
-        recordLocked(author, line);
-        return true;
-    }
-    void flushTicksLocked()
-    {
-        if (m_tick <= m_recorded) return;
-        m_recorded = m_tick;
-        recordLocked(m_me, "tick " + std::to_string(m_tick));
-    }
-    void recordLocked(const std::string& author, const std::string& line)
-    {
-        if (!m_session) return;
-        Record_* rec = recordOf(m_record);
-        if (!rec) return;
-        const uint64_t seq = rec->Append(author, line);
-        if (seq != UINT64_MAX) m_seq = seq + 1;
-    }
     // The host's own lines for the lobby: a config -- a map made from a seed
     // carrying a new seed when `reroll`, or when it was not the map out, and
     // its own otherwise -- and a round, with its dice.
@@ -1078,27 +928,21 @@ private:
         return takeLocked(m_me, line);
     }
     bool roundLocked() { return takeLocked(m_me, "round " + std::to_string(rollLocked())); }
-    // A seed: rolled here, on the host, and recorded -- every runtime plays it.
+    // A seed: rolled here, on the host, and traced -- every runtime plays it.
     uint64_t rollLocked()
     {
         std::random_device rd;
         return ((static_cast<uint64_t>(rd()) << 32) ^ rd() ^ m_tick) | 1;
     }
 
-    // One line, as its author: what every runtime does with the record.
+    // One line, as its author: what every runtime does with the trace (a
+    // `tick` is Lockstep's, before it gets here).
     bool applyLocked(const std::string& author, const std::string& line)
     {
         std::istringstream in(line);
         std::string verb;
         in >> verb;
         const bool host = author == m_owner;
-        if (verb == "tick")
-        {
-            uint64_t n = 0;
-            in >> n;
-            while (m_tick < n) stepLocked();
-            return true;
-        }
         if (verb == "drive")
         {
             const int i = slotOf(author);
@@ -1124,22 +968,20 @@ private:
                     s.elims = s.deaths = s.last_elims = s.last_deaths = 0;
                     spawnLocked(i);
                     noteLocked(author + " drives kart " + std::to_string(i + 1));
-                    if (author == m_me && !m_judge && (m_sent_t || m_sent_s || m_sent_f))
-                        m_outbox.push_back(driveLine(m_sent_t, m_sent_s, m_sent_f));
+                    if (author == m_me && !m_authority && (m_sent_t || m_sent_s || m_sent_f))
+                        proposeLocked(driveLine(m_sent_t, m_sent_s, m_sent_f));
                     return true;
                 }
             return false;   // a full arena: watching
         }
-        if (!host) return false;   // the rest are the host's
         if (verb == "leave")
         {
-            std::string who;
-            in >> who;
-            const int i = slotOf(who);
+            const int i = slotOf(author);
             if (i < 0) return false;
             pitLocked(static_cast<size_t>(i));
             return true;
         }
+        if (!host) return false;   // the rest are the host's
         if (verb == "config")
         {
             // The lobby's only: a round's settings are locked until it ends.
@@ -1199,9 +1041,6 @@ private:
         for (Shot& s : m_shots) freeNode(s.node);
         m_shots.clear();
         for (Burst& b : m_bursts) endBurstLocked(b);
-        m_tick = m_recorded = m_seq = 0;
-        m_wall_ms = 0.0;
-        m_snaps.clear(); m_snap_tick = 0; m_snap_hash = "-"; m_differed_at = 0;
         m_keys = 0; m_sent_t = m_sent_s = m_sent_f = 0;
         m_eye_set = false; m_menu = MenuStart;
         m_phase = Lobby; m_end = 0; m_round_secs = 180;
@@ -1490,7 +1329,7 @@ private:
     void stepLocked()
     {
         Causal_* w = causal(m_world);
-        if (!w) { ++m_tick; return; }
+        if (!w) return;
         {
             std::lock_guard<std::recursive_mutex> lk(w->TreeMutex());
             for (Slot& s : m_slots)
@@ -1502,7 +1341,6 @@ private:
                         heatsLocked(s);
                     }
             w->Interact(dt());
-            ++m_tick;
             for (Slot& s : m_slots) if (alive(s)) groundLocked(s);
             if (m_phase != Lobby)
             {
@@ -1534,13 +1372,6 @@ private:
                                                                  : std::string("the round is over -- a draw"));
         }
         else if (m_phase == Results && static_cast<int64_t>(m_tick) >= m_end) lobbyLocked();
-        if (m_tick % kSnapEvery == 0)
-        {
-            m_snap_tick = m_tick;
-            m_snap_hash = hashLocked();
-            m_snaps.push_back({ m_snap_tick, m_snap_hash });
-            if (m_snaps.size() > 16) m_snaps.erase(m_snaps.begin());
-        }
     }
 
     // The bicycle, on the rows, under the tree's lock; a boost lifts the top
@@ -2060,7 +1891,7 @@ private:
      * burned, and big pale clouds in the gaps between the first branches,
      * each swelling as it rises and thinning to nothing (Scene3D::SetSmoke)
      * -- long after the fire is out. Drawn only, from the tree; not the
-     * record's, as the sparks are not.
+     * trace's, as the sparks are not.
      */
     struct Puff
     {
@@ -3066,7 +2897,7 @@ private:
         const int i = slotOf(m_me);
         if (m_phase == Lobby)
             t = "LOBBY   next: " + mapName(m_map) + ", " + clock(static_cast<int64_t>(m_round_secs) * kHz)
-              + (m_me.empty() ? std::string() : m_judge ? std::string("   yours to start") : "   " + m_owner + " starts it");
+              + (m_me.empty() ? std::string() : m_authority ? std::string("   yours to start") : "   " + m_owner + " starts it");
         else if (i < 0) t = m_me.empty() ? "kart" : "watching -- the arena is full";
         else
         {
@@ -3145,7 +2976,7 @@ private:
         };
         if (m_phase == Lobby && !m_me.empty())
         {
-            auto item = [&](int at, const std::string& text) { return (m_judge && m_menu == at ? "> " : "  ") + text; };
+            auto item = [&](int at, const std::string& text) { return (m_authority && m_menu == at ? "> " : "  ") + text; };
             rows.push_back("LOBBY  --  " + (m_session ? m_owner + "'s battle" : std::string("practice")));
             rows.push_back(item(MenuMap, "map      <  " + mapName(m_map) + (m_layout ? "  #" + std::to_string(m_layout % 10000) : std::string()) + "  >"));
             rows.push_back(item(MenuLength, "length   <  " + clock(static_cast<int64_t>(m_round_secs) * kHz) + "  >"));
@@ -3156,7 +2987,7 @@ private:
             rows.push_back(head);
             ranked(true);
             rows.push_back(" ");
-            rows.push_back(m_judge ? "[up/down] choose  [left/right] change  [Enter] start" : m_owner + " sets the next round");
+            rows.push_back(m_authority ? "[up/down] choose  [left/right] change  [Enter] start" : m_owner + " sets the next round");
         }
         else if (m_phase != Lobby && (m_board_held || m_phase == Results))
         {
@@ -3166,7 +2997,7 @@ private:
             std::snprintf(head, sizeof head, "   %-18s %6s %7s %5s", "driver", "elims", "deaths", "hp");
             rows.push_back(head);
             ranked(false);
-            if (m_judge && m_phase == Playing) { rows.push_back(" "); rows.push_back("[Esc] abandon the round"); }
+            if (m_authority && m_phase == Playing) { rows.push_back(" "); rows.push_back("[Esc] abandon the round"); }
         }
         // One width for every line (the font is a fixed cell), so the rows'
         // backgrounds make one panel.
@@ -3235,28 +3066,7 @@ private:
     {
         return std::to_string(a) + ", " + std::to_string(b) + ", " + std::to_string(c) + ", " + std::to_string(d);
     }
-    static bool parseLine(const std::string& msg, uint64_t& seq, std::string& author, std::string& line)
-    {
-        const size_t a = msg.find(' ');
-        const size_t b = a == std::string::npos ? a : msg.find(' ', a + 1);
-        if (b == std::string::npos) return false;
-        seq = std::strtoull(msg.c_str(), nullptr, 10);
-        author = msg.substr(a + 1, b - a - 1);
-        line = msg.substr(b + 1);
-        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-        return !line.empty();
-    }
     static Causal_* causal(ETCS::RID r) { return r ? ETCS::resolve_in_family<Causal_>("Causal", r) : nullptr; }
-    static Record_* recordOf(ETCS::RID rid)
-    {
-        ETCS::Entity* e = rid ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid) : nullptr;
-        return e ? static_cast<Record_*>(e->getInterfacePointer(ETCS::Buffer("Record"))) : nullptr;
-    }
-    static void callOn(ETCS::RID rid, const char* v, ETCS::Buffer& arg)
-    {
-        ETCS::Entity* e = rid ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid) : nullptr;
-        if (e) e->call(ETCS::Buffer(v), arg);
-    }
     // A verb's answer, "" when there is none.
     static std::string answer(ETCS::RID node, const char* name)
     {
@@ -3280,7 +3090,6 @@ private:
         return true;
     }
 
-    std::mutex m_mu;
     ETCS::RID  m_world = 0, m_camera = 0, m_card = 0;
     std::vector<Slot> m_slots;
 
@@ -3302,18 +3111,11 @@ private:
     uint64_t   m_burst_seq = 0;             // bursts so far: each one's tree is its own
     std::vector<BoardRow> m_board;
 
-    // The session, and its number (the streams'; Leave moves it on).
-    uint64_t    m_gen = 0;
-    std::string m_me, m_owner, m_id;
-    bool        m_judge = false, m_session = false;
-    ETCS::RID   m_record = 0, m_proposals = 0, m_presence = 0, m_hall = 0;
-    std::deque<std::string> m_outbox;
-    std::map<std::string, std::pair<uint64_t, std::string>> m_here;
-    std::string m_sent, m_advertised, m_note;
+    // The session (who, whose trace, the clock, the snapshots) is the
+    // families'; the battle's word to its page is its own.
+    std::string m_note;
 
-    // The battle: its clock, its round, its arena, its dice.
-    uint64_t m_tick = 0, m_recorded = 0, m_seq = 0;
-    double   m_wall_ms = 0.0;
+    // The battle: its round, its arena, its dice.
     Phase    m_phase = Lobby;
     int64_t  m_end = 0;
     uint32_t m_round_secs = 180;
@@ -3322,9 +3124,6 @@ private:
     uint64_t m_rng = 0x9E3779B97F4A7C15ull;
     std::vector<Shot> m_shots;
     std::vector<Pickup> m_pickups;
-    uint64_t m_snap_tick = 0, m_differed_at = 0;
-    std::string m_snap_hash = "-";
-    std::vector<std::pair<uint64_t, std::string>> m_snaps;
 
     // This runtime's own: its keys, its eye, its card, its menu, its board.
     unsigned m_keys = 0;

@@ -108,23 +108,28 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 ## How it stays one battle
 
 Every tab steps its own copy of the world -- the same arena script built it -- from the host's
-record (`KartBattle.h`): `join`, `drive <pedal> <wheel> <trigger>`, `tick <n>`, and the host's
-`leave`, `config <map> <secs> [<layout seed>]`, `round <seed>`, `abandon` and `give` lines, in one
-order. A guest's keys go to the host's proposals ledger and come back as lines of the record, a
-round trip late; the host's own frame edge is the battle's clock. The world is marked driven
+trace (`KartBattle.h`): `join`, `drive <pedal> <wheel> <trigger>`, `leave`, `tick <n>`, and the
+host's `config <map> <secs> [<layout seed>]`, `round <seed>`, `abandon` and `give` lines, in one
+order. A guest's keys go to the host's battle on the guest's own seat -- a stream into it, the
+only way in the room publishes besides its trace -- and come back as lines of the trace, a round
+trip late; the seat's stream ending is its `leave`. The host's own frame edge is the battle's
+clock. The world is marked driven
 (`Scene3D.SetDriven`), so no picture steps it. The karts' rows are the fixed-point Causal rows, and
 so is everything the battle adds to them -- the ground's height under each kart, the shots in
 flight, the damage, the power-ups' dice (seeded by the `round` line), a random map's layout
 (seeded by its `config` line) -- so two tabs fed the same lines are the same battle to the bit.
-Each tab advertises a hash of the battle every five seconds with its presence; a guest whose
-battle is not the host's at the same tick says so.
+Every five seconds the host keeps a hash of the battle as a line of its trace; a guest reaching
+that line whose own battle is not the host's says so. None of that session is the kart's: it is the
+ontology's (`Trace` -> `Lockstep`, and `Present`), the templates the page runs are
+NetworkProvider's (`session_host.etcs`, `session_join.etcs` and their streams), and so is the page's
+half (`session_page.js`) -- golf's match is the same session.
 
 The karts are solid spheres to everything (`etcs_causal_constraints.md` §13): they bump each other,
 the walls and the maps' blocks with the family's own contact, and a shot stops on a wall or a
 block. The ground is not a solid: a map's ramps, hills, pits and decks are a height the battle
 keeps each kart at, by how high the kart is (`KartArena.h`). A map is data; the battle draws the
 one in play with pools of blocks, wedges, slabs, domes, pads and springs made at boot, so a change
-of map is one line of the record. `battle.Faults()` says what is wrong with a map -- a pad off
+of map is one line of the trace. `battle.Faults()` says what is wrong with a map -- a pad off
 one piece of ground, a block across a low ground's edge, low ground with no way out, a spawn in
 lava, more of a thing than its pool draws -- or `none`. What you see of a kart is a body on four tyres, tilted to the
 ground, and an HP bar. The tyres are the body's members, anchored in its frame, so they go where it

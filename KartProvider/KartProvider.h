@@ -12,7 +12,7 @@
 // ── KartBattle ───────────────────────────────────────────────────────────────
 // The world, the camera on it and the card on the camera are RenderProvider
 // nodes; the arena's walls, maps and pool are Scene3D nodes the course made and
-// handed over. See KartBattle.h for the record's lines and what a key does.
+// handed over. See KartBattle.h for the trace's lines and what a key does.
 
 DEFINE_WORK_FUNC(KartBattle, Create)                                 { (void)ctx; (void)data; self.Create(); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindWorld,  (ETCS::RID, rid))    { (void)ctx; self.BindWorld(rid); }
@@ -121,24 +121,23 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddGroundNode, (ETCS::RID, node))     { (void
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddMarkNode, (ETCS::RID, node))       { (void)ctx; self.AddMarkNode(node); }
 // The arena is made: the first map out, the lobby open.
 DEFINE_WORK_FUNC(KartBattle, Ready) { (void)ctx; (void)data; self.Ready(); }
-// Practice <name> -- alone, its own judge, nothing recorded.
+// Practice <name> -- alone, the authority of a trace nobody follows.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Practice, (std::string, name))   { (void)ctx; self.Practice(name); }
-// Host <record> <proposals> <presence> <name> <hall> <id>
-DEFINE_WORK_FUNC_TYPED(KartBattle, Host, (ETCS::RID, record), (ETCS::RID, proposals), (ETCS::RID, presence),
-                       (std::string, name), (ETCS::RID, hall), (std::string, id))
+// Host <name> <hall> <id> -- the authority, listed in the hall under `id`.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Host, (std::string, name), (ETCS::RID, hall), (std::string, id))
 {
     (void)ctx;
-    self.Host(record, proposals, presence, name, hall, id);
+    self.Host(name, hall, id);
 }
-// Join <presence> <name> <owner>
-DEFINE_WORK_FUNC_TYPED(KartBattle, Join, (ETCS::RID, presence), (std::string, name), (std::string, owner))
+// Join <name> <owner> -- a mirror of `owner`'s battle, seated as `name`.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Join, (std::string, name), (std::string, owner))
 {
     (void)ctx;
-    self.Join(presence, name, owner);
+    self.Join(name, owner);
 }
 DEFINE_WORK_FUNC(KartBattle, Leave) { (void)ctx; (void)data; self.Leave(); }
 DEFINE_WORK_FUNC(KartBattle, Tick)  { (void)ctx; (void)data; self.Tick(); }
-// The host's lobby and round, each a line of the record (refused on a guest,
+// The host's lobby and round, each a line of the trace (refused on a guest,
 // and the settings refused outside the lobby): Configure <map> <seconds>,
 // Reroll (a new seed for a map made from one), StartRound, Abandon,
 // Give <driver> <weapon>.
@@ -162,7 +161,7 @@ DEFINE_WORK_FUNC(KartBattle, Give)
     data.writeString(self.Give(who, weapon) ? "ok" : "refused");
 }
 // SetInvert <on> -- this runtime's wheel keys swapped (A right, D left): the
-// page's own setting, no line of the record.
+// page's own setting, no line of the trace.
 DEFINE_WORK_FUNC_TYPED(KartBattle, SetInvert, (int32_t, on)) { (void)ctx; self.SetInvert(on != 0); }
 // Key <code> <down> -- a GLFW key, for a test or a page.
 // Look <yaw> <pitch> -- this runtime's eye swung this far round its kart, to
@@ -192,7 +191,7 @@ DEFINE_WORK_FUNC(KartBattle, Layout)    { (void)ctx; data.reset(); data.writeStr
 DEFINE_WORK_FUNC(KartBattle, Faults)    { (void)ctx; data.reset(); data.writeString(self.Faults().c_str()); }
 // "<tick> <hash>": the battle now.
 DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeString(self.Hash().c_str()); }
-// "<tick> <hash>": the last snapshot, what presence carries.
+// "<tick> <hash>": the last snapshot, what the trace's `hash` lines carry.
 DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
 // Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
 // <slide>", or "-".
@@ -200,62 +199,31 @@ DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> wh
 // Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
 // rope laid behind it, the segments drawn and the darkest (0..1); or "-".
 DEFINE_WORK_FUNC(KartBattle, Tyres)     { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Tyres(who).c_str()); }
-// Run <ticks> -- the judge's clock by hand: stepped and recorded.
+// Run <ticks> -- the authority's clock by hand: stepped and kept.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Run, (uint32_t, ticks)) { (void)ctx; self.Run(ticks); }
 DEFINE_WORK_FUNC(KartBattle, Note)      { (void)ctx; data.reset(); data.writeString(self.Note().c_str()); }
+// Who is here: whose stream into or out of this battle is open, one a line.
+DEFINE_WORK_FUNC(KartBattle, Here)      { (void)ctx; data.reset(); data.writeString(self.Here().c_str()); }
 DEFINE_WORK_FUNC(KartBattle, Delete)    { (void)ctx; (void)data; data.writeString(self.Delete() ? "deleted" : "FAILED"); }
 
-// The session's streams: each ends with its session (KartBattle.h, "each
-// stream is its session's"), as well as when its other end goes.
+// The session's streams: each ends with its session (ontology/Trace.h, "a
+// trace is a session's"), as well as when its other end goes. The bodies are
+// the family's (ontology/TraceBase.h); the verbs are this type's.
 //
-// battle.Emit() -> proposals.Take() -- a guest's lines, for as long as the
-// session lasts.
-DEFINE_STREAM_FUNC_PRODUCE_STANDING(KartBattle, Emit)
+// battle.Trace(<from>) -> mirror.Follow() -- this battle's lines, from `from` on.
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(KartBattle, Trace)
 {
     (void)data;
-    const uint64_t gen = self.Generation();
-    std::string line;
-    bool stale = false;
-    while (!ctx.isInterrupted() && !ctx.isTerminated() && !stream.readerGone())
-    {
-        if (!self.nextEmit(gen, line, stale))
-        {
-            if (stale) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-        if (!stream.writeMessage(line)) break;
-    }
+    uint64_t from = 0;
+    { ETCS::Buffer cfg = stream.getConfig(); cfg >> from; }
+    etcs_trace_produce(self, stream, ctx, from);
 }
-// record.Follow(0) -> battle.Absorb() -- the record, applied in its order.
-DEFINE_STREAM_FUNC_CONSUME(KartBattle, Absorb)
-{
-    (void)data;
-    const uint64_t gen = self.Generation();
-    std::string m;
-    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20))
-        if (!self.Absorb(gen, m)) return;
-    ETCS_LOG("KartBattle", "Absorb: the record ended.");
-    self.RecordEnded(gen);
-}
-// proposals.Follow(0) -> battle.Judge() -- the host judging every line proposed.
-DEFINE_STREAM_FUNC_CONSUME(KartBattle, Judge)
-{
-    (void)data;
-    const uint64_t gen = self.Generation();
-    std::string m;
-    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20))
-        if (!self.JudgeLine(gen, m)) return;
-}
-// presence.Watch() -> battle.Roster() -- the listing, whole, on every change.
-DEFINE_STREAM_FUNC_CONSUME(KartBattle, Roster)
-{
-    (void)data;
-    const uint64_t gen = self.Generation();
-    std::string listing;
-    while (!ctx.isInterrupted() && stream.readMessage(listing))
-        if (!self.Roster(gen, listing)) return;
-}
+// host.Trace(0) -> battle.Follow() -- a mirror of the host's battle.
+DEFINE_STREAM_FUNC_CONSUME(KartBattle, Follow) { (void)data; etcs_trace_follow(self, stream, ctx); }
+// battle.Emit() -> host.Take() -- this runtime's seat in the host's battle.
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(KartBattle, Emit) { (void)data; etcs_trace_emit(self, stream, ctx); }
+// ... -> battle.Take() -- a guest's seat, its lines taken in the order they come.
+DEFINE_STREAM_FUNC_CONSUME(KartBattle, Take) { (void)data; etcs_trace_take(self, stream, ctx); }
 // main.ProducePointer() -> battle.ConsumePointer() -- the pointer: a drag with
 // the right button looks round the kart (KartBattle::Pointer).
 DEFINE_STREAM_FUNC_CONSUME(KartBattle, ConsumePointer)
