@@ -1,0 +1,20 @@
+#!/usr/bin/env etcs
+# A ball: a sphere, solid and free, coloured by its slot (the match's); and
+# its shadow, a dark disc the match lays on whatever is under it.
+#   run golf_ball.etcs world=<Scene3D> game=<GolfMatch> ball_shape=<Mesh> disc=<Mesh>
+requires world [Drawable3D]
+requires game [GolfMatch]
+requires ball_shape [Mesh]
+requires disc [Mesh]
+world.spawn(RenderProvider::Scene3D ball)
+ball.Create(0.3, 0.3, 0.3)
+ball.SetMesh(@ball_shape)
+ball.SetShape(sphere)
+ball.SetSolid(0.45, 0.1)
+ball.SetDamping(0.05)
+world.spawn(RenderProvider::Scene3D shadow)
+shadow.Create(0.36, 0.01, 0.36)
+shadow.SetMesh(@disc)
+shadow.SetColor(0.05, 0.14, 0.07, 1.0)
+shadow.SetAnchored(1)
+game.AddBall(@ball @shadow)

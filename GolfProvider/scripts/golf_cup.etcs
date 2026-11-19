@@ -1,6 +1,7 @@
 #!/usr/bin/env etcs
 # A CUP: a container under a gap in the green, its own floor inside it, and
-# the flag over it. Made and placed by the hole (0.75 under the green's top);
+# the flag over it. Made once, and placed by the match under the cut in the
+# hole in play's green (0.75 under its top);
 # what makes it a cup is here:
 #
 #   its space reaches 0.6 about its centre   the floor fits in it, and a ball
@@ -14,7 +15,7 @@
 #                                            though it stands outside its
 #                                            space (fit leaves the anchored)
 #
-#   run golf_cup.etcs part=<a Scene3D, made 0.7 x 0.6 x 0.7 and placed>
+#   run golf_cup.etcs part=<a Scene3D, made 0.7 x 0.6 x 0.7>
 requires part [Drawable3D]
 part.SetVisible(0)
 part.SetAnchored(1)

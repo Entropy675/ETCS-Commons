@@ -1,0 +1,47 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE COURSE'S WORLD: its space, the pools the match lays each hole with, and
+# the courses themselves -- everything a page or a window starts a match from,
+# the same on every runtime that will share one.
+#
+#   run GolfProvider/scripts/golf_world.etcs anchor=world game=game
+#
+# What makes it golf is four statements of the Causal family
+# (ontology/etcs_causal_constraints.md §11-§13) and one of RenderProvider's:
+#
+#   the anchor's space has a field     SetGravity -- every ball falls
+#   and a speed of light               SetLightSpeed -- nothing moves faster
+#   the greens and walls are solid     anchored, sized and placed by the match
+#                                      for the hole in play; the balls are
+#                                      solid and free, and meet each other
+#   the cup is a space of its own      a ball that drops in fits it, and fit
+#                                      taking it in is what holed means
+#   the world is driven                SetDriven: only the match steps it, from
+#                                      its trace -- never a picture
+#
+# A course is data (golf_course_*.etcs): the match lays the hole in play from
+# the pools made here (GolfMatch::holeLocked), so a new hole is a tick of the
+# trace, not a script -- and a course made from a seed is the same
+# everywhere. Parts are run by bare name (a script's own folder first: the
+# same path in a window and on a page).
+
+requires anchor [Drawable3D]
+requires game [GolfMatch]
+
+# The match steps this world and takes its balls back out of the cup into it.
+game.BindWorld(@anchor)
+anchor.SetGravity(0.0, -9.8, 0.0)
+anchor.SetSpace(500.0)
+# The speed of light here: 16 a second, a little over the hardest shot's 12.
+anchor.SetLightSpeed(16.0)
+anchor.SetDriven(1)
+
+run golf_pool.etcs world=anchor game=game
+
+# ── the courses, in the order the lobby lists them ──────────────────────────
+run golf_course_classic.etcs game=game
+run golf_course_boosters.etcs game=game
+run golf_course_terraces.etcs game=game
+game.AddRandomCourse(random)
+game.Ready()

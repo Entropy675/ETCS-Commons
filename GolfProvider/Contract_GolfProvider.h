@@ -1,7 +1,7 @@
 #ifndef GOLFPROVIDER_CONTRACT__
 
 // OS invariant: one concrete type, no platform split.
-#include "GolfProvider/GolfGame.h"
+#include "GolfProvider/GolfMatch.h"
 
 #define GOLFPROVIDER_CONTRACT__
 

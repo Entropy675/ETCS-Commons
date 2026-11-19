@@ -1,0 +1,9 @@
+#!/usr/bin/env etcs
+# Four pads of the pool. `run golf_pads.etcs world=<Scene3D> game=<GolfMatch> dart=<Mesh>`
+requires world [Drawable3D]
+requires game [GolfMatch]
+requires dart [Mesh]
+run golf_pad.etcs world=world game=game dart=dart
+run golf_pad.etcs world=world game=game dart=dart
+run golf_pad.etcs world=world game=game dart=dart
+run golf_pad.etcs world=world game=game dart=dart

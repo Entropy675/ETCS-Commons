@@ -1,0 +1,9 @@
+#!/usr/bin/env etcs
+# Three springs of the pool. `run golf_springs.etcs world=<Scene3D> game=<GolfMatch> disc=<Mesh> dart=<Mesh>`
+requires world [Drawable3D]
+requires game [GolfMatch]
+requires disc [Mesh]
+requires dart [Mesh]
+run golf_spring.etcs world=world game=game disc=disc dart=dart
+run golf_spring.etcs world=world game=game disc=disc dart=dart
+run golf_spring.etcs world=world game=game disc=disc dart=dart

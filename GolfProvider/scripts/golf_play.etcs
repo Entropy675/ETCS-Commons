@@ -1,54 +1,56 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# THE GAME ON A COURSE: the card on the camera and the hand on the club. Run by
-# a course script with its pieces (golf_course.etcs), after its holes have
-# each given the game a cup and a tee (AddHole):
+# THE MATCH ON A CAMERA: the card, the frame counter, how to play and the
+# little board, and the match bound to the eye it steers (on this runtime's
+# own ball) -- the same for a window and a page.
 #
-#   run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye ball=ball arrow=arrow shadow=shadow under=under
+#   run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye
 #
-# The pointer is the session's to wire (golf_pointer.etcs): a window, or a
-# test playing strokes with game.Press/Drag/Release, or nothing at all.
-# Then: drag the ball back to aim (the arrow is the shot, opposite the drag),
-# let go to putt, or press the right button to put the pull down; drag
-# anywhere else to walk the camera round the ball; the wheel brings it in and
-# out; R starts the round again and N goes on to the next hole. The camera's
-# pitch is the loft: look down for a putt, level for a lob.
+# Then: drag your ball back to aim (the arrow is the shot, opposite the drag)
+# and let go to putt; drag anywhere else, or with the right button, to walk
+# the camera round the ball; the wheel brings it in and out. E arms a power,
+# and a left press and release puts it down where the pointer is; letting go
+# of the right button while the left holds a pull or a power puts it down.
+# The camera's pitch is the loft: look down for a putt, level for a lob.
 
-requires game [GolfGame]
+requires game [GolfMatch]
 requires world [Drawable3D]
 requires eye [Camera]
-requires ball [Drawable3D]
-requires arrow [Drawable3D]
-requires shadow [Drawable3D]
-requires under [Drawable3D]
 
-# The card, and how to play, drawn on the camera's frame.
 eye.spawn(RenderProvider::TextLabel card)
-card.Create(24)
-card.SetText(Hole 1 of 3   Strokes: 0   Round: 0)
+card.Create(20)
+card.SetText(golf)
 card.SetPosition(16, 16)
 card.SetColor(1.0, 1.0, 0.85, 1.0)
 card.SetBackground(0.0, 0.0, 0.0, 0.45)
 card.SetPadding(6)
 card.SetOrder(11)
+# The frame counter, top right: this runtime's pictures a second.
+eye.spawn(RenderProvider::TextLabel fps)
+fps.Create(16)
+fps.SetText(-- fps)
+fps.SetPosition(950, 50)
+fps.SetColor(0.75, 0.9, 0.8, 1.0)
+fps.SetBackground(0.0, 0.0, 0.0, 0.35)
+fps.SetPadding(4)
+fps.SetOrder(11)
 eye.spawn(RenderProvider::TextLabel howto)
 howto.Create(16)
-howto.SetText(pull: shoot, right click: cancel / drag: look / wheel: zoom / N: next / R: reset)
+howto.SetText(drag your ball: shoot / drag or right-drag: look / E then click: power / let go of right: cancel / wheel: zoom)
 howto.SetPosition(16, 724)
 howto.SetColor(0.75, 0.9, 0.8, 1.0)
 howto.SetBackground(0.0, 0.0, 0.0, 0.35)
 howto.SetPadding(4)
 howto.SetOrder(11)
+# The little board, top right under the frame counter: eight rows.
+run golf_board.etcs eye=eye game=game
+run golf_board.etcs eye=eye game=game
 
-game.Create()
 game.BindWorld(@world)
-game.BindBall(@ball)
-game.BindArrow(@arrow)
-game.BindShadow(@shadow)
-game.BindBallShadow(@under)
 game.BindCamera(@eye)
-game.BindHud(@card)
+game.BindCard(@card)
+game.BindFps(@fps)
 game.SetPower(3.0, 12.0)
 # Looking down 55 degrees: the pull's plane tips the same 55 from upright, so
 # a straight-down drag leaves at 35 degrees -- a chip. Lower is loftier.

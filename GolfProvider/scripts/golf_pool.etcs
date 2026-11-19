@@ -1,0 +1,77 @@
+#!/usr/bin/env etcs
+# THE POOLS: everything a hole is laid with, made once and parked until the
+# match needs it (GolfMatch: the hole in play, what powers put down on it).
+#   run golf_pool.etcs world=<Scene3D> game=<GolfMatch>
+requires world [Drawable3D]
+requires game [GolfMatch]
+
+world.spawn(RenderProvider::Mesh ball_shape)
+ball_shape.Create()
+ball_shape.Sphere(12)
+world.spawn(RenderProvider::Mesh disc_shape)
+disc_shape.Create()
+disc_shape.Cylinder(16)
+world.spawn(RenderProvider::Mesh dart)
+dart.Create()
+dart.Arrow(0.3, 0.3)
+
+# Eight balls, each with its shadow.
+run golf_balls.etcs world=world game=game ball_shape=ball_shape disc=disc_shape
+run golf_balls.etcs world=world game=game ball_shape=ball_shape disc=disc_shape
+# Thirty-two slabs: the most a hole has, and what powers put down on it.
+run golf_slabs.etcs world=world game=game
+run golf_slabs.etcs world=world game=game
+run golf_slabs.etcs world=world game=game
+run golf_slabs.etcs world=world game=game
+
+# The cup: a container under the gap in the green, its floor and flag inside.
+world.spawn(RenderProvider::Scene3D cup)
+cup.Create(0.7, 0.6, 0.7)
+run golf_cup.etcs part=cup
+game.AddCupNode(@cup)
+# The tee's mark: wide enough for every ball side by side.
+world.spawn(RenderProvider::Scene3D tee)
+tee.Create(3.4, 0.02, 0.6)
+tee.SetColor(0.85, 0.85, 0.8, 1.0)
+tee.SetAnchored(1)
+game.AddTeeNode(@tee)
+
+# Eight pads and six springs: the kart's boosters, the course's and the powers'.
+run golf_pads.etcs world=world game=game dart=dart
+run golf_pads.etcs world=world game=game dart=dart
+run golf_springs.etcs world=world game=game disc=disc_shape dart=dart
+run golf_springs.etcs world=world game=game disc=disc_shape dart=dart
+# Six spots for powers.
+run golf_spots.etcs world=world game=game
+run golf_spots.etcs world=world game=game
+# Twenty-four puffs the powers draw with: black holes, wind, tornadoes, lightning.
+run golf_puffs.etcs world=world game=game ball_shape=ball_shape
+run golf_puffs.etcs world=world game=game ball_shape=ball_shape
+run golf_puffs.etcs world=world game=game ball_shape=ball_shape
+
+# ── this runtime's own: the arrow a pull draws, and where a power will go ───
+world.spawn(RenderProvider::Scene3D arrow)
+arrow.Create(0.15, 1.0, 0.15)
+arrow.SetMesh(@dart)
+arrow.SetAnchored(1)
+arrow.SetVisible(0)
+world.spawn(RenderProvider::Scene3D arrow_shadow)
+arrow_shadow.Create(0.15, 1.0, 0.02)
+arrow_shadow.SetMesh(@dart)
+arrow_shadow.SetColor(0.05, 0.14, 0.07, 1.0)
+arrow_shadow.SetAnchored(1)
+arrow_shadow.SetVisible(0)
+game.BindArrow(@arrow @arrow_shadow)
+world.spawn(RenderProvider::Scene3D ghost)
+ghost.Create(2.0, 0.05, 2.0)
+ghost.SetMesh(@disc_shape)
+ghost.SetColor(0.55, 0.85, 1.0, 1.0)
+ghost.SetGlow(0.9)
+ghost.SetAnchored(1)
+world.spawn(RenderProvider::Scene3D ghost_arrow)
+ghost_arrow.Create(0.3, 1.6, 0.3)
+ghost_arrow.SetMesh(@dart)
+ghost_arrow.SetColor(0.55, 0.85, 1.0, 1.0)
+ghost_arrow.SetGlow(0.9)
+ghost_arrow.SetAnchored(1)
+game.BindGhost(@ghost @ghost_arrow)

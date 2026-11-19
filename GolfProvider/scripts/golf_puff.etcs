@@ -1,0 +1,13 @@
+#!/usr/bin/env etcs
+# A puff the powers draw with: a soft sphere, glowing or smoke as the match
+# says (Scene3D.SetGlow / SetSmoke), held, not solid.
+#   run golf_puff.etcs world=<Scene3D> game=<GolfMatch> ball_shape=<Mesh>
+requires world [Drawable3D]
+requires game [GolfMatch]
+requires ball_shape [Mesh]
+world.spawn(RenderProvider::Scene3D puff)
+puff.Create(1.0, 1.0, 1.0)
+puff.SetMesh(@ball_shape)
+puff.SetGlow(1.0)
+puff.SetAnchored(1)
+game.AddPuffNode(@puff)

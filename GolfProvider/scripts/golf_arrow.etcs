@@ -1,0 +1,11 @@
+#!/usr/bin/env etcs
+# An arrow of a pad or a spring: bright, flat, held, hidden until its pad is out
+# (the kart's own, KartProvider/scripts/kart_arrow.etcs, in golf's colours).
+#   run golf_arrow.etcs arrow=<Scene3D> dart=<Mesh>
+requires arrow [Drawable3D]
+requires dart [Mesh]
+arrow.Create(0.6, 0.6, 0.6)
+arrow.SetMesh(@dart)
+arrow.SetColor(0.35, 0.95, 1.0, 1.0)
+arrow.SetAnchored(1)
+arrow.SetVisible(0)
