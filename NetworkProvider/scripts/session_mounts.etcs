@@ -1,0 +1,26 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── THE SESSION'S SCRIPTS, for a page that hosts or joins one ───────────────
+#
+#     run NetworkProvider/scripts/session_mounts.etcs tree=tree
+#
+# The scripts each at the path a page stages it under (its OS path), as a
+# game's own mounts list its own; run once from each game's mounts, inside its
+# prefix. The hall's are
+# chess's: the hall is the site's name server for every game.
+
+requires tree [FileHtmlPage]
+
+# The page's half of the session: what every game's page between runtimes does
+# the same (www/session_page.js), beside the page that loads it.
+tree.MountFile(session_page.js ACE_ROOT/modules/NetworkProvider/scripts/www/session_page.js)
+
+tree.MountFile(NetworkProvider/scripts/session_host.etcs ACE_ROOT/modules/NetworkProvider/scripts/session_host.etcs)
+tree.MountFile(NetworkProvider/scripts/session_join.etcs ACE_ROOT/modules/NetworkProvider/scripts/session_join.etcs)
+tree.MountFile(NetworkProvider/scripts/session_leave.etcs ACE_ROOT/modules/NetworkProvider/scripts/session_leave.etcs)
+tree.MountFile(NetworkProvider/scripts/session_close.etcs ACE_ROOT/modules/NetworkProvider/scripts/session_close.etcs)
+tree.MountFile(NetworkProvider/scripts/session_follow.etcs ACE_ROOT/modules/NetworkProvider/scripts/session_follow.etcs)
+tree.MountFile(NetworkProvider/scripts/session_emit.etcs ACE_ROOT/modules/NetworkProvider/scripts/session_emit.etcs)
+tree.MountFile(ChessProvider/scripts/chess_hall.etcs ACE_ROOT/modules/ChessProvider/scripts/chess_hall.etcs)
+tree.MountFile(ChessProvider/scripts/chess_mirror.etcs ACE_ROOT/modules/ChessProvider/scripts/chess_mirror.etcs)
