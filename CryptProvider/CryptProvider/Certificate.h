@@ -11,8 +11,9 @@
  *
  *   AddEpoch <hex>                    an epoch it is valid for; before Issue
  *   Issue <keypair> <role> <subject>  signed by that keypair; the subject is a
- *                                     Keypair RID or a public key in hex. A root
- *                                     is its own subject; nothing else may be.
+ *                                     Keypair RID or a public key in hex. Only a
+ *                                     root is its own subject; a root naming
+ *                                     another root's key attests that root.
  *   Verify [<issuer cert>]            the signature under the issuer key it names;
  *                                     with the issuer's certificate, also that
  *                                     certificate's subject, and that its role
@@ -50,9 +51,9 @@ public:
         ETCS::sig::Key sub{}, iss{};
         if (!subjectKey(subject, sub)) { ETCS_LOG("Certificate", "Issue: subject '" << subject << "' is neither a Keypair nor a key."); return false; }
         by->PublicBytes(iss.data());
-        if ((r == ETCS::sig::Role::Root) != (sub == iss))
+        if (r != ETCS::sig::Role::Root && sub == iss)
         {
-            ETCS_LOG("Certificate", "Issue: a root is its own subject, and nothing else may be.");
+            ETCS_LOG("Certificate", "Issue: only a root is its own subject.");
             return false;
         }
         std::lock_guard<std::mutex> l(mu_);
@@ -74,7 +75,7 @@ public:
         if (etcs_crypt::mc::crypto_ed25519_check(c.signature, c.issuer.data(),
                 reinterpret_cast<const uint8_t*>(msg.data()), msg.size()) != 0)
             return false;
-        if (c.role == ETCS::sig::Role::Root && c.subject != c.issuer) return false;
+        if (c.role != ETCS::sig::Role::Root && c.subject == c.issuer) return false;
         if (!issuer_cert) return true;
         const Certificate* up = etcs_crypt::as<Certificate>(issuer_cert);
         ETCS::sig::Certificate u;
