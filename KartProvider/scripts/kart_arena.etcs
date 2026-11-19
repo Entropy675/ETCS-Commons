@@ -36,27 +36,27 @@ anchor.SetDriven(1)
 
 # ── the ground: not solid, a picture of where to drive ─────────────────────
 anchor.spawn(RenderProvider::Scene3D ground)
-ground.Create(136.0, 0.5, 136.0)
+ground.Create(200.0, 0.5, 200.0)
 ground.SetPosition(0.0, -0.25, 0.0)
 ground.SetAnchored(1)
 battle.AddGroundNode(@ground)
 
-# ── the walls: 128 by 128 inside and four high, the same for every map ─────
+# ── the walls: 192 by 192 inside and four high, the same for every map ─────
 # (KartArena::Half and WallTop: the battle keeps a kart inside them that is
 # below their top, and one that goes over -- off a spring at speed, a jump,
 # a storey's edge -- is out.)
 anchor.spawn(RenderProvider::Scene3D wall_n)
-wall_n.Create(130.0, 4.0, 1.0)
-wall_n.SetPosition(0.0, 2.0, 64.5)
+wall_n.Create(194.0, 4.0, 1.0)
+wall_n.SetPosition(0.0, 2.0, 96.5)
 anchor.spawn(RenderProvider::Scene3D wall_s)
-wall_s.Create(130.0, 4.0, 1.0)
-wall_s.SetPosition(0.0, 2.0, -64.5)
+wall_s.Create(194.0, 4.0, 1.0)
+wall_s.SetPosition(0.0, 2.0, -96.5)
 anchor.spawn(RenderProvider::Scene3D wall_e)
-wall_e.Create(1.0, 4.0, 130.0)
-wall_e.SetPosition(64.5, 2.0, 0.0)
+wall_e.Create(1.0, 4.0, 194.0)
+wall_e.SetPosition(96.5, 2.0, 0.0)
 anchor.spawn(RenderProvider::Scene3D wall_w)
-wall_w.Create(1.0, 4.0, 130.0)
-wall_w.SetPosition(-64.5, 2.0, 0.0)
+wall_w.Create(1.0, 4.0, 194.0)
+wall_w.SetPosition(-96.5, 2.0, 0.0)
 run kart_wall.etcs part=wall_n battle=battle
 run kart_wall.etcs part=wall_s battle=battle
 run kart_wall.etcs part=wall_e battle=battle

@@ -1,0 +1,22 @@
+#!/usr/bin/env etcs
+# Sixteen sparks (kart_spark.etcs).
+#   run kart_sparks.etcs world=<Scene3D> battle=<KartBattle> ember=<Mesh>
+requires world [Drawable3D]
+requires battle [KartBattle]
+requires ember [Mesh]
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember
+run kart_spark.etcs world=world battle=battle ember=ember

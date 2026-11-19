@@ -1,7 +1,7 @@
 #!/usr/bin/env etcs
-# THE BATTLE ON A CAMERA: the card, how to play, the lobby's menu and the
-# board Tab holds up, and the battle bound to the eye it steers (behind this
-# runtime's own kart) -- the same for a window and a page.
+# THE BATTLE ON A CAMERA: the card, the frame counter, how to play, the
+# lobby's menu and the board Tab holds up, and the battle bound to the eye it
+# steers (behind this runtime's own kart) -- the same for a window and a page.
 #   run KartProvider/scripts/kart_play.etcs battle=battle world=world eye=eye
 requires battle [KartBattle]
 requires world [Drawable3D]
@@ -15,6 +15,15 @@ card.SetColor(1.0, 1.0, 0.85, 1.0)
 card.SetBackground(0.0, 0.0, 0.0, 0.45)
 card.SetPadding(6)
 card.SetOrder(11)
+# The frame counter, top right: this runtime's pictures a second.
+eye.spawn(RenderProvider::TextLabel fps)
+fps.Create(16)
+fps.SetText(-- fps)
+fps.SetPosition(950, 50)
+fps.SetColor(0.75, 0.9, 0.8, 1.0)
+fps.SetBackground(0.0, 0.0, 0.0, 0.35)
+fps.SetPadding(4)
+fps.SetOrder(11)
 eye.spawn(RenderProvider::TextLabel howto)
 howto.Create(16)
 howto.SetText(W go / S brake / A D steer / Space fire / Q E look / Tab scores / Esc abandon (host))
@@ -34,3 +43,4 @@ run kart_board.etcs eye=eye battle=battle
 battle.BindWorld(@world)
 battle.BindCamera(@eye)
 battle.BindCard(@card)
+battle.BindFps(@fps)

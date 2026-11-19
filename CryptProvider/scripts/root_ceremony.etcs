@@ -1,0 +1,173 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# THE ROOT CEREMONY: ACE's half of the chain, made once, on a machine with
+# nothing on it but etcs (`ace bundle`). Three steps: the super-root, the active
+# key it certifies, and under the active key the three keys that act for ACE --
+# the build server's (MARKETPLACE_KEY), the release machine's (RELEASE_KEY) and
+# the site registrar's (REGISTRAR_KEY), each the public key its loader or
+# Keypair already holds. Then the root and the active key are each split 3 of 5
+# to five custodians, every custodian and PUBLIC_DIR get the certificates, and
+# both keys are forgotten.
+#
+#   PUBLIC_DIR/{root,active,marketplace,release,registrar}.cert
+#   each custodian: root.shard.private, active.shard.private, the same certificates
+#
+# root.cert is what `ace pin` takes; any three custodians rebuild either key
+# (certify.etcs). Each custodian's medium is mounted at its path below: edit the
+# paths, not the shape. Every custodian is one FileRelation landing on one
+# Custody, listed in one Embassy, and Open is the line that lets anything out.
+# A share never appears in a line: Advertise names the Shard, and the relation
+# fills it in at the file.
+
+spawn NetworkProvider::Embassy embassy
+
+spawn CryptProvider::Custody a
+spawn NetworkProvider::FileRelation to_a
+to_a.Root(/media/custodian-a)
+to_a.Target(Directory)
+to_a.Activate(@a)
+embassy.Advertise(custodian-a file @to_a)
+
+spawn CryptProvider::Custody b
+spawn NetworkProvider::FileRelation to_b
+to_b.Root(/media/custodian-b)
+to_b.Target(Directory)
+to_b.Activate(@b)
+embassy.Advertise(custodian-b file @to_b)
+
+spawn CryptProvider::Custody c
+spawn NetworkProvider::FileRelation to_c
+to_c.Root(/media/custodian-c)
+to_c.Target(Directory)
+to_c.Activate(@c)
+embassy.Advertise(custodian-c file @to_c)
+
+spawn CryptProvider::Custody d
+spawn NetworkProvider::FileRelation to_d
+to_d.Root(/media/custodian-d)
+to_d.Target(Directory)
+to_d.Activate(@d)
+embassy.Advertise(custodian-d file @to_d)
+
+spawn CryptProvider::Custody e
+spawn NetworkProvider::FileRelation to_e
+to_e.Root(/media/custodian-e)
+to_e.Target(Directory)
+to_e.Activate(@e)
+embassy.Advertise(custodian-e file @to_e)
+
+spawn CryptProvider::Custody out
+spawn NetworkProvider::FileRelation to_out
+to_out.Root(PUBLIC_DIR)
+to_out.Target(Directory)
+to_out.Activate(@out)
+embassy.Advertise(public file @to_out)
+
+embassy.Open()
+a.SetEmbassy(@embassy)
+a.SetRelation(custodian-a)
+b.SetEmbassy(@embassy)
+b.SetRelation(custodian-b)
+c.SetEmbassy(@embassy)
+c.SetRelation(custodian-c)
+d.SetEmbassy(@embassy)
+d.SetRelation(custodian-d)
+e.SetEmbassy(@embassy)
+e.SetRelation(custodian-e)
+out.SetEmbassy(@embassy)
+out.SetRelation(public)
+
+# One: the root, its own issuer.
+spawn CryptProvider::Keypair root_key
+root_key.Generate()
+root_key.PublicKey()
+spawn CryptProvider::Certificate root_cert
+root_cert.Issue(@root_key root @root_key)
+
+# Two: the active key, certified by the root.
+spawn CryptProvider::Keypair active
+active.Generate()
+spawn CryptProvider::Certificate active_cert
+active_cert.Issue(@root_key intermediate @active)
+active_cert.Verify(@root_cert)
+
+# Three: the keys that act for ACE, certified by the active key.
+spawn CryptProvider::Certificate marketplace_cert
+marketplace_cert.Issue(@active marketplace MARKETPLACE_KEY)
+marketplace_cert.Verify(@active_cert)
+spawn CryptProvider::Certificate release_cert
+release_cert.Issue(@active release RELEASE_KEY)
+release_cert.Verify(@active_cert)
+spawn CryptProvider::Certificate registrar_cert
+registrar_cert.Issue(@active registrar REGISTRAR_KEY)
+registrar_cert.Verify(@active_cert)
+
+# The root, 3 of 5.
+spawn CryptProvider::Shamir root_split
+root_split.Threshold(3)
+root_split.spawn(CryptProvider::Shard r1)
+root_split.spawn(CryptProvider::Shard r2)
+root_split.spawn(CryptProvider::Shard r3)
+root_split.spawn(CryptProvider::Shard r4)
+root_split.spawn(CryptProvider::Shard r5)
+root_split.Split(@root_key)
+a.Advertise(root shard @r1)
+b.Advertise(root shard @r2)
+c.Advertise(root shard @r3)
+d.Advertise(root shard @r4)
+e.Advertise(root shard @r5)
+
+# The active key, 3 of 5.
+spawn CryptProvider::Shamir active_split
+active_split.Threshold(3)
+active_split.spawn(CryptProvider::Shard i1)
+active_split.spawn(CryptProvider::Shard i2)
+active_split.spawn(CryptProvider::Shard i3)
+active_split.spawn(CryptProvider::Shard i4)
+active_split.spawn(CryptProvider::Shard i5)
+active_split.Split(@active)
+a.Advertise(active shard @i1)
+b.Advertise(active shard @i2)
+c.Advertise(active shard @i3)
+d.Advertise(active shard @i4)
+e.Advertise(active shard @i5)
+
+# The certificates are public: every custodian keeps them, and PUBLIC_DIR.
+a.Advertise(root cert @root_cert)
+a.Advertise(active cert @active_cert)
+a.Advertise(marketplace cert @marketplace_cert)
+a.Advertise(release cert @release_cert)
+a.Advertise(registrar cert @registrar_cert)
+b.Advertise(root cert @root_cert)
+b.Advertise(active cert @active_cert)
+b.Advertise(marketplace cert @marketplace_cert)
+b.Advertise(release cert @release_cert)
+b.Advertise(registrar cert @registrar_cert)
+c.Advertise(root cert @root_cert)
+c.Advertise(active cert @active_cert)
+c.Advertise(marketplace cert @marketplace_cert)
+c.Advertise(release cert @release_cert)
+c.Advertise(registrar cert @registrar_cert)
+d.Advertise(root cert @root_cert)
+d.Advertise(active cert @active_cert)
+d.Advertise(marketplace cert @marketplace_cert)
+d.Advertise(release cert @release_cert)
+d.Advertise(registrar cert @registrar_cert)
+e.Advertise(root cert @root_cert)
+e.Advertise(active cert @active_cert)
+e.Advertise(marketplace cert @marketplace_cert)
+e.Advertise(release cert @release_cert)
+e.Advertise(registrar cert @registrar_cert)
+out.Advertise(root cert @root_cert)
+out.Advertise(active cert @active_cert)
+out.Advertise(marketplace cert @marketplace_cert)
+out.Advertise(release cert @release_cert)
+out.Advertise(registrar cert @registrar_cert)
+
+# Forgotten here: the keys and the shares.
+root_key.Delete()
+active.Delete()
+root_split.Delete()
+active_split.Delete()
+embassy.Close()

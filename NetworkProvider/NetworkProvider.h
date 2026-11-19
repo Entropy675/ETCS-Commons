@@ -1660,7 +1660,7 @@ DEFINE_WORK_FUNC(TarpitNode, Delete)
 
 
 // ===========================================================================
-// The foreign boundary (Embassy.h, HttpsRelation.h, DnsRelation.h)
+// The foreign boundary (Embassy.h, HttpsRelation.h, DnsRelation.h, FileRelation.h)
 // ===========================================================================
 
 // Advertise <name> <scheme> <rid> -- a Foreign leaf, by RID, under the
@@ -1807,5 +1807,44 @@ DEFINE_WORK_FUNC(DnsRelation, Ask)
     if (ok) data.write(answer.c_str());
 }
 DEFINE_WORK_FUNC(DnsRelation, Delete) { (void)ctx; (void)data; self.Delete(); }
+
+// FileRelation: one directory on a medium that does not run ETCS
+// (FileRelation.h). Root and Target before Activate; locked after.
+DEFINE_WORK_FUNC(FileRelation, Root)
+{
+    (void)ctx;
+    std::string dir;
+    data >> dir;
+    const bool ok = self.Root(dir);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(FileRelation, Target)
+{
+    (void)ctx;
+    std::string tags = data.restAsString();
+    while (!tags.empty() && tags.front() == ' ') tags.erase(0, 1);
+    const bool ok = self.Target(tags);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(FileRelation, Activate)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Activate(rid);
+    data.reset(); data << ok;
+}
+// Ask LIST | GET <name> | DROP <name> -- one line, the answer cut to one
+// Buffer. A PUT carries a body, so it comes from a stand-in, not a line.
+DEFINE_WORK_FUNC(FileRelation, Ask)
+{
+    const std::string question = data.toString();
+    std::string answer;
+    const bool ok = self.Exchange(question, answer, ctx);
+    if (answer.size() >= ETCS::Buffer::bufsize) answer.resize(ETCS::Buffer::bufsize - 4), answer += "...";
+    data.reset();
+    if (ok) data.write(answer.c_str());
+}
+DEFINE_WORK_FUNC(FileRelation, Delete) { (void)ctx; (void)data; self.Delete(); }
 
 #endif

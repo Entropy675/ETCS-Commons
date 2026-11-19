@@ -116,6 +116,9 @@ public:
     void BindWorld(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_world = r; }
     void BindCamera(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_camera = r; m_eye_set = false; }
     void BindCard(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_card = r; m_card_text.clear(); }
+    // The frame counter: a label this runtime shows its pictures a second on
+    // (fpsLocked). This runtime's alone, never a line.
+    void BindFps(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_fps = r; m_fps_ms = 0.0; m_fps_seen = -1; }
 
     // ── the arena: what the scripts hand over ────────────────────────────
 
@@ -294,7 +297,9 @@ public:
     }
     void AddPickupNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_pickup_nodes.push_back(r); parkNode(r); }
     void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); parkNode(r); }
-    void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); m_blast_until.push_back(0); parkNode(r); }
+    void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); parkNode(r); }
+    void AddSparkNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_spark_nodes.push_back(r); parkNode(r); }
+    void AddSmokeNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_smoke_nodes.push_back(r); parkNode(r); }
     void AddBoardRow(ETCS::RID r)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -826,6 +831,7 @@ public:
         barsLocked();
         cardLocked(dt_ms);
         boardLocked();
+        fpsLocked(dt_ms);
     }
 
 private:
@@ -1030,9 +1036,11 @@ private:
     static Fixed wallRide()  { return KartArena::WallTop() + kartR() - kartY(); }
     static Fixed wallOut()   { return KartArena::Half() + F(1) + kartR(); }   // past the wall's far side
     // The long arms reach across the arena, however big it is: the sniper
-    // corner to corner, a rocket (30 u/s) its width and more.
+    // corner to corner at once, and a rocket or a round of the minigun lives
+    // until it has flown as far (crossLife), so a shot from one corner can
+    // still land in the other -- a long shot is a tactic, not a waste.
     static Fixed sniperReach() { return KartArena::Half() * F(283, 100); }
-    static constexpr int rocketLife() { return 4 * kHz; }
+    static int crossLife(Fixed speed) { return static_cast<int>((sniperReach() / speed * F(kHz)).ToInt()) + 1; }
     static Fixed voidAt()    { return F(-40); }        // where a fall outside ends, between rounds
     static Fixed lostAt()    { return F(-6); }
 
@@ -1190,7 +1198,7 @@ private:
         for (size_t i = 0; i < m_slots.size(); ++i) pitLocked(i);
         for (Shot& s : m_shots) freeNode(s.node);
         m_shots.clear();
-        for (size_t b = 0; b < m_blast_nodes.size(); ++b) { m_blast_until[b] = 0; parkNode(m_blast_nodes[b]); }
+        for (Burst& b : m_bursts) endBurstLocked(b);
         m_tick = m_recorded = m_seq = 0;
         m_wall_ms = 0.0;
         m_snaps.clear(); m_snap_tick = 0; m_snap_hash = "-"; m_differed_at = 0;
@@ -1510,8 +1518,7 @@ private:
                 if (alive(s)) { wheelsLocked(s); marksLocked(i); }
             }
             if (m_phase != Lobby) pickupsLocked();
-            for (size_t b = 0; b < m_blast_nodes.size(); ++b)
-                if (m_blast_until[b] && static_cast<int64_t>(m_tick) >= m_blast_until[b]) { m_blast_until[b] = 0; parkNode(m_blast_nodes[b]); }
+            burstsLocked();
             arrowsLocked();
         }
         if (m_phase == Playing && static_cast<int64_t>(m_tick) >= m_end)
@@ -1885,7 +1892,7 @@ private:
         using namespace KartArms;
         switch (s.weapon)
         {
-            case Rocket:  shootLocked(RocketShot, i, fx, fy, fz, hx * F(30), Fixed::Zero(), hz * F(30), rocketLife()); break;
+            case Rocket:  shootLocked(RocketShot, i, fx, fy, fz, hx * F(30), Fixed::Zero(), hz * F(30), crossLife(F(30))); break;
             case Mine:
             {
                 const Fixed mx = x - hx * F(2), mz = z - hz * F(2);
@@ -1904,7 +1911,7 @@ private:
                 break;
             case Boost:   s.boost = 2 * kHz; break;
             case Bomb:    shootLocked(BombShot, i, x + hx * F(12, 10), y + F(55, 100), z + hz * F(12, 10), hx * F(14), F(9), hz * F(14), 3 * kHz); break;
-            case Minigun: shootLocked(Bullet, i, fx, fy, fz, hx * F(45), Fixed::Zero(), hz * F(45), 25); s.cooldown = 5; break;
+            case Minigun: shootLocked(Bullet, i, fx, fy, fz, hx * F(45), Fixed::Zero(), hz * F(45), crossLife(F(45))); s.cooldown = 5; break;
             case Fuse:    shootLocked(FuseShot, i, x, y + F(12, 10), z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), 125); break;
             case Sniper:  sniperLocked(i, x, fy, z, hx, hz); break;
             default: break;
@@ -1981,6 +1988,7 @@ private:
                 case RocketShot: case Pellet: case Bullet: case BombShot:
                 {
                     if (s.kind == BombShot) s.vy -= gravity() * dt();
+                    const Fixed was_x = s.x, was_y = s.y, was_z = s.z;
                     s.x += s.vx * dt(); s.y += s.vy * dt(); s.z += s.vz * dt();
                     const int hit = kartAt(s.x, s.y, s.z, s.owner, F(25, 100));
                     const bool wall = solidAt(s.x, s.y, s.z, F(2, 10));
@@ -1988,6 +1996,8 @@ private:
                     if (hit >= 0 || wall || ground || s.life <= 0)
                     {
                         gone = true;
+                        // Met a wall or the ground: it bursts on the side it came from, not inside.
+                        if (hit < 0 && (wall || ground)) { s.x = was_x; s.y = was_y; s.z = was_z; }
                         if (s.kind == RocketShot)    burstLocked(s.x, s.y, s.z, F(4), 40, s.owner);
                         else if (s.kind == BombShot) burstLocked(s.x, s.y, s.z, F(45, 10), 40, s.owner);
                         else if (hit >= 0)           damageLocked(static_cast<size_t>(hit), s.owner, s.kind == Pellet ? 10 : 4);
@@ -2015,31 +2025,332 @@ private:
         m_shots.swap(keep);
     }
 
-    // A burst: everyone in reach but the one who set it off, by how near.
+    /*
+     * A BURST IS A TREE OF FIRE, and the tree is what hurts. From the burst's
+     * point a dozen branches go out -- round it, a little up to well up --
+     * each in steps of a fifth of the burst's reach, turning a little at
+     * every step, forking now and then (less the further out), and carrying
+     * an energy that starts at the reach and is spent by what it goes
+     * through: air costs a unit of energy a unit of way; the ground and a
+     * deck's slab cost 8, a wall or a block 12. Before a step into anything
+     * denser than air a branch tries to go round it -- turned to either side,
+     * up, down -- and only goes in when nothing round it is open, so fire
+     * pours round a block and over a ramp's lip rather than through them.
+     *
+     * A kart is hurt by the most energy any branch has where it passes
+     * within its reach (or the whole of it, at the burst's own point):
+     * `max` times that over the reach. In the open that is the old straight
+     * falloff; behind a block, the long way round, it is less, or nothing.
+     * Every number is the rows' (Fixed), and the tree's dice are made from
+     * the tick, the point and the bursts so far -- the same tree, the same
+     * damage, on every runtime.
+     *
+     * Drawn as it grows: the sparks a front reaches, the front out along the
+     * branches to the reach in kGrowTicks, then all of it fading over
+     * kFadeTicks -- each spark a glowing PUFF (Scene3D::SetGlow) about its
+     * step of the branch: nearly round, a little longer than it is wide and
+     * overlapping the next, so a branch reads as a string of small bursts
+     * rather than a line -- fire is too dissipative to draw thin lines. White-
+     * hot and fuller where its branch is strong, red and leaner where it is
+     * spent, round a core that swells and fades with it.
+     */
+    struct Spark { Fixed x0, y0, z0, x1, y1, z1, e0, e1, d0; int shown = 0; };
+    /*
+     * AND THEN THE SMOKE, from the fire: small dark puffs where branches
+     * burned, and big pale clouds in the gaps between the first branches,
+     * each swelling as it rises and thinning to nothing (Scene3D::SetSmoke)
+     * -- long after the fire is out. Drawn only, from the tree; not the
+     * record's, as the sparks are not.
+     */
+    struct Puff
+    {
+        float x = 0, y = 0, z = 0, r0 = 0, r1 = 0, rise = 0, dense = 0, grey = 0;
+        int   delay = 0, life = 0;
+        int   shown = 0;                          // 0 not yet, 1 up, 2 gone
+        int   said = -1;                          // the density's step last said
+    };
+    struct Burst
+    {
+        bool               live = false;
+        Fixed              x, y, z, reach;
+        int64_t            born = 0;
+        int                fade = -1;             // the glow's step last said
+        std::vector<Spark> sparks;
+        std::vector<float> az;                    // the first branches' bearings, for the gaps between
+        std::vector<Puff>  puffs;
+        int64_t            done = 0;              // the age the last puff is gone at
+    };
+    static constexpr int kBursts = 3, kSparks = 64, kGrowTicks = 8, kFadeTicks = 30;
+    static constexpr int kBranchPuffs = 8, kCloudPuffs = 6, kPuffs = kBranchPuffs + kCloudPuffs;
+
+    // How hard the medium at a point is to go through, a unit of way: air 1.
+    Fixed densityAt(Fixed x, Fixed y, Fixed z)
+    {
+        if (solidAt(x, y, z, F(1, 10))) return F(12);                 // a wall, a block
+        if (KartArena::Solid(m_live, x, z) > y) return F(8);          // the ground
+        for (const KartArena::Deck& d : m_live.decks)                 // a deck's slab
+            if (!(y > d.h) && !(y < d.h - KartArena::DeckThick()) && KartArena::Over(x, z, d.x, d.z, d.w, d.d)) return F(8);
+        return F(1);
+    }
+    static void unitize(Fixed& x, Fixed& y, Fixed& z)
+    {
+        const Fixed l = Fixed::Length(x, y, z);
+        if (!l.IsPositive()) { x = Fixed::Zero(); y = Fixed::One(); z = Fixed::Zero(); return; }
+        x = x / l; y = y / l; z = z / l;
+    }
+    void growLocked(Burst& b, uint64_t seed)
+    {
+        b.sparks.clear();
+        struct Tip { Fixed x, y, z, dx, dy, dz, e, d; int depth; };
+        std::deque<Tip> tips;
+        uint64_t r = seed | 1;
+        auto unit = [&r]() { return F(static_cast<int64_t>(KartArms::Next(r) % 2001) - 1000, 1000); };   // -1..1
+        const Fixed full = b.reach, step = b.reach / F(5);
+        const int first = 12;
+        b.az.clear();
+        for (int k = 0; k < first; ++k)
+        {
+            Fixed sn, cs;
+            const Fixed bearing = Fixed::TwoPi() * (F(k) + unit() * F(3, 10)) / F(first);
+            bearing.SinCos(sn, cs);
+            b.az.push_back(bearing.ToFloat());
+            Tip t{ b.x, b.y, b.z, sn, F(1, 10) + (unit() + Fixed::One()) * F(3, 10), cs, full, Fixed::Zero(), 0 };
+            unitize(t.dx, t.dy, t.dz);
+            tips.push_back(t);
+        }
+        // One step of every live branch in turn, so they grow together.
+        while (!tips.empty() && static_cast<int>(b.sparks.size()) < kSparks)
+        {
+            Tip t = tips.front(); tips.pop_front();
+            Fixed dx = t.dx + unit() * F(35, 100), dy = t.dy + unit() * F(25, 100), dz = t.dz + unit() * F(35, 100);
+            unitize(dx, dy, dz);
+            // The medium a step goes through: at its middle and its end, so a
+            // thin wall is not stepped over.
+            auto through = [&](Fixed ax, Fixed ay, Fixed az) {
+                return Fixed::Max(densityAt(t.x + ax * step * Fixed::Half(), t.y + ay * step * Fixed::Half(), t.z + az * step * Fixed::Half()),
+                                  densityAt(t.x + ax * step, t.y + ay * step, t.z + az * step));
+            };
+            Fixed rho = through(dx, dy, dz);
+            if (rho > Fixed::One())
+            {
+                // Round it: to one side, the other, up, then the far turns and down.
+                const int side = (KartArms::Next(r) & 1) ? 1 : -1;
+                const Fixed turns[5][2] = { { F(8, 10) * F(side), Fixed::Zero() }, { F(-8, 10) * F(side), Fixed::Zero() },
+                                            { Fixed::Zero(), F(1) }, { F(16, 10) * F(side), Fixed::Zero() }, { Fixed::Zero(), F(-1) } };
+                for (const auto& tn : turns)
+                {
+                    Fixed sn, cs;
+                    tn[0].SinCos(sn, cs);
+                    Fixed ax = dx * cs + dz * sn, ay = dy + tn[1], az = dz * cs - dx * sn;
+                    unitize(ax, ay, az);
+                    if (through(ax, ay, az) == Fixed::One())
+                    { dx = ax; dy = ay; dz = az; rho = Fixed::One(); break; }
+                }
+            }
+            Fixed go = step, cost = rho * step;
+            if (cost > t.e) { go = t.e / rho; cost = t.e; }
+            Spark sp;
+            sp.x0 = t.x; sp.y0 = t.y; sp.z0 = t.z;
+            t.x += dx * go; t.y += dy * go; t.z += dz * go;
+            sp.x1 = t.x; sp.y1 = t.y; sp.z1 = t.z;
+            sp.e0 = t.e; sp.e1 = t.e - cost; sp.d0 = t.d;
+            b.sparks.push_back(sp);
+            t.e -= cost; t.d += go; t.dx = dx; t.dy = dy; t.dz = dz;
+            if (!t.e.IsPositive()) continue;
+            // A fork now and then: off the branch's way, with most of what it has.
+            if (t.depth < 3 && t.e > full / F(4) && static_cast<int>(KartArms::Next(r) % 100) < 30 - t.depth * 8)
+            {
+                Tip c = t;
+                c.depth = t.depth + 1;
+                c.e = t.e * F(7, 10);
+                c.dx = t.dx + unit() * F(9, 10); c.dy = t.dy + unit() * F(6, 10); c.dz = t.dz + unit() * F(9, 10);
+                unitize(c.dx, c.dy, c.dz);
+                tips.push_back(c);
+            }
+            tips.push_back(t);
+        }
+    }
+    // The most energy a branch has within a kart's reach of (x, y, z).
+    static Fixed reachedBy(const Burst& b, Fixed x, Fixed y, Fixed z, Fixed reach)
+    {
+        if (Fixed::Length(x - b.x, y - b.y, z - b.z) <= reach) return b.reach;
+        Fixed best = Fixed::Zero();
+        for (const Spark& sp : b.sparks)
+        {
+            const Fixed sx = sp.x1 - sp.x0, sy = sp.y1 - sp.y0, sz = sp.z1 - sp.z0;
+            const Fixed ll = sx * sx + sy * sy + sz * sz;
+            Fixed t = Fixed::Zero();
+            if (ll.IsPositive()) t = Fixed::Min(Fixed::One(), Fixed::Max(Fixed::Zero(), ((x - sp.x0) * sx + (y - sp.y0) * sy + (z - sp.z0) * sz) / ll));
+            if (Fixed::Length(x - (sp.x0 + sx * t), y - (sp.y0 + sy * t), z - (sp.z0 + sz * t)) > reach) continue;
+            best = Fixed::Max(best, sp.e0 + (sp.e1 - sp.e0) * t);
+        }
+        return best;
+    }
+    // A burst: its tree, everyone it reaches but the one who set it off, and the fire.
     void burstLocked(Fixed x, Fixed y, Fixed z, Fixed radius, int max, int owner)
     {
+        Burst& b = blastLocked(x, y, z, radius);
         for (size_t j = 0; j < m_slots.size(); ++j)
         {
             if (static_cast<int>(j) == owner || !alive(m_slots[j])) continue;
             Fixed jx, jy, jz;
             if (!where(j, jx, jy, jz)) continue;
-            const Fixed d = Fixed::Length(jx - x, jy - y, jz - z) - kartR();
-            const int dmg = KartArms::Falloff(d, radius, max);
+            const Fixed e = reachedBy(b, jx, jy, jz, kartR());
+            const int dmg = static_cast<int>((F(max) * e / b.reach).raw >> 32);
             if (dmg > 0) damageLocked(j, owner, dmg);
         }
-        blastLocked(x, y, z, radius);
     }
-    void blastLocked(Fixed x, Fixed y, Fixed z, Fixed radius)
+    // The tree and its fire, in the oldest burst's place if all are burning.
+    Burst& blastLocked(Fixed x, Fixed y, Fixed z, Fixed radius)
     {
-        for (size_t b = 0; b < m_blast_nodes.size(); ++b)
+        int at = 0;
+        for (int k = 0; k < kBursts; ++k)
         {
-            if (m_blast_until[b]) continue;
-            m_blast_until[b] = static_cast<int64_t>(m_tick) + 12;
-            const std::string d = fmt1(radius.ToFloat() * 2.0f);
-            verb(m_blast_nodes[b], "Create", d + ", " + d + ", " + d);
-            placeNode(m_blast_nodes[b], x, y, z);
-            verb(m_blast_nodes[b], "SetVisible", "1");
-            return;
+            if (!m_bursts[k].live) { at = k; break; }
+            if (m_bursts[k].born < m_bursts[at].born) at = k;
+        }
+        Burst& b = m_bursts[at];
+        endBurstLocked(b);
+        b.live = true; b.x = x; b.y = y; b.z = z; b.reach = radius; b.born = static_cast<int64_t>(m_tick); b.fade = -1;
+        uint64_t seed = 0x9e3779b97f4a7c15ull ^ (m_tick * 0x100000001b3ull) ^ ++m_burst_seq;
+        seed ^= static_cast<uint64_t>(x.raw) * 31 + static_cast<uint64_t>(y.raw) * 131 + static_cast<uint64_t>(z.raw) * 1031;
+        growLocked(b, seed);
+        smokeFromLocked(b);
+        return b;
+    }
+    // The smoke a burst's tree leaves: puffs along its branches, spread over
+    // its sparks, and clouds in every second gap between its first branches,
+    // a little up -- where the medium there is air.
+    void smokeFromLocked(Burst& b)
+    {
+        b.puffs.clear();
+        const float reach = b.reach.ToFloat(), step = reach / 5.0f;
+        const size_t n = b.sparks.size();
+        for (int i = 0; i < kBranchPuffs && n; ++i)
+        {
+            const Spark& sp = b.sparks[(static_cast<size_t>(i) * 2 + 1) * n / (kBranchPuffs * 2)];
+            Puff p;
+            p.x = sp.x1.ToFloat(); p.y = sp.y1.ToFloat(); p.z = sp.z1.ToFloat();
+            p.r0 = step * 0.9f; p.r1 = step * 2.4f; p.rise = 1.2f; p.dense = 0.75f; p.grey = 0.14f;
+            p.delay = kGrowTicks / 2 + i; p.life = 100 + 6 * i;
+            b.puffs.push_back(p);
+        }
+        for (size_t j = 0; j + 1 < b.az.size() && static_cast<int>(b.puffs.size()) < kPuffs; j += 2)
+        {
+            const float a = (b.az[j] + b.az[j + 1]) * 0.5f;
+            for (const float out : { 0.55f, 0.3f })
+            {
+                const float x = b.x.ToFloat() + std::sin(a) * reach * out, z = b.z.ToFloat() + std::cos(a) * reach * out;
+                const float y = b.y.ToFloat() + reach * 0.25f;
+                if (densityAt(Fixed::From(x), Fixed::From(y), Fixed::From(z)) != Fixed::One()) continue;
+                Puff p;
+                p.x = x; p.y = y; p.z = z;
+                p.r0 = reach * 0.3f; p.r1 = reach * 0.75f; p.rise = 0.8f; p.dense = 0.55f; p.grey = 0.3f;
+                p.delay = kGrowTicks; p.life = 150;
+                b.puffs.push_back(p);
+                break;
+            }
+        }
+        b.done = kGrowTicks + kFadeTicks;
+        for (const Puff& p : b.puffs) b.done = std::max<int64_t>(b.done, p.delay + p.life);
+    }
+    // The smoke a tick on: each puff up once its time comes, swelling as it
+    // rises (fast, then slower), thickening for its first part and thinning
+    // after; put away when it has thinned to nothing.
+    void puffsLocked(int k, Burst& b, int64_t age)
+    {
+        for (size_t i = 0; i < b.puffs.size(); ++i)
+        {
+            Puff& p = b.puffs[i];
+            const size_t at = static_cast<size_t>(k) * kPuffs + i;
+            if (p.shown == 2 || at >= m_smoke_nodes.size()) continue;
+            const ETCS::RID node = m_smoke_nodes[at];
+            const int64_t pa = age - p.delay;
+            if (pa < 0) continue;
+            const float t = static_cast<float>(pa) / static_cast<float>(p.life);
+            const float thick = t < 0.15f ? t / 0.15f : 1.0f - (t - 0.15f) / 0.85f;
+            const int step = static_cast<int>(p.dense * thick * 20.0f + 0.5f);
+            if (pa > p.life || (step <= 0 && pa > 0)) { parkNode(node); p.shown = 2; continue; }
+            const float grow = 1.0f - (1.0f - t) * (1.0f - t);
+            const float r = p.r0 + (p.r1 - p.r0) * grow;
+            placeNode(node, Fixed::From(p.x), Fixed::From(p.y + p.rise * static_cast<float>(pa) / kHz), Fixed::From(p.z));
+            if (pa % 3 == 0 || !p.shown) verb(node, "Create", fmt3(r * 2.0f) + ", " + fmt3(r * 1.8f) + ", " + fmt3(r * 2.0f));
+            if (step != p.said && step > 0) { verb(node, "SetSmoke", fmt3(static_cast<float>(step) / 20.0f)); p.said = step; }
+            if (!p.shown)
+            {
+                verb(node, "SetColor", f4(p.grey, p.grey * 0.96f, p.grey * 0.92f, 1.0f));
+                verb(node, "SetVisible", "1");
+                p.shown = 1;
+            }
+        }
+    }
+    // The fire out: its core and sparks put away (the smoke goes on).
+    void fireOutLocked(Burst& b)
+    {
+        const size_t k = static_cast<size_t>(&b - m_bursts);
+        if (k < m_blast_nodes.size()) parkNode(m_blast_nodes[k]);
+        for (size_t n = 0; n < b.sparks.size(); ++n)
+            if (b.sparks[n].shown && k * kSparks + n < m_spark_nodes.size()) parkNode(m_spark_nodes[k * kSparks + n]);
+        b.sparks.clear();
+    }
+    void endBurstLocked(Burst& b)
+    {
+        const size_t k = static_cast<size_t>(&b - m_bursts);
+        fireOutLocked(b);
+        for (size_t n = 0; n < b.puffs.size(); ++n)
+            if (b.puffs[n].shown == 1 && k * kPuffs + n < m_smoke_nodes.size()) parkNode(m_smoke_nodes[k * kPuffs + n]);
+        b.puffs.clear();
+        b.live = false;
+    }
+    // The fire, a tick on: the sparks the front has reached shown, the core
+    // swelling with it, and all of it fading once grown. Drawn only.
+    void burstsLocked()
+    {
+        for (int k = 0; k < kBursts; ++k)
+        {
+            Burst& b = m_bursts[k];
+            if (!b.live) continue;
+            const int64_t age = static_cast<int64_t>(m_tick) - b.born;
+            puffsLocked(k, b, age);
+            if (age > b.done) { endBurstLocked(b); continue; }
+            if (age > kGrowTicks + kFadeTicks) { if (!b.sparks.empty()) fireOutLocked(b); continue; }
+            const Fixed front = b.reach * F(std::min<int64_t>(age + 1, kGrowTicks), kGrowTicks);
+            const ETCS::RID core = static_cast<size_t>(k) < m_blast_nodes.size() ? m_blast_nodes[k] : 0;
+            if (age <= kGrowTicks && core)
+            {
+                const std::string d = fmt3((b.reach * (F(3, 10) + F(4, 10) * front / b.reach)).ToFloat());
+                verb(core, "Create", d + ", " + d + ", " + d);
+                if (age == 0) { placeNode(core, b.x, b.y, b.z); verb(core, "SetVisible", "1"); }
+            }
+            for (size_t n = 0; n < b.sparks.size(); ++n)
+            {
+                Spark& sp = b.sparks[n];
+                const size_t at = static_cast<size_t>(k) * kSparks + n;
+                if (sp.shown || sp.d0 > front || at >= m_spark_nodes.size()) continue;
+                const ETCS::RID node = m_spark_nodes[at];
+                const Fixed sx = sp.x1 - sp.x0, sy = sp.y1 - sp.y0, sz = sp.z1 - sp.z0;
+                const float len = Fixed::Length(sx, sy, sz).ToFloat();
+                if (!(len > 0.01f)) continue;
+                const float hot = (sp.e0 / b.reach).ToFloat();       // 1 at the burst, 0 spent
+                // Round, not flattened: at most about 1.9 long to 1 across.
+                const float along = len * 1.15f, across = len * (0.6f + 0.3f * hot);
+                verb(node, "Create", fmt3(across) + ", " + fmt3(across) + ", " + fmt3(along));
+                verb(node, "SetColor", f4(1.0f, 0.25f + 0.65f * hot, 0.05f + 0.55f * hot * hot, 1.0f));
+                poseAlong(node, (sp.x0 + sp.x1) * Fixed::Half(), (sp.y0 + sp.y1) * Fixed::Half(), (sp.z0 + sp.z1) * Fixed::Half(), sx, sy, sz);
+                verb(node, "SetVisible", "1");
+                sp.shown = 1;
+            }
+            // The glow, in ten steps down once it is grown.
+            const int step = age <= kGrowTicks ? 0 : static_cast<int>((age - kGrowTicks) * 10 / kFadeTicks);
+            if (step != b.fade)
+            {
+                b.fade = step;
+                const std::string glow = fmt3(1.6f * (1.0f - static_cast<float>(step) / 10.0f));
+                if (core) verb(core, "SetGlow", fmt3(0.8f * (1.0f - static_cast<float>(step) / 10.0f)));
+                for (size_t n = 0; n < b.sparks.size(); ++n)
+                    if (static_cast<size_t>(k) * kSparks + n < m_spark_nodes.size())
+                        verb(m_spark_nodes[static_cast<size_t>(k) * kSparks + n], "SetGlow", glow);
+            }
         }
     }
 
@@ -2725,6 +3036,24 @@ private:
             }
         }
     }
+    // The frame counter: the camera's own count of the pictures it made
+    // (Camera3D.Renders), over each second of frames -- what was drawn, not
+    // how often the frame edge came round.
+    void fpsLocked(double dt_ms)
+    {
+        if (!m_fps || !m_camera) return;
+        m_fps_ms += dt_ms;
+        if (m_fps_ms < 1000.0 && m_fps_seen >= 0) return;
+        const std::string said = answer(m_camera, "Renders");
+        const int64_t now = said.empty() ? -1 : std::atoll(said.c_str());
+        if (now >= 0 && m_fps_seen >= 0 && m_fps_ms > 0.0)
+        {
+            const int fps = static_cast<int>(static_cast<double>(now - m_fps_seen) * 1000.0 / m_fps_ms + 0.5);
+            verb(m_fps, "SetText", std::to_string(fps) + " fps");
+        }
+        m_fps_seen = now;
+        m_fps_ms = 0.0;
+    }
     // The card: this runtime's health, weapon, eliminations and the clock --
     // or, in the lobby, what the next round is and who starts it.
     void cardLocked(double dt_ms)
@@ -2928,6 +3257,17 @@ private:
         ETCS::Entity* e = rid ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid) : nullptr;
         if (e) e->call(ETCS::Buffer(v), arg);
     }
+    // A verb's answer, "" when there is none.
+    static std::string answer(ETCS::RID node, const char* name)
+    {
+        if (!node) return std::string();
+        ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), node);
+        if (!e) return std::string();
+        ETCS::Buffer action((e->getSourceTag().toString() + "." + name).c_str());
+        ETCS::Buffer payload("");
+        try { e->call(action, payload); } catch (...) { return std::string(); }
+        return payload.c_str();
+    }
     static bool verb(ETCS::RID node, const char* name, const std::string& args)
     {
         if (!node) return false;
@@ -2956,7 +3296,10 @@ private:
     std::vector<SpringNodes> m_spring_nodes;
     ETCS::RID m_floor = 0;
     std::vector<bool> m_shot_busy;
-    std::vector<int64_t> m_blast_until;
+    std::vector<ETCS::RID> m_spark_nodes;   // the bursts' sparks: kBursts x kSparks, glowing
+    std::vector<ETCS::RID> m_smoke_nodes;   // ...and their smoke: kBursts x kPuffs
+    Burst      m_bursts[kBursts];
+    uint64_t   m_burst_seq = 0;             // bursts so far: each one's tree is its own
     std::vector<BoardRow> m_board;
 
     // The session, and its number (the streams'; Leave moves it on).
@@ -3000,6 +3343,9 @@ private:
     bool     m_look_drag = false;
     double   m_card_ms = 0.0;
     std::string m_card_text;
+    ETCS::RID   m_fps = 0;          // BindFps: the frame counter's label
+    double      m_fps_ms = 0.0;     // ...the frames' time since it was last said
+    int64_t     m_fps_seen = -1;    // ...the camera's pictures then
 };
 
 #endif // KARTPROVIDER_KARTBATTLE_H__

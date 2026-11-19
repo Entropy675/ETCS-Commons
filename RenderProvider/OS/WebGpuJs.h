@@ -89,14 +89,26 @@ var WGSL =
 // The scene pass: one node per instance index, mvp folded on the C++ side,
 // Lambert with the same fixed lamp as shaders/mesh.frag. Clip space is y up
 // and depth [0,1] here, which is what the projection hands over -- no flip.
+// The model's columns are vec4s whose w's are the soft share (forward *
+// strength, zero for a lit solid), and a smoke node's alpha arrives negated
+// (DeviceFrame.h): mesh.vert/mesh.frag's sums, line for line.
 var WGSL_MESH =
-  'struct Node { mvp: mat4x4f, rot: mat3x3f, col: vec4f };' +
+  'struct Node { mvp: mat4x4f, c0: vec4f, c1: vec4f, c2: vec4f, col: vec4f };' +
   '@group(0) @binding(0) var<storage, read> nodes: array<Node>;' +
-  'struct MOut { @builtin(position) pos: vec4f, @location(0) n: vec3f, @location(1) col: vec4f };' +
+  'struct MOut { @builtin(position) pos: vec4f, @location(0) n: vec3f, @location(1) col: vec4f,' +
+  '  @location(2) @interpolate(flat) g: vec4f };' +
   '@vertex fn vsMesh(@builtin(instance_index) ii: u32, @location(0) p: vec3f, @location(1) nrm: vec3f) -> MOut {' +
   '  let nd = nodes[ii]; var o: MOut;' +
-  '  o.pos = nd.mvp * vec4f(p, 1.0); o.n = normalize(nd.rot * nrm); o.col = nd.col; return o; }' +
+  '  o.pos = nd.mvp * vec4f(p, 1.0); o.col = nd.col;' +
+  '  let g = vec3f(nd.c0.w, nd.c1.w, nd.c2.w); let s = length(g);' +
+  '  if (s > 0.0) {' +
+  '    o.n = normalize(nd.c0.xyz * (nrm.x / dot(nd.c0.xyz, nd.c0.xyz)) + nd.c1.xyz * (nrm.y / dot(nd.c1.xyz, nd.c1.xyz))' +
+  '                  + nd.c2.xyz * (nrm.z / dot(nd.c2.xyz, nd.c2.xyz)));' +
+  '    o.g = vec4f(g / s, s);' +
+  '  } else { o.n = normalize(mat3x3f(nd.c0.xyz, nd.c1.xyz, nd.c2.xyz) * nrm); o.g = vec4f(0.0); }' +
+  '  return o; }' +
   '@fragment fn fsMesh(i: MOut) -> @location(0) vec4f {' +
+  '  if (i.g.w > 0.0) { let f = abs(dot(normalize(i.n), i.g.xyz)); return vec4f(i.col.rgb, i.g.w * f * sqrt(f) * abs(i.col.a)); }' +
   '  let l = normalize(vec3f(0.4, 0.8, 0.45));' +
   '  let lit = 0.45 + 0.55 * max(dot(normalize(i.n), l), 0.0);' +
   '  return vec4f(i.col.rgb * lit, i.col.a); }';
@@ -126,18 +138,28 @@ function pipes() {
   var mm = d.createShaderModule({ code: WGSL_MESH });
   var lm = d.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } } ] });
-  // Depth-tested, no culling, into an RGBA8 target: the Vulkan scene pass.
-  var mesh = d.createRenderPipeline({
-    layout: d.createPipelineLayout({ bindGroupLayouts: [lm] }),
-    vertex: { module: mm, entryPoint: 'vsMesh', buffers: [ { arrayStride: 24, attributes: [
-      { shaderLocation: 0, offset: 0, format: 'float32x3' },
-      { shaderLocation: 1, offset: 12, format: 'float32x3' } ] } ] },
-    fragment: { module: mm, entryPoint: 'fsMesh', targets: [ { format: 'rgba8unorm' } ] },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' } });
+  // Depth-tested, no culling, into an RGBA8 target: the Vulkan scene pass --
+  // and its soft twins, writing no depth: glow added on (Scene3D::SetGlow),
+  // smoke laid over (SetSmoke).
+  var mlay = d.createPipelineLayout({ bindGroupLayouts: [lm] });
+  function meshPipe(soft) {
+    var glow = soft !== 0;
+    return d.createRenderPipeline({
+      layout: mlay,
+      vertex: { module: mm, entryPoint: 'vsMesh', buffers: [ { arrayStride: 24, attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x3' },
+        { shaderLocation: 1, offset: 12, format: 'float32x3' } ] } ] },
+      fragment: { module: mm, entryPoint: 'fsMesh', targets: [ glow
+        ? { format: 'rgba8unorm', blend: { color: { srcFactor: 'src-alpha', dstFactor: soft === 2 ? 'one-minus-src-alpha' : 'one', operation: 'add' },
+                                           alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' } } }
+        : { format: 'rgba8unorm' } ] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: 'depth24plus', depthWriteEnabled: !glow, depthCompare: 'less' } });
+  }
+  var mesh = meshPipe(0), glow = meshPipe(1), smoke = meshPipe(2);
   // NEAREST, like the Vulkan backend: a pixel editor shows the pixels.
   G.pipes = { device: d, l0: l0, l1: l1, lm: lm, rect: make('fsRect', [l0]), blit: make('fsBlit', [l0, l1]),
-              mesh: mesh, sampler: d.createSampler({ magFilter: 'nearest', minFilter: 'nearest' }) };
+              mesh: mesh, glow: glow, smoke: smoke, sampler: d.createSampler({ magFilter: 'nearest', minFilter: 'nearest' }) };
   return G.pipes;
 }
 // A texture slot: sampled by a blit, and when a scene targets it, drawn
@@ -202,7 +224,7 @@ function place(p, base) {
 // ups: 4 per upload -- slot, w, h, address of w*h*4 RGBA bytes
 // scenesI32: 5 per scene -- target slot, w, h, first node op, node op count
 // scenesF32: 4 per scene -- clear colour
-// nodeF32: 32 per node op -- mvp[16], rotation as three vec4 columns, colour
+// nodeF32: 32 per node op -- mvp[16], the model as three vec4 columns (their w's the soft share), colour (negative alpha: smoke)
 // nodeI32: 1 per node op -- mesh slot
 // meshes: 5 per mesh -- slot, float count, address, index count, address
 function present(hdr) {
@@ -302,10 +324,18 @@ function present(hdr) {
       if (cnt > 0 && p.bgn) {
         sp.setPipeline(pp.mesh);
         sp.setBindGroup(0, p.bgn);
-        // Nodes sharing a mesh keep its buffers bound, as the Vulkan pass does.
-        var bound = -1, me = null;
+        // Nodes sharing a mesh keep its buffers bound, as the Vulkan pass does;
+        // the soft ones come last, farthest first: a node's kind is its
+        // columns' w's (soft or not) and its alpha's sign (smoke), and the
+        // pipeline follows it.
+        var bound = -1, me = null, kind = 0;
         for (var k = 0; k < cnt; k++) {
           var ms = H[ni + first + k];
+          var gf = nf + (first + k) * 32;
+          var nk = (F[gf + 19] !== 0 || F[gf + 23] !== 0 || F[gf + 27] !== 0) ? (F[gf + 31] < 0 ? 2 : 1) : 0;
+          if (nk !== kind) {
+            sp.setPipeline(nk === 2 ? pp.smoke : nk === 1 ? pp.glow : pp.mesh); sp.setBindGroup(0, p.bgn); kind = nk;
+          }
           if (ms !== bound) {
             me = p.mesh[ms]; bound = ms;
             if (me) { sp.setVertexBuffer(0, me.vb); sp.setIndexBuffer(me.ib, 'uint32'); }

@@ -1,0 +1,71 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ATTEST A ROOT: this root, rebuilt from three of its custodians' shards for
+# this and forgotten again, certifies OTHER_ROOT_KEY as a root -- the other
+# root's key, as its root.cert names it. The certificate is the continuation
+# the other root's chains carry so a loader built with this root takes them:
+# written to PUBLIC_DIR as attested.cert, beside this root's own root.cert. Two
+# roots attest each other with one run each, at either's custodians.
+
+spawn NetworkProvider::Embassy embassy
+
+spawn CryptProvider::Custody a
+spawn NetworkProvider::FileRelation to_a
+to_a.Root(/media/custodian-a)
+to_a.Target(Directory)
+to_a.Activate(@a)
+embassy.Advertise(custodian-a file @to_a)
+
+spawn CryptProvider::Custody b
+spawn NetworkProvider::FileRelation to_b
+to_b.Root(/media/custodian-b)
+to_b.Target(Directory)
+to_b.Activate(@b)
+embassy.Advertise(custodian-b file @to_b)
+
+spawn CryptProvider::Custody c
+spawn NetworkProvider::FileRelation to_c
+to_c.Root(/media/custodian-c)
+to_c.Target(Directory)
+to_c.Activate(@c)
+embassy.Advertise(custodian-c file @to_c)
+
+spawn CryptProvider::Custody out
+spawn NetworkProvider::FileRelation to_out
+to_out.Root(PUBLIC_DIR)
+to_out.Target(Directory)
+to_out.Activate(@out)
+embassy.Advertise(public file @to_out)
+
+embassy.Open()
+a.SetEmbassy(@embassy)
+a.SetRelation(custodian-a)
+b.SetEmbassy(@embassy)
+b.SetRelation(custodian-b)
+c.SetEmbassy(@embassy)
+c.SetRelation(custodian-c)
+out.SetEmbassy(@embassy)
+out.SetRelation(public)
+
+spawn CryptProvider::Shamir root_split
+root_split.Threshold(3)
+root_split.spawn(CryptProvider::Shard share1)
+root_split.spawn(CryptProvider::Shard share2)
+root_split.spawn(CryptProvider::Shard share3)
+a.Recall(root @share1)
+b.Recall(root @share2)
+c.Recall(root @share3)
+spawn CryptProvider::Keypair root_key
+root_split.Combine(@root_key)
+spawn CryptProvider::Certificate root_cert
+a.Recall(root @root_cert)
+
+spawn CryptProvider::Certificate attested
+attested.Issue(@root_key root OTHER_ROOT_KEY)
+attested.Verify(@root_cert)
+out.Advertise(attested cert @attested)
+
+root_key.Delete()
+root_split.Delete()
+embassy.Close()

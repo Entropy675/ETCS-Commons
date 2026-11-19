@@ -112,8 +112,9 @@ public:
             Slot& s = m_slots[sc.target];
             s.w = sc.w; s.h = sc.h; s.lastUsed = m_frameNo;
             const int32_t first = static_cast<int32_t>(m_mopI.size());
-            float vp[16];
+            float vp[16], fwd[3];
             device_mul4(sc.proj, sc.view, vp);
+            device_forward(sc.view, fwd);
             for (const DeviceMeshOp& op : sc.meshes)
             {
                 auto mit = m_meshSlots.find(op.mesh);
@@ -122,10 +123,12 @@ public:
                 float mvp[16];
                 device_mul4(vp, op.model, mvp);
                 m_mopF.insert(m_mopF.end(), mvp, mvp + 16);
-                // The rotation as three columns padded to vec4, the way WGSL lays a mat3x3 out.
+                // The model's three columns as vec4s, their w's the glow --
+                // forward * strength, zero for a lit solid (shaders/mesh.vert).
                 for (int c = 0; c < 3; ++c)
-                    m_mopF.insert(m_mopF.end(), { op.model[c * 4], op.model[c * 4 + 1], op.model[c * 4 + 2], 0.0f });
-                m_mopF.insert(m_mopF.end(), op.color, op.color + 4);
+                    m_mopF.insert(m_mopF.end(), { op.model[c * 4], op.model[c * 4 + 1], op.model[c * 4 + 2],
+                                                  fwd[c] * device_soft(op) });
+                m_mopF.insert(m_mopF.end(), { op.color[0], op.color[1], op.color[2], device_alpha(op) });
                 m_mopI.push_back(mit->second.slot);
             }
             m_scI.insert(m_scI.end(), { slot, static_cast<int32_t>(sc.w), static_cast<int32_t>(sc.h),
