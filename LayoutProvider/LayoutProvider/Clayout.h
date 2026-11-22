@@ -98,7 +98,10 @@ public:
     {
         // The arena is ours and Clay holds no other resource, so this is the
         // whole of teardown. Freed rather than leaked because a script can
-        // build and drop layouts as freely as any other entity.
+        // build and drop layouts as freely as any other entity. Clay's current
+        // context is a global and lives in that arena: the next layout's
+        // Create reads it (Clay_MinMemorySize), so it is let go first.
+        if (m_context && Clay_GetCurrentContext() == m_context) Clay_SetCurrentContext(nullptr);
         if (m_memory) { std::free(m_memory); m_memory = nullptr; }
     }
 
