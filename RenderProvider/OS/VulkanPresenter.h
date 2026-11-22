@@ -15,7 +15,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#ifndef _WIN32
 #include <dlfcn.h>
+#endif
 
 static constexpr uint32_t VK_PRESENTER_FRAMES_IN_FLIGHT = 2;
 // Distinct blit sources one window keeps textures for -- a layer stack, in
@@ -367,12 +369,23 @@ private:
 
     static std::string own_module_dir()
     {
+#if defined(_WIN32)
+        HMODULE self = nullptr;
+        char buf[MAX_PATH];
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCSTR>(&VulkanPresenter::own_module_dir), &self))
+            return "";
+        const DWORD n = GetModuleFileNameA(self, buf, sizeof(buf));
+        if (n == 0 || n == sizeof(buf)) return "";
+        std::string path(buf, n);
+#else
         Dl_info info{};
         if (dladdr(reinterpret_cast<const void*>(&VulkanPresenter::own_module_dir), &info) == 0
             || info.dli_fname == nullptr)
             return "";
         std::string path = info.dli_fname;
-        const size_t slash = path.find_last_of('/');
+#endif
+        const size_t slash = path.find_last_of("/\\");
         return (slash == std::string::npos) ? "" : path.substr(0, slash + 1);
     }
 

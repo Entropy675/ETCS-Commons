@@ -283,9 +283,13 @@ private:
     {
         for (size_t at = 1; at <= d.size(); ++at)
         {
-            if (at != d.size() && d[at] != '/') continue;
+            if (at != d.size() && d[at] != '/' && d[at] != '\\') continue;
             const std::string part = d.substr(0, at);
+#if defined(_WIN32)
+            if (!CreateDirectoryA(part.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
+#else
             if (::mkdir(part.c_str(), 0700) != 0 && errno != EEXIST) return false;
+#endif
         }
         return true;
     }
