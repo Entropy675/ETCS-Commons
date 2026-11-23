@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A mirror of a far trace, from its first line: `detach session_follow.etcs src=<Trace surface> dst=<Trace>`
+requires dst [Trace]
+src.Trace(0) -> dst.Follow()

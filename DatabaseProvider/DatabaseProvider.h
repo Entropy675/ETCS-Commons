@@ -470,4 +470,16 @@ DEFINE_WORK_FUNC(Persistence, Forget)  { (void)ctx; (void)data; self.Forget(); }
 DEFINE_WORK_FUNC(Persistence, Info)    { (void)ctx; (void)data; self.Info(); }
 DEFINE_WORK_FUNC(Persistence, Delete)  { (void)ctx; (void)data; self.DeleteConcrete(); }
 
+// --- Keystore -------------------------------------------------------------------
+// No verb takes or answers the secret: it moves between Private types only.
+DEFINE_WORK_FUNC_TYPED(Keystore, Connect, (std::string, name))
+{
+    (void)ctx;
+    self.CreateConnection(ETCS::Buffer(name.c_str()));
+}
+DEFINE_WORK_FUNC(Keystore, Disconnect) { (void)ctx; (void)data; self.CloseConnection(); }
+DEFINE_WORK_FUNC(Keystore, Holds)      { (void)ctx; const bool h = self.Holds(); data.reset(); data << h; }
+DEFINE_WORK_FUNC(Keystore, Forget)     { (void)ctx; const bool ok = self.Forget(); data.reset(); data << ok; }
+DEFINE_WORK_FUNC(Keystore, Delete)     { (void)ctx; (void)data; self.DeleteConcrete(); }
+
 #endif

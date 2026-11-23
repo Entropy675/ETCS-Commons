@@ -12,12 +12,16 @@
 // ── KartBattle ───────────────────────────────────────────────────────────────
 // The world, the camera on it and the card on the camera are RenderProvider
 // nodes; the arena's walls, maps and pool are Scene3D nodes the course made and
-// handed over. See KartBattle.h for the record's lines and what a key does.
+// handed over. See KartBattle.h for the trace's lines and what a key does.
 
 DEFINE_WORK_FUNC(KartBattle, Create)                                 { (void)ctx; (void)data; self.Create(); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindWorld,  (ETCS::RID, rid))    { (void)ctx; self.BindWorld(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCamera, (ETCS::RID, rid))    { (void)ctx; self.BindCamera(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCard,   (ETCS::RID, rid))    { (void)ctx; self.BindCard(rid); }
+// BindFps <label> -- the frame counter: this runtime's pictures a second, said on the label.
+DEFINE_WORK_FUNC_TYPED(KartBattle, BindFps,    (ETCS::RID, rid))    { (void)ctx; self.BindFps(rid); }
+// BindMenu <menu> -- the lobby, drawn: a RenderProvider::Menu over the eye.
+DEFINE_WORK_FUNC_TYPED(KartBattle, BindMenu,   (ETCS::RID, rid))    { (void)ctx; self.BindMenu(rid); }
 // AddKart <body> <fr> <fl> <rr> <rl> <bar back> <bar fill> -- a kart of the
 // pool, its four wheels (the right ones first, as the picture shows them)
 // and its HP bar.
@@ -34,6 +38,43 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddKart, (ETCS::RID, body), (ETCS::RID, fr), 
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddWall, (ETCS::RID, part))           { (void)ctx; self.AddWall(part); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddMap, (std::string, name))          { (void)ctx; self.AddMap(name); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddRandomMap, (std::string, name))    { (void)ctx; self.AddRandomMap(name); }
+// The vehicles a driver picks from in the lobby, after the kart: AddVehicle
+// <name>, then Tune <what> <values> and VehicleLook <mesh under the world> of
+// it (KartBattle::Tune lists the numbers; kart_vehicle_*.etcs). Each "ok" or
+// "refused"; a refused AddVehicle refuses what follows it until the next.
+DEFINE_WORK_FUNC(KartBattle, AddVehicle)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.AddVehicle(name);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, Tune)
+{
+    (void)ctx;
+    const bool ok = self.Tune(data.toString());
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, VehicleLook)
+{
+    (void)ctx;
+    ETCS::RID mesh = 0;
+    data >> mesh;
+    const bool ok = self.VehicleLook(mesh);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// The vehicles, one a line, the kart first.
+DEFINE_WORK_FUNC(KartBattle, Vehicles)  { (void)ctx; data.reset(); data.writeString(self.Vehicles().c_str()); }
+// Ride <vehicle> -- this runtime's, in the lobby: a `ride` line. "ok" or "refused".
+DEFINE_WORK_FUNC(KartBattle, Ride)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Ride(name);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
 // AddBlock <x> <z> <width> <depth> <height> <yaw degrees>
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlock, (float, x), (float, z), (float, w), (float, d), (float, h), (float, yaw))
 {
@@ -91,6 +132,18 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddDomeNode, (ETCS::RID, node))       { (void
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickupNode, (ETCS::RID, node))     { (void)ctx; self.AddPickupNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddShotNode, (ETCS::RID, node))       { (void)ctx; self.AddShotNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlastNode, (ETCS::RID, node))      { (void)ctx; self.AddBlastNode(node); }
+// AddSparkNode <node> -- a shell of a burst's fire: glowing, given its tree's (bent) mesh and turned as the tree is by the battle.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSparkNode, (ETCS::RID, node))      { (void)ctx; self.AddSparkNode(node); }
+// AddFireMesh <mesh> -- the next of the fire's meshes, empty: the battle bakes a part of one of its trees into it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddFireMesh, (ETCS::RID, mesh))       { (void)ctx; self.AddFireMesh(mesh); }
+// AddBurstMesh <mesh> -- the next of a burst's shells' own meshes, empty: its tree, bent to the ground round it, is copied in.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddBurstMesh, (ETCS::RID, mesh))      { (void)ctx; self.AddBurstMesh(mesh); }
+// AddSmokeNode <node> -- a puff of the bursts' smoke: see-through, swelled, raised and thinned by the battle.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSmokeNode, (ETCS::RID, node))      { (void)ctx; self.AddSmokeNode(node); }
+// AddFxNode <node> -- one of the weapons' effects: a ball, a wisp of a homing rocket's smoke or a slick of oil as the battle dresses it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddFxNode, (ETCS::RID, node))         { (void)ctx; self.AddFxNode(node); }
+// AddRingNode <node> <mesh> -- a shockwave's ring: the node, and its (empty) mesh, which the battle bakes the ring into.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddRingNode, (ETCS::RID, node), (ETCS::RID, mesh)) { (void)ctx; self.AddRingNode(node, mesh); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBoardRow, (ETCS::RID, label))      { (void)ctx; self.AddBoardRow(label); }
 // AddPadNode <plate> <arrow> <arrow> <arrow> -- a pad of the pool: its plate
 // and the three arrows that run along it (kart_pad.etcs).
@@ -115,27 +168,26 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddGroundNode, (ETCS::RID, node))     { (void
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddMarkNode, (ETCS::RID, node))       { (void)ctx; self.AddMarkNode(node); }
 // The arena is made: the first map out, the lobby open.
 DEFINE_WORK_FUNC(KartBattle, Ready) { (void)ctx; (void)data; self.Ready(); }
-// Practice <name> -- alone, its own judge, nothing recorded.
+// Practice <name> -- alone, the authority of a trace nobody follows.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Practice, (std::string, name))   { (void)ctx; self.Practice(name); }
-// Host <record> <proposals> <presence> <name> <hall> <id>
-DEFINE_WORK_FUNC_TYPED(KartBattle, Host, (ETCS::RID, record), (ETCS::RID, proposals), (ETCS::RID, presence),
-                       (std::string, name), (ETCS::RID, hall), (std::string, id))
+// Host <name> <hall> <id> -- the authority, listed in the hall under `id`.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Host, (std::string, name), (ETCS::RID, hall), (std::string, id))
 {
     (void)ctx;
-    self.Host(record, proposals, presence, name, hall, id);
+    self.Host(name, hall, id);
 }
-// Join <presence> <name> <owner>
-DEFINE_WORK_FUNC_TYPED(KartBattle, Join, (ETCS::RID, presence), (std::string, name), (std::string, owner))
+// Join <name> <owner> -- a mirror of `owner`'s battle, seated as `name`.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Join, (std::string, name), (std::string, owner))
 {
     (void)ctx;
-    self.Join(presence, name, owner);
+    self.Join(name, owner);
 }
 DEFINE_WORK_FUNC(KartBattle, Leave) { (void)ctx; (void)data; self.Leave(); }
 DEFINE_WORK_FUNC(KartBattle, Tick)  { (void)ctx; (void)data; self.Tick(); }
-// The host's lobby and round, each a line of the record (refused on a guest,
+// The host's lobby and round, each a line of the trace (refused on a guest,
 // and the settings refused outside the lobby): Configure <map> <seconds>,
 // Reroll (a new seed for a map made from one), StartRound, Abandon,
-// Give <driver> <weapon>.
+// Give <driver> <weapon> [spare|pickup] (in hand outright; as the spare; or as a power-up hands it over).
 DEFINE_WORK_FUNC(KartBattle, Configure)
 {
     (void)ctx;
@@ -150,13 +202,13 @@ DEFINE_WORK_FUNC(KartBattle, Abandon)    { (void)ctx; data.reset(); data.writeSt
 DEFINE_WORK_FUNC(KartBattle, Give)
 {
     (void)ctx;
-    std::string who, weapon;
-    data >> who >> weapon;
+    std::string who, weapon, where;
+    data >> who >> weapon >> where;
     data.reset();
-    data.writeString(self.Give(who, weapon) ? "ok" : "refused");
+    data.writeString(self.Give(who, weapon, where) ? "ok" : "refused");
 }
 // SetInvert <on> -- this runtime's wheel keys swapped (A right, D left): the
-// page's own setting, no line of the record.
+// page's own setting, no line of the trace.
 DEFINE_WORK_FUNC_TYPED(KartBattle, SetInvert, (int32_t, on)) { (void)ctx; self.SetInvert(on != 0); }
 // Key <code> <down> -- a GLFW key, for a test or a page.
 // Look <yaw> <pitch> -- this runtime's eye swung this far round its kart, to
@@ -167,6 +219,22 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, Look, (float, yaw), (float, pitch)) { (void)c
 DEFINE_WORK_FUNC(KartBattle, Eye)       { (void)ctx; data.reset(); data.writeString(self.Eye().c_str()); }
 // Frame <ms> -- the frame edge by hand, for a script with no window.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Frame, (float, ms)) { (void)ctx; self.Frame(ms); }
+// Setting <name> <value> -- one of this runtime's settings (none of them the battle's): invert 0|1,
+// marks <units of road a tyre's mark keeps>, look <the look's pace, 1 as made>. "ok" or "refused".
+DEFINE_WORK_FUNC(KartBattle, Setting)
+{
+    (void)ctx;
+    const std::string line = data.toString();
+    const size_t sp = line.find(' ');
+    const bool ok = sp != std::string::npos && self.Setting(line.substr(0, sp), line.substr(sp + 1));
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// "invert <0|1> marks <units> look <scale>": this runtime's settings.
+DEFINE_WORK_FUNC(KartBattle, Settings) { (void)ctx; data.reset(); data.writeString(self.Settings().c_str()); }
+// MenuUp -- "1" while the drawn menu (the lobby's, or the settings) is over the arena, else "0".
+DEFINE_WORK_FUNC(KartBattle, MenuUp) { (void)ctx; data.reset(); data.writeString(self.MenuUp() ? "1" : "0"); }
+// ShowSettings <0|1> -- the settings open over the arena, or shut (O does the same).
+DEFINE_WORK_FUNC_TYPED(KartBattle, ShowSettings, (int32_t, on)) { (void)ctx; self.ShowSettings(on != 0); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, Key, (uint32_t, code), (int32_t, down))
 {
     (void)ctx;
@@ -186,70 +254,65 @@ DEFINE_WORK_FUNC(KartBattle, Layout)    { (void)ctx; data.reset(); data.writeStr
 DEFINE_WORK_FUNC(KartBattle, Faults)    { (void)ctx; data.reset(); data.writeString(self.Faults().c_str()); }
 // "<tick> <hash>": the battle now.
 DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeString(self.Hash().c_str()); }
-// "<tick> <hash>": the last snapshot, what presence carries.
+// "<tick> <hash>": the last snapshot, what the trace's `hash` lines carry.
 DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
 // Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
-// <slide>", or "-".
+// <slide> <spare> <spare ammo> <oil ticks> <dagger ticks> <vehicle> <lean>", or "-".
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
 // Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
 // rope laid behind it, the segments drawn and the darkest (0..1); or "-".
 DEFINE_WORK_FUNC(KartBattle, Tyres)     { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Tyres(who).c_str()); }
-// Run <ticks> -- the judge's clock by hand: stepped and recorded.
+// Run <ticks> -- the authority's clock by hand: stepped and kept.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Run, (uint32_t, ticks)) { (void)ctx; self.Run(ticks); }
 DEFINE_WORK_FUNC(KartBattle, Note)      { (void)ctx; data.reset(); data.writeString(self.Note().c_str()); }
+// The lobby from anywhere: a press on the drawn menu (window pixels), or this
+// runtime's name and colour said outright (a page's controls) -- each a `look`
+// line or a setting, the same state whichever way it came in.
+DEFINE_WORK_FUNC_TYPED(KartBattle, MenuPress, (float, x), (float, y)) { (void)ctx; self.MenuPress(x, y); }
+DEFINE_WORK_FUNC(KartBattle, Rename)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Rename(name);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, Recolour)
+{
+    (void)ctx;
+    int32_t colour = -1;
+    data >> colour;
+    const bool ok = self.Recolour(colour);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// Livery -- "<colour> <name> <palette>": this runtime's kart's colour (a place
+// in the palette), the name shown for it, and the palette as rrggbb,... ; "-" unseated.
+DEFINE_WORK_FUNC(KartBattle, Livery)    { (void)ctx; data.reset(); data.writeString(self.Livery().c_str()); }
+// Who is here: whose stream into or out of this battle is open, one a line.
+// LastBurst -- "<tree> <turn degrees> <bends> <steps> <cut> <cut unbent>": the latest burst's tree, the ground's
+// bends of it, its steps cut, and how many the same turn would have lost unbent.
+DEFINE_WORK_FUNC(KartBattle, LastBurst) { (void)ctx; data.reset(); data.writeString(self.LastBurst().c_str()); }
+DEFINE_WORK_FUNC(KartBattle, Here)      { (void)ctx; data.reset(); data.writeString(self.Here().c_str()); }
 DEFINE_WORK_FUNC(KartBattle, Delete)    { (void)ctx; (void)data; data.writeString(self.Delete() ? "deleted" : "FAILED"); }
 
-// The session's streams: each ends with its session (KartBattle.h, "each
-// stream is its session's"), as well as when its other end goes.
+// The session's streams: each ends with its session (ontology/Trace.h, "a
+// trace is a session's"), as well as when its other end goes. The bodies are
+// the family's (ontology/TraceBase.h); the verbs are this type's.
 //
-// battle.Emit() -> proposals.Take() -- a guest's lines, for as long as the
-// session lasts.
-DEFINE_STREAM_FUNC_PRODUCE_STANDING(KartBattle, Emit)
+// battle.Trace(<from>) -> mirror.Follow() -- this battle's lines, from `from` on.
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(KartBattle, Trace)
 {
     (void)data;
-    const uint64_t gen = self.Generation();
-    std::string line;
-    bool stale = false;
-    while (!ctx.isInterrupted() && !ctx.isTerminated() && !stream.readerGone())
-    {
-        if (!self.nextEmit(gen, line, stale))
-        {
-            if (stale) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-        if (!stream.writeMessage(line)) break;
-    }
+    uint64_t from = 0;
+    { ETCS::Buffer cfg = stream.getConfig(); cfg >> from; }
+    etcs_trace_produce(self, stream, ctx, from);
 }
-// record.Follow(0) -> battle.Absorb() -- the record, applied in its order.
-DEFINE_STREAM_FUNC_CONSUME(KartBattle, Absorb)
-{
-    (void)data;
-    const uint64_t gen = self.Generation();
-    std::string m;
-    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20))
-        if (!self.Absorb(gen, m)) return;
-    ETCS_LOG("KartBattle", "Absorb: the record ended.");
-    self.RecordEnded(gen);
-}
-// proposals.Follow(0) -> battle.Judge() -- the host judging every line proposed.
-DEFINE_STREAM_FUNC_CONSUME(KartBattle, Judge)
-{
-    (void)data;
-    const uint64_t gen = self.Generation();
-    std::string m;
-    while (!ctx.isInterrupted() && stream.readMessage(m, 1u << 20))
-        if (!self.JudgeLine(gen, m)) return;
-}
-// presence.Watch() -> battle.Roster() -- the listing, whole, on every change.
-DEFINE_STREAM_FUNC_CONSUME(KartBattle, Roster)
-{
-    (void)data;
-    const uint64_t gen = self.Generation();
-    std::string listing;
-    while (!ctx.isInterrupted() && stream.readMessage(listing))
-        if (!self.Roster(gen, listing)) return;
-}
+// host.Trace(0) -> battle.Follow() -- a mirror of the host's battle.
+DEFINE_STREAM_FUNC_CONSUME(KartBattle, Follow) { (void)data; etcs_trace_follow(self, stream, ctx); }
+// battle.Emit() -> host.Take() -- this runtime's seat in the host's battle.
+DEFINE_STREAM_FUNC_PRODUCE_STANDING(KartBattle, Emit) { (void)data; etcs_trace_emit(self, stream, ctx); }
+// ... -> battle.Take() -- a guest's seat, its lines taken in the order they come.
+DEFINE_STREAM_FUNC_CONSUME(KartBattle, Take) { (void)data; etcs_trace_take(self, stream, ctx); }
 // main.ProducePointer() -> battle.ConsumePointer() -- the pointer: a drag with
 // the right button looks round the kart (KartBattle::Pointer).
 DEFINE_STREAM_FUNC_CONSUME(KartBattle, ConsumePointer)

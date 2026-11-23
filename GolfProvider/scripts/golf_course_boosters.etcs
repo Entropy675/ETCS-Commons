@@ -1,0 +1,64 @@
+#!/usr/bin/env etcs
+# BOOSTERS: the kart's pads and springs on the green (GolfMatch: a pad pushes
+# a ball rolling on it the way it points, harder the faster it comes; a spring
+# throws one up).
+#
+#   1  the belt        a long lane of pads between blocks: ride them or not
+#   2  over the wall   a wall right across; a pad for pace and a spring to
+#                      clear it -- or lob it
+#   3  the gap         the green stops; the next is two down and eight on: a
+#                      pad flings you across, and short is lost (+1)
+#
+#   run golf_course_boosters.etcs game=<GolfMatch>
+requires game [GolfMatch]
+game.AddCourse(boosters)
+
+# ── 1, the belt ─────────────────────────────────────────────────────────────
+game.AddHole(4)
+game.AddGreen(0.0, -0.5, 40.0, 16.0, 1.0, 88.0, 0.0, 0.0)
+game.AddWall(-8.3, -0.25, 40.0, 0.6, 1.5, 89.2, 0.0, 0.0)
+game.AddWall(8.3, -0.25, 40.0, 0.6, 1.5, 89.2, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, 84.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(4.0, 0.25, 20.0, 3.0, 0.5, 3.0, 0.0, 0.0)
+game.AddWall(-4.0, 0.25, 40.0, 3.0, 0.5, 3.0, 0.0, 0.0)
+game.AddWall(4.0, 0.25, 60.0, 3.0, 0.5, 3.0, 0.0, 45.0)
+game.AddPad(0.0, 10.0, 0.0)
+game.AddPad(0.0, 30.0, 0.0)
+game.AddPad(-2.0, 50.0, -15.0)
+game.AddPad(-2.0, 66.0, 0.0)
+game.AddCup(-4.0, 76.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-5.0, 6.0)
+game.AddSpot(5.0, 46.0)
+
+# ── 2, over the wall: a wall 1.2 high across the whole green ────────────────
+game.AddHole(3)
+game.AddGreen(0.0, -0.5, 26.0, 16.0, 1.0, 60.0, 0.0, 0.0)
+game.AddWall(0.0, 0.6, 30.0, 16.0, 1.2, 0.6, 0.0, 0.0)
+game.AddWall(-8.3, 0.25, 26.0, 0.6, 2.5, 61.2, 0.0, 0.0)
+game.AddWall(8.3, 0.25, 26.0, 0.6, 2.5, 61.2, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, 56.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddPad(0.0, 14.0, 0.0)
+game.AddSpring(0.0, 25.0)
+game.AddCup(3.0, 46.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-5.0, 8.0)
+game.AddSpot(5.0, 40.0)
+
+# ── 3, the gap: the first green's top at 0, the second's at -2 ──────────────
+game.AddHole(3)
+game.AddGreen(0.0, -0.5, 11.0, 16.0, 1.0, 30.0, 0.0, 0.0)
+game.AddGreen(0.0, -2.5, 47.0, 16.0, 1.0, 26.0, 0.0, 0.0)
+game.AddWall(-8.3, -0.25, 11.0, 0.6, 1.5, 30.6, 0.0, 0.0)
+game.AddWall(8.3, -0.25, 11.0, 0.6, 1.5, 30.6, 0.0, 0.0)
+game.AddWall(-8.3, -2.25, 47.0, 0.6, 1.5, 26.6, 0.0, 0.0)
+game.AddWall(8.3, -2.25, 47.0, 0.6, 1.5, 26.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -2.25, 60.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddPad(0.0, 18.0, 0.0)
+game.AddCup(0.0, 52.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-5.0, 4.0)
+game.AddSpot(5.0, 44.0)

@@ -1,0 +1,79 @@
+#!/usr/bin/env etcs
+# RIDGE: high ground at dusk -- teal turf, slate walls, a violet sky -- and
+# ground that rises and falls: a shot's weight is the whole game.
+#
+#   1  the hump     a narrow lane up two and down again: too soft rolls back,
+#                   too hard runs long; a pad at its foot for the bold
+#   2  the drop     an elbow: up the lane, then off its side down a slope three
+#                   deep to a long shelf, sand across the shelf and a block
+#                   to play round
+#   3  the saddle   a wide valley -- down two into it -- that narrows to a
+#                   climb of three and a half up to the cup: pads in the
+#                   valley, pointing up
+#
+# A slope is a slab tilted about its own x: positive runs down toward +z, its
+# top edge on the level above and its bottom on the one below; turned a
+# quarter (yaw 90) it runs down toward +x.
+#   run golf_course_ridge.etcs game=<GolfMatch>
+requires game [GolfMatch]
+game.AddCourse(ridge)
+# Its look: turf, walls, sand, sky.
+game.SetTheme(0.3, 0.58, 0.5, 0.36, 0.38, 0.46, 0.84, 0.83, 0.76, 0.44, 0.38, 0.64)
+
+# ── 1, the hump: 0, 2, 0 -- twelve wide ─────────────────────────────────────
+game.AddHole(3)
+game.AddGreen(0.0, -0.5, 4.0, 12.0, 1.0, 16.0, 0.0, 0.0)
+game.AddGreen(0.0, 0.5097, 17.0981, 12.0, 1.0, 10.198, -11.3099, 0.0)
+game.AddGreen(0.0, 0.5, 25.0, 12.0, 3.0, 6.0, 0.0, 0.0)
+game.AddGreen(0.0, 0.5097, 32.9019, 12.0, 1.0, 10.198, 11.3099, 0.0)
+game.AddGreen(0.0, -0.5, 47.0, 12.0, 1.0, 18.0, 0.0, 0.0)
+game.AddWall(-6.3, 0.75, 26.0, 0.6, 3.5, 61.2, 0.0, 0.0)
+game.AddWall(6.3, 0.75, 26.0, 0.6, 3.5, 61.2, 0.0, 0.0)
+game.AddWall(0.0, 0.75, -4.3, 12.0, 3.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, 0.75, 56.3, 12.0, 3.5, 0.6, 0.0, 0.0)
+game.AddCup(0.0, 48.0)
+game.AddTee(0.0, 0.0)
+game.AddPad(0.0, 8.0, 0.0)
+game.AddSpot(-3.0, 6.0)
+game.AddSpot(3.0, 42.0)
+
+# ── 2, the drop: an elbow, 0 then -3 to the east ────────────────────────────
+game.AddHole(3)
+game.AddGreen(0.0, -2.0, 10.0, 12.0, 4.0, 28.0, 0.0, 0.0)
+game.AddGreen(11.8787, -1.9851, 18.0, 12.0, 1.0, 12.3693, 14.0362, 90.0)
+game.AddGreen(31.0, -3.5, 18.0, 26.0, 1.0, 12.0, 0.0, 0.0)
+game.AddWall(-6.3, -1.75, 10.0, 0.6, 4.5, 29.2, 0.0, 0.0)
+game.AddWall(0.0, -1.75, -4.3, 12.0, 4.5, 0.6, 0.0, 0.0)
+game.AddWall(6.3, -1.75, 3.7, 0.6, 4.5, 15.4, 0.0, 0.0)
+game.AddWall(25.3, -1.75, 11.7, 38.6, 4.5, 0.6, 0.0, 0.0)
+game.AddWall(19.3, -1.75, 24.3, 50.6, 4.5, 0.6, 0.0, 0.0)
+game.AddWall(44.3, -3.25, 18.0, 0.6, 1.5, 12.0, 0.0, 0.0)
+game.AddSand(28.0, -2.97, 18.0, 4.0, 0.06, 12.0, 0.0, 0.0)
+game.AddWall(34.0, -2.75, 15.0, 3.0, 0.5, 3.0, 0.0, 0.0)
+game.AddCup(39.0, 20.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(3.0, 20.0)
+game.AddSpot(22.0, 15.0)
+
+# ── 3, the saddle: 0, -2 (twenty wide), 1.5 (ten wide) ──────────────────────
+game.AddHole(4)
+game.AddGreen(0.0, -1.5, 3.0, 20.0, 3.0, 14.0, 0.0, 0.0)
+game.AddGreen(0.0, -1.4903, 14.9019, 20.0, 1.0, 10.198, 11.3099, 0.0)
+game.AddGreen(0.0, -2.5, 27.0, 20.0, 1.0, 14.0, 0.0, 0.0)
+game.AddGreen(0.0, -0.7351, 41.1213, 10.0, 1.0, 14.4309, -14.0362, 0.0)
+game.AddGreen(0.0, -0.75, 56.0, 10.0, 4.5, 16.0, 0.0, 0.0)
+game.AddWall(-10.3, -1.25, 15.0, 0.6, 3.5, 39.2, 0.0, 0.0)
+game.AddWall(10.3, -1.25, 15.0, 0.6, 3.5, 39.2, 0.0, 0.0)
+game.AddWall(0.0, -1.25, -4.3, 20.0, 3.5, 0.6, 0.0, 0.0)
+game.AddWall(-7.5, -2.25, 34.3, 5.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(7.5, -2.25, 34.3, 5.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(-5.3, -0.5, 49.6, 0.6, 5.0, 30.0, 0.0, 0.0)
+game.AddWall(5.3, -0.5, 49.6, 0.6, 5.0, 30.0, 0.0, 0.0)
+game.AddWall(0.0, -0.5, 64.3, 10.0, 5.0, 0.6, 0.0, 0.0)
+game.AddWall(5.0, -1.75, 27.0, 3.0, 0.5, 3.0, 0.0, 0.0)
+game.AddCup(0.0, 58.0)
+game.AddTee(0.0, 0.0)
+game.AddPad(-2.0, 31.0, 0.0)
+game.AddPad(2.0, 31.0, 0.0)
+game.AddSpot(-7.0, 24.0)
+game.AddSpot(3.0, 52.0)

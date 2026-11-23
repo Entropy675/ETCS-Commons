@@ -1,0 +1,5 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# A seat in a far trace: `detach session_emit.etcs src=<Trace> dst=<Trace surface>`
+requires src [Trace]
+src.Emit() -> dst.Take()

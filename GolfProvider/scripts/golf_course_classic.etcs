@@ -1,0 +1,68 @@
+#!/usr/bin/env etcs
+# THE CLASSIC: the three holes golf began with, as data (GolfMatch.AddHole and
+# what follows each), and a pair of spots for powers on each.
+#
+#   1  the flat one    straight up the green, a block to play round and a
+#                      ridge to play over
+#   2  the step down   from a terrace three up, down a slope to the cup's
+#                      level; a block in the straight line
+#   3  the climb       up a slope to a terrace two up, past a sand trap half
+#                      a unit deep in the straight line
+#
+# A hole's coordinates are its own, the tee at the origin, play toward +z.
+# Slabs are middles and sizes (AddGreen/AddWall/AddSand x y z w h d tilt yaw);
+# the cup cuts the level green under it (GolfCourse::CutCup).
+#   run golf_course_classic.etcs game=<GolfMatch>
+requires game [GolfMatch]
+game.AddCourse(classic)
+
+# ── 1, the flat one ─────────────────────────────────────────────────────────
+game.AddHole(3)
+game.AddGreen(0.0, -0.5, 24.0, 16.0, 1.0, 56.0, 0.0, 0.0)
+game.AddGreen(-2.4, -0.05, 32.0, 10.0, 0.3, 2.4, 12.0, 0.0)
+game.AddWall(-8.3, -0.25, 24.0, 0.6, 1.5, 57.2, 0.0, 0.0)
+game.AddWall(8.3, -0.25, 24.0, 0.6, 1.5, 57.2, 0.0, 0.0)
+game.AddWall(0.0, -0.25, 52.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(2.8, 0.25, 22.0, 3.2, 0.5, 3.2, 0.0, 0.0)
+game.AddCup(0.0, 44.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-5.0, 12.0)
+game.AddSpot(5.0, 36.0)
+
+# ── 2, the step down: the terrace's top at 3, the green's at 0 ──────────────
+game.AddHole(3)
+game.AddGreen(0.0, 1.0, 6.0, 16.0, 4.0, 20.0, 0.0, 0.0)
+game.AddGreen(0.0, 1.0149, 21.8787, 16.0, 1.0, 12.369, 14.036, 0.0)
+game.AddGreen(0.0, -0.5, 40.0, 16.0, 1.0, 24.0, 0.0, 0.0)
+game.AddWall(-8.3, 1.25, 11.7, 0.6, 4.5, 32.6, 0.0, 0.0)
+game.AddWall(8.3, 1.25, 11.7, 0.6, 4.5, 32.6, 0.0, 0.0)
+game.AddWall(-8.3, -0.25, 40.3, 0.6, 1.5, 24.6, 0.0, 0.0)
+game.AddWall(8.3, -0.25, 40.3, 0.6, 1.5, 24.6, 0.0, 0.0)
+game.AddWall(0.0, 1.25, -4.3, 16.0, 4.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, 52.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, 0.25, 37.0, 3.2, 0.5, 3.2, 0.0, 0.0)
+game.AddCup(0.0, 44.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-5.0, 8.0)
+game.AddSpot(5.0, 40.0)
+
+# ── 3, the climb: a trap cut into the green, the terrace's top at 2 ────────
+game.AddHole(3)
+game.AddGreen(0.0, -0.5, 1.8, 16.0, 1.0, 11.6, 0.0, 0.0)
+game.AddGreen(0.0, -0.5, 14.2, 16.0, 1.0, 3.6, 0.0, 0.0)
+game.AddGreen(-5.2, -0.5, 10.0, 5.6, 1.0, 4.8, 0.0, 0.0)
+game.AddGreen(5.2, -0.5, 10.0, 5.6, 1.0, 4.8, 0.0, 0.0)
+game.AddSand(0.0, -1.0, 10.0, 4.8, 1.0, 4.8, 0.0, 0.0)
+game.AddGreen(0.0, 0.5068, 22.0822, 16.0, 1.0, 12.166, -9.462, 0.0)
+game.AddGreen(0.0, 0.5, 40.0, 16.0, 3.0, 24.0, 0.0, 0.0)
+game.AddWall(-8.3, -0.25, 5.7, 0.6, 1.5, 20.6, 0.0, 0.0)
+game.AddWall(8.3, -0.25, 5.7, 0.6, 1.5, 20.6, 0.0, 0.0)
+game.AddWall(-8.3, 0.75, 34.3, 0.6, 3.5, 36.6, 0.0, 0.0)
+game.AddWall(8.3, 0.75, 34.3, 0.6, 3.5, 36.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, 0.75, 52.3, 16.0, 3.5, 0.6, 0.0, 0.0)
+game.AddCup(0.0, 44.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-6.0, 3.0)
+game.AddSpot(6.0, 34.0)

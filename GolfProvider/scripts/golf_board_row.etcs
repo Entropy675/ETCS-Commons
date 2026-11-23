@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# A row of the board: the match places it, writes it and colours it.
+#   run golf_board_row.etcs eye=<Camera> game=<GolfMatch>
+requires eye [Camera]
+requires game [GolfMatch]
+eye.spawn(RenderProvider::TextLabel row)
+row.Create(16)
+row.SetColor(1.0, 1.0, 0.92, 1.0)
+row.SetBackground(0.0, 0.0, 0.0, 0.55)
+row.SetPadding(3)
+row.SetOrder(12)
+game.AddBoardRow(@row)

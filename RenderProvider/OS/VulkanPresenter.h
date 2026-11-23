@@ -15,7 +15,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#ifndef _WIN32
 #include <dlfcn.h>
+#endif
 
 static constexpr uint32_t VK_PRESENTER_FRAMES_IN_FLIGHT = 2;
 // Distinct blit sources one window keeps textures for -- a layer stack, in
@@ -258,6 +260,7 @@ private:
     };
     // 128 bytes, the push-constant floor every device guarantees: the whole
     // transform, the rotation for the normals, and the colour.
+    // The model's columns as vec4s, their w's the glow: forward * strength (mesh.vert).
     struct MeshPush { float mvp[16]; float rot[12]; float color[4]; };
     struct UploadJob
     {
@@ -366,12 +369,23 @@ private:
 
     static std::string own_module_dir()
     {
+#if defined(_WIN32)
+        HMODULE self = nullptr;
+        char buf[MAX_PATH];
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCSTR>(&VulkanPresenter::own_module_dir), &self))
+            return "";
+        const DWORD n = GetModuleFileNameA(self, buf, sizeof(buf));
+        if (n == 0 || n == sizeof(buf)) return "";
+        std::string path(buf, n);
+#else
         Dl_info info{};
         if (dladdr(reinterpret_cast<const void*>(&VulkanPresenter::own_module_dir), &info) == 0
             || info.dli_fname == nullptr)
             return "";
         std::string path = info.dli_fname;
-        const size_t slash = path.find_last_of('/');
+#endif
+        const size_t slash = path.find_last_of("/\\");
         return (slash == std::string::npos) ? "" : path.substr(0, slash + 1);
     }
 
@@ -495,7 +509,8 @@ private:
             meshLayoutInfo.pushConstantRangeCount = 1;
             meshLayoutInfo.pPushConstantRanges    = &meshPush;
             if (vkCreatePipelineLayout(dev, &meshLayoutInfo, nullptr, &m_meshPipelineLayout) != VK_SUCCESS
-                || !createScenePass() || !buildMeshPipeline())
+                || !createScenePass() || !buildMeshPipeline(0, m_meshPipeline) || !buildMeshPipeline(1, m_glowPipeline)
+                || !buildMeshPipeline(2, m_smokePipeline))
                 ETCS_LOG("VulkanPresenter", "the mesh pipeline could not be made -- scenes will not draw.");
         }
         return true;
@@ -567,9 +582,14 @@ private:
 
     // Position and normal in, depth tested, no blending (the depth buffer
     // decides), no culling (the host rasteriser draws every face too), and
-    // the viewport dynamic because every target has its own size.
-    bool buildMeshPipeline()
+    // the viewport dynamic because every target has its own size. The GLOW
+    // pipeline (soft 1) is the same shaders added on (src alpha, one), the
+    // SMOKE one (soft 2) laid over (src alpha, one minus src alpha); both are
+    // tested against the solids' depth and write none (Scene3D::SetGlow,
+    // SetSmoke).
+    bool buildMeshPipeline(int soft, VkPipeline& out)
     {
+        const bool glow = soft != 0;
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = m_meshVertShader; stages[0].pName = "main";
         stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = m_meshFragShader; stages[1].pName = "main";
@@ -598,9 +618,16 @@ private:
         msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO; msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo depth{};
         depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depth.depthTestEnable = VK_TRUE; depth.depthWriteEnable = VK_TRUE; depth.depthCompareOp = VK_COMPARE_OP_LESS;
+        depth.depthTestEnable = VK_TRUE; depth.depthWriteEnable = glow ? VK_FALSE : VK_TRUE; depth.depthCompareOp = VK_COMPARE_OP_LESS;
         VkPipelineColorBlendAttachmentState ba{};
         ba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        if (glow)
+        {
+            ba.blendEnable = VK_TRUE;
+            ba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            ba.dstColorBlendFactor = soft == 2 ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE; ba.colorBlendOp = VK_BLEND_OP_ADD;
+            ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;      ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE; ba.alphaBlendOp = VK_BLEND_OP_ADD;
+        }
         VkPipelineColorBlendStateCreateInfo blend{};
         blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO; blend.attachmentCount = 1; blend.pAttachments = &ba;
         VkGraphicsPipelineCreateInfo ci{};
@@ -617,9 +644,9 @@ private:
         ci.pColorBlendState    = &blend;
         ci.layout              = m_meshPipelineLayout;
         ci.renderPass          = m_scenePass;
-        if (vkCreateGraphicsPipelines(m_instance->GetDevice(), VK_NULL_HANDLE, 1, &ci, nullptr, &m_meshPipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(m_instance->GetDevice(), VK_NULL_HANDLE, 1, &ci, nullptr, &out) != VK_SUCCESS)
         {
-            ETCS_LOG("VulkanPresenter", "vkCreateGraphicsPipelines (mesh) failed.");
+            ETCS_LOG("VulkanPresenter", "vkCreateGraphicsPipelines (" << (soft == 2 ? "smoke" : glow ? "glow" : "mesh") << ") failed.");
             return false;
         }
         return true;
@@ -790,14 +817,25 @@ private:
             VkRect2D scissor{ { 0, 0 }, { t.w, t.h } };
             vkCmdSetViewport(cmd, 0, 1, &viewport);
             vkCmdSetScissor(cmd, 0, 1, &scissor);
-            float vp[16];
+            float vp[16], fwd[3];
             device_mul4(sc.proj, sc.view, vp);
+            device_forward(sc.view, fwd);
             // Nodes sharing a mesh keep its buffers bound: a scene of boxes
-            // is one bind and a push + draw per node.
+            // is one bind and a push + draw per node. The soft ones come last,
+            // farthest first (DeviceMeshOp): the pipeline follows their kind.
             ETCS::RID bound = 0;
             const MeshBuf* mb = nullptr;
+            int kind = 0;
             for (const DeviceMeshOp& op : sc.meshes)
             {
+                const int k = op.smoke > 0.0f ? 2 : op.glow > 0.0f ? 1 : 0;
+                if (k != kind)
+                {
+                    const VkPipeline pipe = k == 2 ? m_smokePipeline : k == 1 ? m_glowPipeline : m_meshPipeline;
+                    if (pipe == VK_NULL_HANDLE) break;
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                    kind = k;
+                }
                 if (!mb || op.mesh != bound)
                 {
                     auto mit = m_meshes.find(op.mesh);
@@ -810,8 +848,13 @@ private:
                 }
                 MeshPush pc{};
                 device_mul4(vp, op.model, pc.mvp);
-                for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) pc.rot[c * 4 + r] = op.model[c * 4 + r];
-                for (int i = 0; i < 4; ++i) pc.color[i] = op.color[i];
+                for (int c = 0; c < 3; ++c)
+                {
+                    for (int r = 0; r < 3; ++r) pc.rot[c * 4 + r] = op.model[c * 4 + r];
+                    pc.rot[c * 4 + 3] = fwd[c] * device_soft(op);
+                }
+                for (int i = 0; i < 3; ++i) pc.color[i] = op.color[i];
+                pc.color[3] = device_alpha(op);
                 vkCmdPushConstants(cmd, m_meshPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
                 vkCmdDrawIndexed(cmd, mb->indexCount, 1, 0, 0, 0);
             }
@@ -1316,6 +1359,8 @@ private:
             for (auto& [rid, mb] : m_meshes) { (void)rid; destroyMesh(mb); }
             m_meshes.clear();
             if (m_meshPipeline)       { vkDestroyPipeline(dev, m_meshPipeline, nullptr);             m_meshPipeline = VK_NULL_HANDLE; }
+            if (m_glowPipeline)       { vkDestroyPipeline(dev, m_glowPipeline, nullptr);             m_glowPipeline = VK_NULL_HANDLE; }
+            if (m_smokePipeline)      { vkDestroyPipeline(dev, m_smokePipeline, nullptr);            m_smokePipeline = VK_NULL_HANDLE; }
             if (m_meshPipelineLayout) { vkDestroyPipelineLayout(dev, m_meshPipelineLayout, nullptr); m_meshPipelineLayout = VK_NULL_HANDLE; }
             if (m_scenePass)          { vkDestroyRenderPass(dev, m_scenePass, nullptr);              m_scenePass = VK_NULL_HANDLE; }
             if (m_pipelineLayout)     { vkDestroyPipelineLayout(dev, m_pipelineLayout, nullptr);     m_pipelineLayout = VK_NULL_HANDLE; }
@@ -1369,6 +1414,8 @@ private:
     VkRenderPass          m_scenePass          = VK_NULL_HANDLE;
     VkPipelineLayout      m_meshPipelineLayout = VK_NULL_HANDLE;
     VkPipeline            m_meshPipeline       = VK_NULL_HANDLE;
+    VkPipeline            m_glowPipeline       = VK_NULL_HANDLE;   // the same, added on (Scene3D::SetGlow)
+    VkPipeline            m_smokePipeline      = VK_NULL_HANDLE;   // the same, laid over (Scene3D::SetSmoke)
     VkShaderModule        m_meshVertShader = VK_NULL_HANDLE, m_meshFragShader = VK_NULL_HANDLE;
     std::unordered_map<ETCS::RID, MeshBuf> m_meshes;
     bool                  m_meshWarned = false;

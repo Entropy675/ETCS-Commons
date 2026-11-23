@@ -37,6 +37,7 @@
     #include "NetworkProvider/HttpsWire.h"
     #include "NetworkProvider/HttpsRelation.h"
     #include "NetworkProvider/DnsRelation.h"
+    #include "NetworkProvider/FileRelation.h"
     #include "NetworkProvider/Embassy.h"
     // Not a tag: the in-module pipe the parse verbs drive directly.
     #include "NetworkProvider/LocalPipePair.h"

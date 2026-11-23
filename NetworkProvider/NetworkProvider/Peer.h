@@ -39,18 +39,20 @@ public:
         std::string err;
         const int fd = etcs_ws::link_dial(url, insecure, err);
         if (fd < 0) { ETCS_LOG("Peer", "Connect " << url << ": " << err); return false; }
-        std::string host, why;
-        if (!etcs_link::hello_dial(fd, name_, host, &why))
+        std::string why;
+        etcs_link::Link link;
+        if (!etcs_link::hello_dial(fd, name_, link, &why))
         {
             ETCS_LOG("Peer", "Connect " << url << ": " << (why.empty() ? "no room answered there." : why));
             ::close(fd);
             return false;
         }
-        edge_ = std::make_shared<etcs_link::Edge>(fd, getArena(), true, host, &exports_);
+        edge_ = std::make_shared<etcs_link::Edge>(fd, getArena(), true, link, &exports_);
         edge_->start();
         url_ = url;
         claim(url, getRID());
-        ETCS_LOG("Peer", "linked to '" << host << "' at " << url << " (RID:" << getRID() << ")");
+        ETCS_LOG("Peer", "linked to '" << link.far_name << "' at " << url << " (RID:" << getRID() << "), "
+                 << etcs_link::describe(link.far));
         return true;
     }
 

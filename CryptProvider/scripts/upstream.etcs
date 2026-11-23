@@ -1,0 +1,30 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── THE SITE, FROM HERE ──────────────────────────────────────────────────────
+#
+#     etcs modules/CryptProvider/scripts/upstream.etcs
+#
+# Asks anticurrententropy.com's registrar for ACE's half of this loader's
+# chain, then reads the site's list of what it serves and fetches what the
+# site has moved past -- every binary, when the site is in a newer epoch. What
+# this loader's own key signed is the developer's, and is left alone. All of
+# it is the next session's; this one keeps what it mapped.
+#
+# Another site: replace the Origin. A site whose certificate the system's
+# bundle does not hold: to_site.SetCaFile(<pem>) before Activate.
+
+spawn CryptProvider::Upstream site
+spawn NetworkProvider::HttpsRelation to_site
+to_site.Origin(https://anticurrententropy.com)
+to_site.Target(Directory)
+to_site.Activate(@site)
+spawn NetworkProvider::Embassy site_embassy
+site_embassy.Advertise(ace https @to_site)
+site_embassy.Open()
+site.SetEmbassy(@site_embassy)
+site.SetRelation(ace)
+
+site.Register()
+site.Update()
+site_embassy.Close()

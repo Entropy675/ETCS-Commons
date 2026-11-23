@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 /*
@@ -64,6 +65,7 @@ namespace KartArena
         Fixed width, up, flat, down, height;
         Fixed sx, cz;                  // derived: the direction (sin yaw, cos yaw)
         Fixed base;                    // derived: what it stands on (a pit's floor, or 0)
+        bool  level = false;           // Generate's: a way between levels (a bank, an exit, a stairwell), stretched with them
         Fixed length() const { return up + flat + down; }
     };
     struct Hill
@@ -103,7 +105,7 @@ namespace KartArena
     inline Fixed DeckThick() { return F(3, 4); }      // as drawn; nothing is under its top but air
     // THE ARENA: square, its walls' inside this far from the middle each way,
     // their top this high (kart_arena.etcs builds them to these).
-    inline Fixed Half() { return F(64); }
+    inline Fixed Half() { return F(96); }
     inline Fixed WallTop() { return F(4); }
 
     // A ramp's height at a point, and its slope there (rise per unit, along x
@@ -240,6 +242,9 @@ namespace KartArena
      *   spring   the same on level ground, and no pad at it
      *   block    level solid ground under it: not on a ramp or a hill, and
      *            wholly in a pit or wholly out
+     *   ramp     one that ends in a drop facing a wall has its lip on the
+     *            karts' bound (a kart's reach inside the wall), or well
+     *            back from it: no trench under the lip to be stuck in
      *   deck     room to drive under it, over the ground there (a block
      *            under one is a pillar)
      *   pit      a ramp or a hill wholly in it or wholly out, and a hill
@@ -249,7 +254,62 @@ namespace KartArena
      *            it is deep
      *   lava     a pit that needs no way out; no spawn, box, pad or spring
      *            on its floor
+     *   bare     no stretch of ground with nothing on it: everywhere a kart
+     *            can drive is within BareReach() of something to drive at,
+     *            over, under or round -- a block, a ramp, a hill, a deck, a
+     *            pit's edge, a pad, a spring, a box (Nearest)
      */
+    inline Fixed BareReach() { return F(26); }
+    // How far (x, z) is from the nearest thing on the map: a pad, a spring or a
+    // box by its middle; a block, a ramp, a hill or a deck by its outline (a
+    // turned one by the ring round it); a pit by its edge, from either side.
+    inline Fixed Nearest(const Map& m, Fixed x, Fixed z)
+    {
+        Fixed best = F(100000);
+        auto point = [&](Fixed px, Fixed pz) { best = Fixed::Min(best, Fixed::Length(x - px, Fixed::Zero(), z - pz)); };
+        auto round = [&](Fixed px, Fixed pz, Fixed r) { best = Fixed::Min(best, Fixed::Max(Fixed::Zero(), Fixed::Length(x - px, Fixed::Zero(), z - pz) - r)); };
+        auto rect = [&](Fixed px, Fixed pz, Fixed w, Fixed d) {
+            const Fixed dx = (x - px).Abs() - w * Fixed::Half(), dz = (z - pz).Abs() - d * Fixed::Half();
+            return std::pair<Fixed, Fixed>(dx, dz);
+        };
+        for (const Pad& p : m.pads)       point(p.x, p.z);
+        for (const Spring& p : m.springs) point(p.x, p.z);
+        for (const Spot& p : m.pickups)   point(p.x, p.z);
+        for (const Hill& k : m.hills)     round(k.x, k.z, k.radius);
+        // An outline square to the arena, or turned a quarter: by its edge.
+        auto box = [&](Fixed px, Fixed pz, Fixed w, Fixed d, int yaw) {
+            const int q = ((yaw % 180) + 180) % 180;
+            if (q != 0 && q != 90) { round(px, pz, Fixed::Min(w, d) * Fixed::Half()); return; }
+            const auto e = rect(px, pz, q ? d : w, q ? w : d);
+            best = Fixed::Min(best, Fixed::Length(Fixed::Max(e.first, Fixed::Zero()), Fixed::Zero(), Fixed::Max(e.second, Fixed::Zero())));
+        };
+        for (const Block& b : m.blocks)   box(b.x, b.z, b.w, b.d, b.yaw);
+        for (const Ramp& r : m.ramps)     box(r.x, r.z, r.width, r.length(), r.yaw);
+        for (const Deck& d : m.decks)     box(d.x, d.z, d.w, d.d, 0);
+        for (const Pit& p : m.pits)
+        {
+            const auto e = rect(p.x, p.z, p.w, p.d);
+            const bool in = e.first.raw < 0 && e.second.raw < 0;
+            best = Fixed::Min(best, in ? Fixed::Min(-e.first, -e.second)
+                                       : Fixed::Length(Fixed::Max(e.first, Fixed::Zero()), Fixed::Zero(), Fixed::Max(e.second, Fixed::Zero())));
+        }
+        return best;
+    }
+    // The ground a kart drives on, tried every eight units: is it bare there?
+    // Not a lava pit's floor (nobody drives there), nor under the middle of a
+    // long thing, which Nearest calls near.
+    template <typename Each> inline void EachBare(const Map& m, Each each)
+    {
+        const int64_t edge = (Half() - F(8)).ToInt() / 8 * 8;
+        for (int64_t i = -edge; i <= edge; i += 8)
+            for (int64_t k = -edge; k <= edge; k += 8)
+            {
+                const Fixed x = F(i), z = F(k);
+                bool molten = false;
+                for (const Pit& p : m.pits) molten = molten || (p.lava && Over(x, z, p.x, p.z, p.w, p.d));
+                if (!molten && Nearest(m, x, z) > BareReach()) each(x, z);
+            }
+    }
     inline Fixed Headroom() { return F(3, 2); }       // under a deck, over the highest ground below it
     inline Fixed HillSkirt() { return F(8, 5); }      // of a hill's radius: how far its dome runs on under the ground
     inline std::string Faults(const Map& m)
@@ -320,6 +380,22 @@ namespace KartArena
                                               b.z - turn[i].s * hw * F(u) + turn[i].c * hd * F(v)) == b.base;
             if (!level) say("block", b.x, b.z, "not on level ground");
         }
+        // A ramp that ends in a drop facing a wall, short of the karts' bound
+        // by less than a kart can turn in: the trench under its lip is a place
+        // to fall into, be stuck in, and not be seen.
+        for (const Ramp& r : m.ramps)
+        {
+            if (!r.down.IsZero()) continue;
+            const bool along_x = r.sx.Abs() > F(99, 100), along_z = r.cz.Abs() > F(99, 100);
+            if (!along_x && !along_z) continue;
+            const Fixed hl = r.length() * Fixed::Half();
+            const Fixed ex = r.x + r.sx * hl, ez = r.z + r.cz * hl;   // its lip's middle
+            const Fixed out = along_x ? ex * r.sx : ez * r.cz;         // how far out, the way it goes
+            const Fixed gap = Half() - F(1) - out;
+            if (gap < F(1, 50) || !(gap < F(4))) continue;
+            if (Solid(m, ex + r.sx * gap * Fixed::Half(), ez + r.cz * gap * Fixed::Half()) < r.base + r.height - F(35, 100))
+                say("ramp", r.x, r.z, "a trench between its lip and the wall");
+        }
         for (const Deck& d : m.decks)
         {
             Fixed top = F(-1000);
@@ -374,6 +450,8 @@ namespace KartArena
             }
             if (!out_by) say("pit", p.x, p.z, "no way out");
         }
+        int bare = 0;
+        EachBare(m, [&](Fixed x, Fixed z) { if (bare++ < 8) say("bare", x, z, "a stretch of ground with nothing on it"); });
         if (!out.empty()) out.pop_back();
         return out;
     }
@@ -404,24 +482,32 @@ namespace KartArena
      * KartArms::Next, so the same seed is the same map anywhere.
      *
      * The numbers below are of a plan 64 across; the map is then stretched to
-     * the arena (Stretch), which keeps everything in it as clear of everything
-     * else as the plan had it, and more. Heights are not stretched: they are
-     * the map's as given, and nothing that may land under the storey is too
-     * high to leave room there (Headroom).
+     * the arena (Stretch): every position 3x, the LEVELS -- storey, low
+     * ground and the ramps between them -- 3x too, so they stay joined, and
+     * everything that stands on the floor 2x, so the gaps between things are
+     * wider than the plan had them. Heights are not stretched: they are the
+     * map's as given, and nothing that may land under the storey is too high
+     * to leave room there (Headroom).
      */
     inline Fixed StoreyHeight() { return F(5); }
     inline Fixed LowDepth()     { return F(5, 2); }
-    // A map made `k` times as far across: where things are and how far they
-    // reach over the ground, not how high they stand. A pad, a spring, a box
-    // and a spawn stay the size they are, further apart.
-    inline void Stretch(Map& m, int k)
+    // A map made further across: every position `at` times as far out, the
+    // levels -- decks, pits and the ramps marked as between them -- `level`
+    // times as big, and what stands on the floor -- blocks, hills, the other
+    // ramps -- `thing` times. Not how high anything stands. A pad, a spring,
+    // a box and a spawn stay the size they are, further apart.
+    inline void Stretch(Map& m, int at, int level, int thing)
     {
-        const Fixed f = F(k);
-        for (Block& b : m.blocks)   { b.x = b.x * f; b.z = b.z * f; b.w = b.w * f; b.d = b.d * f; }
-        for (Ramp& r : m.ramps)     { r.x = r.x * f; r.z = r.z * f; r.width = r.width * f; r.up = r.up * f; r.flat = r.flat * f; r.down = r.down * f; }
-        for (Hill& h : m.hills)     { h.x = h.x * f; h.z = h.z * f; h.radius = h.radius * f; }
-        for (Deck& d : m.decks)     { d.x = d.x * f; d.z = d.z * f; d.w = d.w * f; d.d = d.d * f; }
-        for (Pit& p : m.pits)       { p.x = p.x * f; p.z = p.z * f; p.w = p.w * f; p.d = p.d * f; }
+        const Fixed f = F(at), lv = F(level), th = F(thing);
+        for (Block& b : m.blocks)   { b.x = b.x * f; b.z = b.z * f; b.w = b.w * th; b.d = b.d * th; }
+        for (Ramp& r : m.ramps)
+        {
+            const Fixed g = r.level ? lv : th;
+            r.x = r.x * f; r.z = r.z * f; r.width = r.width * g; r.up = r.up * g; r.flat = r.flat * g; r.down = r.down * g;
+        }
+        for (Hill& h : m.hills)     { h.x = h.x * f; h.z = h.z * f; h.radius = h.radius * th; }
+        for (Deck& d : m.decks)     { d.x = d.x * f; d.z = d.z * f; d.w = d.w * lv; d.d = d.d * lv; }
+        for (Pit& p : m.pits)       { p.x = p.x * f; p.z = p.z * f; p.w = p.w * lv; p.d = p.d * lv; }
         for (Pad& p : m.pads)       { p.x = p.x * f; p.z = p.z * f; }
         for (Spring& p : m.springs) { p.x = p.x * f; p.z = p.z * f; }
         for (Spot& p : m.spawns)    { p.x = p.x * f; p.z = p.z * f; }
@@ -432,7 +518,7 @@ namespace KartArena
         m.blocks.clear(); m.ramps.clear(); m.hills.clear(); m.pads.clear(); m.spawns.clear(); m.pickups.clear();
         m.springs.clear(); m.decks.clear(); m.pits.clear();
         m.generated = true;
-        const int stretch = static_cast<int>((Half() / F(32)).ToInt());
+        const int stretch = static_cast<int>((Half() / F(32)).ToInt());   // positions and levels; things 2x
         const Fixed lip = (Half() - F(1)) / F(stretch);   // the karts' bound, on the plan
         uint64_t r = seed | 1;
         auto pick = [&r](int lo, int hi) { return lo + static_cast<int>(KartArms::Next(r) % static_cast<uint64_t>(hi - lo + 1)); };
@@ -511,7 +597,7 @@ namespace KartArena
         for (int b = 0; b < banks; ++b)
         {
             const int side = (first + b * pick(1, 3)) % 4;
-            Ramp a; a.yaw = sides[side][0]; a.width = F(pick(20, 34)); a.up = F(pick(5, 7));
+            Ramp a; a.yaw = sides[side][0]; a.width = F(pick(20, 34)); a.up = F(pick(5, 7)); a.level = true;
             a.flat = a.down = Fixed::Zero(); a.height = F(pick(20, 30), 10);
             const Fixed at = lip - a.up * Fixed::Half();     // its lip on the karts' bound
             const Fixed along = F(pick(-4, 4));
@@ -529,7 +615,7 @@ namespace KartArena
             const size_t exits = m.ramps.size() + 4;
             for (int t = 0; t < 400 && m.ramps.size() < exits; ++t)
             {
-                Ramp a; a.width = F(4); a.up = F(7); a.flat = a.down = Fixed::Zero(); a.height = LowDepth();
+                Ramp a; a.width = F(4); a.up = F(7); a.flat = a.down = Fixed::Zero(); a.height = LowDepth(); a.level = true;
                 a.yaw = sides[toward ^ 1][0];    // rising back the other way, out of it
                 place(toward, line + a.up * Fixed::Half(), F(pick(-26, 26)), a.x, a.z);
                 const Fixed rad = Fixed::Length(a.up, Fixed::Zero(), a.width) * Fixed::Half();
@@ -578,7 +664,7 @@ namespace KartArena
                     {
                         const Fixed sv = ((from + w) & 1) ? -Fixed::One() : Fixed::One();
                         Well k; Ramp& a = k.ramp;
-                        a.width = well; a.up = climb; a.flat = a.down = Fixed::Zero(); a.height = StoreyHeight();
+                        a.width = well; a.up = climb; a.flat = a.down = Fixed::Zero(); a.height = StoreyHeight(); a.level = true;
                         a.yaw = sides[facing(toward, sv.IsPositive() ? 3 : 2)][0];   // rising in from that end
                         k.u = uc + su * (du - well) * Fixed::Half();
                         k.v = vc + sv * (dv - climb) * Fixed::Half();
@@ -667,7 +753,7 @@ namespace KartArena
             Hill k; k.radius = F(pick(5, 8)); k.height = F(pick(14, 24), 10);
             k.x = F(pick(-24, 24)); k.z = F(pick(-24, 24));
             // Its dome, drawn on under the ground twice its radius out, kept over the floor (Half + 4).
-            const Fixed floor = (Half() + F(4)) / F(stretch) - k.radius * F(2);
+            const Fixed floor = ((Half() + F(4)) - k.radius * F(4)) / F(stretch);   // 2r at twice the size
             if (k.x.Abs() > floor || k.z.Abs() > floor) continue;
             if (!clear(k.x, k.z, k.radius, k.radius)) continue;
             m.hills.push_back(k); taken.push_back({ k.x, k.z, k.radius });
@@ -709,7 +795,27 @@ namespace KartArena
             if (!clear(x, z, F(1))) continue;
             m.pickups.push_back({ x, z }); taken.push_back({ x, z, F(1) });
         }
-        Stretch(m, stretch);
+        Stretch(m, stretch, stretch, 2);
+        // No bare stretches: where the dice left one, something from them --
+        // a bump to hop, a pad (any of the four ways), or a box. Each is far
+        // from everything else there (that is what bare means), so it stands
+        // on one level piece and crosses nothing.
+        EachBare(m, [&](Fixed x, Fixed z) {
+            if (Nearest(m, x, z) <= BareReach()) return;   // the last one laid covers this
+            bool spawn = false;
+            for (const Spot& a : m.spawns) spawn = spawn || ((a.x - x).Abs() < F(12) && (a.z - z).Abs() < F(12));
+            // Within what the pools hold (kart_pool.etcs: ten domes, sixteen pads, twenty boxes).
+            int kind = spawn ? 2 : pick(0, 2);
+            if (kind == 0 && m.hills.size() >= 10) kind = 1;
+            if (kind == 1 && m.pads.size() >= 16) kind = 2;
+            if (kind == 2 && m.pickups.size() >= 20) kind = m.pads.size() < 16 && !spawn ? 1 : 0;
+            switch (kind)
+            {
+                case 0: { Hill k; k.x = x; k.z = z; k.radius = F(pick(5, 7)); k.height = F(pick(8, 14), 10); m.hills.push_back(k); break; }
+                case 1: { Pad p; p.x = x; p.z = z; p.yaw = pick(0, 3) * 90; m.pads.push_back(p); break; }
+                default: m.pickups.push_back({ x, z }); break;
+            }
+        });
         Prepare(m);
     }
 }

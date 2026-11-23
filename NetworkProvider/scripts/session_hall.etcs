@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# ── A HALL OF ONE'S OWN ──────────────────────────────────────────────────────
+#     run NetworkProvider/scripts/session_hall.etcs links=<LinkHub>
+# A Lobby every host lists its session in, published on the hub as `hall` --
+# what ChessProvider/scripts/chess_service.etcs opens on the site, for a
+# server that serves a game's page alone (serve_kart.etcs, serve_golf.etcs).
+requires links [LinkHub]
+spawn NetworkProvider::Lobby hall_list
+spawn NetworkProvider::Room hall
+hall.SetName(hall)
+hall.Publish(hall @hall_list Advertise Withdraw Watch)
+hall.Host(@links hall)

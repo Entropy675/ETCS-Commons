@@ -6,3 +6,4 @@
 *.o
 *_hashes.h
 Makefile
+.ace_exports_kernel.map

@@ -1,13 +1,15 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# GOLF, IN A WINDOW. Three holes: drag the ball back to aim, let go to putt.
+# GOLF, IN A WINDOW: a match of your own on every course, practising alone.
 #
 #     ./bin/etcs modules/GolfProvider/scripts/golf.etcs
 #
-# The same course and the same game the page runs (www/boot_golf.etcs); what
-# differs is the substrate: a window that runs its own loop, and a compositor
-# the camera draws into on the host.
+# The same courses and the same match the page runs (www/boot_golf.etcs);
+# what differs is the substrate: a window that runs its own loop, and a
+# compositor the camera draws into on the host. Hosting and joining are the
+# page's (NetworkProvider/scripts/session_host.etcs, session_join.etcs), and
+# a terminal here can run them too.
 
 spawn RenderProvider::Instance gpu
 gpu.Create()
@@ -32,10 +34,13 @@ world.Create(1.0, 1.0, 1.0)
 world.SetVisible(0)
 eye.SetScene(@world)
 
-# The game, named here so the terminal can reach it (game.Strokes(),
-# game.Reset()); the course builds the hole and hands it its pieces.
-spawn GolfProvider::GolfGame game
-run GolfProvider/scripts/golf_course.etcs anchor=world eye=eye game=game
+# The match, named here so the terminal can reach it (game.Scores(),
+# game.Status()); the world builds the pools and the courses and hands them over.
+spawn GolfProvider::GolfMatch game
+game.Create()
+run GolfProvider/scripts/golf_world.etcs anchor=world game=game
+run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye
+game.Practice(golfer)
 
 view.Clear(0.02, 0.02, 0.03, 1.0)
 view.Compose(@stage)

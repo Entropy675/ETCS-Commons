@@ -75,13 +75,13 @@ public:
     { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
-    // WHAT A VERB SETS IS A VALUE ON THE TAG SURFACE: speed, damping,
+    // WHAT A VERB SETS IS A VALUE ON THE TAG SURFACE: speed, damping, mass,
     // colour, order, sensitivity (and the family's emissivity, CausalBase),
     // each through the funnel under its own flag, so the record keeps the
     // verb, a replay sets it again and a store keeps what it says. The
     // members below are the working copies the step and the picture read,
     // and onValue is their one writer -- a verb, a replay and a restore all
-    // land there. Mass has no verb: it is what a box is, a constant.
+    // land there.
     Scene3D() = default;
     void onValue(const ETCS::Buffer& key, const std::string* value) override
     {
@@ -94,10 +94,21 @@ public:
             std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the step reads these under it
             (speed ? m_speed : m_damping) = Fixed::FromRaw(w[0]);
         }
+        else if (k == "mass")
+        {
+            const bool has = readWords(value, w, 1) && w[0] > 0;
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the step reads it under it
+            m_mass = has ? Fixed::FromRaw(w[0]) : Fixed::One();
+        }
         else if (k == "color")
         {
             if (!readWords(value, w, 4)) { for (int i = 0; i < 4; ++i) m_color[i] = kColor[i]; }
             else for (int i = 0; i < 4; ++i) m_color[i] = Fixed::FromRaw(w[i]).ToFloat();
+            markViewersDirty();
+        }
+        else if (k == "glow" || k == "smoke")
+        {
+            (k == "glow" ? m_glow : m_smoke) = readWords(value, w, 1) ? Fixed::FromRaw(w[0]).ToFloat() : 0.0f;
             markViewersDirty();
         }
         else if (k == "order")
@@ -310,6 +321,36 @@ public:
         this->addTag("color", words({ Fixed::From(r).raw, Fixed::From(g).raw, Fixed::From(b).raw, Fixed::From(a).raw }));
     }
     void SetOrder(int32_t z) { this->addTag("order", words({ z })); }
+    /*
+     * A GLOWING node gives light instead of taking it: its colour, times
+     * `strength` (0 is the lit solid every node is by default), is ADDED to
+     * what is behind it, strongest where its surface faces the eye and
+     * nothing where it turns edge-on -- so a glowing shape has no hard
+     * outline, and many overlapping read as one brighter cloud. It is seen
+     * behind solids (depth tested against them) and hides nothing itself
+     * (writes no depth), so it is drawn after them; every path draws it the
+     * same way (the host raster, shaders/mesh.frag, the WebGPU mesh pass).
+     */
+    void SetGlow(float strength)
+    {
+        if (strength <= 0.0f) { this->removeTag(ETCS::Buffer("glow")); return; }   // the default: a solid
+        else this->addTag("glow", words({ Fixed::From(strength).raw }));
+    }
+    /*
+     * A SMOKING node is see-through: its colour laid OVER what is behind it at
+     * `density` times its alpha, as much as its surface faces the eye and
+     * fading to nothing edge-on, as a glow fades -- so it dims and tints
+     * what is behind it, softly, and never adds light. Like a glow it is seen
+     * behind solids and hides nothing; smoke and glows are drawn after every
+     * solid, farthest first, so smoke in front of a fire dims it and a fire
+     * in front of smoke shines on it. A node with both is smoke. 0 puts it
+     * back to a lit solid.
+     */
+    void SetSmoke(float density)
+    {
+        if (density <= 0.0f) { this->removeTag(ETCS::Buffer("smoke")); return; }
+        this->addTag("smoke", words({ Fixed::From(density).raw }));
+    }
 
     // Terminal speed, in scene units per SECOND -- not per tick. The right
     // value is a property of the scene's scale, which the script knows and
@@ -332,6 +373,11 @@ public:
         if (per_sec >= 0.0f) this->addTag("damping", words({ Fixed::From(per_sec).raw }));
     }
     float Damping() const { return m_damping.ToFloat(); }
+    // What it weighs: 1 as made. Its rows keep energy, so a change is its speed's.
+    void SetMass(float m)
+    {
+        if (m > 0.0f) this->addTag("mass", words({ Fixed::From(m).raw }));
+    }
 
     // Whether this node's own box is drawn. Its children still are, and
     // their coordinates stay relative to a box that is still there -- how a
@@ -995,6 +1041,7 @@ public:
             {
                 std::vector<Node> nodes;
                 collectSubtree(Point3D{0,0,0}, nodes);
+                softSort(nodes, v);
                 coverRows();
                 projectToDevice(static_cast<SceneSink*>(raw), v, nodes);
                 m_depth_cam = 0;            // no host picture: DepthAt says so
@@ -1030,6 +1077,7 @@ public:
 
         std::vector<Node> nodes;
         collectSubtree(Point3D{0,0,0}, nodes);
+        softSort(nodes, v);
         coverRows();
         for (const Node& n : nodes)
         {
@@ -1148,6 +1196,9 @@ private:
         Point3D   pos;
         Point3D   half;
         float     color[4];
+        float     glow;       // SetGlow: 0 a lit solid, else added light, soft at its edges
+        float     smoke;      // SetSmoke: 0 none, else laid over what is behind, soft at its edges
+        bool soft() const { return glow > 0.0f || smoke > 0.0f; }
         Matrix4   rot;        // the node's own row 3, for the device (the host draws boxes axis-aligned)
         ETCS::RID mesh;       // 0: the unit box, scaled to the extent
     };
@@ -1203,6 +1254,36 @@ private:
             const uint8_t c[4] = { toByte(col[0]), toByte(col[1]),
                                    toByte(col[2]), toByte(col[3]) };
             for (uint32_t i = 0; i < w; ++i, d += 4) std::memcpy(d, c, 4);
+        }
+
+        // One pixel of a GLOW (SetGlow): its colour times `a` ADDED to what is
+        // there, the device's blend (one, one) on the colour. Through a
+        // surface with no bytes it is the run's own DrawRect, at that alpha.
+        void add(int32_t y, int32_t x, const float col[3], float a) const
+        {
+            if (a <= 0.0f) return;
+            if (dst) { dst->DrawRect(x, y, 1, 1, col[0], col[1], col[2], a > 1.0f ? 1.0f : a); return; }
+            uint8_t* base = px->PixelData();
+            if (!base) return;
+            uint8_t* d = base + static_cast<size_t>(y) * px->PixelStride() + static_cast<size_t>(x) * 4;
+            for (int i = 0; i < 3; ++i)
+            {
+                const float v = static_cast<float>(d[i]) + col[i] * a * 255.0f;
+                d[i] = static_cast<uint8_t>(v >= 255.0f ? 255.0f : v);
+            }
+        }
+        // One pixel of SMOKE (SetSmoke): its colour laid over what is there at
+        // `a`, the device's blend (src alpha, one minus src alpha).
+        void over(int32_t y, int32_t x, const float col[3], float a) const
+        {
+            if (a <= 0.0f) return;
+            if (a > 1.0f) a = 1.0f;
+            if (dst) { dst->DrawRect(x, y, 1, 1, col[0], col[1], col[2], a); return; }
+            uint8_t* base = px->PixelData();
+            if (!base) return;
+            uint8_t* d = base + static_cast<size_t>(y) * px->PixelStride() + static_cast<size_t>(x) * 4;
+            for (int i = 0; i < 3; ++i)
+                d[i] = static_cast<uint8_t>(static_cast<float>(d[i]) * (1.0f - a) + col[i] * a * 255.0f + 0.5f);
         }
     };
 
@@ -1293,6 +1374,8 @@ private:
             n.half = m_half;
             n.color[0] = m_color[0]; n.color[1] = m_color[1];
             n.color[2] = m_color[2]; n.color[3] = m_color[3];
+            n.glow = m_glow;
+            n.smoke = m_smoke;
             // A node's row 3 is its facing -- except the projection root's,
             // which the look control writes to aim the camera (applyLookTo):
             // that one is the viewer's, not the box's. The root by being the
@@ -1304,6 +1387,18 @@ private:
             out.push_back(n);
         }
         { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out, false); }
+        // The whole walk, solids first and the soft ones -- glow, smoke --
+        // after (each tested against every solid's depth, SetGlow, SetSmoke);
+        // softSort puts those farthest first, for the eye that draws them.
+        if (root) std::stable_partition(out.begin(), out.end(), [](const Node& n) { return !n.soft(); });
+    }
+    // The soft nodes at the walk's end, farthest from the eye first: smoke
+    // laid over smoke and fire is only right that way round.
+    static void softSort(std::vector<Node>& nodes, const View& v)
+    {
+        auto first = std::find_if(nodes.begin(), nodes.end(), [](const Node& n) { return n.soft(); });
+        auto depth = [&v](const Node& n) { return (n.pos.x - v.eye.x) * v.fwd.x + (n.pos.y - v.eye.y) * v.fwd.y + (n.pos.z - v.eye.z) * v.fwd.z; };
+        std::stable_sort(first, nodes.end(), [&](const Node& a, const Node& b) { return depth(a) > depth(b); });
     }
 
     /*
@@ -1341,6 +1436,8 @@ private:
             op.mesh = nd.mesh;
             modelOf(nd, op.model);
             for (int i = 0; i < 4; ++i) op.color[i] = nd.color[i];
+            op.glow = nd.glow;
+            op.smoke = nd.smoke;
             sink->AddMesh(op);
         }
     }
@@ -1643,6 +1740,14 @@ private:
  */
     void rasterBox(const Sink& sink, const View& v, const Node& n)
     {
+        if (n.soft())
+        {
+            // A glowing or smoking box is the unit box's mesh, soft (glowMesh).
+            static std::vector<float> bv; static std::vector<uint32_t> bi;
+            if (bv.empty()) device_unit_box(bv, bi);
+            glowMesh(sink, v, n, bv, bi);
+            return;
+        }
         Point3D c[8];
         for (int i = 0; i < 8; ++i) c[i] = toView(v, corner(n, i));
 
@@ -1679,6 +1784,7 @@ private:
     {
         const std::vector<float>&    vb = mesh.Vertices();
         const std::vector<uint32_t>& ib = mesh.Indices();
+        if (n.soft()) { glowMesh(sink, v, n, vb, ib); return; }
         static const float lx = 0.4f / 1.0028f, ly = 0.8f / 1.0028f, lz = 0.45f / 1.0028f;   // normalised (0.4, 0.8, 0.45)
         for (size_t t = 0; t + 2 < ib.size(); t += 3)
         {
@@ -1719,6 +1825,83 @@ private:
         }
         for (int i = 1; i + 1 < n; ++i)
             triangle(sink, v, s[0], s[i], s[i + 1], col);
+    }
+
+    /*
+     * A GLOWING mesh (SetGlow): each vertex's share of light is the glow
+     * times how squarely its surface faces the eye -- |n . forward|, to the
+     * power 1.5 so it falls off well before the edge -- and the triangle adds
+     * colour times that share, interpolated across it, wherever it is in
+     * front of the solids already drawn. The normal is turned by the inverse
+     * transpose of the node's rotation and extent (R S^-1), so a stretched
+     * shape fades at its true silhouette; shaders/mesh.frag does the same
+     * sum. A triangle reaching behind the near plane is left out: a glow
+     * that close is a flash across the whole view anyway. SMOKE (SetSmoke)
+     * is the same share, laid over instead of added.
+     */
+    void glowMesh(const Sink& sink, const View& v, const Node& n,
+                  const std::vector<float>& vb, const std::vector<uint32_t>& ib)
+    {
+        const float sx = std::max(n.half.x * 2.0f, 1e-6f), sy = std::max(n.half.y * 2.0f, 1e-6f),
+                    sz = std::max(n.half.z * 2.0f, 1e-6f);
+        auto share = [&](uint32_t i) {
+            const float lx = vb[i * 6 + 3] / sx, ly = vb[i * 6 + 4] / sy, lz = vb[i * 6 + 5] / sz;
+            const float nx = n.rot.at(0,0) * lx + n.rot.at(0,1) * ly + n.rot.at(0,2) * lz;
+            const float ny = n.rot.at(1,0) * lx + n.rot.at(1,1) * ly + n.rot.at(1,2) * lz;
+            const float nz = n.rot.at(2,0) * lx + n.rot.at(2,1) * ly + n.rot.at(2,2) * lz;
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            const float f = len > 0.0f ? std::fabs(nx * v.fwd.x + ny * v.fwd.y + nz * v.fwd.z) / len : 0.0f;
+            return (n.smoke > 0.0f ? n.smoke : n.glow) * f * std::sqrt(f) * n.color[3];
+        };
+        const float col[3] = { n.color[0], n.color[1], n.color[2] };
+        for (size_t t = 0; t + 2 < ib.size(); t += 3)
+        {
+            const uint32_t a = ib[t], b = ib[t + 1], c = ib[t + 2];
+            if ((a + 1) * 6 > vb.size() || (b + 1) * 6 > vb.size() || (c + 1) * 6 > vb.size()) continue;
+            const Point3D pa = toView(v, place(n, vb[a * 6], vb[a * 6 + 1], vb[a * 6 + 2]));
+            const Point3D pb = toView(v, place(n, vb[b * 6], vb[b * 6 + 1], vb[b * 6 + 2]));
+            const Point3D pc = toView(v, place(n, vb[c * 6], vb[c * 6 + 1], vb[c * 6 + 2]));
+            if (pa.z < v.near_p || pb.z < v.near_p || pc.z < v.near_p) continue;
+            if (pa.z > v.far_p && pb.z > v.far_p && pc.z > v.far_p) continue;
+            const float sa = share(a), sb = share(b), sc = share(c);
+            if (sa <= 0.0f && sb <= 0.0f && sc <= 0.0f) continue;
+            glowTriangle(sink, v, toScreen(v, pa), toScreen(v, pb), toScreen(v, pc), sa, sb, sc, col, n.smoke > 0.0f);
+        }
+    }
+    // The glow's triangle: covered and in front of the depth there, adding
+    // its interpolated share; the depth is read, never written.
+    void glowTriangle(const Sink& sink, const View& v, const Vertex& a, const Vertex& b, const Vertex& c,
+                      float sa, float sb, float sc, const float col[3], bool smoke)
+    {
+        const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if (std::fabs(area) < 1e-6f) return;
+        int32_t x0 = std::max<int32_t>(static_cast<int32_t>(std::floor(std::min({a.x, b.x, c.x}))), 0);
+        int32_t y0 = std::max<int32_t>(static_cast<int32_t>(std::floor(std::min({a.y, b.y, c.y}))), 0);
+        int32_t x1 = std::min<int32_t>(static_cast<int32_t>(std::ceil(std::max({a.x, b.x, c.x}))), static_cast<int32_t>(v.w) - 1);
+        int32_t y1 = std::min<int32_t>(static_cast<int32_t>(std::ceil(std::max({a.y, b.y, c.y}))), static_cast<int32_t>(v.h) - 1);
+        if (x1 < x0 || y1 < y0) return;
+        if (!sink.dst && !sink.px->PixelData()) return;
+        const float inv = 1.0f / std::fabs(area);
+        const float iza = 1.0f / a.z, izb = 1.0f / b.z, izc = 1.0f / c.z;
+        for (int32_t y = y0; y <= y1; ++y)
+        {
+            const float py = static_cast<float>(y) + 0.5f;
+            for (int32_t x = x0; x <= x1; ++x)
+            {
+                const float pxf = static_cast<float>(x) + 0.5f;
+                float w0 = (b.x - a.x) * (py - a.y) - (b.y - a.y) * (pxf - a.x);
+                float w1 = (c.x - b.x) * (py - b.y) - (c.y - b.y) * (pxf - b.x);
+                float w2 = (a.x - c.x) * (py - c.y) - (a.y - c.y) * (pxf - c.x);
+                if (area < 0.0f) { w0 = -w0; w1 = -w1; w2 = -w2; }
+                if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
+                const float la = w1 * inv, lb = w2 * inv, lc = w0 * inv;
+                const float inv_z = la * iza + lb * izb + lc * izc;
+                if (!(inv_z > 0.0f)) continue;
+                if (1.0f / inv_z >= m_depth[static_cast<size_t>(y) * v.w + x]) continue;
+                if (smoke) sink.over(y, x, col, la * sa + lb * sb + lc * sc);
+                else       sink.add(y, x, col, la * sa + lb * sb + lc * sc);
+            }
+        }
     }
 
     /*
@@ -2185,13 +2368,15 @@ private:
     uint32_t       m_mesh_epoch = 0;
     static constexpr float kColor[4] = {0.8f, 0.8f, 0.85f, 1.0f};
     float   m_color[4] = {kColor[0], kColor[1], kColor[2], kColor[3]};
+    float   m_glow = 0.0f;   // SetGlow; 0 a lit solid
+    float   m_smoke = 0.0f;  // SetSmoke; 0 none
     // Causal: they decide what an impulse is and how motion decays, so they
     // are Fixed and cross from a script's floats once, in their setters.
     static inline const Fixed kSpeed   = Fixed::FromInt(6);
     static inline const Fixed kDamping = Fixed::FromInt(8);
     Fixed   m_speed    = kSpeed;      // terminal, scene units per second
     Fixed   m_damping  = kDamping;    // kinetic -> heat, per second
-    Fixed   m_mass     = Fixed::One();
+    Fixed   m_mass     = Fixed::One();      // SetMass
     Fixed   m_drag_dt, m_drag_damping, m_drag_factor;   // exp(-k dt) for the last (k, dt) seen
 
     OwnKids     m_own_kids;        // the child lists at m_kids_epoch (refreshKids)

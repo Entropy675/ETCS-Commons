@@ -1,0 +1,14 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# ── LEAVE A SESSION JOINED ───────────────────────────────────────────────────
+#     run NetworkProvider/scripts/session_leave.etcs game=<Trace> far=<surface> rfar=<its Remote> peer=<Peer>
+# The seat goes with its stream: the host takes this game's leaving line as it
+# ends. The surface is unbound before it goes -- bound, its Delete would be
+# asked of the host's game (and refused, unpublished).
+requires game [Trace]
+requires rfar [Remote]
+requires peer [Peer]
+game.Leave()
+rfar.Unbind()
+far.Delete()
+peer.Close()

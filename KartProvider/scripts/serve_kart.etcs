@@ -28,10 +28,5 @@ tree.ListPaths()
 web.Start()
 web.IsStarted()
 
-# The hall: a Lobby every host lists its battle in, published on the hub as
-# `hall` -- what ChessProvider/scripts/chess_service.etcs opens on the site.
-spawn NetworkProvider::Lobby hall_list
-spawn NetworkProvider::Room hall
-hall.SetName(hall)
-hall.Publish(hall @hall_list Advertise Withdraw Watch)
-hall.Host(@links hall)
+# The hall every host lists its battle in, on the hub.
+run NetworkProvider/scripts/session_hall.etcs links=links

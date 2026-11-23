@@ -1,0 +1,58 @@
+#!/usr/bin/env etcs
+# THE MOTORBIKE: two wheels in line, light and quick -- a much higher top
+# reached sooner, on a tyre that lets go early: a tap at speed slides, and a
+# slide keeps more of its speed. It leans into what its tyre pulls, as far
+# as the grip holds, and holds a lean in the air. Slim: about half a kart's
+# weight, a small target, a light ram.
+#   run kart_vehicle_moto.etcs battle=<KartBattle> world=<Scene3D>
+# Tune <what> <values> (KartBattle::Tune): top; boost <top> <push>; push
+# <start> <launch> <pull>; brake; reverse <acc> <top>; coast; steer <lock>
+# <jump> <ease> <back>; wheelbase; grip <rolling> <braking>; slide <free>
+# <least>; tyres <2|4> <side> <ahead>; body <w> <h> <d> (it weighs its
+# volume's share of the kart's); tyre <diameter> <width> <drop> (it rides the
+# tyre's radius and the drop over the ground); reach (a shot's target); lean;
+# ram. The kart's for comparison: top 22, boost 30 18, push 2.5 10 2, brake 20,
+# reverse 5 6, coast 0.6, steer 0.45 0.5 1.5 3, wheelbase 1.6, grip 20 10,
+# slide 0.574 0.25, tyres 4 0.7 0.64, body 1.1 0.4 2, tyre 0.46 0.24 0.03 (it
+# rides at 0.25), reach 1, lean 0, ram 20.
+requires battle [KartBattle]
+requires world [Drawable3D]
+battle.AddVehicle(moto)
+battle.Tune(top 34)
+battle.Tune(boost 42 20)
+battle.Tune(push 5 22 6)
+battle.Tune(brake 16)
+battle.Tune(reverse 4 5)
+battle.Tune(coast 0.4)
+battle.Tune(steer 0.35 0.5 1.2 3.5)
+battle.Tune(wheelbase 1.4)
+battle.Tune(grip 11 5)
+battle.Tune(slide 0.5 0.15)
+battle.Tune(tyres 2 0 0.8)
+battle.Tune(body 0.45 0.6 1.8)
+battle.Tune(tyre 0.56 0.16 -0.03)
+battle.Tune(reach 0.75)
+battle.Tune(lean 0.8)
+battle.Tune(ram 12)
+
+# Its look: boxes in its body's unit box, so a box at (x, y, z) sized
+# (w, h, d) in metres is AddBox(x/0.45, y/0.6, z/1.8, w/0.45, h/0.6, d/1.8).
+# Its wheels are the pool's, one each end, sized by its tyre.
+world.spawn(RenderProvider::Mesh moto_look)
+moto_look.Create()
+moto_look.Clear()
+# the engine, low between the wheels
+moto_look.AddBox(0.0, -0.0333, 0.0, 0.7556, 0.3333, 0.2222)
+# the tank over it, and the seat behind
+moto_look.AddBox(0.0, 0.2, 0.0833, 0.6667, 0.3667, 0.3889)
+moto_look.AddBox(0.0, 0.4, -0.1944, 0.6222, 0.1333, 0.3333)
+# the tail over the back wheel
+moto_look.AddBox(0.0, 0.3667, -0.4167, 0.5333, 0.1, 0.1667)
+# the fork down to the front wheel, the bars across it, the lamp ahead
+moto_look.AddBox(0.0, 0.2, 0.4, 0.1778, 0.6667, 0.0444)
+moto_look.AddBox(0.0, 0.5667, 0.3333, 1.3333, 0.0833, 0.0333)
+moto_look.AddBox(0.0, 0.3667, 0.4778, 0.3556, 0.2333, 0.0333)
+# the rider: a body and a helmet
+moto_look.AddBox(0.0, 0.8333, -0.0833, 0.7556, 0.7, 0.1222)
+moto_look.AddBox(0.0, 1.3333, -0.0278, 0.4444, 0.3333, 0.1222)
+battle.VehicleLook(@moto_look)

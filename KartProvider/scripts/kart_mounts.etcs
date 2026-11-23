@@ -8,7 +8,8 @@
 #     tree.SetMountPrefix()
 #
 # The page and what it stages, each at the path it is fetched from -- the same
-# list as www/modules.json's scripts. The runtime (/wasm/) and the marks
+# list as www/modules.json's scripts; the session's (hosting, joining, the
+# hall) are NetworkProvider's, every game's alike. The runtime (/wasm/) and the marks
 # (/favicon/) are the site's, mounted once for every page.
 
 requires tree [FileHtmlPage]
@@ -41,28 +42,37 @@ tree.MountFile(KartProvider/scripts/kart_map_crossroads.etcs ACE_ROOT/modules/Ka
 tree.MountFile(KartProvider/scripts/kart_map_hills.etcs ACE_ROOT/modules/KartProvider/scripts/kart_map_hills.etcs)
 tree.MountFile(KartProvider/scripts/kart_map_skatepark.etcs ACE_ROOT/modules/KartProvider/scripts/kart_map_skatepark.etcs)
 tree.MountFile(KartProvider/scripts/kart_map_lava.etcs ACE_ROOT/modules/KartProvider/scripts/kart_map_lava.etcs)
+tree.MountFile(KartProvider/scripts/kart_map_towers.etcs ACE_ROOT/modules/KartProvider/scripts/kart_map_towers.etcs)
+tree.MountFile(KartProvider/scripts/kart_map_serpent.etcs ACE_ROOT/modules/KartProvider/scripts/kart_map_serpent.etcs)
+tree.MountFile(KartProvider/scripts/kart_vehicle_moto.etcs ACE_ROOT/modules/KartProvider/scripts/kart_vehicle_moto.etcs)
+tree.MountFile(KartProvider/scripts/kart_vehicle_bike.etcs ACE_ROOT/modules/KartProvider/scripts/kart_vehicle_bike.etcs)
+tree.MountFile(KartProvider/scripts/kart_vehicle_pickup.etcs ACE_ROOT/modules/KartProvider/scripts/kart_vehicle_pickup.etcs)
+tree.MountFile(KartProvider/scripts/kart_vehicle_truck.etcs ACE_ROOT/modules/KartProvider/scripts/kart_vehicle_truck.etcs)
 tree.MountFile(KartProvider/scripts/kart_pool.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pool.etcs)
 tree.MountFile(KartProvider/scripts/kart_car.etcs ACE_ROOT/modules/KartProvider/scripts/kart_car.etcs)
 tree.MountFile(KartProvider/scripts/kart_wheel.etcs ACE_ROOT/modules/KartProvider/scripts/kart_wheel.etcs)
 tree.MountFile(KartProvider/scripts/kart_pickup.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pickup.etcs)
 tree.MountFile(KartProvider/scripts/kart_pickups.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pickups.etcs)
 tree.MountFile(KartProvider/scripts/kart_shots.etcs ACE_ROOT/modules/KartProvider/scripts/kart_shots.etcs)
+tree.MountFile(KartProvider/scripts/kart_fx.etcs ACE_ROOT/modules/KartProvider/scripts/kart_fx.etcs)
+tree.MountFile(KartProvider/scripts/kart_fxs.etcs ACE_ROOT/modules/KartProvider/scripts/kart_fxs.etcs)
+tree.MountFile(KartProvider/scripts/kart_ring.etcs ACE_ROOT/modules/KartProvider/scripts/kart_ring.etcs)
+tree.MountFile(KartProvider/scripts/kart_rim.etcs ACE_ROOT/modules/KartProvider/scripts/kart_rim.etcs)
+tree.MountFile(KartProvider/scripts/kart_fire_mesh.etcs ACE_ROOT/modules/KartProvider/scripts/kart_fire_mesh.etcs)
+tree.MountFile(KartProvider/scripts/kart_fire_meshes.etcs ACE_ROOT/modules/KartProvider/scripts/kart_fire_meshes.etcs)
+tree.MountFile(KartProvider/scripts/kart_burst_mesh.etcs ACE_ROOT/modules/KartProvider/scripts/kart_burst_mesh.etcs)
+tree.MountFile(KartProvider/scripts/kart_burst_meshes.etcs ACE_ROOT/modules/KartProvider/scripts/kart_burst_meshes.etcs)
 tree.MountFile(KartProvider/scripts/kart_shot.etcs ACE_ROOT/modules/KartProvider/scripts/kart_shot.etcs)
 tree.MountFile(KartProvider/scripts/kart_blast.etcs ACE_ROOT/modules/KartProvider/scripts/kart_blast.etcs)
+tree.MountFile(KartProvider/scripts/kart_sparks.etcs ACE_ROOT/modules/KartProvider/scripts/kart_sparks.etcs)
+tree.MountFile(KartProvider/scripts/kart_spark.etcs ACE_ROOT/modules/KartProvider/scripts/kart_spark.etcs)
+tree.MountFile(KartProvider/scripts/kart_smokes.etcs ACE_ROOT/modules/KartProvider/scripts/kart_smokes.etcs)
+tree.MountFile(KartProvider/scripts/kart_smoke.etcs ACE_ROOT/modules/KartProvider/scripts/kart_smoke.etcs)
 tree.MountFile(KartProvider/scripts/kart_play.etcs ACE_ROOT/modules/KartProvider/scripts/kart_play.etcs)
 tree.MountFile(KartProvider/scripts/kart_board.etcs ACE_ROOT/modules/KartProvider/scripts/kart_board.etcs)
 tree.MountFile(KartProvider/scripts/kart_board_row.etcs ACE_ROOT/modules/KartProvider/scripts/kart_board_row.etcs)
 tree.MountFile(KartProvider/scripts/kart_keys.etcs ACE_ROOT/modules/KartProvider/scripts/kart_keys.etcs)
 tree.MountFile(KartProvider/scripts/kart_pointer.etcs ACE_ROOT/modules/KartProvider/scripts/kart_pointer.etcs)
-tree.MountFile(KartProvider/scripts/kart_host.etcs ACE_ROOT/modules/KartProvider/scripts/kart_host.etcs)
-tree.MountFile(KartProvider/scripts/kart_join.etcs ACE_ROOT/modules/KartProvider/scripts/kart_join.etcs)
-tree.MountFile(KartProvider/scripts/kart_leave.etcs ACE_ROOT/modules/KartProvider/scripts/kart_leave.etcs)
-tree.MountFile(KartProvider/scripts/kart_close.etcs ACE_ROOT/modules/KartProvider/scripts/kart_close.etcs)
-tree.MountFile(KartProvider/scripts/kart_judge.etcs ACE_ROOT/modules/KartProvider/scripts/kart_judge.etcs)
-tree.MountFile(KartProvider/scripts/kart_follow.etcs ACE_ROOT/modules/KartProvider/scripts/kart_follow.etcs)
-tree.MountFile(KartProvider/scripts/kart_emit.etcs ACE_ROOT/modules/KartProvider/scripts/kart_emit.etcs)
-tree.MountFile(KartProvider/scripts/kart_watch.etcs ACE_ROOT/modules/KartProvider/scripts/kart_watch.etcs)
-tree.MountFile(ChessProvider/scripts/chess_hall.etcs ACE_ROOT/modules/ChessProvider/scripts/chess_hall.etcs)
-tree.MountFile(ChessProvider/scripts/chess_mirror.etcs ACE_ROOT/modules/ChessProvider/scripts/chess_mirror.etcs)
+run NetworkProvider/scripts/session_mounts.etcs tree=tree
 tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
 tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)

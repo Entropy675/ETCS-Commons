@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# A spot for a power: a gold box on a corner, glowing a little, that a ball
+# rolls through (not solid) -- the kart's power-up box, smaller.
+#   run golf_spot.etcs world=<Scene3D> game=<GolfMatch>
+requires world [Drawable3D]
+requires game [GolfMatch]
+world.spawn(RenderProvider::Scene3D box)
+box.Create(0.55, 0.55, 0.55)
+box.SetColor(0.98, 0.78, 0.15, 1.0)
+box.Orient(1.0, 0.0, 1.0, 45.0)
+box.SetAnchored(1)
+game.AddSpotNode(@box)

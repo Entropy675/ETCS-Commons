@@ -163,6 +163,8 @@
     #menu button.script { color: var(--ansi11); }
     #menu button.scope { color: var(--ansi11); }
     #menu button.command { color: var(--muted); }
+    /* The countdown beside an entry the page takes by itself (renderMenu). */
+    #menu .auto { width: 32px; height: 32px; align-self: center; flex: none; }
     #menu .args { display: none; gap: 0.5rem; align-items: center; }
     #menu .args.visible { display: flex; }
     #menu .args input {
@@ -401,14 +403,80 @@
     inputRow.classList.toggle('hidden', buttons);
     if (!buttons) cmdline.focus();
   }
-  document.getElementById('viewtoggle').addEventListener('click', function () { setMenuView('line'); });
+  document.getElementById('viewtoggle').addEventListener('click', function () { stopAuto(); setMenuView('line'); });
   document.getElementById('viewtoggle2').addEventListener('click', function () { setMenuView('buttons'); });
 
+  /*
+   * ── an entry the page takes by itself ───────────────────────────────────────
+   *
+   * A menu may name one entry to take when nothing is pressed for a while
+   * (`auto`: "Continue where you left off?" takes yes after 5s). A ring beside
+   * that entry ticks to completion, green through yellow to red as it nears it
+   * -- the terminal's own shades -- so it reads as about to choose. Anything
+   * pressed or typed first stops it, and so does the next menu. It ticks only
+   * while the buttons are on screen -- a collapsed strip or the command-line
+   * view holds it -- since a choice nobody could see is not one they let pass.
+   * A terminal waits.
+   */
+  let autoTimer = null;
+  function stopAuto() {
+    if (!autoTimer) return;
+    autoTimer.stopped = true;
+    if (autoTimer.el && autoTimer.el.parentNode) autoTimer.el.remove();
+    autoTimer = null;
+  }
+  function shadeAt(t) {
+    // green -> yellow -> red, in the page's ANSI shades (--ansi2, --ansi3, --ansi1)
+    const G = [0x7a, 0x9a, 0x5a], Y = [0xc9, 0xb4, 0x58], R = [0xc4, 0x5c, 0x4a];
+    const a = t < 0.5 ? G : Y, b = t < 0.5 ? Y : R, u = t < 0.5 ? t * 2 : (t - 0.5) * 2;
+    return 'rgb(' + a.map(function (v, k) { return Math.round(v + (b[k] - v) * u); }).join(',') + ')';
+  }
+  function startAuto(m, button) {
+    stopAuto();
+    if (!m.auto || !m.auto.send || !(m.auto.ms > 0) || menuView() !== 'buttons') return;
+    const el = document.createElement('canvas');
+    const px = window.devicePixelRatio || 1;
+    el.className = 'auto';
+    el.width = Math.round(32 * px); el.height = Math.round(32 * px);
+    el.title = 'takes "' + button.textContent + '" by itself';
+    button.after(el);
+    const g = el.getContext('2d');
+    const serial = m.serial, timer = { el: el, stopped: false };
+    let last = performance.now(), shown = 0;
+    autoTimer = timer;
+    function frame(now) {
+      if (timer.stopped) return;
+      if (button.getClientRects().length) shown += now - last;     // on screen: it counts
+      last = now;
+      const t = Math.min(1, shown / m.auto.ms);
+      const c = shadeAt(t), w = el.width, r = w / 2 - 3 * px;
+      g.clearRect(0, 0, w, w);
+      g.lineWidth = 3 * px;
+      g.strokeStyle = 'rgba(141,144,124,0.35)';                // the track, --dim
+      g.beginPath(); g.arc(w / 2, w / 2, r, 0, Math.PI * 2); g.stroke();
+      g.strokeStyle = c;
+      g.beginPath(); g.arc(w / 2, w / 2, r, -Math.PI / 2, -Math.PI / 2 + t * Math.PI * 2); g.stroke();
+      g.fillStyle = c;
+      g.font = (11 * px) + 'px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(String(Math.ceil((1 - t) * m.auto.ms / 1000)), w / 2, w / 2 + px);
+      button.style.borderColor = c;
+      if (t < 1 || !menuEnabled) { requestAnimationFrame(frame); return; }
+      if (serial !== menuSerial) { stopAuto(); return; }
+      stopAuto();
+      button.style.borderColor = '';
+      submitLine(m.auto.send);
+    }
+    requestAnimationFrame(frame);
+  }
+
   function renderMenu(m) {
+    stopAuto();
     menuTitle.textContent = (m.title || '') + '  ' + (m.prompt || '');
     menuItems.textContent = '';
     menuArgs.classList.remove('visible');
     menuPending = null;
+    let autoButton = null;
     for (const it of (m.items || [])) {
       const b = document.createElement('button');
       b.type = 'button';
@@ -429,7 +497,9 @@
         submitLine(it.send);
       });
       menuItems.appendChild(b);
+      if (m.auto && it.send === m.auto.send && !it.args) autoButton = b;
     }
+    if (autoButton) startAuto(m, autoButton);
   }
   menuArgs.addEventListener('submit', function (ev) {
     ev.preventDefault();
@@ -549,6 +619,7 @@
   }
 
   function submitLine(line) {
+    stopAuto();
     append(line + '\n', null);
     if (EMBEDDED) { parentPost({ etcs: 'line', line: line }); return; }
     const mod = window.Module;

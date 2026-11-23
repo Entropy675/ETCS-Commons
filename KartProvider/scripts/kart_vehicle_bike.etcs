@@ -1,0 +1,22 @@
+#!/usr/bin/env etcs
+# THE MOTORCYCLE: slim and quick -- a higher top, a harder push, a quick, big
+# wheel on a short base -- and little grip, so it spins out easily. Its two
+# pairs of tyres meet on its middle, one wheel behind the other; its slim body
+# weighs under half a kart's, so it is knocked about, and it is a small target.
+# Drawn as its body's box.
+#   run kart_vehicle_bike.etcs battle=<KartBattle>
+# The numbers and the kart's: kart_vehicle_moto.etcs.
+requires battle [KartBattle]
+battle.AddVehicle(bike)
+battle.Tune(top 26)
+battle.Tune(boost 34 22)
+battle.Tune(push 3.375 13.5 2.7)
+battle.Tune(grip 11 5)
+battle.Tune(steer 0.6 0.6 0.8 3)
+battle.Tune(wheelbase 1.3)
+battle.Tune(tyres 2 0 0.78)
+battle.Tune(body 0.4 0.55 1.8)
+battle.Tune(tyre 0.56 0.14 -0.03)
+battle.Tune(reach 0.7)
+battle.Tune(lean 0.6)
+battle.Tune(ram 12)

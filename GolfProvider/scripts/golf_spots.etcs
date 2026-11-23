@@ -1,0 +1,7 @@
+#!/usr/bin/env etcs
+# Three spots of the pool. `run golf_spots.etcs world=<Scene3D> game=<GolfMatch>`
+requires world [Drawable3D]
+requires game [GolfMatch]
+run golf_spot.etcs world=world game=game
+run golf_spot.etcs world=world game=game
+run golf_spot.etcs world=world game=game

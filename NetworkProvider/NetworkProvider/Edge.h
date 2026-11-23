@@ -1,6 +1,7 @@
 #ifndef NETWORKPROVIDER_EDGE_H__
 #define NETWORKPROVIDER_EDGE_H__
 #include "../../../ontology.h"
+#include "../../../libs/monocypher.h"
 #include "WebSocket.h"
 
 #include <atomic>
@@ -12,7 +13,15 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <cerrno>
+#include <sstream>
 #include <string>
+#if defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
+#elif defined(__linux__) && !defined(__EMSCRIPTEN__)
+#include <sys/random.h>
+#endif
 
 /*
  * THE EDGE: everything between two runtimes, on ONE MirrorBuffer.
@@ -56,6 +65,17 @@
  * SYMMETRIC. Either side may export and either may ask; a Room and a Peer
  * differ only in who dialled.
  *
+ * SEALED, BETWEEN TWO IDENTITIES. The hello (below) is a handshake: each side
+ * makes a fresh exchange key, and each side's LOADER signs the transcript of
+ * both (core/Trust.h, vouch) -- its key alone for a local identity, its chain
+ * to a root besides for a registered one -- and checks the other's
+ * (recognize). The two exchange keys give a key each way, and from then on
+ * every message of the edge is sealed under them (XChaCha20-Poly1305, the
+ * Envelope's, numbered: one out of order, replayed or altered closes the
+ * link). A hub between the two splices bytes and reads none, so it is sealed
+ * end to end. What the far side proved is stamped on every verb and stream
+ * half run for it (SignalContext::peer) -- its key, not the name it said.
+ *
  * Requests from the far side run on the edge's reader, in arrival order --
  * a verb holds the edge until it answers, as a local verb holds its caller,
  * and the asker waits for that answer for as long as the link lives (Pending).
@@ -98,6 +118,13 @@ struct Reader
         return v;
     }
     std::string rest() { std::string v = at < s.size() ? s.substr(at) : std::string(); at = s.size(); return v; }
+    bool bytes(uint8_t* out, size_t n)
+    {
+        if (!ok || at + n > s.size()) { ok = false; return false; }
+        std::memcpy(out, s.data() + at, n);
+        at += n;
+        return true;
+    }
 };
 
 inline uint64_t random_token()
@@ -107,6 +134,49 @@ inline uint64_t random_token()
     uint64_t x = n.fetch_add(0xD1B54A32D192ED03ull);
     x ^= x >> 31; x *= 0x7FB5D329728EA185ull; x ^= x >> 27; x *= 0x81DADEF4BC2DD44Dull; x ^= x >> 33;
     return x ? x : 1;
+}
+
+// The operating system's randomness, whole or not at all: an exchange key.
+inline bool random_bytes(uint8_t* out, size_t n)
+{
+#if defined(__EMSCRIPTEN__)
+    for (size_t at = 0; at < n; at += 256)
+        if (::getentropy(out + at, n - at < 256 ? n - at : 256) != 0) return false;
+    return true;
+#elif defined(__linux__)
+    size_t at = 0;
+    while (at < n)
+    {
+        const ssize_t r = ::getrandom(out + at, n - at, 0);
+        if (r < 0) { if (errno == EINTR) continue; return false; }
+        at += static_cast<size_t>(r);
+    }
+    return true;
+#elif defined(_WIN32)
+    return BCryptGenRandom(nullptr, out, static_cast<ULONG>(n), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+#else
+    (void)out; (void)n;
+    return false;
+#endif
+}
+inline std::string hex(const uint8_t* p, size_t n)
+{
+    static const char* d = "0123456789abcdef";
+    std::string s(2 * n, '0');
+    for (size_t i = 0; i < n; ++i) { s[2 * i] = d[p[i] >> 4]; s[2 * i + 1] = d[p[i] & 15]; }
+    return s;
+}
+inline bool unhex(const std::string& s, uint8_t* out, size_t n)
+{
+    if (s.size() != 2 * n) return false;
+    auto v = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; };
+    for (size_t i = 0; i < n; ++i)
+    {
+        const int hi = v(s[2 * i]), lo = v(s[2 * i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = static_cast<uint8_t>(hi << 4 | lo);
+    }
+    return true;
 }
 
 // Joins the threads an owner started, when it goes: they hold `this`.
@@ -301,37 +371,170 @@ private:
 // ── The hello, before the edge exists ───────────────────────────────────────
 // Exact frames on the bare socket (etcs_ws::send_frame/recv_frame): nothing
 // may be read past them, the pair takes the socket over next.
-// 'W' <name> welcomes; 'N' <reason> refuses (a name already linked here).
-// The dialler waits for its welcome as long as the socket lives: a host
-// reached through a hub comes for a guest when it gets to it (LinkHub), and
-// answers then. The accepting side keeps its deadline -- the guest's hello is
-// sent on connecting, so only a guest that says nothing runs it out.
-inline bool hello_dial(int fd, const std::string& my_name, std::string& far_name, std::string* why = nullptr)
+//
+//   dialler   'H' 3 <name> <exchange key>
+//   accepter  'W' <name> <exchange key> <its word>      or 'N' <reason>
+//   dialler   'P' <its word>
+//   accepter  'K'                                        or 'N' <reason>
+//
+// A word is "<key> <chain|-> <signature>" over the transcript -- both names
+// and both exchange keys -- as its loader gave it (TrustEvent Vouch), and is
+// checked by the other's loader (Recognize). The dialler waits for its welcome
+// as long as the socket lives: a host reached through a hub comes for a guest
+// when it gets to it (LinkHub), and answers then. The accepting side keeps its
+// deadline -- the guest's hello is sent on connecting, so only a guest that
+// says nothing runs it out.
+struct Link
 {
-    std::string w;
-    if (!etcs_ws::send_frame(fd, Writer().u8('H').u8(2).str(my_name).s)
+    std::string far_name;
+    ETCS::Peer  far;                  // what it proved
+    uint8_t     out[32] = {}, in[32] = {};
+    ~Link() { etcs_monocypher::crypto_wipe(out, 32); etcs_monocypher::crypto_wipe(in, 32); }
+};
+
+namespace hello
+{
+inline void transcript(const std::string& dialler, const uint8_t dx[32], const std::string& accepter,
+                       const uint8_t ax[32], uint8_t t[32])
+{
+    const std::string m = Writer().raw("ETCSLNK0", 8).str(dialler).raw(reinterpret_cast<const char*>(dx), 32)
+                                   .str(accepter).raw(reinterpret_cast<const char*>(ax), 32).s;
+    etcs_monocypher::crypto_blake2b(t, 32, reinterpret_cast<const uint8_t*>(m.data()), m.size());
+}
+// This loader's word on the link, as side `side` ('d' dialled, 'a' accepted).
+inline bool vouch(char side, const uint8_t t[32], std::string& word, std::string& why)
+{
+    ETCS::TrustEvent q(ETCS::TrustEvent::Op::Vouch);
+    q.name = std::string(1, side);
+    q.a = hex(t, 32);
+    const bool ok = q();
+    (ok ? word : why) = q.out;
+    return ok;
+}
+// The far side's word, checked by this loader: what it proved, or why not.
+inline bool recognize(char side, const uint8_t t[32], const std::string& word, const std::string& name,
+                      ETCS::Peer& far, std::string& why)
+{
+    ETCS::TrustEvent q(ETCS::TrustEvent::Op::Recognize);
+    q.name = std::string(1, side);
+    q.a = word;
+    q.b = hex(t, 32);
+    if (!q()) { why = "'" + name + "' did not prove itself: " + q.out; return false; }
+    std::istringstream in(q.out);
+    std::string ident;
+    int registered = 0, guild = 0;
+    in >> ident >> registered >> guild;
+    far = ETCS::Peer{};
+    if (!unhex(word.substr(0, 64), far.key, 32) || !unhex(ident, far.identity, 32))
+    { why = "'" + name + "' answered with an unreadable word"; return false; }
+    far.registered = registered ? 1 : 0;
+    far.guild = guild ? 1 : 0;
+    std::strncpy(far.name, name.c_str(), sizeof far.name - 1);
+    return true;
+}
+// The two keys, one each way, from the exchange and the transcript.
+inline bool keys(bool dialler, const uint8_t mine[32], const uint8_t theirs[32], const uint8_t t[32], Link& l)
+{
+    uint8_t shared[32], d2a[32], a2d[32];
+    etcs_monocypher::crypto_x25519(shared, mine, theirs);
+    uint8_t any = 0;
+    for (uint8_t b : shared) any |= b;
+    if (!any) return false;                          // a low-order key: no secret at all
+    for (char side : { 'd', 'a' })
+    {
+        std::string m("ETCSLNK2");
+        m.push_back(side);
+        m.append(reinterpret_cast<const char*>(shared), 32);
+        m.append(reinterpret_cast<const char*>(t), 32);
+        etcs_monocypher::crypto_blake2b(side == 'd' ? d2a : a2d, 32, reinterpret_cast<const uint8_t*>(m.data()), m.size());
+        etcs_monocypher::crypto_wipe(&m[0], m.size());
+    }
+    std::memcpy(l.out, dialler ? d2a : a2d, 32);
+    std::memcpy(l.in,  dialler ? a2d : d2a, 32);
+    etcs_monocypher::crypto_wipe(shared, 32);
+    etcs_monocypher::crypto_wipe(d2a, 32);
+    etcs_monocypher::crypto_wipe(a2d, 32);
+    return true;
+}
+struct Exchange
+{
+    uint8_t secret[32], pub[32];
+    bool make()
+    {
+        if (!random_bytes(secret, 32)) return false;
+        etcs_monocypher::crypto_x25519_public_key(pub, secret);
+        return true;
+    }
+    ~Exchange() { etcs_monocypher::crypto_wipe(secret, 32); }
+};
+} // namespace hello
+
+// "<key> <identity> <registered> <guild>", hex and 0/1 -- for a script to read.
+inline std::string who(const ETCS::Peer& p)
+{
+    return hex(p.key, 32) + " " + hex(p.identity, 32) + " " + (p.registered ? "1" : "0") + " " + (p.guild ? "1" : "0");
+}
+// "key 1a2b...: registered, of this guild" -- for a log line.
+inline std::string describe(const ETCS::Peer& p)
+{
+    char fp[17];
+    p.fingerprint(fp);
+    return std::string("key ") + fp + ": " + (!p.registered ? "a local identity"
+                                            : p.guild ? "registered, of this loader's guild" : "registered elsewhere");
+}
+
+inline bool hello_dial(int fd, const std::string& my_name, Link& link, std::string* why = nullptr)
+{
+    std::string w, word, err;
+    uint8_t far_x[32], t[32];
+    hello::Exchange x;
+    const auto fail = [&](const std::string& m) { if (why) *why = m; return false; };
+    if (!x.make()) return fail("no randomness for the exchange");
+    if (!etcs_ws::send_frame(fd, Writer().u8('H').u8(3).str(my_name).raw(reinterpret_cast<const char*>(x.pub), 32).s)
         || !etcs_ws::recv_frame(fd, w, etcs_ws::kLive) || w.empty()) return false;
     Reader r(w, 1);
-    if (w[0] == 'N') { if (why) *why = r.str(); return false; }
+    if (w[0] == 'N') return fail(r.str());
     if (w[0] != 'W') return false;
-    far_name = r.str();
-    return r.ok;
+    link.far_name = r.str();
+    r.bytes(far_x, 32);
+    const std::string far_word = r.str();
+    if (!r.ok) return fail("the welcome is unreadable");
+    hello::transcript(my_name, x.pub, link.far_name, far_x, t);
+    if (!hello::recognize('a', t, far_word, link.far_name, link.far, err)) return fail(err);
+    if (!hello::vouch('d', t, word, err)) return fail("this loader would not vouch for the link: " + err);
+    if (!etcs_ws::send_frame(fd, Writer().u8('P').str(word).s) || !etcs_ws::recv_frame(fd, w, 10000) || w.empty())
+        return fail("'" + link.far_name + "' did not answer this side's word");
+    if (w[0] == 'N') { Reader n(w, 1); return fail(n.str()); }
+    if (w[0] != 'K') return false;
+    if (!hello::keys(true, x.secret, far_x, t, link)) return fail("the exchange gave no secret");
+    return true;
 }
-// `taken` says whether a name is already linked; empty accepts every name.
-inline bool hello_accept(int fd, const std::string& my_name, std::string& far_name,
-                         const std::function<bool(const std::string&)>& taken = {})
+// `refuse` says why a guest that proved itself may not link here (empty: it
+// may) -- a name already linked by another key, say.
+inline bool hello_accept(int fd, const std::string& my_name, Link& link,
+                         const std::function<std::string(const ETCS::Peer&)>& refuse = {})
 {
-    std::string h;
-    if (!etcs_ws::recv_frame(fd, h, 10000) || h.size() < 2 || h[0] != 'H' || h[1] != 2) return false;
+    std::string h, word, err;
+    uint8_t far_x[32], t[32];
+    hello::Exchange x;
+    const auto no = [&](const std::string& why) { etcs_ws::send_frame(fd, Writer().u8('N').str(why).s); return false; };
+    if (!etcs_ws::recv_frame(fd, h, 10000) || h.size() < 2 || h[0] != 'H' || h[1] != 3) return false;
     Reader r(h, 2);
-    far_name = r.str();
+    link.far_name = r.str();
+    r.bytes(far_x, 32);
     if (!r.ok) return false;
-    if (taken && taken(far_name))
-    {
-        etcs_ws::send_frame(fd, Writer().u8('N').str("'" + far_name + "' is already linked here").s);
-        return false;
-    }
-    return etcs_ws::send_frame(fd, Writer().u8('W').str(my_name).s);
+    if (!x.make()) return no("no randomness for the exchange");
+    hello::transcript(link.far_name, far_x, my_name, x.pub, t);
+    if (!hello::vouch('a', t, word, err)) return no("'" + my_name + "' would not vouch for the link: " + err);
+    if (!etcs_ws::send_frame(fd, Writer().u8('W').str(my_name).raw(reinterpret_cast<const char*>(x.pub), 32).str(word).s)
+        || !etcs_ws::recv_frame(fd, h, 10000) || h.size() < 2 || h[0] != 'P') return false;
+    Reader p(h, 1);
+    const std::string far_word = p.str();
+    if (!p.ok) return false;
+    if (!hello::recognize('d', t, far_word, link.far_name, link.far, err)) return no(err);
+    if (refuse) { const std::string why = refuse(link.far); if (!why.empty()) return no(why); }
+    if (!hello::keys(false, x.secret, far_x, t, link)) return no("the exchange gave no secret");
+    return etcs_ws::send_frame(fd, Writer().u8('K').s);
 }
 
 class Edge
@@ -340,11 +543,14 @@ public:
     static constexpr size_t kChunk     = 3072;             // bytes of a channel per 'D' frame
     static constexpr size_t kQueueCap  = 4u << 20;         // queued for one slow consumer
 
-    Edge(int fd, ETCS::MemoryArena& arena, bool dialer, std::string far_name, Exports* exports)
-        : fd_(fd), dialer_(dialer), far_name_(std::move(far_name)), exports_(exports),
+    Edge(int fd, ETCS::MemoryArena& arena, bool dialer, const Link& link, Exports* exports)
+        : fd_(fd), dialer_(dialer), far_name_(link.far_name), far_(link.far), exports_(exports),
           id_(random_token()), next_ch_(dialer ? 1 : 2)
     {
+        std::memcpy(key_out_, link.out, 32);
+        std::memcpy(key_in_, link.in, 32);
         ctx_.interrupt = &stop_;
+        ctx_.peer = far_;
         out_.bindContext(ctx_);
         in_.bindContext(ctx_);
         page_ = ETCS::SharedPage::allocate(arena, 0);
@@ -355,6 +561,8 @@ public:
     {
         stop();
         ETCS::MirrorBuffer::teardownPair<ETCS::StrategySocket, ETCS::SharedPage>(out_, in_, page_);
+        etcs_monocypher::crypto_wipe(key_out_, 32);
+        etcs_monocypher::crypto_wipe(key_in_, 32);
     }
     Edge(const Edge&) = delete;
     Edge& operator=(const Edge&) = delete;
@@ -377,6 +585,8 @@ public:
     bool isOpen() const { return open_.load(std::memory_order_acquire) && !stop_.load(); }
     uint64_t id() const { return id_; }
     const std::string& farName() const { return far_name_; }
+    // What the far side proved at the hello: its key, and its identity.
+    const ETCS::Peer& far() const { return far_; }
     size_t channels() { std::lock_guard<std::mutex> lock(ch_mu_); return chans_.size(); }
 
     // ── Asking the far side ─────────────────────────────────────────────────
@@ -479,10 +689,33 @@ private:
     }
     void dropChannel(uint32_t n) { std::lock_guard<std::mutex> lock(ch_mu_); chans_.erase(n); }
 
+    // Every message sealed under this side's key, numbered in the order sent:
+    // the number is the nonce, so the far side opens them in that order or
+    // not at all.
     bool send(const std::string& msg)
     {
         std::lock_guard<std::mutex> lock(send_mu_);
-        return !stop_.load() && out_.writeMessage(msg);
+        if (stop_.load()) return false;
+        std::string sealed(kMac + msg.size(), '\0');
+        uint8_t nonce[24] = {};
+        std::memcpy(nonce, &sent_, 8);
+        ++sent_;
+        uint8_t* body = reinterpret_cast<uint8_t*>(&sealed[0]);
+        etcs_monocypher::crypto_aead_lock(body + kMac, body, key_out_, nonce, nullptr, 0,
+                                          reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+        return out_.writeMessage(sealed);
+    }
+    bool open(std::string& msg)
+    {
+        if (msg.size() < kMac) return false;
+        uint8_t nonce[24] = {};
+        std::memcpy(nonce, &got_, 8);
+        ++got_;
+        uint8_t* body = reinterpret_cast<uint8_t*>(&msg[0]);
+        if (etcs_monocypher::crypto_aead_unlock(body + kMac, body, key_in_, nonce, nullptr, 0, body + kMac, msg.size() - kMac) != 0)
+            return false;
+        msg.erase(0, kMac);
+        return true;
     }
     bool ask(char op, const std::string& body, std::string& answer, const ETCS::SignalContext* asker)
     {
@@ -526,6 +759,12 @@ private:
         while (!stop_.load())
         {
             if (!in_.readMessage(msg)) break;
+            if (!open(msg))
+            {
+                ETCS_LOG("Edge", "a message from '" << far_name_ << "' did not open -- altered, replayed or "
+                         "out of its order. The link is closed.");
+                break;
+            }
             if (msg.size() < 5) continue;
             Reader r(msg, 1);
             const uint32_t id = r.num<uint32_t>();
@@ -621,7 +860,7 @@ private:
         try
         {
             CallerScope who(id_, far_name_);
-            node->call(ETCS::Buffer(conj.c_str()), buf);
+            node->call(ETCS::Buffer(conj.c_str()), buf, ctx_);     // ctx_.peer: who asked
         }
         catch (const std::exception& ex) { return w.u8(0).raw(ex.what(), std::strlen(ex.what())).s; }
         ETCS::MBuffer ans;
@@ -770,9 +1009,14 @@ private:
         return true;
     }
 
+    static constexpr size_t kMac = 16;
+
     int                 fd_;
     bool                dialer_;
     std::string         far_name_;
+    ETCS::Peer          far_;
+    uint8_t             key_out_[32] = {}, key_in_[32] = {};
+    uint64_t            sent_ = 0, got_ = 0;        // the next number each way
     Exports*            exports_;
     uint64_t            id_;
     ETCS::SignalFlag    stop_{ 0 };

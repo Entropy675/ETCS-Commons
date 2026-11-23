@@ -66,6 +66,7 @@ typedef HostSurface Surface;
 // that one type and reaching it generically would mean a caller could hand the
 // throbber a Glyphs leaf that is not a drawable child it can own.
 #include "RenderProvider/Throbber.h"
+#include "RenderProvider/Menu.h"
 
 // auto generated hashes of headers:
 #include "../../ETCS.h"

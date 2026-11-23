@@ -1,0 +1,10 @@
+#!/usr/bin/env etcs
+# Four balls of the pool. `run golf_balls.etcs world=<Scene3D> game=<GolfMatch> ball_shape=<Mesh> disc=<Mesh>`
+requires world [Drawable3D]
+requires game [GolfMatch]
+requires ball_shape [Mesh]
+requires disc [Mesh]
+run golf_ball.etcs world=world game=game ball_shape=ball_shape disc=disc
+run golf_ball.etcs world=world game=game ball_shape=ball_shape disc=disc
+run golf_ball.etcs world=world game=game ball_shape=ball_shape disc=disc
+run golf_ball.etcs world=world game=game ball_shape=ball_shape disc=disc

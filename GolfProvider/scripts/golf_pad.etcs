@@ -1,0 +1,17 @@
+#!/usr/bin/env etcs
+# A pad of the pool: the kart's booster -- a plate on the ground and three
+# arrows that run along it like a belt, drawn only; the push is the match's.
+#   run golf_pad.etcs world=<Scene3D> game=<GolfMatch> dart=<Mesh>
+requires world [Drawable3D]
+requires game [GolfMatch]
+requires dart [Mesh]
+world.spawn(RenderProvider::Scene3D plate)
+plate.Create(1.0, 1.0, 1.0)
+plate.SetAnchored(1)
+world.spawn(RenderProvider::Scene3D a1)
+world.spawn(RenderProvider::Scene3D a2)
+world.spawn(RenderProvider::Scene3D a3)
+run golf_arrow.etcs arrow=a1 dart=dart
+run golf_arrow.etcs arrow=a2 dart=dart
+run golf_arrow.etcs arrow=a3 dart=dart
+game.AddPadNode(@plate @a1 @a2 @a3)

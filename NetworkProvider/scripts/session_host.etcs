@@ -1,0 +1,27 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── HOST A SESSION ───────────────────────────────────────────────────────────
+#
+# A TEMPLATE for any game that claims Trace and Present (ontology/Trace.h,
+# Present.h): the page fills in {{n}} (this session's number, keeping its
+# names its own), {{name}} (this runtime's name in it), {{id}} (its id, what
+# the link carries) and {{hub}} (the site's LinkHub), and runs it with `game`
+# and `hall` handed in -- the hall being the site's name server as this
+# runtime sees it, where the game lists itself under its own kind for as long
+# as this link lasts.
+#
+# THE GAME IS THE AUTHORITY, and what the room publishes of it is all a guest
+# can reach: its trace to mirror, and a seat to take its lines. Nothing else
+# is spawned -- a guest's stream is its seat, and the order the game reads the
+# seats in is the order.
+
+spawn NetworkProvider::Room room{{n}}
+room{{n}}.SetName({{name}})
+room{{n}}.Publish(game @game Trace Take)
+
+requires game [Trace]
+requires hall [Lobby]
+game.Host({{name}} @hall {{id}})
+
+room{{n}}.HostVia({{hub}}/{{id}})

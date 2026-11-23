@@ -1,0 +1,56 @@
+#!/usr/bin/env etcs
+# SERPENT: five walls across the arena, each open at one end and the next at
+# the other, so the way from one end to the other winds back and forth --
+# pads down every lane to send it round, and a spring before the middle of
+# every wall: taken at speed it clears the wall, a short cut for the brave.
+#   run kart_map_serpent.etcs battle=<KartBattle>
+# AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
+# <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
+# <z> <width> <depth> <deep>; AddPickupUp <x> <z>, a box on the deck over the
+# spot (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
+# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor.
+requires battle [KartBattle]
+battle.AddMap(serpent)
+
+# The walls: a hundred and fifty-six long, from the wall's inside to thirty-six
+# short of the other, three high (a kart off a spring at 15 goes eleven up, well
+# over), and open east and west by turns.
+battle.AddBlock(-18.0, -64.0, 156.0, 2.0, 3.0, 0.0)
+battle.AddBlock(18.0, -32.0, 156.0, 2.0, 3.0, 0.0)
+battle.AddBlock(-18.0, 0.0, 156.0, 2.0, 3.0, 0.0)
+battle.AddBlock(18.0, 32.0, 156.0, 2.0, 3.0, 0.0)
+battle.AddBlock(-18.0, 64.0, 156.0, 2.0, 3.0, 0.0)
+# The pads, a lane at a time from the south, each pointing the way the lane
+# runs to its open end.
+battle.AddPad(-30.0, -80.0, 90.0)
+battle.AddPad(30.0, -48.0, 270.0)
+battle.AddPad(-30.0, -16.0, 90.0)
+battle.AddPad(30.0, 16.0, 270.0)
+battle.AddPad(-30.0, 48.0, 90.0)
+battle.AddPad(30.0, 80.0, 270.0)
+# The short cuts: a spring before the middle of each wall, on its south side.
+battle.AddSpring(0.0, -72.0)
+battle.AddSpring(0.0, -40.0)
+battle.AddSpring(0.0, -8.0)
+battle.AddSpring(0.0, 24.0)
+battle.AddSpring(0.0, 56.0)
+
+battle.AddSpawn(-72.0, -80.0)
+battle.AddSpawn(72.0, -48.0)
+battle.AddSpawn(-72.0, -16.0)
+battle.AddSpawn(72.0, 16.0)
+battle.AddSpawn(-72.0, 48.0)
+battle.AddSpawn(72.0, 80.0)
+battle.AddSpawn(36.0, -80.0)
+battle.AddSpawn(-36.0, 80.0)
+
+battle.AddPickup(78.0, -64.0)
+battle.AddPickup(-78.0, -32.0)
+battle.AddPickup(78.0, 0.0)
+battle.AddPickup(-78.0, 32.0)
+battle.AddPickup(78.0, 64.0)
+battle.AddPickup(0.0, -88.0)
+battle.AddPickup(0.0, 88.0)
+battle.AddPickup(48.0, 16.0)
+battle.AddPickup(-48.0, -16.0)

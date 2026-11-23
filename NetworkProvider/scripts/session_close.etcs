@@ -1,0 +1,10 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# ── CLOSE A SESSION HOSTED ───────────────────────────────────────────────────
+#     run NetworkProvider/scripts/session_close.etcs game=<Trace> room=<Room>
+# The hall entry is withdrawn (Present::Absent), and the room goes with its
+# links: every guest's trace ends, which is how they learn the game is over.
+requires game [Trace]
+requires room [Room]
+game.Leave()
+room.Delete()

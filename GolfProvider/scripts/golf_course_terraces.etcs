@@ -1,0 +1,67 @@
+#!/usr/bin/env etcs
+# TERRACES: levels, up and down.
+#
+#   1  the staircase   down two steps of 1.5 to the cup's level, a block on the
+#                      middle step
+#   2  the climb       up two steps of 1.5, each slope steep enough to roll
+#                      back down; pads at the foot of each
+#   3  the zigzag      two part-walls across, gaps on alternate sides, pads
+#                      through the gaps, and sand in front of the cup
+#
+# A slope is a slab tilted about its own x: positive runs down toward +z, its
+# top edge on the level above and its bottom on the one below.
+#   run golf_course_terraces.etcs game=<GolfMatch>
+requires game [GolfMatch]
+game.AddCourse(terraces)
+
+# ── 1, the staircase: 0, -1.5, -3 ──────────────────────────────────────────
+game.AddHole(4)
+game.AddGreen(0.0, -2.0, 7.0, 16.0, 4.0, 22.0, 0.0, 0.0)
+game.AddGreen(0.0, -1.2414, 21.9078, 16.0, 1.0, 8.139, 10.62, 0.0)
+game.AddGreen(0.0, -2.75, 33.0, 16.0, 2.5, 14.0, 0.0, 0.0)
+game.AddGreen(0.0, -2.7414, 43.9078, 16.0, 1.0, 8.139, 10.62, 0.0)
+game.AddGreen(0.0, -3.5, 57.0, 16.0, 1.0, 18.0, 0.0, 0.0)
+game.AddWall(-8.3, -1.5, 31.0, 0.6, 5.0, 70.6, 0.0, 0.0)
+game.AddWall(8.3, -1.5, 31.0, 0.6, 5.0, 70.6, 0.0, 0.0)
+game.AddWall(0.0, -1.5, -4.3, 16.0, 5.0, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -3.25, 66.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(-3.0, -1.25, 33.0, 3.0, 0.5, 3.0, 0.0, 0.0)
+game.AddCup(3.0, 60.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(5.0, 10.0)
+game.AddSpot(-5.0, 30.0)
+
+# ── 2, the climb: 0, 1.5, 3 ────────────────────────────────────────────────
+game.AddHole(4)
+game.AddGreen(0.0, -0.5, 7.0, 16.0, 1.0, 22.0, 0.0, 0.0)
+game.AddGreen(0.0, 0.2555, 23.0742, 16.0, 1.0, 10.112, -8.53, 0.0)
+game.AddGreen(0.0, 0.25, 34.0, 16.0, 2.5, 12.0, 0.0, 0.0)
+game.AddGreen(0.0, 1.7555, 45.0742, 16.0, 1.0, 10.112, -8.53, 0.0)
+game.AddGreen(0.0, 1.0, 57.0, 16.0, 4.0, 14.0, 0.0, 0.0)
+game.AddWall(-8.3, 1.25, 30.0, 0.6, 4.5, 68.6, 0.0, 0.0)
+game.AddWall(8.3, 1.25, 30.0, 0.6, 4.5, 68.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, 1.25, 64.3, 16.0, 4.5, 0.6, 0.0, 0.0)
+game.AddPad(0.0, 13.0, 0.0)
+game.AddPad(3.0, 35.0, 0.0)
+game.AddCup(-3.0, 58.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-5.0, 6.0)
+game.AddSpot(5.0, 30.0)
+
+# ── 3, the zigzag ──────────────────────────────────────────────────────────
+game.AddHole(3)
+game.AddGreen(0.0, -0.5, 24.0, 16.0, 1.0, 56.0, 0.0, 0.0)
+game.AddWall(-2.0, 0.4, 16.0, 12.0, 0.8, 0.6, 0.0, 0.0)
+game.AddWall(2.0, 0.4, 32.0, 12.0, 0.8, 0.6, 0.0, 0.0)
+game.AddSand(0.0, 0.03, 40.0, 5.0, 0.06, 3.0, 0.0, 0.0)
+game.AddWall(-8.3, -0.25, 24.0, 0.6, 1.5, 57.2, 0.0, 0.0)
+game.AddWall(8.3, -0.25, 24.0, 0.6, 1.5, 57.2, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, 52.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddPad(6.0, 10.0, 0.0)
+game.AddPad(-6.0, 26.0, 0.0)
+game.AddCup(0.0, 46.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-6.0, 8.0)
+game.AddSpot(6.0, 24.0)

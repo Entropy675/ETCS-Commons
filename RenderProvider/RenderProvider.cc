@@ -3,7 +3,7 @@
 // Every tag here is BASIC except Scene3D, whose input edge is a stream
 // consumer (see its block). Surface included: its frame pump is a work function
 // a script detaches, not a stream pair -- see the Surface block below.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D Mesh TextLabel Throbber")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D Mesh TextLabel Throbber Menu")
 
 // The GPU -- Vulkan natively, WebGPU in a browser. Spawn one, Create it, and
 // name it from a Device under whatever should use it.
@@ -60,10 +60,10 @@ ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
 // producer, which is how w/a/s/d reaches the scene without this module knowing
 // what a window is.
 ETCS_TAG_BLOCK_HYBRID(Scene3D,
-    (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetSensitivity,
+    (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetMass, SetSensitivity,
      Impulse, Halt, Order, Run, Hash, Look, SetEmissivity, SetSpace, Contain, SetVisible, SetMesh, Project, DepthAt, Delete,
      SetGravity, InheritGravity, SetLightSpeed, InheritLightSpeed, SetSolid, SetAnchored, SetShape, Orient, Aim,
-     SetDriven, Export),
+     SetDriven, Export, SetGlow, SetSmoke),
     (ConsumeInput, ConsumeLook))
 
 // The camera: a Drawable2D that owns pixels, filled by a scene rather than by
@@ -79,7 +79,7 @@ ETCS_TAG_BLOCK_BASIC(Camera3D,
 // anywhere, shared by every node that names it; sent to the device once,
 // and rasterised from the same triangles on the host.
 ETCS_TAG_BLOCK_BASIC(Mesh,
-    Create, Clear, Box, AddVertex, AddTriangle, Delete, Sphere, Arrow, Cylinder)
+    Create, Clear, Box, AddVertex, AddTriangle, Delete, Sphere, Arrow, Cylinder, Bend, Warp, CopyBent, Parts, AddBox)
 
 // Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of
 // whatever it labels and needs no drawing code at the call site. Its font is
@@ -101,3 +101,8 @@ ETCS_TAG_BLOCK_BASIC(TextLabel,
 ETCS_TAG_BLOCK_BASIC(Throbber,
     Create, SetSize, SetStep, SetDots, SetColors, SetTextColor, SetText, SetPlate,
     SetPosition, SetOrder, SetHidden, Watch, CenterOn, Delete)
+
+// A lobby's panel of controls, drawn (Menu.h): fed line by line, asked where a
+// press landed.
+ETCS_TAG_BLOCK_BASIC(Menu,
+    Create, SetLine, SetLines, Focus, Hover, Point, SetPosition, SetOrder, SetHidden, Delete)

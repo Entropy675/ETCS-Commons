@@ -1,0 +1,25 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# ── JOIN A SESSION ───────────────────────────────────────────────────────────
+#
+# A TEMPLATE, like session_host.etcs: {{n}}, {{name}}, {{id}}, {{hub}},
+# {{owner}} (the host's name) and {{type}} (the game's, Module::Type) are the
+# page's to fill, `game` is handed in. One link to the host (Peer) and a
+# surface of the host's game (ontology/Remote.h) -- the same type, so its
+# streams run there. This game MIRRORS the host's trace, and its own lines
+# leave on its seat: they come back as the trace's.
+
+spawn NetworkProvider::Peer peer{{n}}
+peer{{n}}.SetName({{name}})
+peer{{n}}.Connect({{hub}}/{{id}})
+
+spawn {{type}} far{{n}}
+far{{n}}.spawn(NetworkProvider::Remote rfar{{n}})
+rfar{{n}}.Bind(game @peer{{n}})
+
+requires game [Trace]
+game.Join({{name}} {{owner}})
+
+detach NetworkProvider/scripts/session_follow.etcs src=far{{n}} dst=game
+detach NetworkProvider/scripts/session_emit.etcs src=game dst=far{{n}}

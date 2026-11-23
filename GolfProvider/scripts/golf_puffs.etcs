@@ -1,0 +1,13 @@
+#!/usr/bin/env etcs
+# Eight puffs of the pool. `run golf_puffs.etcs world=<Scene3D> game=<GolfMatch> ball_shape=<Mesh>`
+requires world [Drawable3D]
+requires game [GolfMatch]
+requires ball_shape [Mesh]
+run golf_puff.etcs world=world game=game ball_shape=ball_shape
+run golf_puff.etcs world=world game=game ball_shape=ball_shape
+run golf_puff.etcs world=world game=game ball_shape=ball_shape
+run golf_puff.etcs world=world game=game ball_shape=ball_shape
+run golf_puff.etcs world=world game=game ball_shape=ball_shape
+run golf_puff.etcs world=world game=game ball_shape=ball_shape
+run golf_puff.etcs world=world game=game ball_shape=ball_shape
+run golf_puff.etcs world=world game=game ball_shape=ball_shape

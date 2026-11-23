@@ -1,12 +1,15 @@
 #!/usr/bin/env etcs
 #IMPORT ACE_ROOT/modules
 
-# THE GOLF PAGE, served by ETCS.
+# THE GOLF PAGE, served by ETCS, with a hub to play over and a hall to find a
+# match in.
 #
 #     ./bin/etcs modules/GolfProvider/scripts/serve_golf.etcs
-#     then open https://localhost:8443/
+#     then open https://localhost:8443/ -- in two tabs, one hosting
 #
-# Build first: ace wasm make all, then ace wasm make loader etcs.
+# Build first: ace wasm make all, then ace wasm make loader etcs. On the site
+# (scripts/site_apps.etcs) the page is /golf/ and the hall is the one the
+# chess service runs; here the hall is this server's own.
 
 spawn NetworkProvider::HttpServer web
 web.SetPort(8443)
@@ -15,10 +18,15 @@ web.AddHeader(Cross-Origin-Opener-Policy same-origin)
 web.AddHeader(Cross-Origin-Embedder-Policy require-corp)
 
 web.spawn(NetworkProvider::FileHtmlPage tree)
+web.spawn(NetworkProvider::LinkHub links)
 tree.SetDefaultExtension(.html)
 tree.MountTree(wasm ACE_ROOT/bin/wasm)
+tree.MountTree(favicon ACE_ROOT/scripts/www/favicon)
 run GolfProvider/scripts/golf_mounts.etcs tree=tree
 tree.ListPaths()
 
 web.Start()
 web.IsStarted()
+
+# The hall every host lists its match in, on the hub.
+run NetworkProvider/scripts/session_hall.etcs links=links

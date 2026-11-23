@@ -1,0 +1,11 @@
+#!/usr/bin/env etcs
+# A slab of the pool: anchored and solid -- the match sizes, turns, colours
+# and gives it its material (a green's, a wall's, sand's) for the hole in play.
+#   run golf_slab.etcs world=<Scene3D> game=<GolfMatch>
+requires world [Drawable3D]
+requires game [GolfMatch]
+world.spawn(RenderProvider::Scene3D slab)
+slab.Create(1.0, 1.0, 1.0)
+slab.SetAnchored(1)
+slab.SetSolid(0.3, 0.1)
+game.AddSlabNode(@slab)

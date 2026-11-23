@@ -711,6 +711,24 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetOrder, (int32_t, z))
     self.SetOrder(z);
 }
 
+// SetGlow <strength> -- the node gives light instead of taking it: its colour
+// times `strength` added to what is behind it, soft where it turns edge-on
+// (Scene3D::SetGlow). 0 puts it back to a lit solid.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetGlow, (float, strength))
+{
+    (void)ctx;
+    self.SetGlow(strength);
+}
+
+// SetSmoke <density> -- the node is see-through: its colour laid over what is
+// behind it at `density`, soft where it turns edge-on (Scene3D::SetSmoke).
+// 0 puts it back to a lit solid.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetSmoke, (float, density))
+{
+    (void)ctx;
+    self.SetSmoke(density);
+}
+
 // Terminal speed in scene units per SECOND, and how fast motion bleeds off.
 // Held keys are an acceleration, not a displacement, so these two are the whole
 // of the feel: terminal speed is where impulse and drag balance, and damping
@@ -725,6 +743,12 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
 {
     (void)ctx;
     self.SetDamping(per_sec);
+}
+// SetMass <m> -- what it weighs, 1 as made: the share of a collision's push it takes.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetMass, (float, m))
+{
+    (void)ctx;
+    self.SetMass(m);
 }
 
 /*
@@ -1340,7 +1364,15 @@ DEFINE_WORK_FUNC_TYPED(Mesh, AddVertex, (float, x), (float, y), (float, z),
                        (float, nx), (float, ny), (float, nz))
 {
     (void)ctx;
-    ETCS_LOG("Mesh::AddVertex", "index " << self.AddVertex(x, y, z, nx, ny, nz));
+    // Not logged: a game bakes shapes while it runs, thousands of vertices at a time.
+    self.AddVertex(x, y, z, nx, ny, nz);
+}
+
+// AddBox <cx> <cy> <cz> <w> <h> <d> -- a box added to this mesh, in the unit box (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, AddBox, (float, cx), (float, cy), (float, cz), (float, w), (float, h), (float, d))
+{
+    (void)ctx;
+    self.AddBox(cx, cy, cz, w, h, d);
 }
 
 DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_t, c))
@@ -1349,6 +1381,35 @@ DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_
     if (!self.AddTriangle(a, b, c))
         ETCS_LOG("Mesh::AddTriangle", "(" << a << "," << b << "," << c << ") names a vertex past "
                  << self.VertexCount());
+}
+
+// Bend <cx> <cy> <cz> <dx> <dy> <dz> <r> <hold> -- a smooth push for the next CopyBent (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, Bend, (float, cx), (float, cy), (float, cz), (float, dx), (float, dy), (float, dz), (float, r), (float, hold))
+{
+    (void)ctx;
+    self.Bend(cx, cy, cz, dx, dy, dz, r, hold);
+}
+// Warp <seed> <freq> <amp> <scale> <ts> <tc> -- Perlin's noise in each axis for the next CopyBent (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, Warp, (uint32_t, seed), (float, freq), (float, amp), (float, scale), (float, ts), (float, tc))
+{
+    (void)ctx;
+    self.Warp(seed, freq, amp, scale, ts, tc);
+}
+// Parts <n> <ends> -- this mesh is runs of n vertices, the first two of each its poles: a bent copy of it
+// bends each part along the curve through its two ends (`ends` of the way to the poles) and its middle (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, Parts, (uint32_t, n), (float, ends))
+{
+    (void)ctx;
+    self.Parts(n, ends);
+}
+// CopyBent <mesh> -- this mesh made a copy of that one, through the warp and the bends said since the last.
+DEFINE_WORK_FUNC_TYPED(Mesh, CopyBent, (ETCS::RID, src))
+{
+    (void)ctx;
+    ETCS::Entity* e = src ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), src) : nullptr;
+    Mesh* m = e && e->getSourceTag() == ETCS::Buffer("Mesh") ? dynamic_cast<Mesh*>(e) : nullptr;
+    if (!m) { ETCS_LOG("Mesh::CopyBent", "RID:" << src << " does not resolve as a Mesh."); return; }
+    self.CopyBent(*m);
 }
 
 DEFINE_WORK_FUNC(Mesh, Delete)
@@ -1610,5 +1671,41 @@ DEFINE_WORK_FUNC(Throbber, Delete)
     (void)data; (void)ctx;
     self.DeleteConcrete();
 }
+
+/*
+ * ── Menu ───────────────────────────────────────────────────────────────────
+ *
+ * A panel of controls a game draws its lobby with (Menu.h has the lines it
+ * reads). Create <w> <h>, then SetLine <n> <text> for each line that changed
+ * and SetLines <count>; Focus <id> and Hover <x> <y> are drawn; Point <x> <y>
+ * answers "<id> <part>" or "-". Centred in its parent unless SetPosition says
+ * otherwise; SetHidden is the switch.
+ */
+DEFINE_WORK_FUNC_TYPED(Menu, Create, (uint32_t, w), (uint32_t, h)) { (void)ctx; self.Create(w, h); }
+DEFINE_WORK_FUNC(Menu, SetLine)
+{
+    (void)ctx;
+    uint32_t n = 0;
+    data >> n;
+    std::string rest = data.restAsString();
+    if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+    self.SetLine(n, rest);
+}
+DEFINE_WORK_FUNC_TYPED(Menu, SetLines, (uint32_t, count)) { (void)ctx; self.SetLines(count); }
+DEFINE_WORK_FUNC(Menu, Focus) { (void)ctx; std::string id; data >> id; self.Focus(id == "-" ? std::string() : id); }
+DEFINE_WORK_FUNC_TYPED(Menu, Hover, (int32_t, x), (int32_t, y)) { (void)ctx; self.Hover(x, y); }
+DEFINE_WORK_FUNC(Menu, Point)
+{
+    (void)ctx;
+    int32_t x = 0, y = 0;
+    data >> x >> y;
+    const std::string hit = self.Point(x, y);
+    data.reset();
+    data.writeString(hit.c_str());
+}
+DEFINE_WORK_FUNC_TYPED(Menu, SetPosition, (int32_t, x), (int32_t, y)) { (void)ctx; self.SetPosition(x, y); }
+DEFINE_WORK_FUNC_TYPED(Menu, SetOrder, (int32_t, z)) { (void)ctx; self.SetOrder(z); }
+DEFINE_WORK_FUNC_TYPED(Menu, SetHidden, (int32_t, hidden)) { (void)ctx; self.SetHidden(hidden != 0); }
+DEFINE_WORK_FUNC(Menu, Delete) { (void)data; (void)ctx; self.DeleteConcrete(); }
 
 #endif

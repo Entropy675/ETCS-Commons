@@ -1,0 +1,70 @@
+#!/usr/bin/env etcs
+# CHANNELS: a clay court in the evening -- terracotta ground, teal walls, a
+# warm sky -- level all the way, and things in the way of it.
+#
+#   1  the chicane  two walls across, each open at one end: round one, back
+#                   round the other
+#   2  the cross    four arms off a middle: the tee at the foot of one, the
+#                   cup at the end of the arm to its right, a block on the
+#                   middle to bank off or go round
+#   3  the funnel   a low wall most of the way across (round its end, or off a
+#                   spring over it), then two walls closing on the cup's end:
+#                   straight down the middle, or off one and in
+#   run golf_course_channels.etcs game=<GolfMatch>
+requires game [GolfMatch]
+game.AddCourse(channels)
+# Its look: turf, walls, sand, sky.
+game.SetTheme(0.74, 0.47, 0.31, 0.17, 0.36, 0.4, 0.93, 0.86, 0.66, 0.93, 0.76, 0.54)
+
+# ── 1, the chicane ──────────────────────────────────────────────────────────
+game.AddHole(3)
+game.AddGreen(0.0, -0.5, 24.0, 16.0, 1.0, 56.0, 0.0, 0.0)
+game.AddWall(-8.3, -0.25, 24.0, 0.6, 1.5, 57.2, 0.0, 0.0)
+game.AddWall(8.3, -0.25, 24.0, 0.6, 1.5, 57.2, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, 52.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(-3.0, 0.5, 16.0, 10.0, 1.0, 0.6, 0.0, 0.0)
+game.AddWall(3.0, 0.5, 32.0, 10.0, 1.0, 0.6, 0.0, 0.0)
+game.AddCup(0.0, 46.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(5.0, 12.0)
+game.AddSpot(-5.0, 28.0)
+
+# ── 2, the cross: arms ten wide and fourteen long off a middle of ten ───────
+game.AddHole(3)
+game.AddGreen(0.0, -0.5, 15.0, 10.0, 1.0, 38.0, 0.0, 0.0)
+game.AddGreen(-12.0, -0.5, 15.0, 14.0, 1.0, 10.0, 0.0, 0.0)
+game.AddGreen(12.0, -0.5, 15.0, 14.0, 1.0, 10.0, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 10.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(-5.3, -0.25, 2.4, 0.6, 1.5, 14.0, 0.0, 0.0)
+game.AddWall(-12.3, -0.25, 9.7, 14.6, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(-19.3, -0.25, 15.0, 0.6, 1.5, 10.0, 0.0, 0.0)
+game.AddWall(-12.3, -0.25, 20.3, 14.6, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(-5.3, -0.25, 27.6, 0.6, 1.5, 14.0, 0.0, 0.0)
+game.AddWall(0.0, -0.25, 34.3, 10.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(5.3, -0.25, 27.6, 0.6, 1.5, 14.0, 0.0, 0.0)
+game.AddWall(12.3, -0.25, 20.3, 14.6, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(19.3, -0.25, 15.0, 0.6, 1.5, 10.0, 0.0, 0.0)
+game.AddWall(12.3, -0.25, 9.7, 14.6, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(5.3, -0.25, 2.4, 0.6, 1.5, 14.0, 0.0, 0.0)
+game.AddWall(0.0, 0.25, 15.0, 3.0, 0.5, 3.0, 0.0, 45.0)
+game.AddCup(15.0, 15.0)
+game.AddTee(0.0, 0.0)
+game.AddSpot(-15.0, 15.0)
+game.AddSpot(0.0, 30.0)
+
+# ── 3, the funnel ───────────────────────────────────────────────────────────
+game.AddHole(4)
+game.AddGreen(0.0, -0.5, 33.0, 16.0, 1.0, 74.0, 0.0, 0.0)
+game.AddWall(-8.3, -0.25, 33.0, 0.6, 1.5, 75.2, 0.0, 0.0)
+game.AddWall(8.3, -0.25, 33.0, 0.6, 1.5, 75.2, 0.0, 0.0)
+game.AddWall(0.0, -0.25, -4.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(0.0, -0.25, 70.3, 16.0, 1.5, 0.6, 0.0, 0.0)
+game.AddWall(-2.0, 0.25, 24.0, 12.0, 0.5, 0.6, 0.0, 0.0)
+game.AddWall(-5.0, 0.5, 48.0, 0.6, 1.0, 14.0, 0.0, 20.0)
+game.AddWall(5.0, 0.5, 48.0, 0.6, 1.0, 14.0, 0.0, -20.0)
+game.AddCup(0.0, 62.0)
+game.AddTee(0.0, 0.0)
+game.AddSpring(-3.0, 20.0)
+game.AddSpot(0.0, 10.0)
+game.AddSpot(0.0, 36.0)

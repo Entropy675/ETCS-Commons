@@ -277,6 +277,17 @@
       width: 26px; height: 22px; padding: 0; cursor: pointer;
       background: transparent; border: 1px solid var(--line); border-radius: 4px;
     }
+    /* A runtime notice over the loading mark while it is up (takeNotice):
+       above the ring, in the ring's own blue and violet. */
+    #bootnotice {
+      position: absolute; left: 50%; bottom: calc(50% + 60px); transform: translateX(-50%);
+      max-width: 80%; padding: 8px 12px; z-index: 6; pointer-events: none;
+      background: rgba(27, 28, 20, 0.92); color: rgb(240, 227, 199);
+      border: 1px solid rgb(100, 0, 228); box-shadow: 0 0 0 1px rgba(0, 0, 255, 0.35);
+      border-radius: 6px; font-size: 13px; line-height: 1.35; text-align: center;
+      transition: opacity 0.6s; opacity: 1;
+    }
+    #bootnotice.gone { opacity: 0; }
   </style>
 </head>
 <body>
@@ -312,7 +323,7 @@
            See bootThrobber() below: nothing inside the runtime can draw
            during the window this covers, because the runtime is not
            running yet. -->
-      <canvas id="bootthrob" width="96" height="96"></canvas>
+      <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
       <!-- THE SOFT KEYBOARD'S FIELD. A phone raises its keyboard for a focused
            field and nothing else, and nothing on the canvas is a field: so
            this one, invisible, is focused while the runtime says a box or a
@@ -504,6 +515,29 @@
    */
   const SHELL_DRAIN_MS = 250;
   let shellDrainTimer = 0;
+  /*
+   * A NOTICE FROM THE RUNTIME (etcs_web_notice, CommandExecutor.h): a re-sync,
+   * said above the ETCS loading mark while the mark is up. With the mark gone
+   * the terminal has the same line, in colour, and nothing more is shown.
+   */
+  let noticeSerial = 0;
+  function takeNotice(mod) {
+    let json = '';
+    try { json = mod.ccall('etcs_web_notice', 'string', [], []); } catch (e) { return; }
+    if (!json) return;
+    let n = null;
+    try { n = JSON.parse(json); } catch (e) { return; }
+    if (!n || n.serial === noticeSerial) return;
+    noticeSerial = n.serial;
+    const mark = document.getElementById('bootthrob');
+    if (!mark || !mark.parentNode) return;
+    let el = document.getElementById('bootnotice');
+    if (!el) { el = document.createElement('div'); el.id = 'bootnotice'; mark.parentNode.appendChild(el); }
+    el.textContent = String(n.text || '');
+    el.classList.remove('gone');
+    clearTimeout(el.hideTimer);
+    el.hideTimer = setTimeout(function () { el.classList.add('gone'); }, 8000);
+  }
   function drainShellOutput() {
     const mod = window.Module;
     if (!mod || !mod.ccall) return;
@@ -517,6 +551,7 @@
     let menu = '';
     try { menu = mod.ccall('etcs_web_shell_menu', 'string', [], []); } catch (e) { menu = ''; }
     if (menu && menu !== lastMenuJson) { lastMenuJson = menu; toShell({ etcs: 'menu', json: menu }); }
+    takeNotice(mod);
   }
   let lastMenuJson = '';
   function startShellDrain() {
@@ -1777,6 +1812,16 @@
     }
   }
 
+  // WHAT IT LEAVES BEHIND, when its element names something (data-leave): the
+  // canvas's own CSS background, which paints under the canvas's pixels. The
+  // runtime's canvas is transparent until it first presents and opaque after,
+  // so this fills the wait between the throbber going and the first frame, and
+  // everything the runtime draws is over it.
+  function leaveBehind(el, under) {
+    const url = el.dataset.leave;
+    if (!url || !under) return;
+    under.style.background = 'url("' + url + '") center / auto 45% no-repeat';
+  }
   /*
    * ── the boot throbber ──────────────────────────────────────────────────────
    *
@@ -1898,7 +1943,7 @@
         }
       } catch (e) { bad++; }
       if (done || bad > 25) {
-        stopped = true; clearInterval(poll); el.remove();
+        stopped = true; clearInterval(poll); leaveBehind(el, sheet); el.remove();
         sceneUp = true;
         log('[etcs] boot throbber done'
             + (bad > 25 ? ' (could not read the sheet -- leaving anyway)' : '') + '\n');

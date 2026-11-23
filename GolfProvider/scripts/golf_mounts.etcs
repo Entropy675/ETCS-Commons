@@ -1,21 +1,47 @@
 #!/usr/bin/env etcs
-# The golf page's files, mounted into a FileHtmlPage: the page, its manifest,
-# the boot and every script it stages. One list, for any server that hosts it.
-#   run GolfProvider/scripts/golf_mounts.etcs tree=tree
+#IMPORT ACE_ROOT/modules
+# THE GOLF PAGE'S FILES, for any server that hosts it:
+#
+#     tree.SetMountPrefix(golf)
+#     run GolfProvider/scripts/golf_mounts.etcs tree=tree
+#     tree.SetMountPrefix()
+#
+# The page and what it stages, each at the path it is fetched from -- the same
+# list as www/modules.json's scripts; the session's (hosting, joining, the
+# hall) are NetworkProvider's, every game's alike. The runtime (/wasm/) and the
+# marks (/favicon/) are the site's, mounted once for every page.
+
 requires tree [FileHtmlPage]
-tree.MountFile(index.html ACE_ROOT/modules/RenderProvider/scripts/www/index.html)
+
+tree.MountFile(index.html ACE_ROOT/modules/GolfProvider/scripts/www/index.html)
 tree.MountFile(modules.json ACE_ROOT/modules/GolfProvider/scripts/www/modules.json)
 tree.MountFile(boot_golf.etcs ACE_ROOT/modules/GolfProvider/scripts/www/boot_golf.etcs)
-tree.MountFile(GolfProvider/scripts/golf_course.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course.etcs)
-tree.MountFile(GolfProvider/scripts/golf_hole_1.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_hole_1.etcs)
-tree.MountFile(GolfProvider/scripts/golf_hole_2.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_hole_2.etcs)
-tree.MountFile(GolfProvider/scripts/golf_hole_3.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_hole_3.etcs)
+tree.MountFile(GolfProvider/scripts/golf_world.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_world.etcs)
+tree.MountFile(GolfProvider/scripts/golf_pool.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_pool.etcs)
+tree.MountFile(GolfProvider/scripts/golf_balls.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_balls.etcs)
+tree.MountFile(GolfProvider/scripts/golf_ball.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_ball.etcs)
+tree.MountFile(GolfProvider/scripts/golf_slabs.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_slabs.etcs)
+tree.MountFile(GolfProvider/scripts/golf_slab.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_slab.etcs)
 tree.MountFile(GolfProvider/scripts/golf_cup.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_cup.etcs)
-tree.MountFile(GolfProvider/scripts/golf_tee.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_tee.etcs)
-tree.MountFile(GolfProvider/scripts/golf_surface.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_surface.etcs)
-tree.MountFile(GolfProvider/scripts/golf_wall.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_wall.etcs)
+tree.MountFile(GolfProvider/scripts/golf_pads.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_pads.etcs)
+tree.MountFile(GolfProvider/scripts/golf_pad.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_pad.etcs)
+tree.MountFile(GolfProvider/scripts/golf_springs.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_springs.etcs)
+tree.MountFile(GolfProvider/scripts/golf_spring.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_spring.etcs)
+tree.MountFile(GolfProvider/scripts/golf_arrow.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_arrow.etcs)
+tree.MountFile(GolfProvider/scripts/golf_spots.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_spots.etcs)
+tree.MountFile(GolfProvider/scripts/golf_spot.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_spot.etcs)
+tree.MountFile(GolfProvider/scripts/golf_puffs.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_puffs.etcs)
+tree.MountFile(GolfProvider/scripts/golf_puff.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_puff.etcs)
+tree.MountFile(GolfProvider/scripts/golf_course_classic.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_classic.etcs)
+tree.MountFile(GolfProvider/scripts/golf_course_boosters.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_boosters.etcs)
+tree.MountFile(GolfProvider/scripts/golf_course_terraces.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_terraces.etcs)
+tree.MountFile(GolfProvider/scripts/golf_course_ridge.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_ridge.etcs)
+tree.MountFile(GolfProvider/scripts/golf_course_channels.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_channels.etcs)
 tree.MountFile(GolfProvider/scripts/golf_play.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_play.etcs)
+tree.MountFile(GolfProvider/scripts/golf_board.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_board.etcs)
+tree.MountFile(GolfProvider/scripts/golf_board_row.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_board_row.etcs)
 tree.MountFile(GolfProvider/scripts/golf_pointer.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_pointer.etcs)
 tree.MountFile(GolfProvider/scripts/golf_keys.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_keys.etcs)
+run NetworkProvider/scripts/session_mounts.etcs tree=tree
 tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
 tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)

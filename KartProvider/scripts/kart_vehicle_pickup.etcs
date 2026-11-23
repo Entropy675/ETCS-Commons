@@ -1,0 +1,42 @@
+#!/usr/bin/env etcs
+# THE PICKUP: four wheels wide apart on a long base -- slow to its low top,
+# slow to turn and to stop, and a tyre that hardly lets go: it slides only
+# boosted on a full lock, and a slide costs it more. Over twice a kart's
+# weight, a big target, a heavy ram.
+#   run kart_vehicle_pickup.etcs battle=<KartBattle> world=<Scene3D>
+# The numbers and the kart's: kart_vehicle_moto.etcs.
+requires battle [KartBattle]
+requires world [Drawable3D]
+battle.AddVehicle(pickup)
+battle.Tune(top 17)
+battle.Tune(boost 24 14)
+battle.Tune(push 2 6 2)
+battle.Tune(brake 14)
+battle.Tune(reverse 3 5)
+battle.Tune(coast 1)
+battle.Tune(steer 0.4 0.5 1.8 2.5)
+battle.Tune(wheelbase 2.2)
+battle.Tune(grip 30 16)
+battle.Tune(slide 0.6 0.4)
+battle.Tune(tyres 4 0.85 0.9)
+battle.Tune(body 1.5 0.55 2.6)
+battle.Tune(tyre 0.56 0.28 0.02)
+battle.Tune(reach 1.25)
+battle.Tune(ram 35)
+
+# Its look, in its body's unit box as the moto's is (1.5 across, 0.55 up,
+# 2.6 along): the chassis, the cab and its bonnet, the bed's sides and
+# tailgate, the bumpers, a bar of lamps on the roof.
+world.spawn(RenderProvider::Mesh pickup_look)
+pickup_look.Create()
+pickup_look.Clear()
+pickup_look.AddBox(0.0, 0.0, 0.0, 1.0, 0.4545, 1.0)
+pickup_look.AddBox(0.0, 0.7727, 0.1731, 0.9333, 1.0909, 0.3462)
+pickup_look.AddBox(0.0, 0.4091, 0.4154, 0.9333, 0.3636, 0.1385)
+pickup_look.AddBox(-0.46, 0.5, -0.25, 0.08, 0.5455, 0.5)
+pickup_look.AddBox(0.46, 0.5, -0.25, 0.08, 0.5455, 0.5)
+pickup_look.AddBox(0.0, 0.5, -0.4808, 0.92, 0.5455, 0.0385)
+pickup_look.AddBox(0.0, -0.0909, 0.5115, 1.0, 0.2909, 0.0385)
+pickup_look.AddBox(0.0, -0.0909, -0.5115, 1.0, 0.2909, 0.0385)
+pickup_look.AddBox(0.0, 1.3727, 0.2308, 0.6, 0.1091, 0.0385)
+battle.VehicleLook(@pickup_look)
