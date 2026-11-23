@@ -38,6 +38,43 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddKart, (ETCS::RID, body), (ETCS::RID, fr), 
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddWall, (ETCS::RID, part))           { (void)ctx; self.AddWall(part); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddMap, (std::string, name))          { (void)ctx; self.AddMap(name); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddRandomMap, (std::string, name))    { (void)ctx; self.AddRandomMap(name); }
+// The vehicles a driver picks from in the lobby, after the kart: AddVehicle
+// <name>, then Tune <what> <values> and VehicleLook <mesh under the world> of
+// it (KartBattle::Tune lists the numbers; kart_vehicle_*.etcs). Each "ok" or
+// "refused"; a refused AddVehicle refuses what follows it until the next.
+DEFINE_WORK_FUNC(KartBattle, AddVehicle)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.AddVehicle(name);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, Tune)
+{
+    (void)ctx;
+    const bool ok = self.Tune(data.toString());
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, VehicleLook)
+{
+    (void)ctx;
+    ETCS::RID mesh = 0;
+    data >> mesh;
+    const bool ok = self.VehicleLook(mesh);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// The vehicles, one a line, the kart first.
+DEFINE_WORK_FUNC(KartBattle, Vehicles)  { (void)ctx; data.reset(); data.writeString(self.Vehicles().c_str()); }
+// Ride <vehicle> -- this runtime's, in the lobby: a `ride` line. "ok" or "refused".
+DEFINE_WORK_FUNC(KartBattle, Ride)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Ride(name);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
 // AddBlock <x> <z> <width> <depth> <height> <yaw degrees>
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlock, (float, x), (float, z), (float, w), (float, d), (float, h), (float, yaw))
 {
@@ -220,7 +257,7 @@ DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeStr
 // "<tick> <hash>": the last snapshot, what the trace's `hash` lines carry.
 DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
 // Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
-// <slide> <spare> <spare ammo> <oil ticks> <dagger ticks>", or "-".
+// <slide> <spare> <spare ammo> <oil ticks> <dagger ticks> <vehicle> <lean>", or "-".
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
 // Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
 // rope laid behind it, the segments drawn and the darkest (0..1); or "-".

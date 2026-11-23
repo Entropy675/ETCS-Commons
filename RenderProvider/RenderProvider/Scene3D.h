@@ -75,13 +75,13 @@ public:
     { return Hidden() != o.Hidden() ? Hidden() : m_order < o.m_order; }
     int32_t Order() override { return m_order; }
 
-    // WHAT A VERB SETS IS A VALUE ON THE TAG SURFACE: speed, damping,
+    // WHAT A VERB SETS IS A VALUE ON THE TAG SURFACE: speed, damping, mass,
     // colour, order, sensitivity (and the family's emissivity, CausalBase),
     // each through the funnel under its own flag, so the record keeps the
     // verb, a replay sets it again and a store keeps what it says. The
     // members below are the working copies the step and the picture read,
     // and onValue is their one writer -- a verb, a replay and a restore all
-    // land there. Mass has no verb: it is what a box is, a constant.
+    // land there.
     Scene3D() = default;
     void onValue(const ETCS::Buffer& key, const std::string* value) override
     {
@@ -93,6 +93,12 @@ public:
             if (!readWords(value, w, 1)) w[0] = (speed ? kSpeed : kDamping).raw;
             std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the step reads these under it
             (speed ? m_speed : m_damping) = Fixed::FromRaw(w[0]);
+        }
+        else if (k == "mass")
+        {
+            const bool has = readWords(value, w, 1) && w[0] > 0;
+            std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // the step reads it under it
+            m_mass = has ? Fixed::FromRaw(w[0]) : Fixed::One();
         }
         else if (k == "color")
         {
@@ -367,6 +373,11 @@ public:
         if (per_sec >= 0.0f) this->addTag("damping", words({ Fixed::From(per_sec).raw }));
     }
     float Damping() const { return m_damping.ToFloat(); }
+    // What it weighs: 1 as made. Its rows keep energy, so a change is its speed's.
+    void SetMass(float m)
+    {
+        if (m > 0.0f) this->addTag("mass", words({ Fixed::From(m).raw }));
+    }
 
     // Whether this node's own box is drawn. Its children still are, and
     // their coordinates stay relative to a box that is still there -- how a
@@ -2365,7 +2376,7 @@ private:
     static inline const Fixed kDamping = Fixed::FromInt(8);
     Fixed   m_speed    = kSpeed;      // terminal, scene units per second
     Fixed   m_damping  = kDamping;    // kinetic -> heat, per second
-    Fixed   m_mass     = Fixed::One();
+    Fixed   m_mass     = Fixed::One();      // SetMass
     Fixed   m_drag_dt, m_drag_damping, m_drag_factor;   // exp(-k dt) for the last (k, dt) seen
 
     OwnKids     m_own_kids;        // the child lists at m_kids_epoch (refreshKids)

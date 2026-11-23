@@ -60,7 +60,7 @@ ETCS_TAG_BLOCK_BASIC(CompositeDrawable2D,
 // producer, which is how w/a/s/d reaches the scene without this module knowing
 // what a window is.
 ETCS_TAG_BLOCK_HYBRID(Scene3D,
-    (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetSensitivity,
+    (Create, SetPosition, Move, SetColor, SetOrder, SetSpeed, SetDamping, SetMass, SetSensitivity,
      Impulse, Halt, Order, Run, Hash, Look, SetEmissivity, SetSpace, Contain, SetVisible, SetMesh, Project, DepthAt, Delete,
      SetGravity, InheritGravity, SetLightSpeed, InheritLightSpeed, SetSolid, SetAnchored, SetShape, Orient, Aim,
      SetDriven, Export, SetGlow, SetSmoke),
@@ -79,7 +79,7 @@ ETCS_TAG_BLOCK_BASIC(Camera3D,
 // anywhere, shared by every node that names it; sent to the device once,
 // and rasterised from the same triangles on the host.
 ETCS_TAG_BLOCK_BASIC(Mesh,
-    Create, Clear, Box, AddVertex, AddTriangle, Delete, Sphere, Arrow, Cylinder, Bend, Warp, CopyBent, Parts)
+    Create, Clear, Box, AddVertex, AddTriangle, Delete, Sphere, Arrow, Cylinder, Bend, Warp, CopyBent, Parts, AddBox)
 
 // Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of
 // whatever it labels and needs no drawing code at the call site. Its font is

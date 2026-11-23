@@ -744,6 +744,12 @@ DEFINE_WORK_FUNC_TYPED(Scene3D, SetDamping, (float, per_sec))
     (void)ctx;
     self.SetDamping(per_sec);
 }
+// SetMass <m> -- what it weighs, 1 as made: the share of a collision's push it takes.
+DEFINE_WORK_FUNC_TYPED(Scene3D, SetMass, (float, m))
+{
+    (void)ctx;
+    self.SetMass(m);
+}
 
 /*
  * SetSensitivity <span> -- the ONE knob, and its unit is a SPAN: how much of
@@ -1360,6 +1366,13 @@ DEFINE_WORK_FUNC_TYPED(Mesh, AddVertex, (float, x), (float, y), (float, z),
     (void)ctx;
     // Not logged: a game bakes shapes while it runs, thousands of vertices at a time.
     self.AddVertex(x, y, z, nx, ny, nz);
+}
+
+// AddBox <cx> <cy> <cz> <w> <h> <d> -- a box added to this mesh, in the unit box (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, AddBox, (float, cx), (float, cy), (float, cz), (float, w), (float, h), (float, d))
+{
+    (void)ctx;
+    self.AddBox(cx, cy, cz, w, h, d);
 }
 
 DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_t, c))

@@ -1,0 +1,20 @@
+#!/usr/bin/env etcs
+# THE TRUCK: wide, slow and heavy -- a low top, a soft push, a slow, small
+# wheel on a long base, and grip enough that it hardly slides. Its body weighs
+# about four karts, so it shoves them aside; it is a big target. Drawn as its
+# body's box.
+#   run kart_vehicle_truck.etcs battle=<KartBattle>
+# The numbers and the kart's: kart_vehicle_moto.etcs.
+requires battle [KartBattle]
+battle.AddVehicle(truck)
+battle.Tune(top 17)
+battle.Tune(boost 23 12)
+battle.Tune(push 1.5 6 1.2)
+battle.Tune(grip 32 16)
+battle.Tune(steer 0.3 0.35 2.6 2)
+battle.Tune(wheelbase 2.6)
+battle.Tune(tyres 4 1 1.15)
+battle.Tune(body 1.9 0.6 3.2)
+battle.Tune(tyre 0.62 0.34 0.03)
+battle.Tune(reach 1.5)
+battle.Tune(ram 40)

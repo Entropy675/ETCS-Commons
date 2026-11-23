@@ -60,6 +60,22 @@ public:
         return true;
     }
 
+    // A box added to what is here: centred at (cx, cy, cz), w x h x d, its
+    // faces as the unit cube's -- so a shape is built of boxes, in the unit
+    // box a node scales to its extent (a part may reach past it).
+    void AddBox(float cx, float cy, float cz, float w, float h, float d)
+    {
+        if (w <= 0.0f || h <= 0.0f || d <= 0.0f) return;
+        std::vector<float> v;
+        std::vector<uint32_t> ix;
+        device_unit_box(v, ix);
+        const uint32_t base = VertexCount();
+        for (size_t i = 0; i < v.size(); i += 6)
+            m_vertices.insert(m_vertices.end(), { cx + v[i] * w, cy + v[i + 1] * h, cz + v[i + 2] * d, v[i + 3], v[i + 4], v[i + 5] });
+        for (uint32_t k : ix) m_indices.push_back(base + k);
+        ++m_version;
+    }
+
     // The unit cube -- the device's own mesh 0 (DeviceFrame.h), as a starting
     // point a script can reshape, or a mesh a node names explicitly.
     void Box()

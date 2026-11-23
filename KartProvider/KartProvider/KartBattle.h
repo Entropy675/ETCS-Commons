@@ -173,6 +173,9 @@ public:
                 std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
                 s.tyre_pristine[t] = c->RowsUnder();
             }
+        s.made_body = extentOf(body, s.made_volume);
+        Fixed unused;
+        s.made_tyre = extentOf(fr, unused);
         m_slots.push_back(s);
         pitLocked(m_slots.size() - 1);
         // Practice asked for before the arena had made the karts (a page is
@@ -191,6 +194,88 @@ public:
         KartArena::Map m; m.name = name;
         m_defs.push_back(m);
     }
+    // A vehicle by name, the kart's numbers to begin with; Tune and
+    // VehicleLook are of the latest (kart_vehicle_*.etcs). A name taken is
+    // refused, and so is the kart's -- and then they are refused too.
+    bool AddVehicle(const std::string& name)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_tuning = false;
+        if (name.empty() || name.find(' ') != std::string::npos || vehicleNamedLocked(name) >= 0) return false;
+        Vehicle v; v.name = name;
+        m_vehicles.push_back(v);
+        m_tuning = true;
+        return true;
+    }
+    // "<what> <values...>" of the latest vehicle: top, boost <top> <push>,
+    // push <start> <launch> <pull>, brake, reverse <acc> <top>, coast,
+    // steer <lock> <jump> <ease> <back>, wheelbase, grip <rolling> <braking>,
+    // slide <free> <least>, tyres <2|4> <side> <ahead>, body <w> <h> <d>,
+    // tyre <diameter> <width> <drop>, reach, lean, ram <hp>.
+    // Decimals read exactly (no float), so every runtime tunes the same.
+    bool Tune(const std::string& line)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (!m_tuning) return false;
+        Vehicle& v = m_vehicles.back();
+        std::istringstream in(line);
+        std::string what;
+        in >> what;
+        std::vector<Fixed> n;
+        std::vector<std::string> said;
+        for (std::string w; in >> w; ) { Fixed f; if (!decimal(w, f)) return false; n.push_back(f); said.push_back(w); }
+        auto need = [&](size_t k) { return n.size() == k; };
+        auto positive = [&](size_t k) { for (size_t i = 0; i < k; ++i) if (!n[i].IsPositive()) return false; return true; };
+        if (what == "top" && need(1) && positive(1)) { v.top = n[0]; return true; }
+        if (what == "boost" && need(2) && positive(2)) { v.boost_top = n[0]; v.boost_push = n[1]; return true; }
+        if (what == "push" && need(3) && positive(3)) { v.start = n[0]; v.launch = n[1]; v.pull = n[2]; return true; }
+        if (what == "brake" && need(1) && positive(1)) { v.brake = n[0]; return true; }
+        if (what == "reverse" && need(2) && positive(2)) { v.rev_acc = n[0]; v.rev_top = n[1]; return true; }
+        if (what == "coast" && need(1) && n[0].raw >= 0) { v.coast = n[0]; return true; }
+        if (what == "steer" && need(4) && positive(4)) { v.lock = n[0]; v.jump = n[1]; v.ease = n[2]; v.back = n[3]; return true; }
+        if (what == "wheelbase" && need(1) && positive(1)) { v.base = n[0]; return true; }
+        if (what == "grip" && need(2) && positive(2)) { v.grip = n[0]; v.brake_grip = n[1]; return true; }
+        if (what == "slide" && need(2) && positive(2) && n[0] < Fixed::One() && n[1] <= Fixed::One()) { v.slide_free = n[0]; v.slide_least = n[1]; return true; }
+        if (what == "tyres" && need(3) && (n[0] == F(2) || n[0] == F(4)) && n[1].raw >= 0 && n[2].IsPositive())
+        {
+            v.tyres = n[0] == F(2) ? 2 : 4; v.side = n[1]; v.ahead = n[2];
+            return true;
+        }
+        if (what == "body" && need(3) && positive(3))
+        {
+            v.body = said[0] + ", " + said[1] + ", " + said[2]; v.volume = n[0] * n[1] * n[2];
+            return true;
+        }
+        // A tyre stands on the ground: the body rides its radius and the drop over it.
+        if (what == "tyre" && need(3) && positive(2) && (n[0] / F(2) + n[2]).IsPositive())
+        {
+            v.tyre = said[0] + ", " + said[1] + ", " + said[0]; v.drop = n[2]; v.ride = n[0] / F(2) + n[2];
+            return true;
+        }
+        if (what == "reach" && need(1) && positive(1)) { v.reach = n[0]; return true; }
+        if (what == "lean" && need(1) && n[0].raw >= 0) { v.lean = n[0]; return true; }
+        if (what == "ram" && need(1) && n[0].raw >= 0) { v.ram = static_cast<int>(n[0].ToInt()); return true; }
+        return false;
+    }
+    // The latest vehicle's body: a Mesh under the world (0: the body's own box).
+    bool VehicleLook(ETCS::RID mesh) { std::lock_guard<std::mutex> g(m_mu); if (m_tuning) m_vehicles.back().look = mesh; return m_tuning; }
+    // The vehicles, one a line, the kart first.
+    std::string Vehicles()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        std::string out = kart().name + "\n";
+        for (const Vehicle& v : m_vehicles) out += v.name + "\n";
+        return out;
+    }
+    // This runtime's vehicle, in the lobby: a `ride` line.
+    bool Ride(const std::string& name)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (slotOf(m_me) < 0 || m_phase != Lobby || vehicleNamedLocked(name) < 0) return false;
+        proposeLocked("ride " + name);
+        return true;
+    }
+
     // A map made from a seed each time it is chosen (KartArena::Generate).
     void AddRandomMap(const std::string& name)
     {
@@ -773,7 +858,7 @@ public:
              + fmt1(speedOf(static_cast<size_t>(i))) + " " + std::to_string(s.hp) + " " + KartArms::Name(s.weapon)
              + " " + std::to_string(s.ammo) + " " + fmt3(y) + " " + (s.air ? "air" : "ground") + " " + fmt3(s.wheel.ToFloat())
              + " " + fmt3(slide) + " " + KartArms::Name(s.spare) + " " + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip)
-             + " " + std::to_string(s.dagger);
+             + " " + std::to_string(s.dagger) + " " + vehicleOf(s).name + " " + fmt3(s.lean.ToFloat());
     }
     // Tyres <name> -- per tyre, fr fl rr rl, "<heat> <rope> <shown> <darkest>": its heat (J), how
     // long its mark's rope is laid behind it, how many segments are drawn,
@@ -858,6 +943,10 @@ private:
         std::string driver;
         int         colour = -1;                   // its `look`: a place in the palette, -1 its own
         std::string name;                          // its `look`: shown for it; empty, its label
+        int         ride = 0;                      // its vehicle: a place in m_vehicles
+        Fixed       lean;                          // its body's roll into the turn, rad (+ to the picture's right)
+        std::string made_body, made_tyre;          // the pool's extents, "w, h, d": the kart's
+        Fixed       made_volume;                   // the pool's body's: a vehicle's mass is its volume over this
         int         thr = 0, steer = 0, fire = 0;
         int         press = 0;                     // a press of the trigger the tick has not yet seen
         Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
@@ -950,6 +1039,7 @@ private:
 
     static Fixed F(int64_t n, int64_t d = 1) { return Fixed::FromInt(n) / Fixed::FromInt(d); }
     static Fixed dt()        { return F(1, kHz); }
+    struct Vehicle;   // below: what the numbers that follow are the kart's of
     /*
      * THE PEDAL: slow off the line, then as it always was -- quick, and less
      * the nearer the top, the launch's push falling with speed, never below
@@ -965,14 +1055,14 @@ private:
     static Fixed topSpeed()  { return F(22); }
     static Fixed boostSpeed(){ return F(30); }
     static Fixed boostPush() { return F(18); }
-    static Fixed pushAt(Fixed v, Fixed top)
+    static Fixed pushAt(const Vehicle& c, Fixed v, Fixed top)
     {
         const Fixed u = v.IsPositive() ? v / top : Fixed::Zero();
-        const Fixed p = launch() * (Fixed::One() - u);
-        const Fixed full = p > pull() ? p : pull();
+        const Fixed p = c.launch * (Fixed::One() - u);
+        const Fixed full = p > c.pull ? p : c.pull;
         if (!(u < F(3, 10))) return full;
         const Fixed e = u / F(3, 10), ease = e * e * (F(3) - F(2) * e);
-        return startPush() + (full - startPush()) * ease;
+        return c.start + (full - c.start) * ease;
     }
     static Fixed brake()     { return F(20); }
     static Fixed reverseAcc(){ return F(5); }
@@ -986,7 +1076,7 @@ private:
     // kart goes, so the turn a press gives at speed (speed x lock /
     // wheelbase) stays near 1.7 to 1.9 rad/s from 16 u/s up instead of
     // growing with it. A long hold doubles it.
-    static Fixed lockAt(Fixed speed) { return wheelLock() / (Fixed::One() + speed.Abs() / F(10)); }
+    static Fixed lockAt(const Vehicle& c, Fixed speed) { return c.lock / (Fixed::One() + speed.Abs() / F(10)); }
     static Fixed wheelbase() { return F(16, 10); }
     // The tyres across: the most they pull a slide out (u/s/s), and less
     // with the brake on -- past it the kart slides. A full lock at 16 u/s
@@ -997,12 +1087,45 @@ private:
     // a quarter while the way is up to ~35 degrees off the heading (`off`
     // is that angle's sine), rising to all of it full sideways -- so a drift
     // keeps its speed and a kart knocked sideways still stops.
-    static Fixed slideCost(Fixed off)
+    static Fixed slideCost(const Vehicle& c, Fixed off)
     {
-        const Fixed free = F(574, 1000), least = F(1, 4);
+        const Fixed free = c.slide_free, least = c.slide_least;
         if (off <= free) return least;
         return Fixed::Min(Fixed::One(), least + (Fixed::One() - least) * (off - free) / (Fixed::One() - free));
     }
+    /*
+     * A VEHICLE: every number the drive reads. The first is the kart, the
+     * numbers above as they always were; a vehicle script adds another and
+     * tunes it (kart_vehicle_*.etcs: AddVehicle, Tune, VehicleLook), and a
+     * driver picks one in the lobby -- a `ride` line, so every runtime drives
+     * the same. Its look is presentation: the body keeps its extent, so it
+     * meets the world as any kart does.
+     */
+    struct Vehicle
+    {
+        std::string name = "kart";
+        Fixed start = startPush(), launch = KartBattle::launch(), pull = KartBattle::pull(), top = topSpeed();
+        Fixed boost_top = boostSpeed(), boost_push = boostPush();
+        Fixed brake = KartBattle::brake(), rev_acc = reverseAcc(), rev_top = reverseTop(), coast = KartBattle::coast();
+        Fixed lock = wheelLock(), jump = steerJump(), ease = steerEase(), back = steerBack();
+        Fixed base = wheelbase();
+        Fixed grip = KartBattle::grip(), brake_grip = brakeGrip();
+        Fixed slide_free = F(574, 1000), slide_least = F(1, 4);
+        int   tyres = 4;                       // 2: in line, the front pair and the rear pair one each
+        Fixed side = tyreSide(), ahead = tyreAhead();
+        std::string body, tyre;                // "w, h, d" Created on the body and each tyre; empty: as the pool made them
+        Fixed volume;                          // the body's; it weighs its share of the pool's (0: the pool's own)
+        Fixed drop = F(3, 100);                // the tyres' centres below the body's
+        Fixed ride = kartY();                  // the body's centre over the ground: on its tyres
+        Fixed reach = kartR();                 // how far from its centre a shot meets it
+        Fixed lean;                            // of the turn's lean, 0 none: a rolled body (poseLocked)
+        int   ram = 20;                        // a ram's damage, boosting at speed
+        ETCS::RID look = 0;                    // the body's mesh; 0 its own box
+    };
+    // The most a body leans, and how quickly it gets there (rad, per s).
+    static Fixed leanMost() { return F(85, 100); }
+    static Fixed leanPace() { return F(8); }
+
     // A PAD pushes the way it points while a kart's middle is over it:
     // padPush() (u/s/s) whatever the kart is doing -- a nudge -- and
     // padGain() times its speed that way a second on top, so one taken at
@@ -1040,8 +1163,8 @@ private:
     static Fixed markRunMax(){ return F(4); }       // ...at most this
     static Fixed markTurn()  { return F(99, 100); } // a way turned past ~8 degrees ends a segment...
     static Fixed markMin()   { return F(1, 4); }    // ...this long at least
-    static Fixed kartY()     { return F(25, 100); }   // the ride height: the body's centre over the ground
-    static Fixed kartR()     { return F(1); }          // the reach a shot meets
+    static Fixed kartY()     { return F(25, 100); }   // the kart's ride height: its body's centre over the ground
+    static Fixed kartR()     { return F(1); }          // the kart's reach a shot meets
     static Fixed gravity()   { return F(10); }        // light: half of what it was -- air is where the fun is
     static Fixed climb()     { return F(35, 100); }   // more ground than this in one step is a wall
     static Fixed noseRise()  { return F(7, 10); }     // ...and this much under the nose (a slope of ~0.75)
@@ -1056,7 +1179,7 @@ private:
     // clears the whole rim has no ground under it, and at lostAt() is out, as
     // one that comes down in lava is -- and one that is somehow still beyond
     // the walls after kOutTicks is out too, so nobody waits out a round there.
-    static Fixed wallRide()  { return KartArena::WallTop() + kartR() - kartY(); }
+    static Fixed wallRide(const Vehicle& c) { return KartArena::WallTop() + c.reach - c.ride; }
     static Fixed rimDeep()   { return F(8); }
     static Fixed rimRise()   { return F(12); }
     static Fixed wallOut()   { return KartArena::Half() + rimDeep(); }   // past the rim's far side
@@ -1174,6 +1297,18 @@ private:
             paintKartLocked(static_cast<size_t>(i));
             return true;
         }
+        if (verb == "ride")
+        {
+            // `ride <vehicle>`: the lobby's only, as a look is.
+            const int i = slotOf(author);
+            std::string name;
+            if (i < 0 || m_phase != Lobby || !(in >> name)) return false;
+            const int v = vehicleNamedLocked(name);
+            if (v < 0) return false;
+            m_slots[static_cast<size_t>(i)].ride = v;
+            rideLookLocked(static_cast<size_t>(i));
+            return true;
+        }
         if (!host) return false;   // the rest are the host's
         if (verb == "config")
         {
@@ -1267,13 +1402,14 @@ private:
         const Fixed l = Fixed::Length(dx, Fixed::Zero(), dz);
         if (l.IsPositive()) { s.hx = dx / l; s.hz = dz / l; } else { s.hx = Fixed::Zero(); s.hz = Fixed::One(); }
         Fixed gx, gz;
-        const Fixed y = KartArena::Solid(m_live, x, z, &gx, &gz) + kartY();   // on the ground, under any deck
+        const Fixed y = KartArena::Solid(m_live, x, z, &gx, &gz) + vehicleOf(s).ride;   // on the ground, under any deck
         s.sgx = gx; s.sgz = gz; s.vy = Fixed::Zero(); s.air = false;
         std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
         OrderVector& r = k->RowsUnder();
         const uint64_t id = r.id;
+        const Fixed reach = r.radius;   // its extent's, which a ride may have changed
         r = s.pristine;
-        r.id = id;
+        r.id = id; r.radius = reach;
         r.PlaceAt(x, y, z);
         poseLocked(s, r);
     }
@@ -1282,6 +1418,11 @@ private:
     {
         m_slots[i].driver.clear();
         m_slots[i].colour = -1; m_slots[i].name.clear();
+        m_slots[i].ride = 0; m_slots[i].lean = Fixed::Zero();
+        verb(m_slots[i].body, "SetMesh", "0");
+        verb(m_slots[i].body, "Create", m_slots[i].made_body);
+        verb(m_slots[i].body, "SetMass", "1");
+        for (ETCS::RID w : m_slots[i].wheels) verb(w, "Create", m_slots[i].made_tyre);
         paintKartLocked(i);
         parkLocked(i);
     }
@@ -1326,7 +1467,7 @@ private:
         }
         s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
         s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = s.drips = s.drip_in = 0;
-        s.kx = s.kz = Fixed::Zero();
+        s.kx = s.kz = Fixed::Zero(); s.lean = Fixed::Zero();
         freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1;
         Fixed dx = -bx, dz = -bz;
@@ -1337,7 +1478,7 @@ private:
         wheelsLocked(s);
         verb(s.body, "SetAnchored", m_phase == Lobby ? "1" : "0");
         verb(s.body, "SetVisible", "1");
-        for (ETCS::RID w : s.wheels) verb(w, "SetVisible", "1");
+        for (int t = 0; t < 4; ++t) verb(s.wheels[t], "SetVisible", tyreShown(vehicleOf(s), t) ? "1" : "0");
     }
     // Everyone afresh (a new map, a round, the lobby): out of play first,
     // then back in slot order, each at the spawn furthest from those already
@@ -1616,30 +1757,31 @@ private:
                     }
                 }
         Fixed speed = vx * hx + vz * hz;
-        wheelTurnLocked(s, steer, speed, step);
+        const Vehicle& c = vehicleOf(s);
+        wheelTurnLocked(c, s, steer, speed, step);
         if (s.boost > 0) --s.boost;
         if (s.slip > 0) --s.slip;
         if (s.air) return;
         Fixed lx = vx - hx * speed, lz = vz - hz * speed;
         const Fixed rolled = speed;
         const bool braking = (thr > 0 && speed.raw < 0) || (thr < 0 && speed.raw > 0);
-        const Fixed top = s.boost > 0 ? boostSpeed() : topSpeed();
-        Fixed push = pushAt(speed, top);
-        if (s.boost > 0 && push < boostPush()) push = boostPush();
+        const Fixed top = s.boost > 0 ? c.boost_top : c.top;
+        Fixed push = pushAt(c, speed, top);
+        if (s.boost > 0 && push < c.boost_push) push = c.boost_push;
         if (s.slip > 0) push = push / F(3);   // oil: the tyres spin
         if (thr > 0)
         {
-            if (speed.raw < 0) speed = Fixed::Min(speed + brake() * step, Fixed::Zero());
+            if (speed.raw < 0) speed = Fixed::Min(speed + c.brake * step, Fixed::Zero());
             else if (speed < top) speed = Fixed::Min(speed + push * step, top);
         }
         else if (thr < 0)
         {
-            if (speed.raw > 0) speed = Fixed::Max(speed - brake() * step, Fixed::Zero());
-            else               speed = Fixed::Max(speed - reverseAcc() * step, -reverseTop());
+            if (speed.raw > 0) speed = Fixed::Max(speed - c.brake * step, Fixed::Zero());
+            else               speed = Fixed::Max(speed - c.rev_acc * step, -c.rev_top);
         }
         else
         {
-            speed -= speed * coast() * step;
+            speed -= speed * c.coast * step;
             if (speed.Abs() < F(1, 100)) speed = Fixed::Zero();
         }
         // What the brake took is the tyres' work against the road.
@@ -1651,11 +1793,11 @@ private:
         if (!along.IsZero()) speed -= gravity() * along / (Fixed::One() + along * along).Sqrt() * step;
         // Past the kart's own top (a boost run out, a pad taken, a hill run
         // down) it eases back on the level; nothing goes past a pad's top.
-        if (speed > top && along.raw >= 0) speed = Fixed::Max(top, speed - brake() * Fixed::Half() * step);
+        if (speed > top && along.raw >= 0) speed = Fixed::Max(top, speed - c.brake * Fixed::Half() * step);
         if (speed > padTop()) speed = padTop();
         // The heading turns by speed x wheel / wheelbase, about +y: a turn of
         // +a takes +z toward +x, which with +z ahead is to the picture's right.
-        const Fixed yaw = speed * s.wheel / wheelbase() * step;
+        const Fixed yaw = speed * s.wheel / c.base * step;
         if (!yaw.IsZero())
         {
             Fixed sn, cs;
@@ -1674,8 +1816,22 @@ private:
         const Fixed on = wx * s.hx + wz * s.hz;
         Fixed ax = wx - s.hx * on, az = wz - s.hz * on;
         const Fixed across = Fixed::Length(ax, Fixed::Zero(), az);
-        Fixed most = (braking ? brakeGrip() : grip()) * step;
+        Fixed most = (braking ? c.brake_grip : c.grip) * step;
         if (s.slip > 0) most = most / F(6);   // ...and hold a sixth of what they did
+        const Fixed right = ax * s.hz - az * s.hx;   // the way's across, to the heading's right (hz, -hx)
+        // The lean: toward the pull the tyres give (the turn's inside) by it
+        // over gravity, eased there -- a slide leans as far as the grip holds.
+        // In the air nothing pulls and it holds. The kart's is none.
+        if (!c.lean.IsZero())
+        {
+            const Fixed pull = across.IsPositive() ? -right / across * Fixed::Min(across, most) / step : Fixed::Zero();
+            Fixed want = c.lean * pull / gravity();
+            if (want > leanMost()) want = leanMost(); else if (want < -leanMost()) want = -leanMost();
+            const Fixed pace = leanPace() * step;
+            Fixed d = want - s.lean;
+            if (d > pace) d = pace; else if (d < -pace) d = -pace;
+            s.lean += d;
+        }
         if (across > most) { const Fixed keep = (across - most) / across; ax *= keep; az *= keep; }
         else               { ax = az = Fixed::Zero(); }
         Fixed nx = s.hx * on + ax, nz = s.hz * on + az;
@@ -1683,7 +1839,7 @@ private:
         Fixed now = pulled;
         if (pulled.IsPositive() && was > pulled)
         {
-            now = was - slideCost(across / was) * (was - pulled);
+            now = was - slideCost(c, across / was) * (was - pulled);
             nx = nx * now / pulled; nz = nz * now / pulled;
         }
         const Fixed scrubbed = Fixed::Half() * m * (was * was - now * now);
@@ -1712,13 +1868,18 @@ private:
         Fixed total = braked + scrubbed;
         if (!total.IsPositive()) return;
         if (total > r.Heat()) { const Fixed f = r.Heat() / total; braked *= f; scrubbed *= f; total = r.Heat(); }
+        // Shared among the tyres it has (tyreShown); a hidden one takes none.
+        const Vehicle& c = vehicleOf(s);
+        const Fixed tyres = F(c.tyres);
         Fixed slide[4], sum = Fixed::Zero();
         Fixed dsn, dcs;
         s.wheel.SinCos(dsn, dcs);
         for (int t = 0; t < 4; ++t)
         {
+            slide[t] = Fixed::Zero();
+            if (!tyreShown(c, t)) continue;
             // The tyre's place off the body's middle, level: across (hz, -hx), ahead (hx, hz).
-            const Fixed sx = (t % 2) ? -tyreSide() : tyreSide(), sz = (t < 2) ? tyreAhead() : -tyreAhead();
+            const Fixed sx = (t % 2) ? -c.side : c.side, sz = (t < 2) ? c.ahead : -c.ahead;
             const Fixed ox = s.hz * sx + s.hx * sz, oz = -s.hx * sx + s.hz * sz;
             // Its patch's way: the body's, and the turn's (+spin takes +x toward -z).
             const Fixed px = wx + spin * oz, pz = wz - spin * ox;
@@ -1730,13 +1891,14 @@ private:
         r.energy -= total;
         for (int t = 0; t < 4; ++t)
         {
-            const Fixed share = braked / F(4) + (sum.IsPositive() ? scrubbed * slide[t] / sum : scrubbed / F(4));
+            if (!tyreShown(c, t)) continue;
+            const Fixed share = braked / tyres + (sum.IsPositive() ? scrubbed * slide[t] / sum : scrubbed / tyres);
             if (!share.IsPositive()) continue;
-            Causal_* c = causal(s.wheels[t]);
-            if (!c) { r.energy += share; continue; }   // no tyre: the body keeps it
+            Causal_* w = causal(s.wheels[t]);
+            if (!w) { r.energy += share; continue; }   // no tyre: the body keeps it
             OrderVector heat;
             heat.energy = share;
-            c->AbsorbUnder(heat);
+            w->AbsorbUnder(heat);
         }
     }
 
@@ -1750,19 +1912,19 @@ private:
      * it should be (the kart speeding up with the wheel turned, so the lock
      * shrinking) it comes back at that pace too.
      */
-    static void wheelTurnLocked(Slot& s, int steer, Fixed speed, Fixed step)
+    static void wheelTurnLocked(const Vehicle& c, Slot& s, int steer, Fixed speed, Fixed step)
     {
         if (steer != s.steer_held) s.wheel_ease = Fixed::Zero();
         s.steer_held = steer;
         Fixed target = Fixed::Zero();
         if (steer != 0)
         {
-            s.wheel_ease = Fixed::Min(s.wheel_ease + step / steerEase(), Fixed::One());
-            target = lockAt(speed) * (steerJump() + (F(2) - steerJump()) * s.wheel_ease) * F(steer);
+            s.wheel_ease = Fixed::Min(s.wheel_ease + step / c.ease, Fixed::One());
+            target = lockAt(c, speed) * (c.jump + (F(2) - c.jump) * s.wheel_ease) * F(steer);
             // Short of it: there at once (the press's jump, and the ease after it).
             if (((target - s.wheel) * F(steer)).IsPositive()) { s.wheel = target; return; }
         }
-        const Fixed turn = steerBack() * step;
+        const Fixed turn = c.back * step;
         Fixed d = target - s.wheel;
         if (d > turn) d = turn; else if (d < -turn) d = -turn;
         s.wheel += d;
@@ -1786,17 +1948,17 @@ private:
         Fixed vx, vy, vz;
         r.Velocity(m, vx, vy, vz);
         Fixed gx, gz;
-        Fixed g = groundFor(s, r, r.x, r.z, &gx, &gz) + kartY();
+        Fixed g = groundFor(s, r, r.x, r.z, &gx, &gz) + vehicleOf(s).ride;
         const Fixed sp = Fixed::Length(vx, Fixed::Zero(), vz);
         // Past the walls' inside: over them (high enough, or out already) or stopped by them.
         const Fixed far = Fixed::Max(r.x.Abs(), r.z.Abs());
         const bool over = far > bound()
-                       && (r.y - kartY() >= wallRide() - climb() || Fixed::Max(s.px.Abs(), s.pz.Abs()) > bound() + F(1, 100));
+                       && (r.y - vehicleOf(s).ride >= wallRide(vehicleOf(s)) - climb() || Fixed::Max(s.px.Abs(), s.pz.Abs()) > bound() + F(1, 100));
         if (over)
         {
             // On the wall's top -- or a deck laid to it, if that is higher -- or past it all.
-            const bool on_wall = far < wallOut() && r.y - kartY() >= wallRide() - climb();
-            const bool deck = on_wall && far <= KartArena::Half() && g > wallRide() + kartY();
+            const bool on_wall = far < wallOut() && r.y - vehicleOf(s).ride >= wallRide(vehicleOf(s)) - climb();
+            const bool deck = on_wall && far <= KartArena::Half() && g > wallRide(vehicleOf(s)) + vehicleOf(s).ride;
             if (!deck)
             {
                 // The rim: up from the wall's top the further out, and the
@@ -1804,7 +1966,7 @@ private:
                 // down the slope whichever way the kart points.
                 const Fixed out = Fixed::Max(Fixed::Zero(), far - KartArena::Half());
                 const Fixed slope = rimRise() / rimDeep();
-                g = (on_wall ? wallRide() + slope * out : voidAt()) + kartY();
+                g = (on_wall ? wallRide(vehicleOf(s)) + slope * out : voidAt()) + vehicleOf(s).ride;
                 gx = gz = Fixed::Zero();
                 if (on_wall)
                 {
@@ -1825,7 +1987,7 @@ private:
         if (!wall && !over && sp.IsPositive() && !s.air)
         {
             const Fixed nx = r.x + vx / sp * F(9, 10), nz = r.z + vz / sp * F(9, 10);
-            wall = groundFor(s, r, nx, nz) + kartY() - r.y > noseRise();
+            wall = groundFor(s, r, nx, nz) + vehicleOf(s).ride - r.y > noseRise();
         }
         if (wall)
         {
@@ -1833,14 +1995,14 @@ private:
             // (a kart thrown up beside a pit's wall clears it as it rises).
             r.PlaceAt(s.px, r.y, s.pz);
             if (!s.air) r.SetVelocity(m, Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
-            g = groundFor(s, r, s.px, s.pz, &gx, &gz) + kartY();
+            g = groundFor(s, r, s.px, s.pz, &gx, &gz) + vehicleOf(s).ride;
         }
         Fixed y = r.y;
         const Fixed step = dt();
         // A spring under it throws it up, whatever way it was going.
         if (!s.air)
             if (const KartArena::Spring* up = KartArena::SpringAt(m_live, r.x, r.z))
-                if ((g - kartY() - up->y).Abs() < F(5, 100)) { s.air = true; s.vy = springKick(sp); }
+                if ((g - vehicleOf(s).ride - up->y).Abs() < F(5, 100)) { s.air = true; s.vy = springKick(sp); }
         if (!s.air)
         {
             const Fixed flying = y + s.vy * step - gravity() * step * step * Fixed::Half();
@@ -1867,8 +2029,8 @@ private:
         poseLocked(s, r);
         // Out: down on a lava pit's floor, or far enough down outside the walls.
         const KartArena::Pit* pit = s.air || over ? nullptr : KartArena::PitAt(m_live, x, z);
-        const bool molten = pit && pit->lava && (y - kartY() + pit->depth).Abs() < F(5, 100);
-        if (molten || (over && y - kartY() < lostAt()) || s.out_ticks > kOutTicks)
+        const bool molten = pit && pit->lava && (y - vehicleOf(s).ride + pit->depth).Abs() < F(5, 100);
+        if (molten || (over && y - vehicleOf(s).ride < lostAt()) || s.out_ticks > kOutTicks)
             damageLocked(static_cast<size_t>(&s - m_slots.data()), -1, kFullHp, molten ? "the lava" : s.out_ticks > kOutTicks ? "the mountains" : "the drop");
     }
     // Up turned onto the normal of ground that slopes (gx, gz): the half-way
@@ -1882,7 +2044,7 @@ private:
         tw = tw / tl; tx = tx / tl; tz = tz / tl;
     }
     // The body's turn: level to the heading, then tilted to the slope it
-    // stands on (or last stood on, in the air).
+    // stands on (or last stood on, in the air), then rolled into its lean.
     static void poseLocked(const Slot& s, OrderVector& r)
     {
         Fixed yw, yy;   // the heading's turn about +y: +z onto (hx, hz)
@@ -1894,6 +2056,15 @@ private:
         r.qx = tx * yw - tz * yy;
         r.qy = tw * yy;
         r.qz = tz * yw + tx * yy;
+        if (s.lean.IsZero()) return;
+        // x roll about its own +z by -lean: its top toward +x, the turn's inside.
+        Fixed sn, cs;
+        (-s.lean / F(2)).SinCos(sn, cs);
+        const Fixed w = r.qw, x = r.qx, y = r.qy, z = r.qz;
+        r.qw = w * cs - z * sn;
+        r.qx = x * cs + y * sn;
+        r.qy = y * cs - x * sn;
+        r.qz = z * cs + w * sn;
     }
     // +z turned about +y onto (dx, dz), as a half-angle pair (w, y); straight
     // back is a half turn.
@@ -1913,7 +2084,7 @@ private:
     Fixed groundFor(const Slot& s, const OrderVector& r, Fixed x, Fixed z, Fixed* gx = nullptr, Fixed* gz = nullptr) const
     {
         const Fixed reach = s.air && s.vy.IsPositive() ? Fixed::Zero() : climb();
-        return KartArena::Height(m_live, x, z, r.y - kartY(), reach, gx, gz);
+        return KartArena::Height(m_live, x, z, r.y - vehicleOf(s).ride, reach, gx, gz);
     }
     // ...under a shot at height y, and the top of everything at a point.
     Fixed groundAt(Fixed x, Fixed z, Fixed y) const { return KartArena::Height(m_live, x, z, y, Fixed::Zero()); }
@@ -1935,7 +2106,7 @@ private:
                 if ((jx - x) * (jx - x) + (jy - y) * (jy - y) + (jz - z) * (jz - z) < F(22, 10) * F(22, 10))
                 {
                     m_slots[j].ram_safe = static_cast<int64_t>(m_tick) + 25;
-                    damageLocked(j, static_cast<int>(i), 20);
+                    damageLocked(j, static_cast<int>(i), vehicleOf(s).ram);
                 }
             }
     }
@@ -1965,7 +2136,7 @@ private:
             case Mine:
             {
                 const Fixed mx = x - hx * F(2), mz = z - hz * F(2);
-                Shot& m = shootLocked(MineShot, i, mx, groundAt(mx, mz, y - kartY() + climb()) + F(1, 10), mz, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kMineTicks);
+                Shot& m = shootLocked(MineShot, i, mx, groundAt(mx, mz, y - vehicleOf(s).ride + climb()) + F(1, 10), mz, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kMineTicks);
                 m.armed = 25;
                 break;
             }
@@ -1991,7 +2162,7 @@ private:
                 break;
             case Smoke:
             {
-                Shot& c = shootLocked(SmokeShot, i, x, groundAt(x, z, y - kartY() + climb()), z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kSmokeTicks);
+                Shot& c = shootLocked(SmokeShot, i, x, groundAt(x, z, y - vehicleOf(s).ride + climb()), z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kSmokeTicks);
                 s.dagger = kDaggerTicks;
                 for (int k = 0; k < kSmokePuffs; ++k) c.cloud[k] = takeFx();
                 smokeRingLocked(c);
@@ -2050,7 +2221,7 @@ private:
             if (along.raw <= 0 || along > sniperReach()) continue;
             const Fixed px = jx - (x + hx * along), pz = jz - (z + hz * along);
             const Fixed off = Fixed::Length(px, jy - y, pz);
-            if (off > kartR() || !(along < best)) continue;
+            if (off > vehicleOf(m_slots[j]).reach || !(along < best)) continue;
             best = along; hit = static_cast<int>(j); miss = off;
         }
         Fixed reach = hit >= 0 ? best : sniperReach();
@@ -2062,7 +2233,7 @@ private:
         Shot& tr = shootLocked(KartArms::Tracer, i, x + hx * reach * Fixed::Half(), y, z + hz * reach * Fixed::Half(),
                                hx, Fixed::Zero(), hz, 8);
         if (tr.node >= 0) verb(m_shot_nodes[tr.node], "Create", "0.1, 0.1, " + fmt1(reach.ToFloat()));
-        if (hit >= 0) damageLocked(static_cast<size_t>(hit), static_cast<int>(i), 100 - static_cast<int>((F(50) * miss / kartR()).raw >> 32));
+        if (hit >= 0) damageLocked(static_cast<size_t>(hit), static_cast<int>(i), 100 - static_cast<int>((F(50) * miss / vehicleOf(m_slots[static_cast<size_t>(hit)]).reach).raw >> 32));
     }
 
     // Every shot one tick on: flown, met, burst or spent.
@@ -2133,7 +2304,7 @@ private:
                         Fixed jx, jy, jz;
                         if (static_cast<int>(j) == s.owner || (s.armed >> j & 1) || !alive(m_slots[j]) || !where(j, jx, jy, jz)) continue;
                         const Fixed dx = jx - s.x, dz = jz - s.z, d = Fixed::Length(dx, Fixed::Zero(), dz);
-                        if (d > front + kartR() || (jy - s.y).Abs() > F(5, 2)) continue;
+                        if (d > front + vehicleOf(m_slots[j]).reach || (jy - s.y).Abs() > F(5, 2)) continue;
                         s.armed |= 1 << j;
                         if (d.IsPositive()) { m_slots[j].kx += dx / d * waveThrow(); m_slots[j].kz += dz / d * waveThrow(); }
                         damageLocked(j, s.owner, 15);
@@ -2294,7 +2465,7 @@ private:
     void slickLocked(size_t i, Fixed x, Fixed y, Fixed z, Fixed reach, Fixed lift = Fixed::Zero())
     {
         Fixed gx = Fixed::Zero(), gz = Fixed::Zero();
-        const Fixed h = KartArena::Height(m_live, x, z, y - kartY() + climb(), Fixed::Zero(), &gx, &gz);
+        const Fixed h = KartArena::Height(m_live, x, z, y - vehicleOf(m_slots[i]).ride + climb(), Fixed::Zero(), &gx, &gz);
         Shot& o = shootLocked(KartArms::OilShot, i, x, h + F(4, 100) + lift, z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kOilTicks);
         o.reach = reach;
         o.fx = takeFx();
@@ -2789,7 +2960,7 @@ private:
             if (static_cast<int>(j) == owner || !alive(m_slots[j])) continue;
             Fixed jx, jy, jz;
             if (!where(j, jx, jy, jz)) continue;
-            const Fixed e = reachedBy(b, jx, jy, jz, kartR());
+            const Fixed e = reachedBy(b, jx, jy, jz, vehicleOf(m_slots[j]).reach);
             const int dmg = static_cast<int>((F(max) * e / b.reach).raw >> 32);
             if (dmg > 0) damageLocked(j, owner, dmg);
         }
@@ -3152,12 +3323,12 @@ private:
     // The first kart in play (not `except`) within its reach plus `r` of a point.
     int kartAt(Fixed x, Fixed y, Fixed z, int except, Fixed r)
     {
-        const Fixed reach = kartR() + r;
         for (size_t j = 0; j < m_slots.size(); ++j)
         {
             if (static_cast<int>(j) == except || !alive(m_slots[j])) continue;
             Fixed jx, jy, jz;
             if (!where(j, jx, jy, jz)) continue;
+            const Fixed reach = vehicleOf(m_slots[j]).reach + r;
             if ((jx - x) * (jx - x) + (jy - y) * (jy - y) + (jz - z) * (jz - z) < reach * reach) return static_cast<int>(j);
         }
         return -1;
@@ -3193,7 +3364,7 @@ private:
         if (!k) return;
         std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
         const OrderVector& r = k->Order4();
-        const Fixed down = F(3, 100);
+        const Vehicle& c = vehicleOf(s);
         for (int i = 0; i < 4; ++i)
         {
             Causal_* w = causal(s.wheels[i]);
@@ -3201,7 +3372,7 @@ private:
             OrderVector& q = w->RowsUnder();
             // In the body's own frame: +z ahead, the front right wheel at +x
             // (the heading's across, (hz, -hx), on the level).
-            Fixed ox = (i % 2) ? -tyreSide() : tyreSide(), oy = -down, oz = (i < 2) ? tyreAhead() : -tyreAhead();
+            Fixed ox = (i % 2) ? -c.side : c.side, oy = -c.drop, oz = (i < 2) ? c.ahead : -c.ahead;
             r.RotateVector(ox, oy, oz);
             q.PlaceAt(ox, oy, oz);
             q.Orient(Fixed::Zero(), Fixed::Zero(), Fixed::One(), Fixed::TwoPi() / F(4));
@@ -3424,8 +3595,9 @@ private:
                 std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
                 OrderVector& q = c->RowsUnder();
                 const uint64_t id = q.id;
+                const Fixed reach = q.radius;   // its extent's, which a ride may have changed
                 q = s.tyre_pristine[t];
-                q.id = id;
+                q.id = id; q.radius = reach;
                 s.tyre_heat[t] = Fixed::Zero();
             }
     }
@@ -3567,7 +3739,8 @@ private:
                 + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.out_ticks) + " " + std::to_string(s.dagger) + " " + std::to_string(s.drips) + " " + std::to_string(s.drip_in) + " " + std::to_string(s.kx.raw) + " "
                 + std::to_string(s.kz.raw) + " " + std::to_string(s.elims) + " "
                 + std::to_string(s.deaths) + " " + std::to_string(s.last_elims) + " " + std::to_string(s.last_deaths) + " "
-                + std::to_string(s.dead_until) + " " + std::to_string(s.ram_safe) + " " + std::to_string(s.colour) + " " + s.name;
+                + std::to_string(s.dead_until) + " " + std::to_string(s.ram_safe) + " " + std::to_string(s.colour) + " " + s.name
+                + " " + std::to_string(s.ride) + " " + std::to_string(s.lean.raw);
             if (Causal_* k = causal(s.body))
             {
                 std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
@@ -3827,7 +4000,7 @@ private:
         if (m_settings) return { "invert", "marks", "look", "close" };
         const bool seated = slotOf(m_me) >= 0;
         if (m_authority) { items.push_back("map"); items.push_back("length"); }
-        if (seated) { items.push_back("colour"); items.push_back("name"); }
+        if (seated) { items.push_back("vehicle"); items.push_back("colour"); items.push_back("name"); }
         if (m_authority)
         {
             items.push_back("start");
@@ -3967,6 +4140,15 @@ private:
             return;
         }
         if (id == "name") { const int i = slotOf(m_me); if (i >= 0) { m_editing = true; m_edit = nameOfLocked(static_cast<size_t>(i)); } return; }
+        if (id == "vehicle")
+        {
+            const int i = slotOf(m_me);
+            if (i < 0) return;
+            const int count = static_cast<int>(m_vehicles.size()) + 1;
+            const int v = ((m_slots[static_cast<size_t>(i)].ride + dir) % count + count) % count;
+            proposeLocked("ride " + (v == 0 ? kart().name : m_vehicles[static_cast<size_t>(v - 1)].name));
+            return;
+        }
         if (id == "settings") { m_settings = true; m_set_focus = 0; m_editing = false; return; }
         if (!m_authority) return;
         if (id == "start") { roundLocked(); return; }
@@ -4039,6 +4221,7 @@ private:
             const Slot& s = m_slots[static_cast<size_t>(me)];
             std::string sw;
             for (int c = 0; c < kPaletteN; ++c) sw += (c ? "," : "") + hexOf(kPalette[c]);
+            L.push_back("choice|vehicle|vehicle|" + vehicleOf(s).name + "|1");
             L.push_back("swatches|colour|colour|" + std::to_string(s.colour >= 0 ? s.colour : me % kMaxKarts) + "|" + sw + "|1");
             L.push_back("field|name|name|" + (m_editing ? m_edit : nameOfLocked(static_cast<size_t>(me))) + "|1|" + (m_editing ? "1" : "0"));
         }
@@ -4056,7 +4239,7 @@ private:
         }
         L.push_back(std::string("hint|") + (m_editing ? "type a name  Enter keeps it  Esc drops it"
                                             : host ? "arrows move it  Enter starts  or click"
-                                                   : "arrows: your colour and name  or click"));
+                                                   : "arrows: your vehicle, colour and name  or click"));
         previewLocked(L);
     }
     // The map in play from above: its ground, what stands on it, its pads,
@@ -4176,6 +4359,77 @@ private:
         const Slot& s = m_slots[i];
         return s.colour >= 0 && s.colour < kPaletteN ? kPalette[s.colour] : kColors[i % kMaxKarts];
     }
+    // The kart, and the vehicles added after it: 0 is the kart.
+    static const Vehicle& kart() { static const Vehicle k; return k; }
+    const Vehicle& vehicleOf(const Slot& s) const
+    {
+        return s.ride > 0 && s.ride <= static_cast<int>(m_vehicles.size()) ? m_vehicles[static_cast<size_t>(s.ride - 1)] : kart();
+    }
+    int vehicleNamedLocked(const std::string& name) const
+    {
+        if (name == kart().name) return 0;
+        for (size_t k = 0; k < m_vehicles.size(); ++k) if (m_vehicles[k].name == name) return static_cast<int>(k + 1);
+        return -1;
+    }
+    // A decimal read exactly: [-]digits[.digits], as a ratio of integers.
+    static bool decimal(const std::string& w, Fixed& out)
+    {
+        size_t i = 0;
+        const bool neg = !w.empty() && w[0] == '-';
+        if (neg) ++i;
+        int64_t num = 0, den = 1;
+        bool digits = false, point = false;
+        for (; i < w.size(); ++i)
+        {
+            if (w[i] == '.' && !point) { point = true; continue; }
+            if (w[i] < '0' || w[i] > '9' || num > 100000000) return false;
+            num = num * 10 + (w[i] - '0');
+            if (point) den *= 10;
+            digits = true;
+        }
+        if (!digits) return false;
+        out = F(neg ? -num : num, den);
+        return true;
+    }
+    // A slot's vehicle as drawn: its body's mesh, and the tyres it rides on.
+    void rideLookLocked(size_t i)
+    {
+        Slot& s = m_slots[i];
+        const Vehicle& c = vehicleOf(s);
+        verb(s.body, "Create", c.body.empty() ? s.made_body : c.body);
+        // At the kart's density: what it weighs is its volume's share of the kart's.
+        const Fixed mass = c.volume.IsPositive() && s.made_volume.IsPositive() ? c.volume / s.made_volume : Fixed::One();
+        verb(s.body, "SetMass", exact(mass.ToFloat()));
+        for (ETCS::RID w : s.wheels) verb(w, "Create", c.tyre.empty() ? s.made_tyre : c.tyre);
+        verb(s.body, "SetMesh", std::to_string(c.look));
+        const bool shown = alive(s);
+        for (int t = 0; t < 4; ++t) verb(s.wheels[t], "SetVisible", shown && tyreShown(c, t) ? "1" : "0");
+        s.lean = Fixed::Zero();
+        Fixed x, y, z;
+        if (shown && where(i, x, y, z)) placeLocked(i, x, z, s.hx, s.hz);   // at its own ride height
+        wheelsLocked(s);
+    }
+    // Two in line: the right of each pair is drawn, the pair being one place.
+    static bool tyreShown(const Vehicle& c, int t) { return c.tyres == 4 || t % 2 == 0; }
+    // A float as text that reads back as the same float.
+    static std::string exact(float f) { char b[32]; std::snprintf(b, sizeof b, "%.9g", f); return b; }
+    // A node's extent as it was Created, "w, h, d", and its volume. A half
+    // extent's words are a script's float halved, so each reads back exactly
+    // and a Create with them makes the same extent again.
+    static std::string extentOf(ETCS::RID rid, Fixed& volume)
+    {
+        ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), rid);
+        std::string v;
+        volume = Fixed::Zero();
+        if (!e || !e->valueOf(ETCS::Buffer("extent"), v) || v.size() != 24) return std::string();
+        size_t at = 0;
+        int64_t w[3];
+        for (int64_t& x : w) ETCS::Entity::getWord(v, at, x);
+        volume = Fixed::FromRaw(w[0]) * Fixed::FromRaw(w[1]) * Fixed::FromRaw(w[2]) * F(8);
+        return exact(2.0f * Fixed::FromRaw(w[0]).ToFloat()) + ", " + exact(2.0f * Fixed::FromRaw(w[1]).ToFloat()) + ", "
+             + exact(2.0f * Fixed::FromRaw(w[2]).ToFloat());
+    }
+
     void paintKartLocked(size_t i)
     {
         const float* c = colourOfLocked(i);
@@ -4274,6 +4528,8 @@ private:
     std::vector<ETCS::RID> m_walls;
     std::vector<KartArena::Map> m_defs;
     KartArena::Map m_live;
+    std::vector<Vehicle> m_vehicles;   // after the kart: what vehicle scripts added, in their order
+    bool m_tuning = false;             // the latest AddVehicle took: Tune and VehicleLook are its
     std::vector<ETCS::RID> m_live_blocks;
     std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_wedge_nodes, m_dome_nodes;
     std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;

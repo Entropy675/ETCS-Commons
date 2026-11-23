@@ -75,6 +75,15 @@ run kart_map_towers.etcs battle=battle
 run kart_map_serpent.etcs battle=battle
 battle.AddRandomMap(random)
 
-# ── the pools, then the first map out ──────────────────────────────────────
+# ── the pools ──────────────────────────────────────────────────────────────
 run kart_pool.etcs world=anchor battle=battle
+
+# ── the vehicles a driver picks in the lobby, after the kart: each a script
+# of its numbers and its look (kart_vehicle_*.etcs) ─────────────────────────
+run kart_vehicle_moto.etcs battle=battle world=anchor
+run kart_vehicle_bike.etcs battle=battle
+run kart_vehicle_pickup.etcs battle=battle world=anchor
+run kart_vehicle_truck.etcs battle=battle
+
+# ── then the first map out ─────────────────────────────────────────────────
 battle.Ready()
