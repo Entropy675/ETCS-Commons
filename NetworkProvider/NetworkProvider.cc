@@ -1,3 +1,5 @@
+// Monocypher's bodies, once in this module: the link's exchange and seal (Edge.h).
+#define ETCS_MONOCYPHER_IMPLEMENTATION
 #include "NetworkProvider.h"
 ETCS_MODULE_EXPORT_MAIN(NetworkProvider,
     "HttpServer ConnectionManager HTTPParser TLSContext SocketConnectionState StaticHtmlPage FileHtmlPage TarpitNode "
@@ -62,8 +64,8 @@ ETCS_TAG_BLOCK_BASIC(TarpitNode,
 // LinkHub is spawned under an HttpServer; Remote and Seal under the entity
 // they belong to -- the surface, the node they guard.
 ETCS_TAG_BLOCK_BASIC(LinkHub, SetPrefix, Info, Delete)
-ETCS_TAG_BLOCK_BASIC(Room,    Publish, Unpublish, SetName, Host, HostVia, Drop, Info, Delete)
-ETCS_TAG_BLOCK_BASIC(Peer,    Connect, SetName, Publish, Unpublish, Close, Info, Delete)
+ETCS_TAG_BLOCK_BASIC(Room,    Publish, Unpublish, SetName, Host, HostVia, Drop, Who, Admit, Info, Delete)
+ETCS_TAG_BLOCK_BASIC(Peer,    Connect, SetName, Publish, Unpublish, Close, Who, Info, Delete)
 ETCS_TAG_BLOCK_BASIC(Remote,  Bind, Unbind, Info, Delete)
 ETCS_TAG_BLOCK_BASIC(Seal,    Key, Delete)
 ETCS_TAG_BLOCK_HYBRID(Lobby,  (Advertise, Withdraw, List, Delete), (Entries, Watch, Mirror))

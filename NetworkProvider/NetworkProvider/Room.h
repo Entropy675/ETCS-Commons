@@ -55,6 +55,20 @@ public:
     }
     bool Unpublish(const std::string& name) { return exports_.Unpublish(name); }
     void SetName(const std::string& n) { if (!n.empty()) name_ = n; }
+    /*
+     * Who may link at all, judged at the hello on what the guest proved:
+     * `anyone` (the default: a local identity is a key, and that is enough to
+     * be told apart), `registered` (a chain to a root), or `guild` (registered
+     * under this loader's own active key). A refused guest is told why.
+     */
+    bool Admit(const std::string& bar)
+    {
+        const int v = bar == "anyone" ? 0 : bar == "registered" ? 1 : bar == "guild" ? 2 : -1;
+        if (v < 0) { ETCS_LOG("Room", "Admit: anyone, registered or guild -- not '" << bar << "'"); return false; }
+        admit_.store(v);
+        ETCS_LOG("Room", "'" << name_ << "' admits " << bar);
+        return true;
+    }
 
     // A guest's socket, from any source: said hello to, then an edge.
     void AcceptChannel(int fd)
@@ -63,16 +77,30 @@ public:
         if (stopping_.load()) { ::close(fd); return; }
         threads_.start([this, fd]()
         {
-            std::string guest;
-            const auto taken = [this](const std::string& n) { return static_cast<bool>(edgeOf(n)); };
-            if (!etcs_link::hello_accept(fd, name_, guest, taken)) { ::close(fd); return; }
-            auto e = std::make_shared<etcs_link::Edge>(fd, getArena(), false, guest, &exports_);
+            // A name already linked here is refused -- unless the same key is
+            // coming back for it (a page reloaded, a link dropped): then the old
+            // link goes, and the new one is that guest.
+            etcs_link::Link link;
+            std::shared_ptr<etcs_link::Edge> stale;
+            const auto refuse = [this, &link, &stale](const ETCS::Peer& who) -> std::string {
+                const int bar = admit_.load();
+                if (bar >= 1 && !who.registered) return "'" + name_ + "' admits registered identities only";
+                if (bar >= 2 && !who.guild) return "'" + name_ + "' admits its own guild only";
+                auto old = edgeOf(link.far_name);
+                if (!old) return std::string();
+                if (std::memcmp(old->far().key, who.key, 32) == 0) { stale = old; return std::string(); }
+                return "'" + link.far_name + "' is already linked here, by another key";
+            };
+            if (!etcs_link::hello_accept(fd, name_, link, refuse)) { ::close(fd); return; }
+            if (stale) { stale->stop(); ETCS_LOG("Room", "'" << link.far_name << "' came back: its old link is closed."); }
+            auto e = std::make_shared<etcs_link::Edge>(fd, getArena(), false, link, &exports_);
             {
                 std::lock_guard<std::mutex> lock(mu_);
                 if (stopping_.load()) return;          // e's destructor closes fd
+                reapLocked();
                 edges_.insert(e);
             }
-            ETCS_LOG("Room", "'" << guest << "' linked to RID:" << getRID());
+            ETCS_LOG("Room", "'" << link.far_name << "' linked to RID:" << getRID() << ", " << etcs_link::describe(link.far));
             e->start();
         });
     }
@@ -144,7 +172,7 @@ public:
                  << (via_url_.empty() ? "" : " via:" + via_url_));
         for (auto& [n, x] : exports_.snapshot()) ETCS_LOG("Room", "  " << n << " -> RID:" << x.rid);
         for (auto& e : edges_)
-            ETCS_LOG("Room", "  guest '" << e->farName() << "' channels:" << e->channels());
+            ETCS_LOG("Room", "  guest '" << e->farName() << "' channels:" << e->channels() << ", " << etcs_link::describe(e->far()));
     }
 
     bool DeleteConcrete() override
@@ -175,6 +203,7 @@ private:
     std::string                                   name_ = "room";
     std::string                                   via_url_;
     std::atomic<bool>                             stopping_{ false };
+    std::atomic<int>                              admit_{ 0 };      // 0 anyone, 1 registered, 2 guild
     etcs_link::Threads                            threads_;
 };
 

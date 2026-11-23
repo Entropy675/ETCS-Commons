@@ -762,6 +762,26 @@ DEFINE_WORK_FUNC(Room, Drop)
     const bool ok = self.Drop(guest);
     data.reset(); data << ok;
 }
+// Admit <anyone|registered|guild> -- who may link here, by what its hello proved.
+DEFINE_WORK_FUNC(Room, Admit)
+{
+    (void)ctx;
+    std::string bar;
+    data >> bar;
+    const bool ok = self.Admit(bar);
+    data.reset(); data << ok;
+}
+// Who <guest> -- what that guest's link proved: "<key> <identity> <registered> <guild>",
+// or "-" if it is not linked here.
+DEFINE_WORK_FUNC(Room, Who)
+{
+    (void)ctx;
+    std::string guest;
+    data >> guest;
+    auto e = self.edgeOf(guest);
+    data.reset();
+    data.writeString((e ? etcs_link::who(e->far()) : std::string("-")).c_str());
+}
 DEFINE_WORK_FUNC(Room, Info)   { (void)ctx; (void)data; self.Info(); }
 DEFINE_WORK_FUNC(Room, Delete) { (void)ctx; (void)data; self.Delete(); }
 
@@ -794,6 +814,14 @@ DEFINE_WORK_FUNC(Peer, Unpublish)
     data.reset(); data << ok;
 }
 DEFINE_WORK_FUNC(Peer, Close)  { (void)ctx; (void)data; self.Close(); }
+// Who -- what the far side of this link proved: "<key> <identity> <registered> <guild>", or "-".
+DEFINE_WORK_FUNC(Peer, Who)
+{
+    (void)ctx;
+    auto e = self.edge();
+    data.reset();
+    data.writeString((e && e->isOpen() ? etcs_link::who(e->far()) : std::string("-")).c_str());
+}
 DEFINE_WORK_FUNC(Peer, Info)   { (void)ctx; (void)data; self.Info(); }
 DEFINE_WORK_FUNC(Peer, Delete) { (void)ctx; (void)data; self.Delete(); }
 
