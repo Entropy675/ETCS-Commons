@@ -242,9 +242,10 @@ namespace KartArena
      *   spring   the same on level ground, and no pad at it
      *   block    level solid ground under it: not on a ramp or a hill, and
      *            wholly in a pit or wholly out
-     *   ramp     one that ends in a drop facing a wall has its lip on the
-     *            karts' bound (a kart's reach inside the wall), or well
-     *            back from it: no trench under the lip to be stuck in
+     *   ramp     one that ends in a drop facing a wall runs on into the
+     *            wall (its lip past the wall's inside), or stops well back
+     *            from it: no trench under the lip to be stuck in -- not
+     *            even the hairline a lip on the karts' bound leaves
      *   deck     room to drive under it, over the ground there (a block
      *            under one is a pillar)
      *   pit      a ramp or a hill wholly in it or wholly out, and a hill
@@ -380,9 +381,12 @@ namespace KartArena
                                               b.z - turn[i].s * hw * F(u) + turn[i].c * hd * F(v)) == b.base;
             if (!level) say("block", b.x, b.z, "not on level ground");
         }
-        // A ramp that ends in a drop facing a wall, short of the karts' bound
-        // by less than a kart can turn in: the trench under its lip is a place
-        // to fall into, be stuck in, and not be seen.
+        // A ramp that ends in a drop facing a wall, short of the wall by
+        // less than a kart can turn in: the floor between its lip and the
+        // wall is a trench to fall into, be stuck in, and not be seen. A lip
+        // right on the karts' bound is one too: the ground's sums there are a
+        // hair either side of it, and a slim ride finds the hair. Only ground
+        // as high just past the lip (another ramp, a deck) fills it.
         for (const Ramp& r : m.ramps)
         {
             if (!r.down.IsZero()) continue;
@@ -391,9 +395,9 @@ namespace KartArena
             const Fixed hl = r.length() * Fixed::Half();
             const Fixed ex = r.x + r.sx * hl, ez = r.z + r.cz * hl;   // its lip's middle
             const Fixed out = along_x ? ex * r.sx : ez * r.cz;         // how far out, the way it goes
-            const Fixed gap = Half() - F(1) - out;
-            if (gap < F(1, 50) || !(gap < F(4))) continue;
-            if (Solid(m, ex + r.sx * gap * Fixed::Half(), ez + r.cz * gap * Fixed::Half()) < r.base + r.height - F(35, 100))
+            if (!(out < Half()) || !(out > Half() - F(5))) continue;  // into the wall, or well back
+            const Fixed past = F(1, 20);
+            if (Solid(m, ex + r.sx * past, ez + r.cz * past) < r.base + r.height - F(35, 100))
                 say("ramp", r.x, r.z, "a trench between its lip and the wall");
         }
         for (const Deck& d : m.decks)
@@ -432,10 +436,13 @@ namespace KartArena
             for (const Ramp& r : m.ramps)
             {
                 const Fixed hl = r.length() * Fixed::Half(), hw = r.width * Fixed::Half();
+                // Its corners, what of it is in a wall cut off: a bank run on
+                // into the wall a pit goes up to is in the pit.
+                auto cut = [](Fixed v) { return Fixed::Max(-Half(), Fixed::Min(Half(), v)); };
                 int in = 0;
                 for (int i = -1; i <= 1; i += 2)
                     for (int j = -1; j <= 1; j += 2)
-                        in += Over(r.x + r.sx * hl * F(i) + r.cz * hw * F(j), r.z + r.cz * hl * F(i) - r.sx * hw * F(j), p.x, p.z, p.w + hair, p.d + hair);
+                        in += Over(cut(r.x + r.sx * hl * F(i) + r.cz * hw * F(j)), cut(r.z + r.cz * hl * F(i) - r.sx * hw * F(j)), p.x, p.z, p.w + hair, p.d + hair);
                 const bool mine = Over(r.x, r.z, p.x, p.z, p.w, p.d);
                 bool touched = in != 0;
                 if (!mine && !touched)   // none of its corners in the pit: is any of the pit under it?
@@ -465,8 +472,9 @@ namespace KartArena
      *              the arena. Ramps along that line climb out of it, there
      *              are springs in it, and whatever lands in it stands on
      *              its floor
-     *   banks      on up to two walls (a ramp up to the wall, ridden up and
-     *              rolled back down from), nothing else within reach of one
+     *   banks      on up to two walls (a ramp up to the wall and on into
+     *              it, ridden up and rolled back down from), nothing else
+     *              within reach of one
      *   a storey   a deck over a seventh to a third of the arena, on the
      *              high ground, on pillars: a ramp up in each of up to two
      *              of its corners, from its edge in under it, the deck cut
@@ -519,7 +527,7 @@ namespace KartArena
         m.springs.clear(); m.decks.clear(); m.pits.clear();
         m.generated = true;
         const int stretch = static_cast<int>((Half() / F(32)).ToInt());   // positions and levels; things 2x
-        const Fixed lip = (Half() - F(1)) / F(stretch);   // the karts' bound, on the plan
+        const Fixed lip = (Half() + F(1)) / F(stretch);   // the walls' outside, on the plan: a bank's lip is in the wall
         uint64_t r = seed | 1;
         auto pick = [&r](int lo, int hi) { return lo + static_cast<int>(KartArms::Next(r) % static_cast<uint64_t>(hi - lo + 1)); };
         struct Room { Fixed x, z, rad; };
@@ -599,7 +607,7 @@ namespace KartArena
             const int side = (first + b * pick(1, 3)) % 4;
             Ramp a; a.yaw = sides[side][0]; a.width = F(pick(20, 34)); a.up = F(pick(5, 7)); a.level = true;
             a.flat = a.down = Fixed::Zero(); a.height = F(pick(20, 30), 10);
-            const Fixed at = lip - a.up * Fixed::Half();     // its lip on the karts' bound
+            const Fixed at = lip - a.up * Fixed::Half();     // its lip in the wall
             const Fixed along = F(pick(-4, 4));
             if (reach[side] < F(30)) continue;               // the same side twice: one bank
             if (sunk && (side < 2) != (toward < 2)) continue;

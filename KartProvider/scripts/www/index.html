@@ -67,14 +67,15 @@
        upside-down T of squares that touch (go over brake, the wheel either
        side), low so they hide little of the road -- for a thumb on a tablet,
        and a click on a PC. Each press is the key's, held while it is held.
-       Hidden while the drawn menu is up: it has the pointer then. */
+       Shown only while the keys drive a kart (Driving): not while the page
+       loads, in the lobby, or under the settings. */
     .pad { position: absolute; bottom: 16px; width: 104px; height: 104px; border-radius: 50%;
            background: rgba(255, 255, 255, 0.1); border: 2px solid rgba(255, 255, 255, 0.22);
            color: rgba(255, 255, 255, 0.3); font-size: 42px; line-height: 1; padding: 0;
            touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer; }
     .pad.held { background: rgba(255, 255, 255, 0.24); }
     .pad:focus { outline: none; }
-    .pad.under-menu { display: none; }
+    .pad.off { display: none; }
     #pad-fire { left: 16px; }
     .pad.key { width: 76px; height: 76px; border-radius: 8px; font-size: 30px; }
     #pad-right { right: 16px; }
@@ -131,11 +132,11 @@
     <div id="stage">
       <canvas id="canvas" width="1024" height="768" tabindex="0"></canvas>
       <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
-      <button id="pad-fire" tabindex="-1" class="pad" title="fire (Space)">&#x26A1;</button>
-      <button id="pad-go" tabindex="-1" class="pad key" title="go (W)">&#x25B2;</button>
-      <button id="pad-left" tabindex="-1" class="pad key" title="steer left (A)">&#x25C0;</button>
-      <button id="pad-down" tabindex="-1" class="pad key" title="brake, reverse (S)">&#x25BC;</button>
-      <button id="pad-right" tabindex="-1" class="pad key" title="steer right (D)">&#x25B6;</button>
+      <button id="pad-fire" tabindex="-1" class="pad off" title="fire (Space)">&#x26A1;</button>
+      <button id="pad-go" tabindex="-1" class="pad key off" title="go (W)">&#x25B2;</button>
+      <button id="pad-left" tabindex="-1" class="pad key off" title="steer left (A)">&#x25C0;</button>
+      <button id="pad-down" tabindex="-1" class="pad key off" title="brake, reverse (S)">&#x25BC;</button>
+      <button id="pad-right" tabindex="-1" class="pad key off" title="steer right (D)">&#x25B6;</button>
     </div>
 
     <aside>
@@ -291,15 +292,14 @@
     }).catch(function () {});
   }, 2000);
   /*
-   * THE PADS, under the drawn menu: hidden while it is up (the lobby's, or
-   * the settings), asked of the battle a few times a second.
+   * THE PADS, only while the keys drive a kart: hidden until the battle
+   * says so (Driving), asked a few times a second.
    */
   const pads = ['pad-fire', 'pad-go', 'pad-down', 'pad-left', 'pad-right'].map(function (id) { return document.getElementById(id); });
   setInterval(function () {
     if (!page.runtimeUp() || !page.nameLive('battle')) return;
-    Promise.resolve(page.ask('MenuUp', '')).then(function (up) {
-      if (up !== '0' && up !== '1') return;
-      for (const el of pads) el.classList.toggle('under-menu', up === '1');
+    Promise.resolve(page.ask('Driving', '')).then(function (on) {
+      for (const el of pads) el.classList.toggle('off', on !== '1');
     }).catch(function () {});
   }, 300);
   /*

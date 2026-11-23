@@ -2,8 +2,9 @@
 # THE MOTORBIKE: two wheels in line, light and quick -- a much higher top
 # reached sooner, on a tyre that lets go early: a tap at speed slides, and a
 # slide keeps more of its speed. It leans into what its tyre pulls, as far
-# as the grip holds, and holds a lean in the air. Slim: about half a kart's
-# weight, a small target, a light ram.
+# as the grip holds -- in gradually as the wheel is held, and back upright
+# once it is let go -- and holds a lean in the air. Slim: about half a
+# kart's weight, a small target, a light ram.
 #   run kart_vehicle_moto.etcs battle=<KartBattle> world=<Scene3D>
 # Tune <what> <values> (KartBattle::Tune): top; boost <top> <push>; push
 # <start> <launch> <pull>; brake; reverse <acc> <top>; coast; steer <lock>

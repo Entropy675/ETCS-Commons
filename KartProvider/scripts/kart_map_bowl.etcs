@@ -16,14 +16,14 @@ battle.AddMap(bowl)
 
 # The banks: up to the wall, each the whole wall long, so two meet in every
 # corner and the corner is ground like the rest -- a kart driven into one
-# rides up and rolls back, with nothing to wedge against. Their lips are on
-# the karts' bound (95: the wall's inside less a kart's reach), as a seeded
-# map's banks are (KartArena.h): one short of it leaves a trench under the lip
-# a kart drops into and hides in.
-battle.AddRamp(0.0, 84.5, 0.0, 192.0, 21.0, 0.0, 0.0, 3.0)
-battle.AddRamp(84.5, 0.0, 90.0, 192.0, 21.0, 0.0, 0.0, 3.0)
-battle.AddRamp(0.0, -84.5, 180.0, 192.0, 21.0, 0.0, 0.0, 3.0)
-battle.AddRamp(-84.5, 0.0, 270.0, 192.0, 21.0, 0.0, 0.0, 3.0)
+# rides up and rolls back, with nothing to wedge against. Each runs on INTO
+# the walls, to their outside (97), lip and ends alike: no strip of floor
+# between a bank and a wall, however slim the ride. At the karts' bound (95)
+# a bank is 3 high, its lip 3.29 inside the wall; the wall's top is 4.
+battle.AddRamp(0.0, 85.5, 0.0, 194.0, 23.0, 0.0, 0.0, 3.2857)
+battle.AddRamp(85.5, 0.0, 90.0, 194.0, 23.0, 0.0, 0.0, 3.2857)
+battle.AddRamp(0.0, -85.5, 180.0, 194.0, 23.0, 0.0, 0.0, 3.2857)
+battle.AddRamp(-85.5, 0.0, 270.0, 194.0, 23.0, 0.0, 0.0, 3.2857)
 # On them, either side of every corner, a pad pointing away from it along its
 # bank: a kart that drifts up into a corner is sent round the bowl the way of
 # whichever it comes down on -- clockwise off one, the other way off the other.

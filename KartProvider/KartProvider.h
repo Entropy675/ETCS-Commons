@@ -233,6 +233,9 @@ DEFINE_WORK_FUNC(KartBattle, Setting)
 DEFINE_WORK_FUNC(KartBattle, Settings) { (void)ctx; data.reset(); data.writeString(self.Settings().c_str()); }
 // MenuUp -- "1" while the drawn menu (the lobby's, or the settings) is over the arena, else "0".
 DEFINE_WORK_FUNC(KartBattle, MenuUp) { (void)ctx; data.reset(); data.writeString(self.MenuUp() ? "1" : "0"); }
+// Driving -- "1" while this runtime's keys drive a kart (a round under way, no menu over it), else "0":
+// when a page shows its pads.
+DEFINE_WORK_FUNC(KartBattle, Driving) { (void)ctx; data.reset(); data.writeString(self.Driving() ? "1" : "0"); }
 // ShowSettings <0|1> -- the settings open over the arena, or shut (O does the same).
 DEFINE_WORK_FUNC_TYPED(KartBattle, ShowSettings, (int32_t, on)) { (void)ctx; self.ShowSettings(on != 0); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, Key, (uint32_t, code), (int32_t, down))
@@ -257,7 +260,8 @@ DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeStr
 // "<tick> <hash>": the last snapshot, what the trace's `hash` lines carry.
 DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
 // Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
-// <slide> <spare> <spare ammo> <oil ticks> <dagger ticks> <vehicle> <lean>", or "-".
+// <slide> <spare> <spare ammo> <oil ticks> <dagger ticks> <vehicle> <lean> <oiled>", or "-": <oiled> a
+// digit a tyre (fr fl rr rl), 1 with oil on it.
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
 // Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
 // rope laid behind it, the segments drawn and the darkest (0..1); or "-".

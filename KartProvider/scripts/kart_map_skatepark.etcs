@@ -21,10 +21,11 @@ battle.AddRamp(-25.5, 0.0, 90.0, 8.0, 10.0, 0.0, 0.0, 3.0)
 battle.AddRamp(6.0, 0.0, 90.0, 8.0, 0.0, 2.0, 10.0, 3.0)
 battle.AddRamp(-51.0, 0.0, 0.0, 10.0, 10.0, 12.0, 10.0, 3.0)
 battle.AddRamp(51.0, 0.0, 0.0, 10.0, 10.0, 12.0, 10.0, 3.0)
-# The banks, up to the north and south walls: their lips on the karts' bound
-# (95), no trench under them.
-battle.AddRamp(0.0, 86.0, 0.0, 90.0, 18.0, 0.0, 0.0, 3.0)
-battle.AddRamp(0.0, -86.0, 180.0, 90.0, 18.0, 0.0, 0.0, 3.0)
+# The banks, up to the north and south walls and on into them, to their
+# outside (97): no floor between a lip and its wall. 3 high at the karts'
+# bound (95).
+battle.AddRamp(0.0, 87.0, 0.0, 90.0, 20.0, 0.0, 0.0, 3.3333)
+battle.AddRamp(0.0, -87.0, 180.0, 90.0, 20.0, 0.0, 0.0, 3.3333)
 # The galleries: a deck in the air along the west wall and one along the
 # east, the side lanes under them.
 battle.AddDeck(-78.0, 0.0, 33.0, 84.0, 5.0)

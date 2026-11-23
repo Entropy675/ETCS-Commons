@@ -645,6 +645,8 @@ public:
     void ShowSettings(bool on) { std::lock_guard<std::mutex> g(m_mu); m_settings = on && m_menu_rid; m_editing = false; }
     // Whether the drawn menu (the lobby's, or the settings) is over the arena: a page hides its pads under it.
     bool MenuUp() { std::lock_guard<std::mutex> g(m_mu); return menuShownLocked(); }
+    // Do this runtime's keys drive a kart now: seated in a round under way, no menu over it?
+    bool Driving() { std::lock_guard<std::mutex> g(m_mu); return m_ready && !m_me.empty() && m_phase == Playing && !menuShownLocked(); }
 
     /*
      * LOOKING ROUND THE KART. The eye rides behind the kart; a drag with the
@@ -857,8 +859,9 @@ public:
         return std::to_string(i) + " " + fmt3(x) + " " + fmt3(z) + " " + fmt3(s.hx.ToFloat()) + " " + fmt3(s.hz.ToFloat()) + " "
              + fmt1(speedOf(static_cast<size_t>(i))) + " " + std::to_string(s.hp) + " " + KartArms::Name(s.weapon)
              + " " + std::to_string(s.ammo) + " " + fmt3(y) + " " + (s.air ? "air" : "ground") + " " + fmt3(s.wheel.ToFloat())
-             + " " + fmt3(slide) + " " + KartArms::Name(s.spare) + " " + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip)
-             + " " + std::to_string(s.dagger) + " " + vehicleOf(s).name + " " + fmt3(s.lean.ToFloat());
+             + " " + fmt3(slide) + " " + KartArms::Name(s.spare) + " " + std::to_string(s.spare_ammo) + " " + std::to_string(std::max({ s.slip, s.oil[0], s.oil[1], s.oil[2], s.oil[3] }))
+             + " " + std::to_string(s.dagger) + " " + vehicleOf(s).name + " " + fmt3(s.lean.ToFloat()) + " "
+             + (s.oil[0] ? "1" : "0") + (s.oil[1] ? "1" : "0") + (s.oil[2] ? "1" : "0") + (s.oil[3] ? "1" : "0");
     }
     // Tyres <name> -- per tyre, fr fl rr rl, "<heat> <rope> <shown> <darkest>": its heat (J), how
     // long its mark's rope is laid behind it, how many segments are drawn,
@@ -945,6 +948,7 @@ private:
         std::string name;                          // its `look`: shown for it; empty, its label
         int         ride = 0;                      // its vehicle: a place in m_vehicles
         Fixed       lean;                          // its body's roll into the turn, rad (+ to the picture's right)
+        Fixed       lean_hold;                     // 0..1: up while a wheel is held, down while none (leanBuild, leanSettle)
         std::string made_body, made_tyre;          // the pool's extents, "w, h, d": the kart's
         Fixed       made_volume;                   // the pool's body's: a vehicle's mass is its volume over this
         int         thr = 0, steer = 0, fire = 0;
@@ -961,7 +965,8 @@ private:
         uint8_t     weapon = KartArms::None, ammo = 0;
         uint8_t     spare = KartArms::None, spare_ammo = 0;   // the second one carried (KartArms.h)
         int         cooldown = 0, boost = 0;
-        int         slip = 0;                      // ticks of oil still on the tyres
+        int         slip = 0;                      // ticks of no grip at all (the rim's scree): every tyre as oiled
+        int         oil[4] = { 0, 0, 0, 0 };       // ticks of oil still on each tyre, fr fl rr rl
         int         out_ticks = 0;                 // ticks beyond the walls, on end
         int         dagger = 0;                    // ticks of the smoke's dagger left
         int         dagger_fx = -1;                // its blade: drawn, not state
@@ -1122,9 +1127,24 @@ private:
         int   ram = 20;                        // a ram's damage, boosting at speed
         ETCS::RID look = 0;                    // the body's mesh; 0 its own box
     };
-    // The most a body leans, and how quickly it gets there (rad, per s).
+    // The most a body leans, and how quickly it can move (rad, per s): a
+    // swing from one side to the other. How far it may lean grows with how
+    // long a wheel is held -- none to all of it over leanBuild() s, eased --
+    // and with none held falls back over leanSettle().
     static Fixed leanMost() { return F(85, 100); }
+    // How much of a kart is on oil, 0..1: its tyres with oil on them over
+    // the tyres it has (a bike's two: the pair each stands for), all of
+    // them on the scree.
+    static Fixed oiledLocked(const Slot& s, const Vehicle& c)
+    {
+        if (s.slip > 0) return Fixed::One();
+        int n = 0, of = 0;
+        for (int t = 0; t < 4; ++t) if (tyreShown(c, t)) { ++of; n += s.oil[t] > 0; }
+        return F(n, of);
+    }
     static Fixed leanPace() { return F(8); }
+    static Fixed leanBuild() { return F(1, 5); }
+    static Fixed leanSettle() { return F(1, 2); }
 
     // A PAD pushes the way it points while a kart's middle is over it:
     // padPush() (u/s/s) whatever the kart is doing -- a nudge -- and
@@ -1418,7 +1438,7 @@ private:
     {
         m_slots[i].driver.clear();
         m_slots[i].colour = -1; m_slots[i].name.clear();
-        m_slots[i].ride = 0; m_slots[i].lean = Fixed::Zero();
+        m_slots[i].ride = 0; m_slots[i].lean = m_slots[i].lean_hold = Fixed::Zero();
         verb(m_slots[i].body, "SetMesh", "0");
         verb(m_slots[i].body, "Create", m_slots[i].made_body);
         verb(m_slots[i].body, "SetMass", "1");
@@ -1430,7 +1450,7 @@ private:
     {
         Slot& s = m_slots[i];
         s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
-        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = s.drips = s.drip_in = 0;
+        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = s.drips = s.drip_in = 0; for (int& o : s.oil) o = 0;
         s.kx = s.kz = Fixed::Zero();
         freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1; s.ram_safe = 0;
@@ -1466,8 +1486,8 @@ private:
             if (nearest > best) { best = nearest; bx = p.x; bz = p.z; }
         }
         s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
-        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = s.drips = s.drip_in = 0;
-        s.kx = s.kz = Fixed::Zero(); s.lean = Fixed::Zero();
+        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = s.drips = s.drip_in = 0; for (int& o : s.oil) o = 0;
+        s.kx = s.kz = Fixed::Zero(); s.lean = s.lean_hold = Fixed::Zero();
         freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1;
         Fixed dx = -bx, dz = -bz;
@@ -1761,6 +1781,7 @@ private:
         wheelTurnLocked(c, s, steer, speed, step);
         if (s.boost > 0) --s.boost;
         if (s.slip > 0) --s.slip;
+        for (int& o : s.oil) if (o > 0) --o;
         if (s.air) return;
         Fixed lx = vx - hx * speed, lz = vz - hz * speed;
         const Fixed rolled = speed;
@@ -1768,7 +1789,11 @@ private:
         const Fixed top = s.boost > 0 ? c.boost_top : c.top;
         Fixed push = pushAt(c, speed, top);
         if (s.boost > 0 && push < c.boost_push) push = c.boost_push;
-        if (s.slip > 0) push = push / F(3);   // oil: the tyres spin
+        // Oil: by the share of its tyres that have it on them, the pedal
+        // does down to a third of what it did (the tyres spin) and the grip
+        // holds down to a sixth.
+        const Fixed oiled = oiledLocked(s, c);
+        if (oiled.IsPositive()) push = push * (Fixed::One() - oiled * F(2, 3));
         if (thr > 0)
         {
             if (speed.raw < 0) speed = Fixed::Min(speed + c.brake * step, Fixed::Zero());
@@ -1817,16 +1842,22 @@ private:
         Fixed ax = wx - s.hx * on, az = wz - s.hz * on;
         const Fixed across = Fixed::Length(ax, Fixed::Zero(), az);
         Fixed most = (braking ? c.brake_grip : c.grip) * step;
-        if (s.slip > 0) most = most / F(6);   // ...and hold a sixth of what they did
+        if (oiled.IsPositive()) most = most * (Fixed::One() - oiled * F(5, 6));
         const Fixed right = ax * s.hz - az * s.hx;   // the way's across, to the heading's right (hz, -hx)
         // The lean: toward the pull the tyres give (the turn's inside) by it
-        // over gravity, eased there -- a slide leans as far as the grip holds.
-        // In the air nothing pulls and it holds. The kart's is none.
+        // over gravity -- a slide leans as far as the grip holds -- as far as
+        // the held wheel lets it (lean_hold, eased): a press leans in
+        // gradually, a let-go settles upright though the slide goes on. In
+        // the air nothing pulls and it holds. The kart's is none.
         if (!c.lean.IsZero())
         {
+            if (steer != 0) s.lean_hold = Fixed::Min(s.lean_hold + step / leanBuild(), Fixed::One());
+            else            s.lean_hold = Fixed::Max(s.lean_hold - step / leanSettle(), Fixed::Zero());
+            const Fixed e = s.lean_hold * s.lean_hold * (F(3) - F(2) * s.lean_hold);
             const Fixed pull = across.IsPositive() ? -right / across * Fixed::Min(across, most) / step : Fixed::Zero();
             Fixed want = c.lean * pull / gravity();
             if (want > leanMost()) want = leanMost(); else if (want < -leanMost()) want = -leanMost();
+            want = want * e;
             const Fixed pace = leanPace() * step;
             Fixed d = want - s.lean;
             if (d > pace) d = pace; else if (d < -pace) d = -pace;
@@ -2279,12 +2310,24 @@ private:
                         verb(m_shot_nodes[s.node], "SetColor", (s.life / 10) % 2 ? "1.0, 0.9, 0.2, 1.0" : "0.55, 0.08, 0.08, 1.0");
                     break;
                 case OilShot:
-                    // On the tyres of whoever is on it, but the kart that dropped it.
+                    // On each tyre that touches it, whoever's -- the kart that
+                    // dropped it too, once it has left it (`armed` while it has
+                    // not): a kart is oiled on as many tyres as are on it.
                     for (size_t j = 0; j < m_slots.size(); ++j)
                     {
-                        Fixed jx, jy, jz;
-                        if (static_cast<int>(j) == s.owner || !alive(m_slots[j]) || m_slots[j].air || !where(j, jx, jy, jz)) continue;
-                        if (Fixed::Length(jx - s.x, Fixed::Zero(), jz - s.z) <= s.reach && (jy - s.y).Abs() < F(1)) m_slots[j].slip = kSlipTicks;
+                        Slot& o = m_slots[j];
+                        if (!alive(o) || o.air) continue;
+                        bool on = false;
+                        int hit[4] = { 0, 0, 0, 0 };
+                        for (int t = 0; t < 4; ++t)
+                        {
+                            Fixed tx, ty, tz;
+                            if (!tyreAt(o, t, tx, ty, tz)) continue;
+                            hit[t] = Fixed::Length(tx - s.x, Fixed::Zero(), tz - s.z) <= s.reach && (ty - s.y).Abs() < F(1);
+                            on = on || hit[t];
+                        }
+                        if (static_cast<int>(j) == s.owner && s.armed) { if (!on) s.armed = 0; continue; }
+                        for (int t = 0; t < 4; ++t) if (hit[t]) o.oil[t] = kSlipTicks;
                     }
                     if (s.life <= 0) gone = true;
                     else if ((s.life == 20 || s.life == 10) && s.fx >= 0)   // drying up
@@ -2343,7 +2386,7 @@ private:
     {
         for (const Shot& s : m_shots)
             if (s.kind == KartArms::SmokeShot && s.life > kSmokeTicks - kSmokeThick - (kSmokeTicks - kSmokeThick) * 2 / 3   // while it is thick enough to hide in
-                && Fixed::Length(x - s.x, Fixed::Zero(), z - s.z) < smokeRingR(kSmokeTicks - s.life) + F(3, 2)) return true;
+                && Fixed::Length(x - s.x, Fixed::Zero(), z - s.z) < smokeRingR(kSmokeTicks - s.life) + F(3)) return true;
         return false;
     }
     /*
@@ -2468,6 +2511,7 @@ private:
         const Fixed h = KartArena::Height(m_live, x, z, y - vehicleOf(m_slots[i]).ride + climb(), Fixed::Zero(), &gx, &gz);
         Shot& o = shootLocked(KartArms::OilShot, i, x, h + F(4, 100) + lift, z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kOilTicks);
         o.reach = reach;
+        o.armed = 1;   // its kart is on it: not oiled by it until it has left it
         o.fx = takeFx();
         if (o.fx >= 0)
         {
@@ -2489,16 +2533,17 @@ private:
     }
     /*
      * A SMOKE BOMB IS A RING: kSmokePuffs puffs round where it went off,
-     * spreading from 1.5 out to 8 over its thick five seconds -- fast, then
-     * slowing -- and on to 10 as it thins over fifteen, so it walls a kart
-     * in and anyone outside out. Placed every tick (rows, not lines), turning
+     * spreading from 3 out to 16 over its thick five seconds -- fast, then
+     * slowing -- and on to 20 as it thins over fifteen, so it walls a kart
+     * in and anyone outside out. Each puff is 9 to 17 across as it swells,
+     * 5 to 8 high. Placed every tick (rows, not lines), turning
      * slowly; dressed kSmokeSteps times over its life (a verb a puff each):
      * swelling all along, dense while thick, thinning to nothing after.
      */
     static Fixed smokeRingR(int age)
     {
-        if (age < kSmokeThick) { const Fixed v = Fixed::One() - F(age, kSmokeThick); return F(3, 2) + F(13, 2) * (Fixed::One() - v * v); }
-        return F(8) + F(2) * F(std::min(age, kSmokeTicks) - kSmokeThick, kSmokeTicks - kSmokeThick);
+        if (age < kSmokeThick) { const Fixed v = Fixed::One() - F(age, kSmokeThick); return F(3) + F(13) * (Fixed::One() - v * v); }
+        return F(16) + F(4) * F(std::min(age, kSmokeTicks) - kSmokeThick, kSmokeTicks - kSmokeThick);
     }
     void smokeRingLocked(const Shot& c)
     {
@@ -2516,7 +2561,7 @@ private:
         const int at = step * kSmokeTicks / kSmokeSteps;   // the age this step stands for
         const float g = static_cast<float>(step) / kSmokeSteps;
         const float thin = at < kSmokeThick ? 0.0f : static_cast<float>(at - kSmokeThick) / (kSmokeTicks - kSmokeThick);
-        const std::string w = fmt1(4.5f + 4.0f * g), h = fmt1(3.2f + 2.3f * g);
+        const std::string w = fmt1(9.0f + 8.0f * g), h = fmt1(4.8f + 3.45f * g);
         for (int k = 0; k < kSmokePuffs; ++k)
             if (c.cloud[k] >= 0)
                 dressLocked(m_fx_nodes[static_cast<size_t>(c.cloud[k])], w + ", " + h + ", " + w, "0.5, 0.5, 0.53, 1.0", 0.0f, 0.95f * (1.0f - thin) + 0.03f);
@@ -3736,11 +3781,11 @@ private:
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
                 + std::to_string(s.hp) + " " + std::to_string(s.weapon) + " " + std::to_string(s.ammo) + " "
                 + std::to_string(s.cooldown) + " " + std::to_string(s.boost) + " " + std::to_string(s.spare) + " "
-                + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.out_ticks) + " " + std::to_string(s.dagger) + " " + std::to_string(s.drips) + " " + std::to_string(s.drip_in) + " " + std::to_string(s.kx.raw) + " "
+                + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.oil[0]) + " " + std::to_string(s.oil[1]) + " " + std::to_string(s.oil[2]) + " " + std::to_string(s.oil[3]) + " " + std::to_string(s.out_ticks) + " " + std::to_string(s.dagger) + " " + std::to_string(s.drips) + " " + std::to_string(s.drip_in) + " " + std::to_string(s.kx.raw) + " "
                 + std::to_string(s.kz.raw) + " " + std::to_string(s.elims) + " "
                 + std::to_string(s.deaths) + " " + std::to_string(s.last_elims) + " " + std::to_string(s.last_deaths) + " "
                 + std::to_string(s.dead_until) + " " + std::to_string(s.ram_safe) + " " + std::to_string(s.colour) + " " + s.name
-                + " " + std::to_string(s.ride) + " " + std::to_string(s.lean.raw);
+                + " " + std::to_string(s.ride) + " " + std::to_string(s.lean.raw) + " " + std::to_string(s.lean_hold.raw);
             if (Causal_* k = causal(s.body))
             {
                 std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
@@ -4404,7 +4449,7 @@ private:
         verb(s.body, "SetMesh", std::to_string(c.look));
         const bool shown = alive(s);
         for (int t = 0; t < 4; ++t) verb(s.wheels[t], "SetVisible", shown && tyreShown(c, t) ? "1" : "0");
-        s.lean = Fixed::Zero();
+        s.lean = s.lean_hold = Fixed::Zero();
         Fixed x, y, z;
         if (shown && where(i, x, y, z)) placeLocked(i, x, z, s.hx, s.hz);   // at its own ride height
         wheelsLocked(s);
