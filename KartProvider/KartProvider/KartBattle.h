@@ -819,7 +819,12 @@ public:
     }
 
 private:
-    static constexpr int kMarkNodes = 32;   // a tyre's drawn segments at most
+    static constexpr int kMarkNodes = 32;   // a tyre's drawn segments at most: bits of a 64-bit mask
+    static_assert(kMarkNodes > 0 && kMarkNodes < 64, "a tyre's nodes are bits of Trail::used");
+    // Every node of a tyre in use. Not (1u << kMarkNodes) - 1: at 32 that shift
+    // is past a 32-bit word, undefined, and a compiler may drop the code it guards
+    // (the web's did: no mark was ever drawn).
+    static constexpr uint64_t kMarkAll = (uint64_t(1) << kMarkNodes) - 1u;
     /*
      * A TYRE'S MARK: the road it ran, as segments laid where it ran them and
      * left there, newest first, each as dark as what the tyre shed over it
@@ -842,7 +847,7 @@ private:
         int      run_level = 0;
         bool     touched = false, air = false;
         uint32_t seq = 0;                          // segments laid: which lift a new one takes
-        uint32_t used = 0;                         // the tyre's drawn segments' nodes in use, a bit each
+        uint64_t used = 0;                         // the tyre's drawn segments' nodes in use, a bit each (kMarkNodes < 64)
     };
     struct Slot
     {
@@ -946,28 +951,28 @@ private:
     static Fixed F(int64_t n, int64_t d = 1) { return Fixed::FromInt(n) / Fixed::FromInt(d); }
     static Fixed dt()        { return F(1, kHz); }
     /*
-     * THE PEDAL: slow off the line, then a steady ramp, then a rush at the
-     * end -- its push by how near the top the kart is: startPush rising to
-     * rampPush over the first fifth, rampPush held to 72%, then up to
-     * spikePush by 82% and held to the top. So the speed a full lock slides
-     * at (16 or so) takes about four and a half seconds to build, and the
-     * last of the top half a second more: about 50 units in all. Speed is
-     * worth keeping: a corner taken in a drift keeps more of it than one
-     * braked for. A boost pushes hard (boostPush()) to its own top.
+     * THE PEDAL: slow off the line, then as it always was -- quick, and less
+     * the nearer the top, the launch's push falling with speed, never below
+     * pull(). Over the first 30% of the top the push eases (smoothstep) from
+     * startPush up to that curve, so the first few units of speed take about
+     * a second; from there on it is the old pedal, a little over half a
+     * second later: the slide speed of a full lock (16 or so) at about 3.5 s,
+     * the top at about 6.4 s and 83 units -- reached, and drifted at.
      */
+    static Fixed launch()    { return F(10); }
+    static Fixed pull()      { return F(2); }
     static Fixed startPush() { return F(5, 2); }
-    static Fixed rampPush()  { return F(18, 5); }
-    static Fixed spikePush() { return F(10); }
     static Fixed topSpeed()  { return F(22); }
     static Fixed boostSpeed(){ return F(30); }
     static Fixed boostPush() { return F(18); }
     static Fixed pushAt(Fixed v, Fixed top)
     {
         const Fixed u = v.IsPositive() ? v / top : Fixed::Zero();
-        if (u < F(1, 5))   return startPush() + (rampPush() - startPush()) * u * F(5);
-        if (u < F(18, 25)) return rampPush();
-        if (u < F(41, 50)) return rampPush() + (spikePush() - rampPush()) * (u - F(18, 25)) * F(10);
-        return spikePush();
+        const Fixed p = launch() * (Fixed::One() - u);
+        const Fixed full = p > pull() ? p : pull();
+        if (!(u < F(3, 10))) return full;
+        const Fixed e = u / F(3, 10), ease = e * e * (F(3) - F(2) * e);
+        return startPush() + (full - startPush()) * ease;
     }
     static Fixed brake()     { return F(20); }
     static Fixed reverseAcc(){ return F(5); }
@@ -3349,14 +3354,14 @@ private:
         if (g.level > 0 && g.len.IsPositive() && base + kMarkNodes <= m_mark_nodes.size())
         {
             // A node of the tyre's own: a free one, or the oldest drawn one's.
-            while (tr.used == (1u << kMarkNodes) - 1u)
+            while (tr.used == kMarkAll)
             {
                 for (auto it = tr.segs.rbegin(); it != tr.segs.rend(); ++it)
                     if (it->node >= 0) { unmarkLocked(base, tr, *it); break; }
             }
             int n = 0;
-            while (tr.used & (1u << n)) ++n;
-            tr.used |= 1u << n;
+            while (tr.used & (uint64_t(1) << n)) ++n;
+            tr.used |= uint64_t(1) << n;
             g.node = n;
             const ETCS::RID node = m_mark_nodes[base + static_cast<size_t>(n)];
             const Fixed lift = F(8, 1000) + F(1, 1000) * F(static_cast<int64_t>(t * 8 + static_cast<int>(tr.seq % 8)));
@@ -3395,7 +3400,7 @@ private:
     {
         if (g.node < 0) return;
         if (base + static_cast<size_t>(g.node) < m_mark_nodes.size()) parkNode(m_mark_nodes[base + static_cast<size_t>(g.node)]);
-        tr.used &= ~(1u << g.node);
+        tr.used &= ~(uint64_t(1) << g.node);
         g.node = -1;
     }
     // A tyre's mark gone: the trail forgotten, its segments parked.

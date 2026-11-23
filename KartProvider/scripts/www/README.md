@@ -16,9 +16,9 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   turn and a long hold a hard one; let go, they come back. The kart turns by its speed and the wheels'
   angle, so a kart standing still does not turn, and the faster it goes the less the wheels
   turn: at speed it carves an arc. Click the arena first so it has the keys.
-- **Speed builds.** Slow off the line, then a steady climb, then a rush at the end: the speed
-  where a full turn starts to slide takes about four and a half seconds, full speed a little
-  over five, so speed kept is worth more than speed won back.
+- **Speed builds.** Slow off the line, then quick, and slower the faster you go: the speed
+  where a full turn starts to slide comes at about three and a half seconds, full speed at
+  about six, so speed kept is worth more than speed won back.
 - **The tyres grip only so hard.** Turn too sharply for your speed (or brake in a turn) and the
   kart slides out of it: a drift, which keeps more of your speed through a corner than braking
   for it. Steer against the slide to catch it. Braking and sliding heat the tyres, and each leaves
@@ -28,8 +28,9 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   not: which way A and D turn, how much road the skid marks keep (off to 160 units), how fast
   the look turns. They are this tab's own, kept with your name, and nothing in them is the
   battle's: no other tab sees them, and none is in what the tabs check they agree on.
-- **Pads** on the arena, for a touch screen or a mouse: fire bottom left; go, and the wheel
-  left and right, bottom right. Held as a key is held; hidden while the menu is up.
+- **Pads** on the arena, for a touch screen or a mouse: fire bottom left, and bottom right the
+  arrows as keys are laid out -- go over brake, the wheel either side. Held as a key is held;
+  hidden while the menu is up.
 - **Drive over a gold box** for a weapon off the dice; **Space** fires it. The box is back eight
   seconds later. **You carry two**: the one in hand and a spare. A box with a weapon in hand
   goes to the spare, in place of what was there, and the spare comes to hand when the one in

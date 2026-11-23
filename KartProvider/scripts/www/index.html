@@ -62,20 +62,25 @@
        all the same, or a narrow page has it lying over the panel beside it. */
     canvas#canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated; }
     #bootthrob { position: absolute; left: calc(50% - 48px); top: calc(50% - 48px); pointer-events: none; }
-    /* The pads: big, see-through buttons over the arena's bottom corners --
-       fire on the left; go, and the wheel, on the right -- for a thumb on a
-       tablet, and a click on a PC. Each press is the key's, held while it is
-       held. Hidden while the drawn menu is up: it has the pointer then. */
+    /* The pads: see-through buttons over the arena's bottom corners -- fire
+       on the left, and on the right the arrows as keys are laid out, an
+       upside-down T of squares that touch (go over brake, the wheel either
+       side), low so they hide little of the road -- for a thumb on a tablet,
+       and a click on a PC. Each press is the key's, held while it is held.
+       Hidden while the drawn menu is up: it has the pointer then. */
     .pad { position: absolute; bottom: 16px; width: 104px; height: 104px; border-radius: 50%;
            background: rgba(255, 255, 255, 0.1); border: 2px solid rgba(255, 255, 255, 0.22);
            color: rgba(255, 255, 255, 0.3); font-size: 42px; line-height: 1; padding: 0;
            touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer; }
     .pad.held { background: rgba(255, 255, 255, 0.24); }
+    .pad:focus { outline: none; }
     .pad.under-menu { display: none; }
     #pad-fire { left: 16px; }
-    #pad-left { right: 136px; }
+    .pad.key { width: 76px; height: 76px; border-radius: 8px; font-size: 30px; }
     #pad-right { right: 16px; }
-    #pad-go { right: 76px; bottom: 132px; }
+    #pad-down  { right: 92px; }
+    #pad-left  { right: 168px; }
+    #pad-go    { right: 92px; bottom: 92px; }
     aside { display: flex; flex-direction: column; gap: 10px; }
     section { border: 1px solid var(--line); background: var(--panel); padding: 8px 10px; }
     h3 { margin: 0 0 6px; font-weight: normal; color: var(--dim); font-size: 11px;
@@ -126,10 +131,11 @@
     <div id="stage">
       <canvas id="canvas" width="1024" height="768" tabindex="0"></canvas>
       <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
-      <button id="pad-fire" class="pad" title="fire (Space)">&#x26A1;</button>
-      <button id="pad-left" class="pad" title="steer left (A)">&#x25C0;</button>
-      <button id="pad-right" class="pad" title="steer right (D)">&#x25B6;</button>
-      <button id="pad-go" class="pad" title="go (W)">&#x25B2;</button>
+      <button id="pad-fire" tabindex="-1" class="pad" title="fire (Space)">&#x26A1;</button>
+      <button id="pad-go" tabindex="-1" class="pad key" title="go (W)">&#x25B2;</button>
+      <button id="pad-left" tabindex="-1" class="pad key" title="steer left (A)">&#x25C0;</button>
+      <button id="pad-down" tabindex="-1" class="pad key" title="brake, reverse (S)">&#x25BC;</button>
+      <button id="pad-right" tabindex="-1" class="pad key" title="steer right (D)">&#x25B6;</button>
     </div>
 
     <aside>
@@ -188,7 +194,7 @@
         <h3>Playing</h3>
         <div class="keys"><b>W</b> go &nbsp; <b>S</b> brake, reverse &nbsp; <b>A</b> <b>D</b> steer &nbsp; <b>Space</b> fire
         &nbsp; <b>Q</b> <b>E</b> or a right-button drag look round &nbsp; <b>Tab</b> scores &nbsp; <b>O</b> settings. The round buttons on the
-        arena are fire, go and the wheel too, for a touch screen. Drive over a gold box
+        arena are fire and the arrows too, for a touch screen. Drive over a gold box
         for a weapon; ramps throw you, hills slow you going up.
         In the lobby the host's arrows move the menu and <b>Enter</b> starts; in a round the host's <b>Esc</b>
         abandons it. Click the arena first so it has the keys.</div>
@@ -288,7 +294,7 @@
    * THE PADS, under the drawn menu: hidden while it is up (the lobby's, or
    * the settings), asked of the battle a few times a second.
    */
-  const pads = ['pad-fire', 'pad-go', 'pad-left', 'pad-right'].map(function (id) { return document.getElementById(id); });
+  const pads = ['pad-fire', 'pad-go', 'pad-down', 'pad-left', 'pad-right'].map(function (id) { return document.getElementById(id); });
   setInterval(function () {
     if (!page.runtimeUp() || !page.nameLive('battle')) return;
     Promise.resolve(page.ask('MenuUp', '')).then(function (up) {
@@ -328,6 +334,7 @@
   }
   pad('pad-fire', 32);
   pad('pad-go', 87);
+  pad('pad-down', 83);
   pad('pad-left', function () { return invertEl.checked ? 68 : 65; });
   pad('pad-right', function () { return invertEl.checked ? 65 : 68; });
 })();
