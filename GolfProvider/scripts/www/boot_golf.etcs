@@ -1,4 +1,5 @@
 #!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
 
 # GOLF, IN A BROWSER: the courses, the pools and the match, on the page served
 # by ETCS (index.html beside this). The page names you, then practises, hosts
@@ -34,9 +35,11 @@ world.Create(1.0, 1.0, 1.0)
 world.SetVisible(0)
 eye.SetScene(@world)
 
-# The match, named here so the page and the terminal reach it (game.Scores(),
+# The match, named so the page and the terminal reach it (game.Scores(),
 # game.Status()); the world builds the pools and the courses and hands them over.
-spawn GolfProvider::GolfMatch game
+# ENSURE: the OS entry (ETCS scripts/golf.etcs) makes it first, so the name is
+# its global; run alone, as the page runs it, this makes it.
+ensure GolfProvider::GolfMatch game
 game.Create()
 run GolfProvider/scripts/golf_world.etcs anchor=world game=game
 run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye
