@@ -550,6 +550,16 @@ window.EtcsSessionPage = function (cfg) {
     else { try { await loadGlue(joinBase(wasm_base, 'etcs.js')); } catch (_) { await loadGlue(joinBase(wasm_base, 'etcs')); } }
   }
 
+  // WHAT IT LEAVES BEHIND, when its element names something (data-leave): the
+  // canvas's own CSS background, which paints under the canvas's pixels. The
+  // runtime's canvas is transparent until it first presents and opaque after,
+  // so this fills the wait between the throbber going and the first frame, and
+  // everything the runtime draws is over it.
+  function leaveBehind(el, under) {
+    const url = el.dataset.leave;
+    if (!url || !under) return;
+    under.style.background = 'url("' + url + '") center / auto 45% no-repeat';
+  }
   // The boot throbber, page-side: the runtime's first frame lands seconds
   // after main() starts. Not by reading the canvas, as the chess page does: a
   // 2D context asked for before the runtime's WebGPU one takes the canvas from
@@ -579,7 +589,7 @@ window.EtcsSessionPage = function (cfg) {
     requestAnimationFrame(frame);
     const p = setInterval(function () {
       if (!sceneUp) return;
-      stopped = true; clearInterval(p); el.remove(); log('[etcs] the ' + KIND + ' is up\n');
+      stopped = true; clearInterval(p); leaveBehind(el, canvas); el.remove(); log('[etcs] the ' + KIND + ' is up\n');
     }, 200);
   }
   bootThrobber();

@@ -323,7 +323,7 @@
            See bootThrobber() below: nothing inside the runtime can draw
            during the window this covers, because the runtime is not
            running yet. -->
-      <canvas id="bootthrob" width="96" height="96"></canvas>
+      <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-square.svg"></canvas>
       <!-- THE SOFT KEYBOARD'S FIELD. A phone raises its keyboard for a focused
            field and nothing else, and nothing on the canvas is a field: so
            this one, invisible, is focused while the runtime says a box or a
@@ -1812,6 +1812,16 @@
     }
   }
 
+  // WHAT IT LEAVES BEHIND, when its element names something (data-leave): the
+  // canvas's own CSS background, which paints under the canvas's pixels. The
+  // runtime's canvas is transparent until it first presents and opaque after,
+  // so this fills the wait between the throbber going and the first frame, and
+  // everything the runtime draws is over it.
+  function leaveBehind(el, under) {
+    const url = el.dataset.leave;
+    if (!url || !under) return;
+    under.style.background = 'url("' + url + '") center / auto 45% no-repeat';
+  }
   /*
    * ── the boot throbber ──────────────────────────────────────────────────────
    *
@@ -1933,7 +1943,7 @@
         }
       } catch (e) { bad++; }
       if (done || bad > 25) {
-        stopped = true; clearInterval(poll); el.remove();
+        stopped = true; clearInterval(poll); leaveBehind(el, sheet); el.remove();
         sceneUp = true;
         log('[etcs] boot throbber done'
             + (bad > 25 ? ' (could not read the sheet -- leaving anyway)' : '') + '\n');

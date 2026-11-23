@@ -115,7 +115,7 @@
   <div id="main">
     <div id="stage">
       <canvas id="canvas" width="1024" height="768"></canvas>
-      <canvas id="bootthrob" width="96" height="96"></canvas>
+      <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-square.svg"></canvas>
     </div>
 
     <aside>
@@ -621,6 +621,16 @@
     else { try { await loadGlue(joinBase(wasm_base, 'etcs.js')); } catch (_) { await loadGlue(joinBase(wasm_base, 'etcs')); } }
   }
 
+  // WHAT IT LEAVES BEHIND, when its element names something (data-leave): the
+  // canvas's own CSS background, which paints under the canvas's pixels. The
+  // runtime's canvas is transparent until it first presents and opaque after,
+  // so this fills the wait between the throbber going and the first frame, and
+  // everything the runtime draws is over it.
+  function leaveBehind(el, under) {
+    const url = el.dataset.leave;
+    if (!url || !under) return;
+    under.style.background = 'url("' + url + '") center / auto 45% no-repeat';
+  }
   // The boot throbber, page-side (PaintProvider's page has the measurement:
   // the runtime's first frame lands seconds after main() starts). Leaves when
   // the sheet's centre has something in it -- the board.
@@ -659,7 +669,7 @@
           if (lit > 40) done = true;
         }
       } catch (e) { bad++; }
-      if (done || bad > 25) { stopped = true; clearInterval(p); el.remove(); sceneUp = true; log('[etcs] the board is up\n'); }
+      if (done || bad > 25) { stopped = true; clearInterval(p); leaveBehind(el, canvas); el.remove(); sceneUp = true; log('[etcs] the board is up\n'); }
     }, 200);
   }
   bootThrobber();
