@@ -35,7 +35,9 @@
  *                            (a seat's first line, taken as it sits)
  *   leave                    the author's kart back in the pit (its seat's
  *                            stream ended, however it did)
- *   drive <t> <s> <f>        the author's pedal, wheel and trigger: -1 0 1, 0 1
+ *   drive <t> <s> <f>        the author's pedal, wheel and trigger: the pedal a level
+ *                            -8..8 (go up, brake/reverse down; a key is 8, a touch pad's
+ *                            pedal any), the wheel -1 0 1, the trigger 0 1
  *   tick <n>                 every kart driven, every shot flown, the world
  *                            stepped, up to tick n
  *   config <map> <secs> [<layout>]   (the host's, in the lobby only) the next
@@ -597,10 +599,12 @@ public:
         if (bit < 5) { if (down) m_keys |= (1u << bit); else m_keys &= ~(1u << bit); }
         sendKeysLocked();
     }
-    // The keys held, said as a `drive` line when what they ask has changed.
+    // The keys held, said as a `drive` line when what they ask has changed:
+    // W or S is the whole pedal; with neither, the page's (Pedal).
     void sendKeysLocked()
     {
-        const int t = ((m_keys & 1) ? 1 : 0) - ((m_keys & 2) ? 1 : 0);
+        int t = ((m_keys & 1) ? kPedalFull : 0) - ((m_keys & 2) ? kPedalFull : 0);
+        if (t == 0) t = m_pedal;
         const int right = ((m_keys & 8) ? 1 : 0) - ((m_keys & 4) ? 1 : 0);
         const int s = m_invert ? -right : right;
         const int f = (m_keys & 16) ? 1 : 0;
@@ -621,6 +625,16 @@ public:
         sendKeysLocked();
     }
     bool Inverted() { std::lock_guard<std::mutex> g(m_mu); return m_invert; }
+    // THE PEDAL BY LEVEL, this runtime's: -kPedalFull (all the brake, then
+    // reverse) to kPedalFull (all the go), 0 let go -- a touch pad's, where
+    // the finger is on it says how far down. W or S held is the whole pedal
+    // over it. A `drive` line like the keys'.
+    void Pedal(int level)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_pedal = std::max(-kPedalFull, std::min(kPedalFull, level));
+        sendKeysLocked();
+    }
 
     /*
      * THE SETTINGS: this runtime's own, and none of them the battle's -- no
@@ -649,12 +663,14 @@ public:
     bool Driving() { std::lock_guard<std::mutex> g(m_mu); return m_ready && !m_me.empty() && m_phase == Playing && !menuShownLocked(); }
 
     /*
-     * LOOKING ROUND THE KART. The eye rides behind the kart; a drag with the
-     * right button, or Q and E held, swings it round the kart (and a drag up
-     * or down, over it) -- to see beside or behind, or out of a hole the
-     * view behind is no good in. Let alone it comes back behind the kart,
-     * slowly (lookLocked). This runtime's alone: where a driver looks is no
-     * part of the battle, so no line and nothing hashed.
+     * LOOKING ROUND THE KART. The eye rides behind the kart; a drag on the
+     * arena -- either button, or a finger (the window's left button) -- or Q
+     * and E held, swings it round the kart (and a drag up or down, over it):
+     * to see beside or behind, or out of a hole the view behind is no good
+     * in. Let alone a while -- no drag moving it, though the button or finger
+     * is still down -- it drifts back behind the kart (lookLocked). This
+     * runtime's alone: where a driver looks is no part of the battle, so no
+     * line and nothing hashed.
      */
     void Pointer(const InputEvent& ev)
     {
@@ -664,18 +680,19 @@ public:
         {
             case INPUT_BUTTON_DOWN:
                 if (lobby && ev.key == 0) { menuPressLocked(ev.x, ev.y); break; }
-                if (ev.key == kLookButton) { m_look_drag = true; m_look_x = ev.x; m_look_y = ev.y; }
+                if (lobby || m_look_drag || (ev.key != kLookButton && ev.key != kDragButton)) break;
+                m_look_drag = true; m_look_button = ev.key; m_look_x = ev.x; m_look_y = ev.y;
                 break;
             case INPUT_MOTION:
                 if (lobby) verb(m_menu_rid, "Hover", std::to_string(ev.x) + " " + std::to_string(ev.y));
                 if (!m_look_drag) break;
                 // Let go outside the window: the platform says it is up.
-                if (input_button_state(ev, kLookButton) == 0) { m_look_drag = false; break; }
+                if (input_button_state(ev, m_look_button) == 0) { m_look_drag = false; break; }
                 turnLookLocked((ev.x - m_look_x) * kLookTurn * m_look_speed, (ev.y - m_look_y) * kLookTurn * m_look_speed);
                 m_look_x = ev.x; m_look_y = ev.y;
                 break;
             case INPUT_BUTTON_UP:
-                if (ev.key == kLookButton) m_look_drag = false;
+                if (m_look_drag && ev.key == m_look_button) m_look_drag = false;
                 break;
             default: break;
         }
@@ -951,7 +968,7 @@ private:
         Fixed       lean_hold;                     // 0..1: up while a wheel is held, down while none (leanBuild, leanSettle)
         std::string made_body, made_tyre;          // the pool's extents, "w, h, d": the kart's
         Fixed       made_volume;                   // the pool's body's: a vehicle's mass is its volume over this
-        int         thr = 0, steer = 0, fire = 0;
+        int         thr = 0, steer = 0, fire = 0;   // the pedal's level (kPedalFull a key), the wheel's way, the trigger
         int         press = 0;                     // a press of the trigger the tick has not yet seen
         Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
         Fixed       wheel_ease;                    // how far a held wheel has eased: 0 at the press, 1 at twice the lock
@@ -1024,6 +1041,7 @@ private:
     static constexpr float    kBoomGap    = 0.25f;     // the least it keeps over the ground, or off a deck
     static constexpr float    kBoomLeast  = 0.2f;      // of its length, however little is clear
     static constexpr uint16_t kLookButton = 1;         // the right button
+    static constexpr uint16_t kDragButton = 0;         // the left, and a finger on a touch screen
     static constexpr float    kLookTurn   = 0.006f;    // radians a pixel dragged (golf's orbit)
     static constexpr uint16_t kSettingsKey = 'O';      // opens and shuts the settings
     static constexpr double   kLookKeyRate = 2.0;      // radians a second, Q or E held
@@ -1132,6 +1150,7 @@ private:
     // long a wheel is held -- none to all of it over leanBuild() s, eased --
     // and with none held falls back over leanSettle().
     static Fixed leanMost() { return F(85, 100); }
+    static constexpr int kPedalFull = 8;   // the pedal's levels each way: a key is all of them
     // How much of a kart is on oil, 0..1: its tyres with oil on them over
     // the tyres it has (a bike's two: the pair each stands for), all of
     // them on the scree.
@@ -1264,7 +1283,7 @@ private:
             int t = 0, s = 0, f = 0;
             if (i < 0 || !(in >> t >> s)) return false;
             in >> f;
-            m_slots[i].thr   = t < 0 ? -1 : (t > 0 ? 1 : 0);
+            m_slots[i].thr   = std::max(-kPedalFull, std::min(kPedalFull, t));
             m_slots[i].steer = s < 0 ? -1 : (s > 0 ? 1 : 0);
             // A press is kept until a tick sees it: a tap whose down and up
             // both land between two ticks (a busy host's frame) still fires.
@@ -1395,7 +1414,7 @@ private:
         m_shots.clear();
         clearWispsLocked();
         for (Burst& b : m_bursts) endBurstLocked(b);
-        m_keys = 0; m_sent_t = m_sent_s = m_sent_f = 0;
+        m_keys = 0; m_pedal = 0; m_sent_t = m_sent_s = m_sent_f = 0;
         m_eye_set = false; m_menu = 0; m_editing = false;
         m_phase = Lobby; m_end = 0; m_round_secs = 180;
         m_rng = 0x9E3779B97F4A7C15ull;
@@ -1794,15 +1813,18 @@ private:
         // holds down to a sixth.
         const Fixed oiled = oiledLocked(s, c);
         if (oiled.IsPositive()) push = push * (Fixed::One() - oiled * F(2, 3));
+        // The pedal's level is its share of the push, the brake and the
+        // reverse: a key is all of each.
+        const Fixed level = F(thr < 0 ? -thr : thr, kPedalFull);
         if (thr > 0)
         {
-            if (speed.raw < 0) speed = Fixed::Min(speed + c.brake * step, Fixed::Zero());
-            else if (speed < top) speed = Fixed::Min(speed + push * step, top);
+            if (speed.raw < 0) speed = Fixed::Min(speed + c.brake * level * step, Fixed::Zero());
+            else if (speed < top) speed = Fixed::Min(speed + push * level * step, top);
         }
         else if (thr < 0)
         {
-            if (speed.raw > 0) speed = Fixed::Max(speed - c.brake * step, Fixed::Zero());
-            else               speed = Fixed::Max(speed - c.rev_acc * step, -c.rev_top);
+            if (speed.raw > 0) speed = Fixed::Max(speed - c.brake * level * step, Fixed::Zero());
+            else               speed = Fixed::Max(speed - c.rev_acc * level * step, -c.rev_top);
         }
         else
         {
@@ -3775,7 +3797,7 @@ private:
                        + " " + std::to_string(m_rng);
         for (const Slot& s : m_slots)
         {
-            st += "|" + s.driver + " " + std::to_string(s.thr) + std::to_string(s.steer) + std::to_string(s.fire)
+            st += "|" + s.driver + " " + std::to_string(s.thr) + " " + std::to_string(s.steer) + std::to_string(s.fire)
                 + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.wheel_ease.raw) + " "
                 + std::to_string(s.steer_held) + " " + std::to_string(s.hx.raw) + " "
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
@@ -3817,13 +3839,14 @@ private:
         m_look_pitch = std::max(kLookDown, std::min(kLookUp, m_look_pitch + pitch));
         m_look_idle_ms = 0.0;
     }
-    // Q and E turn the look while held; left alone for kLookHoldMs it goes
-    // back to behind the kart, to about a third of what is left every kLookBackMs.
+    // Q and E turn the look while held; left alone for kLookHoldMs -- no key,
+    // no drag moving it, a button held still or not -- it goes back to behind
+    // the kart, to about a third of what is left every kLookBackMs.
     void lookLocked(double dt_ms)
     {
         const int keys = ((m_look_keys & 2u) ? 1 : 0) - ((m_look_keys & 1u) ? 1 : 0);
         if (keys != 0) turnLookLocked(static_cast<float>(keys * kLookKeyRate * m_look_speed * dt_ms / 1000.0), 0.0f);
-        if (keys != 0 || m_look_drag) return;
+        if (keys != 0) return;   // a drag held still is let alone: turnLookLocked starts the count again
         m_look_idle_ms += dt_ms;
         if (m_look_idle_ms < kLookHoldMs || (m_look_yaw == 0.0f && m_look_pitch == 0.0f)) return;
         const float keep = static_cast<float>(std::exp(-dt_ms / kLookBackMs));
@@ -3991,7 +4014,8 @@ private:
         if (now >= 0 && m_fps_seen >= 0 && m_fps_ms > 0.0)
         {
             const int fps = static_cast<int>(static_cast<double>(now - m_fps_seen) * 1000.0 / m_fps_ms + 0.5);
-            verb(m_fps, "SetText", std::to_string(fps) + " fps");
+            // ...and where they were drawn: "gpu" through the device, "cpu" on the host.
+            verb(m_fps, "SetText", std::to_string(fps) + " fps " + (answer(m_camera, "OnDevice") == "1" ? "gpu" : "cpu"));
         }
         m_fps_seen = now;
         m_fps_ms = 0.0;
@@ -4621,6 +4645,7 @@ private:
     Fixed    m_mark_len = Fixed::FromInt(kMarkLength);
     float    m_look_speed = 1.0f;
     int      m_sent_t = 0, m_sent_s = 0, m_sent_f = 0;
+    int      m_pedal = 0;                   // the page's pedal by level (Pedal), under the keys
     int      m_menu = 0;                        // the menu's focus: a place in menuItemsLocked()
     bool     m_editing = false;                 // the name field has the keys
     std::string m_edit;                         // what is typed into it, before Enter
@@ -4639,6 +4664,7 @@ private:
     double   m_look_idle_ms = 0.0;
     unsigned m_look_keys = 0;      // Q is bit 0, E bit 1
     bool     m_look_drag = false;
+    uint16_t m_look_button = kLookButton;   // the button the drag is on
     double   m_card_ms = 0.0;
     std::string m_card_text;
     ETCS::RID   m_fps = 0;          // BindFps: the frame counter's label

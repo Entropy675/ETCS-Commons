@@ -2359,8 +2359,10 @@ private:
         if (m_fps_ms < 1000.0 && m_fps_seen >= 0) return;
         const std::string said = answer(m_camera, "Renders");
         const int64_t now = said.empty() ? -1 : std::atoll(said.c_str());
+        // ...and where they were drawn: "gpu" through the device, "cpu" on the host.
         if (now >= 0 && m_fps_seen >= 0 && m_fps_ms > 0.0)
-            verb(m_fps, "SetText", std::to_string(static_cast<int>(static_cast<double>(now - m_fps_seen) * 1000.0 / m_fps_ms + 0.5)) + " fps");
+            verb(m_fps, "SetText", std::to_string(static_cast<int>(static_cast<double>(now - m_fps_seen) * 1000.0 / m_fps_ms + 0.5)) + " fps "
+                                   + (answer(m_camera, "OnDevice") == "1" ? "gpu" : "cpu"));
         m_fps_seen = now;
         m_fps_ms = 0.0;
     }

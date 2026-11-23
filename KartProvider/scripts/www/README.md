@@ -28,10 +28,14 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   not: which way A and D turn, how much road the skid marks keep (off to 160 units), how fast
   the look turns. They are this tab's own, kept with your name, and nothing in them is the
   battle's: no other tab sees them, and none is in what the tabs check they agree on.
-- **Pads** on the arena, for a touch screen or a mouse: fire bottom left, and bottom right the
-  arrows as keys are laid out -- go over brake, the wheel either side. Held as a key is held;
-  shown only while a round is being driven: not while the page loads, in the lobby, or under
-  the settings.
+- **Pads** on the arena, for a touch screen or a mouse: bottom left a row of three -- the wheel
+  either side and between them **the pedal**, go on its top half and brake (then reverse) on its
+  bottom, harder the further your finger is from its middle -- and fire bottom right. Every
+  finger counts and holds whatever it is over now: hold the wheel and the pedal at once, or slide
+  from one pad to another. Lit while held, and only then; shown only while a round is being
+  driven: not while the page loads, in the lobby, or under the settings.
+- **Fullscreen**, the header's button: the arena and its pads fill the screen (at its 4:3, bars
+  either side). The button again, or Esc, gives it back.
 - **Drive over a gold box** for a weapon off the dice; **Space** fires it. The box is back eight
   seconds later. **You carry two**: the one in hand and a spare. A box with a weapon in hand
   goes to the spare, in place of what was there, and the spare comes to hand when the one in
@@ -80,8 +84,9 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   page's button) -- back to the lobby, its scores discarded.
 - **Hold Tab** in a round for the scores on the arena. The top right corner counts this tab's
   **frames a second**.
-- **Look round the kart** with **Q** and **E**, or by dragging with the right button (up and
-  down too): the eye swings round the kart and, let alone, drifts back behind it. It also keeps
+- **Look round the kart** with **Q** and **E**, or by dragging on the arena -- either mouse
+  button, or a finger on a touch screen (up and down too): the eye swings round the kart and,
+  let alone a moment (a finger held still counts), drifts back behind it. It also keeps
   to the kart's side of the ground -- down in a pit with it, under a deck with it -- instead of
   looking at it through a wall.
 - **The arena** is 192 units across inside its walls, which are four high: below their top they

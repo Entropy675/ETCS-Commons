@@ -18,7 +18,8 @@ DEFINE_WORK_FUNC(KartBattle, Create)                                 { (void)ctx
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindWorld,  (ETCS::RID, rid))    { (void)ctx; self.BindWorld(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCamera, (ETCS::RID, rid))    { (void)ctx; self.BindCamera(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCard,   (ETCS::RID, rid))    { (void)ctx; self.BindCard(rid); }
-// BindFps <label> -- the frame counter: this runtime's pictures a second, said on the label.
+// BindFps <label> -- the frame counter: this runtime's pictures a second, said on the label with where
+// they were drawn ("60 fps gpu", "12 fps cpu").
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindFps,    (ETCS::RID, rid))    { (void)ctx; self.BindFps(rid); }
 // BindMenu <menu> -- the lobby, drawn: a RenderProvider::Menu over the eye.
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindMenu,   (ETCS::RID, rid))    { (void)ctx; self.BindMenu(rid); }
@@ -210,10 +211,13 @@ DEFINE_WORK_FUNC(KartBattle, Give)
 // SetInvert <on> -- this runtime's wheel keys swapped (A right, D left): the
 // page's own setting, no line of the trace.
 DEFINE_WORK_FUNC_TYPED(KartBattle, SetInvert, (int32_t, on)) { (void)ctx; self.SetInvert(on != 0); }
+// Pedal <level> -- this runtime's pedal by level, -8 (all the brake, then reverse) to 8 (all the go),
+// 0 let go: a touch pad's. W or S held is the whole pedal over it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Pedal, (int32_t, level)) { (void)ctx; self.Pedal(level); }
 // Key <code> <down> -- a GLFW key, for a test or a page.
 // Look <yaw> <pitch> -- this runtime's eye swung this far round its kart, to
-// the picture's right, and over it, in degrees: what a drag with the right
-// button, or Q and E, does. Let alone it comes back behind the kart.
+// the picture's right, and over it, in degrees: what a drag on the arena
+// (either button, or a finger), or Q and E, does. Let alone it comes back behind the kart.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Look, (float, yaw), (float, pitch)) { (void)ctx; self.Look(yaw, pitch); }
 // "<eye x> <y> <z> <at x> <y> <z> <look yaw> <pitch>": where the eye is headed.
 DEFINE_WORK_FUNC(KartBattle, Eye)       { (void)ctx; data.reset(); data.writeString(self.Eye().c_str()); }

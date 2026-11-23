@@ -15,11 +15,12 @@ card.SetColor(1.0, 1.0, 0.85, 1.0)
 card.SetBackground(0.0, 0.0, 0.0, 0.45)
 card.SetPadding(6)
 card.SetOrder(11)
-# The frame counter, top right: this runtime's pictures a second.
+# The frame counter, top right: this runtime's pictures a second, and where
+# they are drawn -- gpu (WebGPU, Vulkan) or cpu (the host's raster).
 eye.spawn(RenderProvider::TextLabel fps)
 fps.Create(16)
 fps.SetText(-- fps)
-fps.SetPosition(950, 50)
+fps.SetPosition(886, 50)
 fps.SetColor(0.75, 0.9, 0.8, 1.0)
 fps.SetBackground(0.0, 0.0, 0.0, 0.35)
 fps.SetPadding(4)

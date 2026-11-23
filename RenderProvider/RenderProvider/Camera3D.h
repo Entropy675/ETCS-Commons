@@ -6,6 +6,7 @@
 #include "SceneSink.h"
 
 #include <cmath>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -273,8 +274,10 @@ public:
          * means "a new composition starts here" exactly as it does for
          * PolygonDrawable2D and a window surface on a device.
          */
-        if (this->DeviceProjection()) Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
-        else                          ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        const bool device = this->DeviceProjection();
+        if (device) Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        else        ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        m_on_device.store(device);
         ++m_renders;
         return scene->Project(this) != nullptr;
     }
@@ -507,6 +510,9 @@ public:
     // form of the claim above -- a settled scene stops incrementing it, and a
     // scene under WASD does not.
     uint64_t Renders() const { return m_renders; }
+    // Did the last of them go through the device (the GPU), or on the host
+    // (the CPU)? What a frame counter says beside its number.
+    bool OnDevice() const { return m_on_device.load(); }
 
 private:
     /*
@@ -629,6 +635,7 @@ private:
     bool               m_scene_lands = true;    // DeviceProjectionLands, asked at each draw
     mutable std::mutex m_scene_mtx;
     uint64_t  m_renders = 0;
+    std::atomic<bool> m_on_device{ false };   // the last render's sink: the device, or the host
 };
 
 #endif

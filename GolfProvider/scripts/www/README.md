@@ -9,6 +9,8 @@ modules/GolfProvider/scripts/golf.etcs`.
 
 ## Playing
 
+- **Fullscreen**, the header's button: the course fills the screen (at its 4:3, bars either
+  side). The button again, or Esc, gives it back.
 - **Host a match** and it is listed in the hall; anyone who opens the page sees it and **joins**,
   taking the next free ball of eight. The link under the button joins it directly. Out of a
   match the course is yours alone: practice, with the lobby yours.

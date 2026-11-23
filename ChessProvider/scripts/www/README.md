@@ -7,7 +7,9 @@ by whichever runtime hosts the table -- yours, another player's, or the site's.
 What is HTML here is what a window has no DOM for: the hall, the seats, the
 conversation and the line you type. On the OS those are the bars
 `scripts/chess_table.etcs` slides in; here they are the column beside the
-board. The same boot script sets up both (`boot_chess.etcs`).
+board. The same boot script sets up both (`boot_chess.etcs`). The header's
+**fullscreen** button gives the board the whole screen (at its 4:3); the
+button again, or Esc, gives it back.
 
 Serve it with `serve_chess.etcs` (this module) or as part of the site
 (`scripts/run_website.etcs`, under `/chess/play/`). ETCS serves ETCS: the page,
