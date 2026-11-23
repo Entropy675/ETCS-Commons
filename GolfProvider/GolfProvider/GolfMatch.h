@@ -42,6 +42,9 @@
  *   abandon                   (the host's, in a round) back to the lobby
  *   give <who> <power>        (the host's) a power handed over outright
  *
+ * An AUTHOR is a seat: over a link, the key its link proved (shown by the
+ * label it gave, ontology/Trace.h); here, the name this runtime gave.
+ *
  * The world is Scene3D marked driven (SetDriven): no picture steps it. The
  * balls are Causal solids on solid greens (etcs_causal_constraints.md §12-
  * §13): gravity is the world's space's, the bounce and the roll are the
@@ -290,7 +293,10 @@ public:
     bool Give(const std::string& who, const std::string& power)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        return m_authority && takeLocked(m_me, "give " + who + " " + power);
+        // Named as people name them; the line names the seat.
+        const int i = slotNamedLocked(who);
+        if (!m_authority || i < 0) return false;
+        return takeLocked(m_me, "give " + m_slots[i].player + " " + power);
     }
 
     // ── what the families ask of a match ──────────────────────────────────
@@ -316,11 +322,11 @@ public:
     }
     // A seat's stream opening and ending (Present); the owner's is the trace
     // this mirror follows, whose end EndedConcrete says.
-    void ArrivedConcrete(const std::string& who) override { std::lock_guard<std::mutex> g(m_mu); noteLocked(who + " is here"); }
+    void ArrivedConcrete(const std::string& who) override { std::lock_guard<std::mutex> g(m_mu); noteLocked(labelLocked(who) + " is here"); }
     void DepartedConcrete(const std::string& who) override
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (who != m_owner) noteLocked(who + " left");
+        if (who != m_owner) noteLocked(labelLocked(who) + " left");
     }
 
     // ── the hand: keys and the pointer (this runtime's, until it lets go) ──
@@ -445,7 +451,7 @@ public:
     {
         std::lock_guard<std::mutex> g(m_mu);
         const char* mode = m_me.empty() ? "idle" : !m_session ? "practice" : m_authority ? "host" : "guest";
-        return std::to_string(m_tick) + " " + std::to_string(m_lines.size()) + " " + mode + " " + (m_me.empty() ? "-" : m_me) + " "
+        return std::to_string(m_tick) + " " + std::to_string(m_lines.size()) + " " + mode + " " + (m_me.empty() ? "-" : labelLocked(m_me)) + " "
              + std::to_string(slotOf(m_me)) + " " + phaseName() + " " + std::to_string(secsLeft()) + " " + courseName(m_course) + " "
              + std::to_string(m_hole + 1) + " " + std::to_string(m_live.holes.size()) + " " + std::to_string(m_hole_secs) + " "
              + std::to_string(m_layout);
@@ -458,7 +464,7 @@ public:
         for (size_t i : rankLocked())
         {
             const Slot& s = m_slots[i];
-            out += std::to_string(i) + " " + s.player + " " + std::to_string(s.total) + " " + std::to_string(s.strokes) + " "
+            out += std::to_string(i) + " " + labelLocked(s.player) + " " + std::to_string(s.total) + " " + std::to_string(s.strokes) + " "
                  + (s.holed ? "holed" : s.done ? "out" : "playing") + " " + GolfPowers::Name(s.power) + "\n";
         }
         return out;
@@ -500,7 +506,7 @@ public:
     std::string Ball(const std::string& who)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        const int i = slotOf(who.empty() ? m_me : who);
+        const int i = slotNamedLocked(who.empty() ? m_me : who);
         if (i < 0) return "-";
         const Slot& s = m_slots[i];
         Fixed x, y, z, v;
@@ -666,7 +672,7 @@ private:
                     s.holed = s.done = false;
                     if (m_phase == Lobby || m_phase == Playing) teeBallLocked(i);
                     else { s.done = true; parkBallLocked(i); }
-                    noteLocked(author + " plays ball " + std::to_string(i + 1));
+                    noteLocked(labelLocked(author) + " plays ball " + std::to_string(i + 1));
                     return true;
                 }
             return false;   // every ball taken: watching
@@ -723,14 +729,14 @@ private:
         {
             if (m_phase == Lobby) return false;
             lobbyLocked();
-            noteLocked(author + " abandoned the round");
+            noteLocked(labelLocked(author) + " abandoned the round");
             return true;
         }
         if (verb == "give")
         {
             std::string who, p;
             in >> who >> p;
-            const int i = slotOf(who);
+            const int i = slotNamedLocked(who);
             const uint8_t power = GolfPowers::ByName(p);
             if (i < 0 || power == GolfPowers::None) return false;
             m_slots[i].power = power;
@@ -940,7 +946,7 @@ private:
         if (m_phase == Playing) { s.strokes = strokes; s.total += strokes; }
         s.park_at = static_cast<int64_t>(m_tick) + kParkAfter;
         if (m_phase == Playing)
-            noteLocked(s.player + (holed ? " holed in " + std::to_string(strokes) : " is out: " + std::to_string(strokes)));
+            noteLocked(labelLocked(s.player) + (holed ? " holed in " + std::to_string(strokes) : " is out: " + std::to_string(strokes)));
     }
 
     // ── one tick ────────────────────────────────────────────────────────
@@ -1049,7 +1055,7 @@ private:
             const Fixed fx = s.fx, fy = s.fy, fz = s.fz;
             putBallLocked(i, fx, fy, fz);
             if (m_phase == Playing) ++s.strokes;
-            noteLocked(s.player + "'s ball is lost: +1");
+            noteLocked(labelLocked(s.player) + "'s ball is lost: +1");
             return;
         }
         if (m_phase == Playing && s.strokes >= kCap && restingLocked(static_cast<int>(i))) { finishLocked(i, kCap + 1, false); return; }
@@ -1097,7 +1103,7 @@ private:
                 for (Slot& s : m_slots) s.last_total = s.player.empty() ? -1 : s.total;
                 const std::vector<size_t> rank = rankLocked();
                 const bool clear = !rank.empty() && (rank.size() == 1 || m_slots[rank[0]].total != m_slots[rank[1]].total);
-                noteLocked(rank.empty() ? "the round is over" : clear ? "the round is over -- " + m_slots[rank[0]].player + " wins with " + std::to_string(m_slots[rank[0]].total)
+                noteLocked(rank.empty() ? "the round is over" : clear ? "the round is over -- " + labelLocked(m_slots[rank[0]].player) + " wins with " + std::to_string(m_slots[rank[0]].total)
                                                                      : std::string("the round is over -- a tie"));
             }
         }
@@ -1174,7 +1180,7 @@ private:
                 break;
             }
         }
-        noteLocked(s.player + " put down a " + GolfPowers::Name(kind));
+        noteLocked(labelLocked(s.player) + " put down a " + GolfPowers::Name(kind));
         s.power = GolfPowers::None;
         return true;
     }
@@ -1740,7 +1746,7 @@ private:
             const Slot& s = m_slots[i];
             const int total = last ? s.last_total : s.total;
             if (last && total < 0) continue;
-            std::string r = s.player + "  " + std::to_string(total);
+            std::string r = labelLocked(s.player) + "  " + std::to_string(total);
             if (!last) r += s.holed ? "  (in)" : s.done ? "  (out)" : "  (" + std::to_string(s.strokes) + ")";
             rows.push_back({ r, static_cast<int>(i) });
         }
@@ -1845,6 +1851,15 @@ private:
     {
         if (who.empty()) return -1;
         for (size_t i = 0; i < m_slots.size(); ++i) if (m_slots[i].player == who) return static_cast<int>(i);
+        return -1;
+    }
+    // A player as a person names one: its seat, or else its label.
+    int slotNamedLocked(const std::string& who) const
+    {
+        const int i = slotOf(who);
+        if (i >= 0 || who.empty()) return i;
+        for (size_t k = 0; k < m_slots.size(); ++k)
+            if (!m_slots[k].player.empty() && labelLocked(m_slots[k].player) == who) return static_cast<int>(k);
         return -1;
     }
     std::vector<size_t> rankLocked() const

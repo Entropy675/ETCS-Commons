@@ -43,6 +43,9 @@
  *                            round's scores discarded
  *   give <who> <weapon>      (the host's) a weapon handed over outright
  *
+ * An AUTHOR is a seat: over a link, the key its link proved (shown by the
+ * label it gave, ontology/Trace.h); here, the name this runtime gave.
+ *
  * Lines apply in the trace's order, and a tick is a line, so where an input
  * falls between two ticks is the trace's to say and the same everywhere.
  * The world is Scene3D marked driven (SetDriven): no picture steps it. The
@@ -398,11 +401,11 @@ public:
         std::lock_guard<std::mutex> g(m_mu);
         return std::to_string(driversLocked()) + " " + std::to_string(m_slots.size());
     }
-    void ArrivedConcrete(const std::string& who) override { std::lock_guard<std::mutex> g(m_mu); noteLocked(who + " is here"); }
+    void ArrivedConcrete(const std::string& who) override { std::lock_guard<std::mutex> g(m_mu); noteLocked(labelLocked(who) + " is here"); }
     void DepartedConcrete(const std::string& who) override
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (who != m_owner) noteLocked(who + " left");
+        if (who != m_owner) noteLocked(labelLocked(who) + " left");
     }
 
     // ── the host's lobby and round, as lines ─────────────────────────────
@@ -436,8 +439,10 @@ public:
     bool Give(const std::string& who, const std::string& weapon)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (!m_authority) return false;
-        return takeLocked(m_me, "give " + who + " " + weapon);
+        // Named as people name them; the line names the seat.
+        const int i = slotNamedLocked(who);
+        if (!m_authority || i < 0) return false;
+        return takeLocked(m_me, "give " + m_slots[i].driver + " " + weapon);
     }
 
     /*
@@ -557,7 +562,7 @@ public:
         std::lock_guard<std::mutex> g(m_mu);
         const char* mode = m_me.empty() ? "idle" : !m_session ? "practice" : m_authority ? "host" : "guest";
         return std::to_string(m_tick) + " " + std::to_string(m_lines.size()) + " " + mode + " "
-             + (m_me.empty() ? "-" : m_me) + " " + std::to_string(slotOf(m_me)) + " " + phaseName() + " "
+             + (m_me.empty() ? "-" : labelLocked(m_me)) + " " + std::to_string(slotOf(m_me)) + " " + phaseName() + " "
              + std::to_string(secsLeft()) + " " + mapName(m_map) + " " + std::to_string(m_round_secs) + " "
              + std::to_string(m_layout);
     }
@@ -571,7 +576,7 @@ public:
         for (size_t i : rankLocked())
         {
             const Slot& s = m_slots[i];
-            out += std::to_string(i) + " " + s.driver + " " + std::to_string(elimsOf(s)) + " " + std::to_string(deathsOf(s))
+            out += std::to_string(i) + " " + labelLocked(s.driver) + " " + std::to_string(elimsOf(s)) + " " + std::to_string(deathsOf(s))
                  + " " + std::to_string(s.hp) + " " + KartArms::Name(s.weapon) + " " + std::to_string(s.ammo)
                  + " " + (s.dead_until < 0 ? "alive" : "out") + "\n";
         }
@@ -646,7 +651,7 @@ public:
     std::string Kart(const std::string& who)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        const int i = slotOf(who);
+        const int i = slotNamedLocked(who);
         Causal_* k = i < 0 ? nullptr : causal(m_slots[i].body);
         if (!k) return "-";
         const Slot& s = m_slots[i];
@@ -670,7 +675,7 @@ public:
     std::string Tyres(const std::string& who)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        const int i = slotOf(who);
+        const int i = slotNamedLocked(who);
         if (i < 0) return "-";
         const Slot& s = m_slots[i];
         std::string out;
@@ -967,7 +972,7 @@ private:
                     s.driver = author;
                     s.elims = s.deaths = s.last_elims = s.last_deaths = 0;
                     spawnLocked(i);
-                    noteLocked(author + " drives kart " + std::to_string(i + 1));
+                    noteLocked(labelLocked(author) + " drives kart " + std::to_string(i + 1));
                     if (author == m_me && !m_authority && (m_sent_t || m_sent_s || m_sent_f))
                         proposeLocked(driveLine(m_sent_t, m_sent_s, m_sent_f));
                     return true;
@@ -1014,14 +1019,14 @@ private:
             if (m_phase != Playing) return false;
             for (Slot& s : m_slots) s.elims = s.deaths = 0;   // discarded: the lobby keeps the last round completed
             lobbyLocked();
-            noteLocked(author + " abandoned the round");
+            noteLocked(labelLocked(author) + " abandoned the round");
             return true;
         }
         if (verb == "give")
         {
             std::string who, w;
             in >> who >> w;
-            const int i = slotOf(who);
+            const int i = slotNamedLocked(who);
             const uint8_t weapon = KartArms::ByName(w);
             if (i < 0 || weapon == KartArms::None) return false;
             m_slots[i].weapon = weapon; m_slots[i].ammo = KartArms::Ammo(weapon); m_slots[i].cooldown = 0;
@@ -1368,7 +1373,7 @@ private:
             const std::vector<size_t> rank = rankLocked();
             const bool clear = !rank.empty() && (rank.size() == 1
                 || m_slots[rank[0]].elims != m_slots[rank[1]].elims || m_slots[rank[0]].deaths != m_slots[rank[1]].deaths);
-            noteLocked(rank.empty() ? "the round is over" : clear ? "the round is over -- " + m_slots[rank[0]].driver + " wins"
+            noteLocked(rank.empty() ? "the round is over" : clear ? "the round is over -- " + labelLocked(m_slots[rank[0]].driver) + " wins"
                                                                  : std::string("the round is over -- a draw"));
         }
         else if (m_phase == Results && static_cast<int64_t>(m_tick) >= m_end) lobbyLocked();
@@ -2966,10 +2971,10 @@ private:
                 const Slot& s = m_slots[i];
                 char line[128];
                 if (last_round)
-                    std::snprintf(line, sizeof line, "%d. %-18s %6d %7d%s", place++, s.driver.substr(0, 18).c_str(),
+                    std::snprintf(line, sizeof line, "%d. %-18s %6d %7d%s", place++, labelLocked(s.driver).substr(0, 18).c_str(),
                                   s.last_elims, s.last_deaths, s.driver == m_me ? "  <" : "");
                 else
-                    std::snprintf(line, sizeof line, "%d. %-18s %6d %7d %5.1f%s", place++, s.driver.substr(0, 18).c_str(),
+                    std::snprintf(line, sizeof line, "%d. %-18s %6d %7d %5.1f%s", place++, labelLocked(s.driver).substr(0, 18).c_str(),
                                   s.elims, s.deaths, s.hp / 10.0, s.driver == m_me ? "  <" : "");
                 rows.push_back(line);
             }
@@ -3033,6 +3038,15 @@ private:
     {
         if (who.empty()) return -1;
         for (size_t i = 0; i < m_slots.size(); ++i) if (m_slots[i].driver == who) return static_cast<int>(i);
+        return -1;
+    }
+    // A driver as a person names one: its seat, or else its label.
+    int slotNamedLocked(const std::string& who) const
+    {
+        const int i = slotOf(who);
+        if (i >= 0 || who.empty()) return i;
+        for (size_t k = 0; k < m_slots.size(); ++k)
+            if (!m_slots[k].driver.empty() && labelLocked(m_slots[k].driver) == who) return static_cast<int>(k);
         return -1;
     }
     int mapIndex(const std::string& name) const
