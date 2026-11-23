@@ -47,9 +47,13 @@ modules/GolfProvider/scripts/golf.etcs`.
   for everyone when every ball is in, or the time runs out (anyone still out scored nine). A ball
   that falls off goes back where it was struck, a stroke added. **Lowest total wins**; the little
   board, top right, keeps it.
-- In the lobby the host sets the **course** and the **time a hole** and **starts** the round
-  (**Enter**); in a round the host can **abandon** it (**Esc**). Between rounds anyone can knock
-  a ball about on the first hole, uncounted.
+- **The lobby's menu is drawn in the canvas**: the host's **course** and **time a hole**, **your
+  ball's colour and your name** (yours, whoever you are), the first hole from above, and
+  **start** (**Enter**). The arrows and the pointer both move it; **M** (or its last button)
+  folds it away, and then anyone can knock a ball about on the first hole, uncounted. The page
+  has the same controls in HTML, and neither is where the state is: each says a line of the
+  trace (`config`, `look`, `round`), so a change made in one shows in the other, on every
+  tab. In a round the host can **abandon** it (**Esc**).
 - **The cup is round**: what a ball drops through is still a square gap (the ground is boxes),
   under a rim that covers its corners and over a round well.
 

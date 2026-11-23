@@ -33,14 +33,22 @@ howto.SetBackground(0.0, 0.0, 0.0, 0.35)
 howto.SetPadding(4)
 howto.SetOrder(11)
 
-# The lobby's menu and the round's board: sixteen rows, the menu up between
-# rounds, the board while Tab is held and in a round's results.
+# The round's board: sixteen rows, up while Tab is held and in a round's
+# results.
 run kart_board.etcs eye=eye battle=battle
 run kart_board.etcs eye=eye battle=battle
 run kart_board.etcs eye=eye battle=battle
 run kart_board.etcs eye=eye battle=battle
 
+# The lobby's menu, drawn in the canvas and centred in it: the map, the
+# length, your colour and name, and the host's start. The page's own panel
+# says the same lines, so either one moves the lobby.
+eye.spawn(RenderProvider::Menu menu)
+menu.Create(640, 430)
+menu.SetOrder(20)
+
 battle.BindWorld(@world)
 battle.BindCamera(@eye)
 battle.BindCard(@card)
 battle.BindFps(@fps)
+battle.BindMenu(@menu)

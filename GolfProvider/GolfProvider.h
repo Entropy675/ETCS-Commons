@@ -17,6 +17,8 @@ DEFINE_WORK_FUNC_TYPED(GolfMatch, BindWorld,  (ETCS::RID, rid))     { (void)ctx;
 DEFINE_WORK_FUNC_TYPED(GolfMatch, BindCamera, (ETCS::RID, rid))     { (void)ctx; self.BindCamera(rid); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, BindCard,   (ETCS::RID, rid))     { (void)ctx; self.BindCard(rid); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, BindFps,    (ETCS::RID, rid))     { (void)ctx; self.BindFps(rid); }
+// BindMenu <menu> -- the lobby, drawn: a RenderProvider::Menu over the eye.
+DEFINE_WORK_FUNC_TYPED(GolfMatch, BindMenu,   (ETCS::RID, rid))     { (void)ctx; self.BindMenu(rid); }
 // BindArrow <arrow> <shadow> -- what a pull draws, and its shadow on the ground.
 DEFINE_WORK_FUNC_TYPED(GolfMatch, BindArrow, (ETCS::RID, arrow), (ETCS::RID, shadow)) { (void)ctx; self.BindArrow(arrow, shadow); }
 // BindGhost <ring> <arrow> -- where a power will go, while the left holds it.
@@ -103,6 +105,29 @@ DEFINE_WORK_FUNC(GolfMatch, Give)
     data.reset();
     data.writeString(self.Give(who, power, how) ? "ok" : "refused");
 }
+// The lobby from anywhere: a press on the drawn menu (window pixels), or this
+// runtime's name and colour said outright (a page's controls) -- each a `look`
+// line or a setting, the same state whichever way it came in.
+DEFINE_WORK_FUNC_TYPED(GolfMatch, MenuPress, (float, x), (float, y)) { (void)ctx; self.MenuPress(x, y); }
+DEFINE_WORK_FUNC(GolfMatch, Rename)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Rename(name);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(GolfMatch, Recolour)
+{
+    (void)ctx;
+    int32_t colour = -1;
+    data >> colour;
+    const bool ok = self.Recolour(colour);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// Livery -- "<colour> <name> <palette>": this runtime's ball's colour (a place
+// in the palette), the name shown for it, and the palette as rrggbb,... ; "-" unseated.
+DEFINE_WORK_FUNC(GolfMatch, Livery)   { (void)ctx; data.reset(); data.writeString(self.Livery().c_str()); }
 
 // The hand as verbs (window pixels), a key, and a shot or a power stated outright.
 DEFINE_WORK_FUNC_TYPED(GolfMatch, Press,   (float, x), (float, y)) { (void)ctx; self.Press(x, y); }

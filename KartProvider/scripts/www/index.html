@@ -85,6 +85,10 @@
     td.key { color: var(--sel); }
     .empty { color: var(--dim); font-size: 12px; padding: 4px 0; }
     .keys { font-size: 12px; color: var(--dim); }
+    #look { display: flex; flex-wrap: wrap; gap: 4px; }
+    #look button { width: 18px; height: 18px; padding: 0; }
+    #look button.on { outline: 2px solid var(--light); outline-offset: 1px; }
+    #shown-as { font: inherit; font-size: 12px; width: 9em; background: var(--bg); color: var(--light); border: 1px solid var(--line); }
     .keys b { color: var(--light); font-weight: normal; border: 1px solid var(--line); padding: 0 5px; }
     #link { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
             font-size: 12px; color: var(--sel); cursor: pointer; }
@@ -145,6 +149,15 @@
           <button id="abandon" class="hidden" title="end this round now: back to the lobby, its scores discarded">abandon the round</button>
         </div>
         <div id="who-sets" class="keys" style="margin-top:4px"></div>
+      </section>
+
+      <section>
+        <h3>Your kart</h3>
+        <div class="row">
+          <input id="shown-as" spellcheck="false" maxlength="16" title="the name shown on your kart and the board (letters, digits, - and _)">
+          <div id="look" title="your kart's colour"></div>
+        </div>
+        <div id="look-note" class="keys" style="margin-top:4px">the canvas's menu says the same: change either</div>
       </section>
 
       <section>

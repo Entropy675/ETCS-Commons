@@ -22,7 +22,8 @@
  *
  * The page's elements, by id: status canvas shell name host leave link turn
  * seats round note scores no-scores scores-title map length reroll start
- * abandon who-sets hall no-hall bootthrob. The canvas is the runtime's (a
+ * abandon who-sets hall no-hall bootthrob, and if the game has a look (its
+ * Livery, Rename, Recolour) look shown-as look-note. The canvas is the runtime's (a
  * Window's surface); what is HTML is what a window has no DOM for.
  */
 window.EtcsSessionPage = function (cfg) {
@@ -305,6 +306,7 @@ window.EtcsSessionPage = function (cfg) {
         roundEl.textContent = v.round || '';
         roundEl.className = v.phase !== 'lobby' ? 'playing' : '';
         renderSettings(v.mode === 'host' || v.mode === 'practice', v.phase, v.next, v.secs, v.seeded);
+        phaseNow = v.phase;
         const title = $('scores-title');
         if (title) title.textContent = v.phase === 'lobby' ? 'Last round' : 'Scores';
       }
@@ -312,6 +314,7 @@ window.EtcsSessionPage = function (cfg) {
       if (note != null) noteEl.textContent = note;
       const scores = await ask('Scores', '');
       if (scores != null && scores !== shownScores) { shownScores = scores; cfg.scores(scores, api); }
+      if (lookEl) { const lv = await ask('Livery', ''); if (lv != null) renderLook(lv.trim()); }
       // Every poll, not once: a page asks before its boot has made every map.
       const maps = await ask('Maps', '');
       if (maps && maps !== shownMaps) { shownMaps = maps; renderMaps(maps); }
@@ -364,6 +367,40 @@ window.EtcsSessionPage = function (cfg) {
   startBtn.addEventListener('click', function () { if (authority) ask('StartRound', ''); canvas.focus(); });
   abandonBtn.addEventListener('click', function () { if (authority) ask('Abandon', ''); canvas.focus(); });
   rerollBtn.addEventListener('click', function () { if (authority) ask('Reroll', ''); canvas.focus(); });
+
+  /*
+   * YOUR LOOK: your colour and the name shown for you, each a `look` line of
+   * the trace -- the same line the canvas's menu says, so changing either
+   * shows in both: neither one is where the state is. Anyone seated sets
+   * their own, in the lobby only. "<colour> <name> <rrggbb,...>" or "-".
+   */
+  const lookEl = $('look'), shownAsEl = $('shown-as'), lookNoteEl = $('look-note');
+  let phaseNow = '', shownLook = '';
+  function renderLook(text) {
+    const open = phaseNow === 'lobby' && text !== '-';
+    if (text !== shownLook) {
+      shownLook = text;
+      lookEl.innerHTML = '';
+      const p = text === '-' ? [] : text.split(' ');
+      const chosen = parseInt(p[0], 10), palette = p[2] ? p[2].split(',') : [];
+      palette.forEach(function (hex, n) {
+        const b = document.createElement('button');
+        b.style.background = '#' + hex; b.className = n === chosen ? 'on' : ''; b.title = '#' + hex;
+        b.onclick = function () { ask('Recolour', String(n)); canvas.focus(); };
+        lookEl.appendChild(b);
+      });
+      if (shownAsEl && document.activeElement !== shownAsEl) shownAsEl.value = p[1] || '';
+    }
+    for (const b of lookEl.children) b.disabled = !open;
+    if (shownAsEl) shownAsEl.disabled = !open;
+    if (lookNoteEl) lookNoteEl.textContent = text === '-' ? 'take a place to choose a look'
+      : open ? 'the canvas\'s menu says the same: change either' : 'locked until the round is over';
+  }
+  if (shownAsEl) shownAsEl.addEventListener('change', function () {
+    const n = shownAsEl.value.trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 16);
+    ask('Rename', n).then(function (r) { if (r !== 'ok') log('[etcs] that name was refused\n', 'err'); shownLook = ''; });
+    canvas.focus();
+  });
   // "<name> <kind> <id> <players> <places>" per session of this kind. Mine is
   // marked; one with a place free is a join.
   function renderHall(list) {

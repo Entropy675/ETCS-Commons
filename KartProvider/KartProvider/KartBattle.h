@@ -12,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <deque>
 #include <map>
@@ -48,6 +49,10 @@
  *   give <who> <weapon> [spare|pickup]   (the host's) a weapon in hand
  *                            outright; as the spare; or as a power-up hands
  *                            one over (KartArms.h, two are carried)
+ *   look <colour|=> [<name>|=]   (in the lobby) the author's colour -- a
+ *                            place in the palette, -1 its kart's own -- and
+ *                            the name shown for it (none: its label); "="
+ *                            keeps what it has
  *
  * An AUTHOR is a seat: over a link, the key its link proved (shown by the
  * label it gave, ontology/Trace.h); here, the name this runtime gave.
@@ -138,6 +143,8 @@ public:
     // The frame counter: a label this runtime shows its pictures a second on
     // (fpsLocked). This runtime's alone, never a line.
     void BindFps(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_fps = r; m_fps_ms = 0.0; m_fps_seen = -1; }
+    // The lobby, drawn: a RenderProvider::Menu over the eye (kart_play.etcs).
+    void BindMenu(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_menu_rid = r; m_menu_sent.clear(); m_menu_lines = 0; m_menu_focus.clear(); m_menu_shown = -1; }
 
     // ── the arena: what the scripts hand over ────────────────────────────
 
@@ -473,9 +480,10 @@ public:
      * wheel's -1 and +1 (the camera's right is up x forward: +x for a kart
      * heading +z); SetInvert swaps the two keys for this runtime alone. Tab
      * holds up the board and Q and E look round the kart (lookLocked), this
-     * runtime's alone and no line of the trace. In the lobby the host's keys
-     * move the menu instead: up/down choose, left/right change, Enter
-     * changes or starts; each change is a line.
+     * runtime's alone and no line of the trace. In the lobby the keys move
+     * the menu instead (menuKeyLocked): up/down choose, left/right change,
+     * Enter starts or edits -- the host's the round's settings, everyone's
+     * their own colour and name; each change is a line.
      */
     void Key(uint16_t key, bool down)
     {
@@ -487,10 +495,10 @@ public:
             if (down) m_look_keys |= bit; else m_look_keys &= ~bit;
             return;
         }
-        if (down && m_authority && m_ready && !m_defs.empty())
+        if (down && m_ready && !m_defs.empty() && !m_me.empty())
         {
             if (m_phase == Lobby && menuKeyLocked(key)) return;
-            if (m_phase == Playing && key == 256) { takeLocked(m_me, "abandon"); return; }
+            if (m_authority && m_phase == Playing && key == 256) { takeLocked(m_me, "abandon"); return; }
         }
         int bit = key == 0 ? 5 : -1;   // no key: the held ones read again (SetInvert)
         if (key == 'W' || key == 265) bit = 0;
@@ -531,12 +539,15 @@ public:
     void Pointer(const InputEvent& ev)
     {
         std::lock_guard<std::mutex> g(m_mu);
+        const bool lobby = menuShownLocked();
         switch (ev.action)
         {
             case INPUT_BUTTON_DOWN:
+                if (lobby && ev.key == 0) { menuPressLocked(ev.x, ev.y); break; }
                 if (ev.key == kLookButton) { m_look_drag = true; m_look_x = ev.x; m_look_y = ev.y; }
                 break;
             case INPUT_MOTION:
+                if (lobby) verb(m_menu_rid, "Hover", std::to_string(ev.x) + " " + std::to_string(ev.y));
                 if (!m_look_drag) break;
                 // Let go outside the window: the platform says it is up.
                 if (input_button_state(ev, kLookButton) == 0) { m_look_drag = false; break; }
@@ -549,6 +560,43 @@ public:
             default: break;
         }
     }
+    // A press on the lobby's panel, as a verb (window pixels): what a click does.
+    void MenuPress(float x, float y)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (menuShownLocked()) menuPressLocked(static_cast<int>(x), static_cast<int>(y));
+    }
+    // This runtime's name in the battle, from the page: its `look`, in the lobby.
+    bool Rename(const std::string& name)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotOf(m_me);
+        // No name is the seat's label again.
+        if (i < 0 || m_phase != Lobby || (!name.empty() && (!validName(name) || nameTakenLocked(i, name)))) return false;
+        proposeLocked("look =" + (name.empty() ? std::string() : " " + name));
+        return true;
+    }
+    // "<colour> <name> <palette>", or "-": this runtime's look, for a page.
+    std::string Livery()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotOf(m_me);
+        if (i < 0) return "-";
+        const Slot& s = m_slots[static_cast<size_t>(i)];
+        std::string pal;
+        for (int c = 0; c < kPaletteN; ++c) pal += (c ? "," : "") + hexOf(kPalette[c]);
+        return std::to_string(s.colour >= 0 ? s.colour : i % static_cast<int>(kMaxKarts)) + " " + nameOfLocked(static_cast<size_t>(i)) + " " + pal;
+    }
+    // A colour of the palette (-1: the kart's own), for this runtime's kart, in the lobby.
+    bool Recolour(int colour)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotOf(m_me);
+        if (i < 0 || m_phase != Lobby || colour < -1 || colour >= kPaletteN) return false;
+        proposeLocked("look " + std::to_string(colour) + " =");
+        return true;
+    }
+
     // The look as a verb: this far round the kart and over it, in degrees
     // (to the picture's right, and up), as a drag would leave it.
     void Look(float yaw_deg, float pitch_deg)
@@ -596,7 +644,7 @@ public:
         for (size_t i : rankLocked())
         {
             const Slot& s = m_slots[i];
-            out += std::to_string(i) + " " + labelLocked(s.driver) + " " + std::to_string(elimsOf(s)) + " " + std::to_string(deathsOf(s))
+            out += std::to_string(i) + " " + nameOfLocked(i) + " " + std::to_string(elimsOf(s)) + " " + std::to_string(deathsOf(s))
                  + " " + std::to_string(s.hp) + " " + KartArms::Name(s.weapon) + " " + std::to_string(s.ammo)
                  + " " + (s.dead_until < 0 ? "alive" : "out") + "\n";
         }
@@ -733,6 +781,7 @@ public:
         barsLocked();
         cardLocked(dt_ms);
         boardLocked();
+        menuLocked();
         fpsLocked(dt_ms);
     }
 
@@ -769,6 +818,8 @@ private:
         ETCS::RID   bar_back = 0, bar_fill = 0;   // the HP bar: this runtime's to turn
         OrderVector pristine;                      // the rows as made: every restart starts here
         std::string driver;
+        int         colour = -1;                   // its `look`: a place in the palette, -1 its own
+        std::string name;                          // its `look`: shown for it; empty, its label
         int         thr = 0, steer = 0, fire = 0;
         int         press = 0;                     // a press of the trigger the tick has not yet seen
         Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
@@ -813,7 +864,12 @@ private:
     struct PadNodes { ETCS::RID plate = 0; ETCS::RID arrow[3] = { 0, 0, 0 }; };
     struct SpringNodes { ETCS::RID plate = 0; ETCS::RID arrow[4] = { 0, 0, 0, 0 }; };
     enum Phase { Lobby, Playing, Results };
-    enum MenuItem { MenuMap, MenuLength, MenuStart, MenuItems };
+    static constexpr int kPaletteN = 10;
+    // The palette a `look` picks from: the karts' own eight, then two more.
+    static constexpr float kPalette[kPaletteN][3] = {
+        { 0.86f, 0.18f, 0.16f }, { 0.18f, 0.42f, 0.88f }, { 0.95f, 0.80f, 0.15f }, { 0.20f, 0.70f, 0.30f },
+        { 0.95f, 0.50f, 0.10f }, { 0.60f, 0.30f, 0.80f }, { 0.20f, 0.80f, 0.85f }, { 0.92f, 0.92f, 0.90f },
+        { 0.93f, 0.40f, 0.66f }, { 0.20f, 0.20f, 0.23f } };
 
     static constexpr size_t   kMaxKarts   = 8;
     static constexpr int      kHz         = 50;
@@ -1037,6 +1093,27 @@ private:
             pitLocked(static_cast<size_t>(i));
             return true;
         }
+        if (verb == "look")
+        {
+            // The lobby's only, as the round's settings are: a kart does not
+            // change colour under fire.
+            // `look <colour|=> [<name>|=]`: each part said, or kept ("=") -- a
+            // colour and a name changed one after the other are two lines that
+            // do not undo each other. No name at all is the label again.
+            const int i = slotOf(author);
+            std::string colour, name;
+            if (i < 0 || m_phase != Lobby || !(in >> colour)) return false;
+            Slot& s = m_slots[static_cast<size_t>(i)];
+            int c = s.colour;
+            if (colour != "=") { char* end = nullptr; c = static_cast<int>(std::strtol(colour.c_str(), &end, 10)); if (!end || *end || c < -1 || c >= kPaletteN) return false; }
+            in >> name;
+            if (name == "=") name = s.name;
+            // A name is one seat's: not another's, nor another's label.
+            else if (!name.empty() && (!validName(name) || nameTakenLocked(i, name))) return false;
+            s.colour = c; s.name = name;
+            paintKartLocked(static_cast<size_t>(i));
+            return true;
+        }
         if (!host) return false;   // the rest are the host's
         if (verb == "config")
         {
@@ -1104,7 +1181,7 @@ private:
         clearWispsLocked();
         for (Burst& b : m_bursts) endBurstLocked(b);
         m_keys = 0; m_sent_t = m_sent_s = m_sent_f = 0;
-        m_eye_set = false; m_menu = MenuStart;
+        m_eye_set = false; m_menu = 0; m_editing = false;
         m_phase = Lobby; m_end = 0; m_round_secs = 180;
         m_rng = 0x9E3779B97F4A7C15ull;
         bakeFiresLocked(ETCS::EpochSeed() ^ 0xF17E5EEDull);   // the lobby's: the epoch's own
@@ -1144,6 +1221,8 @@ private:
     void pitLocked(size_t i)
     {
         m_slots[i].driver.clear();
+        m_slots[i].colour = -1; m_slots[i].name.clear();
+        paintKartLocked(i);
         parkLocked(i);
     }
     void parkLocked(size_t i)
@@ -1438,7 +1517,7 @@ private:
             const std::vector<size_t> rank = rankLocked();
             const bool clear = !rank.empty() && (rank.size() == 1
                 || m_slots[rank[0]].elims != m_slots[rank[1]].elims || m_slots[rank[0]].deaths != m_slots[rank[1]].deaths);
-            noteLocked(rank.empty() ? "the round is over" : clear ? "the round is over -- " + labelLocked(m_slots[rank[0]].driver) + " wins"
+            noteLocked(rank.empty() ? "the round is over" : clear ? "the round is over -- " + nameOfLocked(rank[0]) + " wins"
                                                                  : std::string("the round is over -- a draw"));
         }
         else if (m_phase == Results && static_cast<int64_t>(m_tick) >= m_end) lobbyLocked();
@@ -3349,7 +3428,7 @@ private:
                 + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.out_ticks) + " " + std::to_string(s.dagger) + " " + std::to_string(s.kx.raw) + " "
                 + std::to_string(s.kz.raw) + " " + std::to_string(s.elims) + " "
                 + std::to_string(s.deaths) + " " + std::to_string(s.last_elims) + " " + std::to_string(s.last_deaths) + " "
-                + std::to_string(s.dead_until) + " " + std::to_string(s.ram_safe);
+                + std::to_string(s.dead_until) + " " + std::to_string(s.ram_safe) + " " + std::to_string(s.colour) + " " + s.name;
             if (Causal_* k = causal(s.body))
             {
                 std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
@@ -3595,33 +3674,196 @@ private:
         verb(m_card, "SetText", t);
     }
 
-    // The lobby menu, under the host's keys: up/down choose, left/right
-    // change, Enter changes or starts. True when the key was the menu's.
+    /*
+     * THE LOBBY, DRAWN (RenderProvider::Menu). What is on it is said as lines
+     * each frame and only the lines that changed are sent: the next round's
+     * map and length (the host's to move), your kart's colour and your name
+     * (yours), start, a new layout for a map made from a seed, the map from
+     * above, and the drivers with their last round. The keys and the pointer
+     * both move it; every change it makes is a line.
+     */
+    std::vector<std::string> menuItemsLocked() const
+    {
+        std::vector<std::string> items;
+        const bool seated = slotOf(m_me) >= 0;
+        if (m_authority) { items.push_back("map"); items.push_back("length"); }
+        if (seated) { items.push_back("colour"); items.push_back("name"); }
+        if (m_authority)
+        {
+            items.push_back("start");
+            if (!m_defs.empty() && m_defs[m_map].generated) items.push_back("reroll");
+        }
+        return items;
+    }
+    bool menuShownLocked() const { return m_menu_rid && m_phase == Lobby && !m_me.empty() && m_ready; }
+
+    // A key in the lobby: true when it was the menu's.
     bool menuKeyLocked(uint16_t key)
     {
+        if (m_editing)
+        {
+            if (key == 257 || key == 335) { m_editing = false; if (validName(m_edit)) restyleLocked(-2, m_edit); return true; }
+            if (key == 256) { m_editing = false; return true; }
+            if (key == 259) { if (!m_edit.empty()) m_edit.pop_back(); return true; }
+            char c = 0;
+            if (key >= 'A' && key <= 'Z') c = static_cast<char>(key - 'A' + 'a');
+            else if ((key >= '0' && key <= '9') || key == '-') c = static_cast<char>(key);
+            if (c && m_edit.size() < kNameMax) m_edit += c;
+            return true;   // typing drives nothing
+        }
+        const std::vector<std::string> items = menuItemsLocked();
+        if (items.empty()) return false;
         const bool up = key == 265 || key == 'W', down = key == 264 || key == 'S';
         const bool left = key == 263 || key == 'A', right = key == 262 || key == 'D';
         const bool enter = key == 257 || key == 335;
-        if (up)   { m_menu = (m_menu + MenuItems - 1) % MenuItems; return true; }
-        if (down) { m_menu = (m_menu + 1) % MenuItems; return true; }
+        const int n = static_cast<int>(items.size());
+        m_menu = ((m_menu % n) + n) % n;
+        if (up)   { m_menu = (m_menu + n - 1) % n; return true; }
+        if (down) { m_menu = (m_menu + 1) % n; return true; }
         if (!left && !right && !enter) return false;
-        const int dir = left ? -1 : 1;
-        if (m_menu == MenuStart) { if (enter) roundLocked(); return true; }
-        if (m_menu == MenuMap)
-        {
-            // Enter on a map made from a seed: the same map, a new seed.
-            const int n = static_cast<int>(m_defs.size());
-            const int next = enter && m_defs[m_map].generated ? m_map : ((m_map + dir) % n + n) % n;
-            configLocked(next, m_round_secs, true);
-            return true;
-        }
-        static const uint32_t lengths[] = { 60, 120, 180, 300 };
-        int at = 0;
-        for (int l = 0; l < 4; ++l) if (lengths[l] <= m_round_secs) at = l;
-        at = (at + dir + 4) % 4;
-        configLocked(m_map, lengths[at], false);
+        const std::string& at = items[static_cast<size_t>(m_menu)];
+        if (at == "start" || at == "reroll" || at == "name") { if (enter) menuActLocked(at, "press", 0); return true; }
+        if (at == "colour") { menuActLocked(at, left ? "prev" : "next", 0); return true; }
+        // Enter on a map made from a seed: the same map, a new seed.
+        if (at == "map" && enter && m_defs[m_map].generated) { menuActLocked("reroll", "press", 0); return true; }
+        menuActLocked(at, left ? "prev" : "next", 0);
         return true;
     }
+    // A press at (x, y) of the window: what the menu says it is on.
+    void menuPressLocked(int x, int y)
+    {
+        ETCS::Buffer a("Menu.Point"), d((std::to_string(x) + " " + std::to_string(y)).c_str());
+        try { if (ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), m_menu_rid)) e->call(a, d); }
+        catch (...) { return; }
+        std::istringstream in(d.toString());
+        std::string id, part;
+        int n = 0;
+        in >> id >> part >> n;
+        if (m_editing && id != "name") { m_editing = false; if (validName(m_edit)) restyleLocked(-2, m_edit); }
+        if (id.empty() || id == "-" || id == "+") return;   // off the panel, or on nothing of it
+        const std::vector<std::string> items = menuItemsLocked();
+        for (size_t k = 0; k < items.size(); ++k) if (items[k] == id) m_menu = static_cast<int>(k);
+        menuActLocked(id, part, n);
+    }
+    void menuActLocked(const std::string& id, const std::string& part, int n)
+    {
+        const int dir = part == "prev" ? -1 : 1;
+        if (id == "colour")
+        {
+            const int i = slotOf(m_me);
+            if (i < 0) return;
+            int c = m_slots[static_cast<size_t>(i)].colour;
+            if (c < 0) c = i % kMaxKarts;
+            c = part == "swatch" ? n : ((c + dir) % kPaletteN + kPaletteN) % kPaletteN;
+            restyleLocked(c, std::string());
+            return;
+        }
+        if (id == "name") { const int i = slotOf(m_me); if (i >= 0) { m_editing = true; m_edit = nameOfLocked(static_cast<size_t>(i)); } return; }
+        if (!m_authority) return;
+        if (id == "start") { roundLocked(); return; }
+        if (id == "reroll") { if (m_defs[m_map].generated) configLocked(m_map, m_round_secs, true); return; }
+        if (id == "map")
+        {
+            const int count = static_cast<int>(m_defs.size());
+            configLocked(((m_map + dir) % count + count) % count, m_round_secs, true);
+            return;
+        }
+        if (id == "length")
+        {
+            static const uint32_t lengths[] = { 60, 120, 180, 300 };
+            int at = 0;
+            for (int l = 0; l < 4; ++l) if (lengths[l] <= m_round_secs) at = l;
+            at = (at + dir + 4) % 4;
+            configLocked(m_map, lengths[at], false);
+        }
+    }
+    // This runtime's `look`: -2 keeps the colour it has, an empty name the name.
+    void restyleLocked(int colour, const std::string& name)
+    {
+        if (slotOf(m_me) < 0) return;
+        proposeLocked("look " + (colour == -2 ? std::string("=") : std::to_string(colour)) + " " + (name.empty() ? std::string("=") : name));
+    }
+
+    void menuLocked()
+    {
+        if (!m_menu_rid) return;
+        const int show = menuShownLocked() ? 1 : 0;
+        if (show != m_menu_shown) { verb(m_menu_rid, "SetHidden", show ? "0" : "1"); m_menu_shown = show; if (!show) m_editing = false; }
+        if (!show) return;
+        std::vector<std::string> L;
+        const bool host = m_authority;
+        const int me = slotOf(m_me);
+        L.push_back("title|LOBBY");
+        L.push_back("sub|" + (m_session ? labelLocked(m_owner) + "'s battle" : std::string("practice")) + " -- next round");
+        L.push_back("choice|map|map|" + mapName(m_map) + (m_layout ? "  #" + std::to_string(m_layout % 10000) : std::string()) + "|" + (host ? "1" : "0"));
+        L.push_back("choice|length|length|" + clock(static_cast<int64_t>(m_round_secs) * kHz) + "|" + (host ? "1" : "0"));
+        if (me >= 0)
+        {
+            const Slot& s = m_slots[static_cast<size_t>(me)];
+            std::string sw;
+            for (int c = 0; c < kPaletteN; ++c) sw += (c ? "," : "") + hexOf(kPalette[c]);
+            L.push_back("swatches|colour|colour|" + std::to_string(s.colour >= 0 ? s.colour : me % kMaxKarts) + "|" + sw + "|1");
+            L.push_back("field|name|name|" + (m_editing ? m_edit : nameOfLocked(static_cast<size_t>(me))) + "|1|" + (m_editing ? "1" : "0"));
+        }
+        L.push_back(host ? std::string("button|start|start the round|1|1") : "button|start|" + labelLocked(m_owner) + " starts the round|0|0");
+        if (host && !m_defs.empty() && m_defs[m_map].generated) L.push_back("button|reroll|new layout|1|0");
+        // The table is twenty letters wide beside the map: K for eliminations, D for deaths.
+        L.push_back("head|driver        K   D");
+        for (size_t i : rankLocked())
+        {
+            const Slot& s = m_slots[i];
+            char line[96];
+            std::snprintf(line, sizeof line, "%-11s %3d %3d", nameOfLocked(i).substr(0, 11).c_str(), s.last_elims, s.last_deaths);
+            L.push_back("row|" + hexOf(colourOfLocked(i)) + "|" + line);
+        }
+        L.push_back(std::string("hint|") + (m_editing ? "type a name  Enter keeps it  Esc drops it"
+                                            : host ? "arrows move it  Enter starts  or click"
+                                                   : "arrows: your colour and name  or click"));
+        previewLocked(L);
+        // Only what changed goes over.
+        if (m_menu_sent.size() > L.size()) m_menu_sent.resize(L.size());
+        for (size_t k = 0; k < L.size(); ++k)
+        {
+            if (k < m_menu_sent.size() && m_menu_sent[k] == L[k]) continue;
+            verb(m_menu_rid, "SetLine", std::to_string(k) + " " + L[k]);
+            if (k < m_menu_sent.size()) m_menu_sent[k] = L[k]; else m_menu_sent.push_back(L[k]);
+        }
+        if (m_menu_lines != L.size()) { verb(m_menu_rid, "SetLines", std::to_string(L.size())); m_menu_lines = L.size(); }
+        const std::vector<std::string> items = menuItemsLocked();
+        const std::string focus = items.empty() ? "-" : items[static_cast<size_t>(((m_menu % static_cast<int>(items.size())) + static_cast<int>(items.size())) % static_cast<int>(items.size()))];
+        if (focus != m_menu_focus) { verb(m_menu_rid, "Focus", focus); m_menu_focus = focus; }
+    }
+    // The map in play from above: its ground, what stands on it, its pads,
+    // springs and boxes, and where karts start.
+    void previewLocked(std::vector<std::string>& L) const
+    {
+        const KartArena::Map& m = m_live;
+        const float h = KartArena::Half().ToFloat();
+        auto f1 = [](float v) { char b[16]; std::snprintf(b, sizeof b, "%.1f", v); return std::string(b); };
+        auto rect = [&](float x, float z, float w, float d, const char* c) { L.push_back("rect|" + f1(x) + "|" + f1(z) + "|" + f1(w) + "|" + f1(d) + "|" + c); };
+        auto disc = [&](float x, float z, float r, const char* c) { L.push_back("disc|" + f1(x) + "|" + f1(z) + "|" + f1(r) + "|" + c); };
+        L.push_back("preview|" + f1(-h) + "|" + f1(-h) + "|" + f1(h) + "|" + f1(h));
+        rect(0, 0, 2 * h, 2 * h, "3a4a35");
+        for (const auto& p : m.pits) rect(p.x.ToFloat(), p.z.ToFloat(), p.w.ToFloat(), p.d.ToFloat(), p.lava ? "f25c14" : "22281f");
+        for (const auto& k : m.hills) disc(k.x.ToFloat(), k.z.ToFloat(), k.radius.ToFloat(), "56684a");
+        for (const auto& r : m.ramps)
+        {
+            const bool across = (((r.yaw % 180) + 180) % 180) == 90;
+            const float len = r.length().ToFloat(), wid = r.width.ToFloat();
+            rect(r.x.ToFloat(), r.z.ToFloat(), across ? len : wid, across ? wid : len, "8a8f6a");
+        }
+        for (const auto& d : m.decks) rect(d.x.ToFloat(), d.z.ToFloat(), d.w.ToFloat(), d.d.ToFloat(), "6e7f99");
+        for (const auto& b : m.blocks)
+        {
+            const bool across = (((b.yaw % 180) + 180) % 180) == 90;
+            rect(b.x.ToFloat(), b.z.ToFloat(), (across ? b.d : b.w).ToFloat(), (across ? b.w : b.d).ToFloat(), "b4ad97");
+        }
+        for (const auto& p : m.pads) disc(p.x.ToFloat(), p.z.ToFloat(), 2.0f, "2f8fd0");
+        for (const auto& p : m.springs) disc(p.x.ToFloat(), p.z.ToFloat(), 2.0f, "c04fa0");
+        for (const auto& p : m.pickups) disc(p.x.ToFloat(), p.z.ToFloat(), 1.6f, "f2cc26");
+        for (const auto& p : m.spawns) disc(p.x.ToFloat(), p.z.ToFloat(), 1.8f, "f0e3c7");
+    }
+
     /*
      * THE MENU AND THE BOARD on the camera's rows. In the lobby, the menu --
      * every runtime's, only the host's moved -- with the drivers and the last
@@ -3642,29 +3884,15 @@ private:
                 const Slot& s = m_slots[i];
                 char line[128];
                 if (last_round)
-                    std::snprintf(line, sizeof line, "%d. %-18s %6d %7d%s", place++, labelLocked(s.driver).substr(0, 18).c_str(),
+                    std::snprintf(line, sizeof line, "%d. %-18s %6d %7d%s", place++, nameOfLocked(i).substr(0, 18).c_str(),
                                   s.last_elims, s.last_deaths, s.driver == m_me ? "  <" : "");
                 else
-                    std::snprintf(line, sizeof line, "%d. %-18s %6d %7d %5.1f%s", place++, labelLocked(s.driver).substr(0, 18).c_str(),
+                    std::snprintf(line, sizeof line, "%d. %-18s %6d %7d %5.1f%s", place++, nameOfLocked(i).substr(0, 18).c_str(),
                                   s.elims, s.deaths, s.hp / 10.0, s.driver == m_me ? "  <" : "");
                 rows.push_back(line);
             }
         };
-        if (m_phase == Lobby && !m_me.empty())
-        {
-            auto item = [&](int at, const std::string& text) { return (m_authority && m_menu == at ? "> " : "  ") + text; };
-            rows.push_back("LOBBY  --  " + (m_session ? m_owner + "'s battle" : std::string("practice")));
-            rows.push_back(item(MenuMap, "map      <  " + mapName(m_map) + (m_layout ? "  #" + std::to_string(m_layout % 10000) : std::string()) + "  >"));
-            rows.push_back(item(MenuLength, "length   <  " + clock(static_cast<int64_t>(m_round_secs) * kHz) + "  >"));
-            rows.push_back(item(MenuStart, "[ start the round ]"));
-            rows.push_back(" ");
-            char head[96];
-            std::snprintf(head, sizeof head, "   %-18s %6s %7s   %s", "driver", "elims", "deaths", "(last round)");
-            rows.push_back(head);
-            ranked(true);
-            rows.push_back(" ");
-            rows.push_back(m_authority ? "[up/down] choose  [left/right] change  [Enter] start" : m_owner + " sets the next round");
-        }
+        if (m_phase == Lobby) {}   // the lobby is the menu's (menuLocked)
         else if (m_phase != Lobby && (m_board_held || m_phase == Results))
         {
             rows.push_back(m_phase == Playing ? "ROUND  " + clock(m_end - static_cast<int64_t>(m_tick)) + " left  --  " + mapName(m_map)
@@ -3711,13 +3939,51 @@ private:
         for (size_t i = 0; i < m_slots.size(); ++i) if (m_slots[i].driver == who) return static_cast<int>(i);
         return -1;
     }
+    // What a driver is called: its `look`'s name, or its seat's label.
+    std::string nameOfLocked(size_t i) const
+    {
+        const Slot& s = m_slots[i];
+        return s.name.empty() ? labelLocked(s.driver) : s.name;
+    }
+    const float* colourOfLocked(size_t i) const
+    {
+        const Slot& s = m_slots[i];
+        return s.colour >= 0 && s.colour < kPaletteN ? kPalette[s.colour] : kColors[i % kMaxKarts];
+    }
+    void paintKartLocked(size_t i)
+    {
+        const float* c = colourOfLocked(i);
+        verb(m_slots[i].body, "SetColor", f4(c[0], c[1], c[2], 1.0f));
+    }
+    static std::string hexOf(const float* c)
+    {
+        char b[8];
+        auto by = [](float v) { return static_cast<int>(std::lround(std::min(1.0f, std::max(0.0f, v)) * 255.0f)); };
+        std::snprintf(b, sizeof b, "%02x%02x%02x", by(c[0]), by(c[1]), by(c[2]));
+        return b;
+    }
+    static constexpr size_t kNameMax = 16;
+    // A name a `look` may give: letters, digits, - and _, at most kNameMax.
+    static bool validName(const std::string& n)
+    {
+        if (n.empty() || n.size() > kNameMax) return false;
+        for (char c : n)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+        return true;
+    }
+    bool nameTakenLocked(int mine, const std::string& n) const
+    {
+        for (size_t k = 0; k < m_slots.size(); ++k)
+            if (static_cast<int>(k) != mine && !m_slots[k].driver.empty() && (m_slots[k].name == n || labelLocked(m_slots[k].driver) == n)) return true;
+        return false;
+    }
     // A driver as a person names one: its seat, or else its label.
     int slotNamedLocked(const std::string& who) const
     {
         const int i = slotOf(who);
         if (i >= 0 || who.empty()) return i;
         for (size_t k = 0; k < m_slots.size(); ++k)
-            if (!m_slots[k].driver.empty() && labelLocked(m_slots[k].driver) == who) return static_cast<int>(k);
+            if (!m_slots[k].driver.empty() && (labelLocked(m_slots[k].driver) == who || m_slots[k].name == who)) return static_cast<int>(k);
         return -1;
     }
     int mapIndex(const std::string& name) const
@@ -3823,7 +4089,14 @@ private:
     unsigned m_keys = 0;
     bool     m_invert = false;   // this runtime's wheel keys swapped (SetInvert)
     int      m_sent_t = 0, m_sent_s = 0, m_sent_f = 0;
-    int      m_menu = MenuStart;
+    int      m_menu = 0;                        // the menu's focus: a place in menuItemsLocked()
+    bool     m_editing = false;                 // the name field has the keys
+    std::string m_edit;                         // what is typed into it, before Enter
+    ETCS::RID m_menu_rid = 0;
+    std::vector<std::string> m_menu_sent;       // the lines the menu has, as last sent
+    size_t   m_menu_lines = 0;
+    std::string m_menu_focus;
+    int      m_menu_shown = -1;
     bool     m_board_held = false;
     float    m_eye[3] = { 0.0f, 0.0f, 0.0f }, m_at[3] = { 0.0f, 0.0f, 0.0f };
     bool     m_eye_set = false;

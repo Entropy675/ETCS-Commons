@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <map>
 #include <mutex>
@@ -133,6 +134,8 @@ public:
         }
     }
     void BindCamera(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_camera = r; m_follow = true; m_sky_said.clear(); skyLocked(); }
+    // The lobby, drawn: a RenderProvider::Menu over the eye (menuLocked).
+    void BindMenu(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_menu_rid = r; m_menu_sent.clear(); m_menu_lines = 0; m_menu_focus.clear(); m_menu_shown = -1; }
     void BindCard(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_card = r; m_card_text.clear(); }
     void BindFps(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_fps = r; m_fps_ms = 0.0; m_fps_seen = -1; }
     // The arrow a pull draws, and its shadow on the ground under it.
@@ -387,6 +390,9 @@ public:
         std::lock_guard<std::mutex> g(m_mu);
         if (key == 258) { m_board_held = down; return; }
         if (!down) return;
+        // The lobby's menu has the keys while it is up (and a name being
+        // typed has them all); M folds it away to knock a ball about.
+        if (m_phase == Lobby && m_menu_rid && !m_me.empty() && m_ready && menuKeyLocked(key)) return;
         if (key == 'E' || key == 'e')
         {
             const int i = slotOf(m_me);
@@ -412,6 +418,8 @@ public:
                 // The right button looks round, with the left held or not.
                 if (ev.key == kLookButton) { m_right = true; m_last_x = x; m_last_y = y; break; }
                 if (ev.key != 0 || m_mode != Idle) break;
+                // A press on the menu is the menu's: nothing behind it is pulled or turned.
+                if (menuShownLocked() && menuPressLocked(static_cast<int>(x), static_cast<int>(y))) { m_mode = Down; break; }
                 m_last_x = x; m_last_y = y;
                 m_pull_len = Fixed::Zero();
                 if (m_armed && heldPowerLocked() != GolfPowers::None) { m_mode = Placing; ghostLocked(x, y); }
@@ -434,6 +442,7 @@ public:
                 }
                 if (m_mode == Pulling) pullLocked(x, y);
                 else if (m_mode == Placing) ghostLocked(x, y);
+                else if (m_mode == Idle && menuShownLocked()) verb(m_menu_rid, "Hover", std::to_string(static_cast<int>(x)) + ", " + std::to_string(static_cast<int>(y)));
                 m_last_x = x; m_last_y = y;
                 break;
             }
@@ -466,6 +475,42 @@ public:
     void RightPress(float x, float y)   { Pointer(event(INPUT_BUTTON_DOWN, kLookButton, x, y)); }
     void RightRelease(float x, float y) { Pointer(event(INPUT_BUTTON_UP, kLookButton, x, y)); }
     void Wheel(float notches)           { Pointer(event(INPUT_SCROLL, 0, 0.0f, notches)); }
+    // The lobby from anywhere: a press on the drawn menu (window pixels), or
+    // this runtime's name and colour said outright (a page's controls) --
+    // each a `look` line or a setting, the same state whichever way it came.
+    void MenuPress(float x, float y)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (menuShownLocked()) menuPressLocked(static_cast<int>(x), static_cast<int>(y));
+    }
+    bool Rename(const std::string& name)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotOf(m_me);
+        // No name is the seat's label again.
+        if (i < 0 || m_phase != Lobby || (!name.empty() && (!validName(name) || nameTakenLocked(i, name)))) return false;
+        proposeLocked("look =" + (name.empty() ? std::string() : " " + name));
+        return true;
+    }
+    bool Recolour(int colour)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotOf(m_me);
+        if (i < 0 || m_phase != Lobby || colour < -1 || colour >= kPaletteN) return false;
+        proposeLocked("look " + std::to_string(colour) + " =");
+        return true;
+    }
+    // "<colour> <name> <palette>", or "-": this runtime's look, for a page.
+    std::string Livery()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotOf(m_me);
+        if (i < 0) return "-";
+        const Slot& s = m_slots[static_cast<size_t>(i)];
+        std::string pal;
+        for (int c = 0; c < kPaletteN; ++c) pal += (c ? "," : "") + hexOf(kPalette[c]);
+        return std::to_string(s.colour >= 0 ? s.colour : i % static_cast<int>(kMaxBalls)) + " " + nameOfLocked(static_cast<size_t>(i)) + " " + pal;
+    }
     // A shot or a power stated outright, as this runtime's line: what the
     // pointer's release says, for a test or a script.
     void Shoot(float x, float y, float z)
@@ -510,7 +555,7 @@ public:
         for (size_t i : rankLocked())
         {
             const Slot& s = m_slots[i];
-            out += std::to_string(i) + " " + labelLocked(s.player) + " " + std::to_string(s.total) + " " + std::to_string(s.strokes) + " "
+            out += std::to_string(i) + " " + nameOfLocked(i) + " " + std::to_string(s.total) + " " + std::to_string(s.strokes) + " "
                  + (s.holed ? "holed" : s.done ? "out" : "playing") + " " + GolfPowers::Name(s.power) + "\n";
         }
         return out;
@@ -582,6 +627,7 @@ public:
         shadowsLocked();
         cardLocked(dt_ms);
         boardLocked();
+        menuLocked();
         fpsLocked(dt_ms);
     }
 
@@ -594,6 +640,8 @@ private:
         ETCS::RID   ball = 0, shadow = 0;
         OrderVector pristine;                 // the rows as made: a ball put anywhere starts from these
         std::string player;
+        int         colour = -1;              // its `look`: a place in the palette, -1 its own
+        std::string name;                     // its `look`: shown for it; empty, its label
         int         strokes = 0, total = 0;   // on this hole; over the holes done
         int         last_total = -1;          // the last round completed's, for the lobby's board
         bool        holed = false, done = false, out = true;   // out: off the course (parked)
@@ -636,6 +684,12 @@ private:
     static constexpr const float kColors[kMaxBalls][3] = {
         { 0.97f, 0.97f, 0.95f }, { 0.95f, 0.30f, 0.25f }, { 0.25f, 0.55f, 0.95f }, { 0.98f, 0.82f, 0.20f },
         { 0.65f, 0.35f, 0.90f }, { 0.25f, 0.85f, 0.55f }, { 0.98f, 0.55f, 0.15f }, { 0.20f, 0.20f, 0.22f } };
+    // The palette a `look` picks from: the balls' own eight, then two more.
+    static constexpr int kPaletteN = 10;
+    static constexpr const float kPalette[kPaletteN][3] = {
+        { 0.97f, 0.97f, 0.95f }, { 0.95f, 0.30f, 0.25f }, { 0.25f, 0.55f, 0.95f }, { 0.98f, 0.82f, 0.20f },
+        { 0.65f, 0.35f, 0.90f }, { 0.25f, 0.85f, 0.55f }, { 0.98f, 0.55f, 0.15f }, { 0.20f, 0.20f, 0.22f },
+        { 0.96f, 0.52f, 0.72f }, { 0.15f, 0.75f, 0.78f } };
 
     static Fixed F(int64_t n, int64_t d = 1) { return Fixed::FromInt(n) / Fixed::FromInt(d); }
     static Fixed dt()          { return F(1, kHz); }
@@ -750,7 +804,29 @@ private:
             Slot& s = m_slots[i];
             s.player.clear(); s.strokes = s.total = 0; s.last_total = -1; s.power = s.spare = GolfPowers::None;
             s.holed = s.done = false;
+            s.colour = -1; s.name.clear();
+            paintBallLocked(static_cast<size_t>(i));
             parkBallLocked(static_cast<size_t>(i));
+            return true;
+        }
+        if (verb == "look")
+        {
+            // Each player's own, and the lobby's only, as the round's
+            // settings are: `look <colour|=> [<name>|=]`, a colour of the
+            // palette (-1 the ball's own) and a name no other player has --
+            // each said, or kept ("="), so a colour and a name changed one
+            // after the other do not undo each other. No name is the label.
+            const int i = slotOf(author);
+            std::string colour, name;
+            if (i < 0 || m_phase != Lobby || !(in >> colour)) return false;
+            Slot& s = m_slots[static_cast<size_t>(i)];
+            int c = s.colour;
+            if (colour != "=") { char* end = nullptr; c = static_cast<int>(std::strtol(colour.c_str(), &end, 10)); if (!end || *end || c < -1 || c >= kPaletteN) return false; }
+            in >> name;
+            if (name == "=") name = s.name;
+            else if (!name.empty() && (!validName(name) || nameTakenLocked(i, name))) return false;
+            s.colour = c; s.name = name;
+            paintBallLocked(static_cast<size_t>(i));
             return true;
         }
         if (!host) return false;   // the rest are the host's
@@ -809,11 +885,14 @@ private:
         {
             Slot& s = m_slots[i];
             s.player.clear(); s.strokes = s.total = 0; s.last_total = -1; s.power = s.spare = GolfPowers::None; s.holed = s.done = false;
+            s.colour = -1; s.name.clear();
+            paintBallLocked(i);
             parkBallLocked(i);
         }
         m_phase = Lobby; m_end = 0; m_hole_secs = 120;
         m_rng = 0x9E3779B97F4A7C15ull;
         m_armed = false; m_mode = Idle; m_right = false;
+        m_menu = 0; m_editing = false; m_menu_open = true;
         hideArrowLocked(); hideGhostLocked();
         if (!m_defs.empty() && m_ready) { courseLocked(0, firstLayout(0)); holeLocked(0); }
     }
@@ -823,6 +902,7 @@ private:
     {
         m_phase = Lobby;
         m_end = 0;
+        m_menu_open = true;
         holeLocked(0);
     }
     void courseLocked(int c, uint64_t layout)
@@ -1000,7 +1080,7 @@ private:
         if (m_phase == Playing) { s.strokes = strokes; s.total += strokes; }
         s.park_at = static_cast<int64_t>(m_tick) + kParkAfter;
         if (m_phase == Playing)
-            noteLocked(labelLocked(s.player) + (holed ? " holed in " + std::to_string(strokes) : " is out: " + std::to_string(strokes)));
+            noteLocked(nameOfLocked(i) + (holed ? " holed in " + std::to_string(strokes) : " is out: " + std::to_string(strokes)));
     }
 
     // ── one tick ────────────────────────────────────────────────────────
@@ -1138,7 +1218,7 @@ private:
             const Fixed fx = s.fx, fy = s.fy, fz = s.fz;
             putBallLocked(i, fx, fy, fz);
             if (m_phase == Playing) ++s.strokes;
-            noteLocked(labelLocked(s.player) + "'s ball is lost: +1");
+            noteLocked(nameOfLocked(i) + "'s ball is lost: +1");
             return;
         }
         if (m_phase == Playing && s.strokes >= kCap && restingLocked(static_cast<int>(i))) { finishLocked(i, kCap + 1, false); return; }
@@ -1193,7 +1273,7 @@ private:
                 for (Slot& s : m_slots) s.last_total = s.player.empty() ? -1 : s.total;
                 const std::vector<size_t> rank = rankLocked();
                 const bool clear = !rank.empty() && (rank.size() == 1 || m_slots[rank[0]].total != m_slots[rank[1]].total);
-                noteLocked(rank.empty() ? "the round is over" : clear ? "the round is over -- " + labelLocked(m_slots[rank[0]].player) + " wins with " + std::to_string(m_slots[rank[0]].total)
+                noteLocked(rank.empty() ? "the round is over" : clear ? "the round is over -- " + nameOfLocked(rank[0]) + " wins with " + std::to_string(m_slots[rank[0]].total)
                                                                      : std::string("the round is over -- a tie"));
             }
         }
@@ -1284,7 +1364,7 @@ private:
                 break;
             }
         }
-        noteLocked(labelLocked(s.player) + " put down a " + GolfPowers::Name(kind));
+        noteLocked(nameOfLocked(i) + " put down a " + GolfPowers::Name(kind));
         s.power = s.spare; s.spare = GolfPowers::None;   // used: the spare comes to hand
         return true;
     }
@@ -1916,6 +1996,208 @@ private:
         m_card_text = t;
         verb(m_card, "SetText", t);
     }
+    /*
+     * THE LOBBY'S MENU, drawn in the canvas (RenderProvider::Menu, bound by
+     * golf_play.etcs): the next round's course and how long a hole has (the
+     * host's to move), your ball's colour and your name (yours), start, a new
+     * course for one made from a seed, the first hole from above, and the
+     * players with their last round. Said to the widget as lines, rebuilt
+     * each frame, only those that changed sent. The keys and the pointer both
+     * move it and every change it makes is a line of the trace -- the page's
+     * own controls say the same lines, so either moves the other. Folded away
+     * (M, or its last button) the course is all there to knock a ball about.
+     */
+    std::vector<std::string> menuItemsLocked() const
+    {
+        std::vector<std::string> items;
+        const bool seated = slotOf(m_me) >= 0;
+        if (m_authority) { items.push_back("course"); items.push_back("length"); }
+        if (seated) { items.push_back("colour"); items.push_back("name"); }
+        if (m_authority)
+        {
+            items.push_back("start");
+            if (!m_defs.empty() && m_defs[m_course].generated) items.push_back("reroll");
+        }
+        items.push_back("fold");
+        return items;
+    }
+    bool menuShownLocked() const { return m_menu_rid && m_menu_open && m_phase == Lobby && !m_me.empty() && m_ready; }
+    // A key in the lobby: true when it was the menu's.
+    bool menuKeyLocked(uint16_t key)
+    {
+        if (m_editing)
+        {
+            if (key == 257 || key == 335) { m_editing = false; if (validName(m_edit)) restyleLocked(-2, m_edit); return true; }
+            if (key == 256) { m_editing = false; return true; }
+            if (key == 259) { if (!m_edit.empty()) m_edit.pop_back(); return true; }
+            char c = 0;
+            if (key >= 'A' && key <= 'Z') c = static_cast<char>(key - 'A' + 'a');
+            else if ((key >= '0' && key <= '9') || key == '-') c = static_cast<char>(key);
+            if (c && m_edit.size() < kNameMax) m_edit += c;
+            return true;   // typing arms nothing
+        }
+        if (key == 'M') { m_menu_open = !m_menu_open; return true; }
+        if (!m_menu_open) return false;
+        const std::vector<std::string> items = menuItemsLocked();
+        const bool up = key == 265 || key == 'W', down = key == 264 || key == 'S';
+        const bool left = key == 263 || key == 'A', right = key == 262 || key == 'D';
+        const bool enter = key == 257 || key == 335;
+        const int n = static_cast<int>(items.size());
+        m_menu = ((m_menu % n) + n) % n;
+        if (up)   { m_menu = (m_menu + n - 1) % n; return true; }
+        if (down) { m_menu = (m_menu + 1) % n; return true; }
+        if (!left && !right && !enter) return false;
+        const std::string& at = items[static_cast<size_t>(m_menu)];
+        if (at == "start" || at == "reroll" || at == "name" || at == "fold") { if (enter) menuActLocked(at, "press", 0); return true; }
+        // Enter anywhere else is the host's start, as it is with the menu folded.
+        if (enter) { menuActLocked("start", "press", 0); return true; }
+        menuActLocked(at, left ? "prev" : "next", 0);
+        return true;
+    }
+    // A press at (x, y) of the window: true when it was on the menu's panel.
+    bool menuPressLocked(int x, int y)
+    {
+        ETCS::Buffer a("Menu.Point"), d((std::to_string(x) + " " + std::to_string(y)).c_str());
+        try { if (ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), m_menu_rid)) e->call(a, d); }
+        catch (...) { return false; }
+        std::istringstream in(d.toString());
+        std::string id, part;
+        int n = 0;
+        in >> id >> part >> n;
+        if (id.empty() || id == "-") return false;   // off the panel
+        if (m_editing && id != "name") { m_editing = false; if (validName(m_edit)) restyleLocked(-2, m_edit); }
+        if (id == "+") return true;                  // on it, on nothing of it
+        const std::vector<std::string> items = menuItemsLocked();
+        for (size_t k = 0; k < items.size(); ++k) if (items[k] == id) m_menu = static_cast<int>(k);
+        menuActLocked(id, part, n);
+        return true;
+    }
+    void menuActLocked(const std::string& id, const std::string& part, int n)
+    {
+        const int dir = part == "prev" ? -1 : 1;
+        if (id == "fold") { m_menu_open = false; return; }
+        if (id == "colour")
+        {
+            const int i = slotOf(m_me);
+            if (i < 0) return;
+            int c = m_slots[static_cast<size_t>(i)].colour;
+            if (c < 0) c = i % static_cast<int>(kMaxBalls);
+            c = part == "swatch" ? n : ((c + dir) % kPaletteN + kPaletteN) % kPaletteN;
+            restyleLocked(c, std::string());
+            return;
+        }
+        if (id == "name") { const int i = slotOf(m_me); if (i >= 0) { m_editing = true; m_edit = nameOfLocked(static_cast<size_t>(i)); } return; }
+        if (!m_authority) return;
+        if (id == "start") { takeLocked(m_me, "round " + std::to_string(rollLocked())); return; }
+        if (id == "reroll") { if (m_defs[m_course].generated) configLocked(m_course, m_hole_secs, true); return; }
+        if (id == "course")
+        {
+            const int count = static_cast<int>(m_defs.size());
+            configLocked(((m_course + dir) % count + count) % count, m_hole_secs, true);
+            return;
+        }
+        if (id == "length")
+        {
+            static const uint32_t lengths[] = { 60, 120, 180, 300 };
+            int at = 0;
+            for (int l = 0; l < 4; ++l) if (lengths[l] <= m_hole_secs) at = l;
+            configLocked(m_course, lengths[(at + dir + 4) % 4], false);
+        }
+    }
+    // This runtime's `look`: -2 keeps the colour it has, an empty name the name.
+    void restyleLocked(int colour, const std::string& name)
+    {
+        if (slotOf(m_me) < 0) return;
+        proposeLocked("look " + (colour == -2 ? std::string("=") : std::to_string(colour)) + " " + (name.empty() ? std::string("=") : name));
+    }
+    void menuLocked()
+    {
+        if (!m_menu_rid) return;
+        const int show = menuShownLocked() ? 1 : 0;
+        if (show != m_menu_shown) { verb(m_menu_rid, "SetHidden", show ? "0" : "1"); m_menu_shown = show; if (!show) m_editing = false; }
+        if (!show) return;
+        std::vector<std::string> L;
+        const bool host = m_authority;
+        const int me = slotOf(m_me);
+        L.push_back("title|LOBBY");
+        L.push_back("sub|" + (m_session ? labelLocked(m_owner) + "'s match" : std::string("practice")) + " -- next round");
+        L.push_back("choice|course|course|" + courseName(m_course) + (m_layout ? "  #" + std::to_string(m_layout % 10000) : std::string()) + "|" + (host ? "1" : "0"));
+        L.push_back("choice|length|a hole|" + clock(static_cast<int64_t>(m_hole_secs) * kHz) + "|" + (host ? "1" : "0"));
+        if (me >= 0)
+        {
+            const Slot& s = m_slots[static_cast<size_t>(me)];
+            std::string sw;
+            for (int c = 0; c < kPaletteN; ++c) sw += (c ? "," : "") + hexOf(kPalette[c]);
+            L.push_back("swatches|colour|colour|" + std::to_string(s.colour >= 0 ? s.colour : me % static_cast<int>(kMaxBalls)) + "|" + sw + "|1");
+            L.push_back("field|name|name|" + (m_editing ? m_edit : nameOfLocked(static_cast<size_t>(me))) + "|1|" + (m_editing ? "1" : "0"));
+        }
+        L.push_back(host ? std::string("button|start|start the round|1|1") : "button|start|" + labelLocked(m_owner) + " starts the round|0|0");
+        if (host && !m_defs.empty() && m_defs[m_course].generated) L.push_back("button|reroll|new course|1|0");
+        L.push_back("button|fold|knock a ball about|1|0");
+        L.push_back("head|player        last");
+        for (size_t i : rankLocked())
+        {
+            const Slot& s = m_slots[i];
+            char line[96];
+            std::snprintf(line, sizeof line, "%-12s %5s", nameOfLocked(i).substr(0, 12).c_str(),
+                          s.last_total < 0 ? "-" : std::to_string(s.last_total).c_str());
+            L.push_back("row|" + hexOf(colourOfLocked(i)) + "|" + line);
+        }
+        L.push_back(std::string("hint|") + (m_editing ? "type a name  Enter keeps it  Esc drops it"
+                                            : host ? "arrows move it  Enter starts  M folds  or click"
+                                                   : "arrows: your colour and name  M folds  or click"));
+        previewLocked(L);
+        // Only what changed goes over.
+        if (m_menu_sent.size() > L.size()) m_menu_sent.resize(L.size());
+        for (size_t k = 0; k < L.size(); ++k)
+        {
+            if (k < m_menu_sent.size() && m_menu_sent[k] == L[k]) continue;
+            verb(m_menu_rid, "SetLine", std::to_string(k) + " " + L[k]);
+            if (k < m_menu_sent.size()) m_menu_sent[k] = L[k]; else m_menu_sent.push_back(L[k]);
+        }
+        if (m_menu_lines != L.size()) { verb(m_menu_rid, "SetLines", std::to_string(L.size())); m_menu_lines = L.size(); }
+        const std::vector<std::string> items = menuItemsLocked();
+        const int n = static_cast<int>(items.size());
+        const std::string focus = items[static_cast<size_t>(((m_menu % n) + n) % n)];
+        if (focus != m_menu_focus) { verb(m_menu_rid, "Focus", focus); m_menu_focus = focus; }
+    }
+    // The hole out from above, in the course's own colours: its ground and
+    // walls (a turned one by its middle and its size, unturned), its sand,
+    // the tee, the cup, pads, springs and spots.
+    void previewLocked(std::vector<std::string>& L) const
+    {
+        const GolfCourse::Hole& h = m_play;
+        if (h.slabs.empty()) return;
+        float x0 = 1e9f, x1 = -1e9f, z0 = 1e9f, z1 = -1e9f;
+        for (const auto& b : h.slabs)
+        {
+            const bool across = b.ys.Abs() > F(7, 10);   // turned about a quarter: its width runs along z
+            const float w = (across ? b.d : b.w).ToFloat() * 0.5f, d = (across ? b.w : b.d).ToFloat() * 0.5f;
+            x0 = std::min(x0, b.x.ToFloat() - w); x1 = std::max(x1, b.x.ToFloat() + w);
+            z0 = std::min(z0, b.z.ToFloat() - d); z1 = std::max(z1, b.z.ToFloat() + d);
+        }
+        // Square, about its middle: the picture is.
+        const float half = std::max(x1 - x0, z1 - z0) * 0.5f + 1.0f, mx = (x0 + x1) * 0.5f, mz = (z0 + z1) * 0.5f;
+        auto f1 = [](float v) { char b[16]; std::snprintf(b, sizeof b, "%.1f", v); return std::string(b); };
+        L.push_back("preview|" + f1(mx - half) + "|" + f1(mz - half) + "|" + f1(mx + half) + "|" + f1(mz + half));
+        const GolfCourse::Theme& t = m_live.theme;
+        L.push_back("rect|" + f1(mx) + "|" + f1(mz) + "|" + f1(2 * half) + "|" + f1(2 * half) + "|" + hexOf(t.sky));
+        for (int kind : { GolfCourse::Green, GolfCourse::Sand, GolfCourse::Wall })
+            for (const auto& b : h.slabs)
+            {
+                if (b.kind != kind) continue;
+                const bool across = b.ys.Abs() > F(7, 10);
+                L.push_back("rect|" + f1(b.x.ToFloat()) + "|" + f1(b.z.ToFloat()) + "|" + f1((across ? b.d : b.w).ToFloat()) + "|" + f1((across ? b.w : b.d).ToFloat()) + "|"
+                            + hexOf(kind == GolfCourse::Wall ? t.wall : kind == GolfCourse::Sand ? t.sand : t.turf));
+            }
+        auto disc = [&](Fixed x, Fixed z, float r, const char* c) { L.push_back("disc|" + f1(x.ToFloat()) + "|" + f1(z.ToFloat()) + "|" + f1(r) + "|" + c); };
+        for (const auto& p : h.pads)    disc(p.x, p.z, 1.2f, "2f8fd0");
+        for (const auto& p : h.springs) disc(p.x, p.z, 1.2f, "c04fa0");
+        for (const auto& p : h.pickups) disc(p.x, p.z, 1.0f, "f2cc26");
+        disc(h.tee_x, h.tee_z, 1.2f, "f0e3c7");
+        if (h.cup) disc(h.cup_x, h.cup_z, 1.2f, "101014");
+    }
+
     // The little board, top right: everyone's total, best first, in their
     // ball's colour -- this round's, or in the lobby the last one completed.
     void boardLocked()
@@ -1927,7 +2209,7 @@ private:
             const Slot& s = m_slots[i];
             const int total = last ? s.last_total : s.total;
             if (last && total < 0) continue;
-            std::string r = labelLocked(s.player) + "  " + std::to_string(total);
+            std::string r = nameOfLocked(i) + "  " + std::to_string(total);
             if (!last) r += s.holed ? "  (in)" : s.done ? "  (out)" : "  (" + std::to_string(s.strokes) + ")";
             rows.push_back({ r, static_cast<int>(i) });
         }
@@ -1938,7 +2220,7 @@ private:
             const std::string text = show ? std::to_string(n + 1) + ". " + rows[n].first : std::string();
             if (show && text != b.text)
             {
-                const float* c = kColors[rows[n].second % kMaxBalls];
+                const float* c = colourOfLocked(static_cast<size_t>(rows[n].second));
                 verb(b.rid, "SetText", text);
                 verb(b.rid, "SetColor", f4(0.55f + 0.45f * c[0], 0.55f + 0.45f * c[1], 0.55f + 0.45f * c[2], 1.0f));
                 b.text = text;
@@ -1969,7 +2251,7 @@ private:
         {
             st += "|" + s.player + " " + std::to_string(s.strokes) + " " + std::to_string(s.total) + " " + std::to_string(s.holed) + std::to_string(s.done)
                 + std::to_string(s.out) + " " + std::to_string(s.park_at) + " " + std::to_string(s.power) + " " + std::to_string(s.spare) + " "
-                + std::to_string(s.fx.raw) + " "
+                + std::to_string(s.colour) + " " + s.name + " " + std::to_string(s.fx.raw) + " "
                 + std::to_string(s.fy.raw) + " " + std::to_string(s.fz.raw);
             if (Causal_* k = causal(s.ball))
             {
@@ -2041,8 +2323,46 @@ private:
         const int i = slotOf(who);
         if (i >= 0 || who.empty()) return i;
         for (size_t k = 0; k < m_slots.size(); ++k)
-            if (!m_slots[k].player.empty() && labelLocked(m_slots[k].player) == who) return static_cast<int>(k);
+            if (!m_slots[k].player.empty() && (labelLocked(m_slots[k].player) == who || m_slots[k].name == who)) return static_cast<int>(k);
         return -1;
+    }
+    // A player as shown: the name its `look` gave, or else its seat's label.
+    std::string nameOfLocked(size_t i) const
+    {
+        const Slot& s = m_slots[i];
+        return s.name.empty() ? labelLocked(s.player) : s.name;
+    }
+    const float* colourOfLocked(size_t i) const
+    {
+        const Slot& s = m_slots[i];
+        return s.colour >= 0 && s.colour < kPaletteN ? kPalette[s.colour] : kColors[i % kMaxBalls];
+    }
+    void paintBallLocked(size_t i)
+    {
+        const float* c = colourOfLocked(i);
+        verb(m_slots[i].ball, "SetColor", f4(c[0], c[1], c[2], 1.0f));
+    }
+    static std::string hexOf(const float* c)
+    {
+        char b[8];
+        auto by = [](float v) { return static_cast<int>(std::lround(std::min(1.0f, std::max(0.0f, v)) * 255.0f)); };
+        std::snprintf(b, sizeof b, "%02x%02x%02x", by(c[0]), by(c[1]), by(c[2]));
+        return b;
+    }
+    static constexpr size_t kNameMax = 16;
+    // A name a `look` may give: letters, digits, - and _, at most kNameMax.
+    static bool validName(const std::string& n)
+    {
+        if (n.empty() || n.size() > kNameMax) return false;
+        for (char c : n)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+        return true;
+    }
+    bool nameTakenLocked(int mine, const std::string& n) const
+    {
+        for (size_t k = 0; k < m_slots.size(); ++k)
+            if (static_cast<int>(k) != mine && !m_slots[k].player.empty() && (m_slots[k].name == n || labelLocked(m_slots[k].player) == n)) return true;
+        return false;
     }
     std::vector<size_t> rankLocked() const
     {
@@ -2150,6 +2470,13 @@ private:
     std::string m_card_text;
     double   m_fps_ms = 0.0;
     int64_t  m_fps_seen = -1;
+    // The lobby's menu: where it is, what is being typed, and what its widget was last told.
+    ETCS::RID m_menu_rid = 0;
+    int      m_menu = 0, m_menu_shown = -1;
+    bool     m_menu_open = true, m_editing = false;
+    std::string m_edit, m_menu_focus;
+    std::vector<std::string> m_menu_sent;
+    size_t   m_menu_lines = 0;
 };
 
 #endif // GOLFPROVIDER_GOLFMATCH_H__

@@ -20,6 +20,8 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, BindCamera, (ETCS::RID, rid))    { (void)ctx;
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCard,   (ETCS::RID, rid))    { (void)ctx; self.BindCard(rid); }
 // BindFps <label> -- the frame counter: this runtime's pictures a second, said on the label.
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindFps,    (ETCS::RID, rid))    { (void)ctx; self.BindFps(rid); }
+// BindMenu <menu> -- the lobby, drawn: a RenderProvider::Menu over the eye.
+DEFINE_WORK_FUNC_TYPED(KartBattle, BindMenu,   (ETCS::RID, rid))    { (void)ctx; self.BindMenu(rid); }
 // AddKart <body> <fr> <fl> <rr> <rl> <bar back> <bar fill> -- a kart of the
 // pool, its four wheels (the right ones first, as the picture shows them)
 // and its HP bar.
@@ -210,6 +212,29 @@ DEFINE_WORK_FUNC(KartBattle, Tyres)     { (void)ctx; std::string who; data >> wh
 // Run <ticks> -- the authority's clock by hand: stepped and kept.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Run, (uint32_t, ticks)) { (void)ctx; self.Run(ticks); }
 DEFINE_WORK_FUNC(KartBattle, Note)      { (void)ctx; data.reset(); data.writeString(self.Note().c_str()); }
+// The lobby from anywhere: a press on the drawn menu (window pixels), or this
+// runtime's name and colour said outright (a page's controls) -- each a `look`
+// line or a setting, the same state whichever way it came in.
+DEFINE_WORK_FUNC_TYPED(KartBattle, MenuPress, (float, x), (float, y)) { (void)ctx; self.MenuPress(x, y); }
+DEFINE_WORK_FUNC(KartBattle, Rename)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const bool ok = self.Rename(name);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, Recolour)
+{
+    (void)ctx;
+    int32_t colour = -1;
+    data >> colour;
+    const bool ok = self.Recolour(colour);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// Livery -- "<colour> <name> <palette>": this runtime's kart's colour (a place
+// in the palette), the name shown for it, and the palette as rrggbb,... ; "-" unseated.
+DEFINE_WORK_FUNC(KartBattle, Livery)    { (void)ctx; data.reset(); data.writeString(self.Livery().c_str()); }
 // Who is here: whose stream into or out of this battle is open, one a line.
 // LastBurst -- "<tree> <turn degrees> <bends> <steps> <cut> <cut unbent>": the latest burst's tree, the ground's
 // bends of it, its steps cut, and how many the same turn would have lost unbent.

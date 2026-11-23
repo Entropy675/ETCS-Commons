@@ -3,7 +3,7 @@
 // Every tag here is BASIC except Scene3D, whose input edge is a stream
 // consumer (see its block). Surface included: its frame pump is a work function
 // a script detaches, not a stream pair -- see the Surface block below.
-ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D Mesh TextLabel Throbber")
+ETCS_MODULE_EXPORT_MAIN(RenderProvider, "Instance Device Surface ImageSurface PolygonDrawable2D CompositeDrawable2D Scene3D Camera3D Mesh TextLabel Throbber Menu")
 
 // The GPU -- Vulkan natively, WebGPU in a browser. Spawn one, Create it, and
 // name it from a Device under whatever should use it.
@@ -101,3 +101,8 @@ ETCS_TAG_BLOCK_BASIC(TextLabel,
 ETCS_TAG_BLOCK_BASIC(Throbber,
     Create, SetSize, SetStep, SetDots, SetColors, SetTextColor, SetText, SetPlate,
     SetPosition, SetOrder, SetHidden, Watch, CenterOn, Delete)
+
+// A lobby's panel of controls, drawn (Menu.h): fed line by line, asked where a
+// press landed.
+ETCS_TAG_BLOCK_BASIC(Menu,
+    Create, SetLine, SetLines, Focus, Hover, Point, SetPosition, SetOrder, SetHidden, Delete)

@@ -1652,4 +1652,40 @@ DEFINE_WORK_FUNC(Throbber, Delete)
     self.DeleteConcrete();
 }
 
+/*
+ * ── Menu ───────────────────────────────────────────────────────────────────
+ *
+ * A panel of controls a game draws its lobby with (Menu.h has the lines it
+ * reads). Create <w> <h>, then SetLine <n> <text> for each line that changed
+ * and SetLines <count>; Focus <id> and Hover <x> <y> are drawn; Point <x> <y>
+ * answers "<id> <part>" or "-". Centred in its parent unless SetPosition says
+ * otherwise; SetHidden is the switch.
+ */
+DEFINE_WORK_FUNC_TYPED(Menu, Create, (uint32_t, w), (uint32_t, h)) { (void)ctx; self.Create(w, h); }
+DEFINE_WORK_FUNC(Menu, SetLine)
+{
+    (void)ctx;
+    uint32_t n = 0;
+    data >> n;
+    std::string rest = data.restAsString();
+    if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+    self.SetLine(n, rest);
+}
+DEFINE_WORK_FUNC_TYPED(Menu, SetLines, (uint32_t, count)) { (void)ctx; self.SetLines(count); }
+DEFINE_WORK_FUNC(Menu, Focus) { (void)ctx; std::string id; data >> id; self.Focus(id == "-" ? std::string() : id); }
+DEFINE_WORK_FUNC_TYPED(Menu, Hover, (int32_t, x), (int32_t, y)) { (void)ctx; self.Hover(x, y); }
+DEFINE_WORK_FUNC(Menu, Point)
+{
+    (void)ctx;
+    int32_t x = 0, y = 0;
+    data >> x >> y;
+    const std::string hit = self.Point(x, y);
+    data.reset();
+    data.writeString(hit.c_str());
+}
+DEFINE_WORK_FUNC_TYPED(Menu, SetPosition, (int32_t, x), (int32_t, y)) { (void)ctx; self.SetPosition(x, y); }
+DEFINE_WORK_FUNC_TYPED(Menu, SetOrder, (int32_t, z)) { (void)ctx; self.SetOrder(z); }
+DEFINE_WORK_FUNC_TYPED(Menu, SetHidden, (int32_t, hidden)) { (void)ctx; self.SetHidden(hidden != 0); }
+DEFINE_WORK_FUNC(Menu, Delete) { (void)data; (void)ctx; self.DeleteConcrete(); }
+
 #endif

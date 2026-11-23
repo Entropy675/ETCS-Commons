@@ -57,9 +57,14 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 - **A kart at nothing is eliminated**: one to whoever did it, one against the kart, which is back
   three seconds later at the spawn furthest from everyone, whole and unarmed.
 - **Between rounds is the lobby.** The karts wait parked at their spawns and the arena shows the
-  lobby's menu: the next round's map and length, the drivers and the last round's scores. The host
-  moves it with the arrows (up/down choose, left/right change) and starts the round with
-  **Enter**, or uses the page's own controls; a guest sees every change and cannot make one.
+  lobby's menu, drawn in the canvas: the next round's map and length (the host's), **your
+  kart's colour and your name** (yours, whoever you are), the map from above, the drivers and
+  the last round's scores. The arrows move it (up/down choose, left/right change, **Enter**
+  starts or edits) and so does the pointer -- click a swatch, a chevron, the name to type one.
+  The page has the same controls in HTML, and neither is where the state is: each says a line
+  of the trace (`config`, `look`, `round`), so a change made in one shows in the other, and on
+  every tab. A guest sees the host's settings change and cannot change them; a colour or a
+  name is its owner's, in the lobby only.
 - **A round's settings are locked** until it is over: the clock runs out (the results stand for
   six seconds, then the lobby, which keeps them), or the host **abandons** it (**Esc**, or the
   page's button) -- back to the lobby, its scores discarded.
