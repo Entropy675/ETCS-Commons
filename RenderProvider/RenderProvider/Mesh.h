@@ -3,8 +3,10 @@
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
+#include "../../../ontology/Noise.h"
 #include "DeviceFrame.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -187,6 +189,74 @@ public:
         ++m_version;
     }
 
+    /*
+     * BENT COPIES. Two kinds of push, summed at each vertex, said before a
+     * copy and spent by it:
+     *
+     *   a WARP   Perlin's noise in each axis (ontology/Noise.h: a Warp
+     *            with Perlin in its slot, as the state's), the field
+     *            the mesh's points sit in once turned by (ts, tc) about +y
+     *            and scaled by `scale` -- its frequency `freq` there, its
+     *            push `amp` times the point's distance from (0, 0, 0):
+     *            nothing at the middle, most at the ends, so all of a
+     *            shape curves rather than a part of it
+     *   a BEND   a smooth push by (dx, dy, dz) at (cx, cy, cz), fading to
+     *            nothing `r` away -- (1 - d^2/r^2)^2 of it at a distance d --
+     *            and held off the middle: within `hold` of (0, 0, 0) it is
+     *            scaled down to nothing there
+     *
+     * CopyBent makes this mesh a copy of another put through them. A shape made once and shared stays as made; each bent copy of it
+     * is its own, so one shape bent to many places costs a copy each, not a
+     * remake (KartBattle's fire: a tree baked once a round, bent to the
+     * walls round every burst). The normals are the source's: a bend is
+     * gentle, and a glow's soft edge does not need them exact.
+     */
+    static constexpr size_t kMaxBends = 16;
+    void Bend(float cx, float cy, float cz, float dx, float dy, float dz, float r, float hold)
+    {
+        if (m_bends.size() < kMaxBends && r > 0.0f) m_bends.push_back({ { cx, cy, cz }, { dx, dy, dz }, r, hold });
+    }
+    void Warp(uint32_t seed, float freq, float amp, float scale, float ts, float tc)
+    {
+        m_warp = { { seed, freq, amp }, scale > 0.0f ? scale : 1.0f, ts, tc, true };
+    }
+    bool CopyBent(const Mesh& src)
+    {
+        std::vector<float> v = src.m_vertices;
+        for (size_t i = 0; i + 5 < v.size(); i += 6)
+        {
+            float* p = &v[i];
+            const float out = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+            float push[3] = { 0.0f, 0.0f, 0.0f };
+            if (m_warp.on)
+            {
+                // Into the field's frame: scaled, and turned +z onto (ts, tc).
+                const WarpBy& w = m_warp;
+                const float x = p[0] * w.scale, y = p[1] * w.scale, z = p[2] * w.scale;
+                const float fx = x * w.tc + z * w.ts, fz = z * w.tc - x * w.ts;
+                float nx = 0.0f, ny = 0.0f, nz = 0.0f;
+                w.field.Push(fx, y, fz, nx, ny, nz);
+                // ...and back.
+                push[0] += (nx * w.tc - nz * w.ts) / w.scale; push[1] += ny / w.scale; push[2] += (nz * w.tc + nx * w.ts) / w.scale;
+            }
+            for (const BendAt& b : m_bends)
+            {
+                const float ex = p[0] - b.c[0], ey = p[1] - b.c[1], ez = p[2] - b.c[2];
+                const float q = (ex * ex + ey * ey + ez * ez) / (b.r * b.r);
+                if (q >= 1.0f) continue;
+                const float w = (1.0f - q) * (1.0f - q) * (b.hold > 0.0f ? std::min(1.0f, out / b.hold) : 1.0f);
+                for (int k = 0; k < 3; ++k) push[k] += b.d[k] * w;
+            }
+            for (int k = 0; k < 3; ++k) p[k] += push[k];
+        }
+        m_vertices.swap(v);
+        m_indices = src.m_indices;
+        m_bends.clear();
+        m_warp.on = false;
+        ++m_version;
+        return true;
+    }
+
     // The geometry as it is kept, for a rasteriser on the host
     // (Scene3D::rasterMesh): the same interleaved floats Fill sends.
     const std::vector<float>&    Vertices() const { return m_vertices; }
@@ -219,8 +289,14 @@ private:
         else                                     m_indices.insert(m_indices.end(), { a, c, b });
     }
 
+    struct BendAt { float c[3], d[3], r, hold; };
+    // The noise in the warp's slot is Perlin's: the one a game's state was
+    // warped with (KartBattle's fire), so the copy is what was decided.
+    struct WarpBy { ETCS::Noise::Warp<ETCS::Noise::Perlin, float> field; float scale = 1.0f, ts = 0.0f, tc = 1.0f; bool on = false; };
     std::vector<float>    m_vertices;
     std::vector<uint32_t> m_indices;
+    std::vector<BendAt>   m_bends;      // said, not yet spent by a copy
+    WarpBy                m_warp;       // ...and the warp, likewise
     uint64_t              m_version = 0;
 };
 

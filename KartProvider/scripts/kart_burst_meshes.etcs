@@ -1,0 +1,14 @@
+#!/usr/bin/env etcs
+# Three bursts' worth of their shells' own meshes: nine (kart_burst_mesh.etcs).
+#   run kart_burst_meshes.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+run kart_burst_mesh.etcs world=world battle=battle
+run kart_burst_mesh.etcs world=world battle=battle
+run kart_burst_mesh.etcs world=world battle=battle
+run kart_burst_mesh.etcs world=world battle=battle
+run kart_burst_mesh.etcs world=world battle=battle
+run kart_burst_mesh.etcs world=world battle=battle
+run kart_burst_mesh.etcs world=world battle=battle
+run kart_burst_mesh.etcs world=world battle=battle
+run kart_burst_mesh.etcs world=world battle=battle

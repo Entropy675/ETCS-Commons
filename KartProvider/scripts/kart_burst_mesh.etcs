@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# One of the bursts' own meshes, empty: when a burst goes off, the battle has
+# its tree's mesh for this shell copied into it, bent to the ground round the
+# burst (Mesh.Bend, Mesh.CopyBent -- KartBattle.h, a burst), and the shell is
+# drawn with it. A child of the world, since a shape is named by where it is
+# (Scene3D::SetMesh).
+#   run kart_burst_mesh.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Mesh bent)
+bent.Create()
+battle.AddBurstMesh(@bent)

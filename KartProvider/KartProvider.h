@@ -93,8 +93,12 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddDomeNode, (ETCS::RID, node))       { (void
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickupNode, (ETCS::RID, node))     { (void)ctx; self.AddPickupNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddShotNode, (ETCS::RID, node))       { (void)ctx; self.AddShotNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlastNode, (ETCS::RID, node))      { (void)ctx; self.AddBlastNode(node); }
-// AddSparkNode <node> -- a spark of the bursts' fire: a glowing streak the battle lays along a branch.
+// AddSparkNode <node> -- a shell of a burst's fire: glowing, given its tree's (bent) mesh and turned as the tree is by the battle.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSparkNode, (ETCS::RID, node))      { (void)ctx; self.AddSparkNode(node); }
+// AddFireMesh <mesh> -- the next of the fire's meshes, empty: the battle bakes a part of one of its trees into it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddFireMesh, (ETCS::RID, mesh))       { (void)ctx; self.AddFireMesh(mesh); }
+// AddBurstMesh <mesh> -- the next of a burst's shells' own meshes, empty: its tree, bent to the ground round it, is copied in.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddBurstMesh, (ETCS::RID, mesh))      { (void)ctx; self.AddBurstMesh(mesh); }
 // AddSmokeNode <node> -- a puff of the bursts' smoke: see-through, swelled, raised and thinned by the battle.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSmokeNode, (ETCS::RID, node))      { (void)ctx; self.AddSmokeNode(node); }
 // AddFxNode <node> -- one of the weapons' effects: a ball, a wisp of a homing rocket's smoke or a slick of oil as the battle dresses it.
@@ -207,6 +211,9 @@ DEFINE_WORK_FUNC(KartBattle, Tyres)     { (void)ctx; std::string who; data >> wh
 DEFINE_WORK_FUNC_TYPED(KartBattle, Run, (uint32_t, ticks)) { (void)ctx; self.Run(ticks); }
 DEFINE_WORK_FUNC(KartBattle, Note)      { (void)ctx; data.reset(); data.writeString(self.Note().c_str()); }
 // Who is here: whose stream into or out of this battle is open, one a line.
+// LastBurst -- "<tree> <turn degrees> <bends> <steps> <cut> <cut unbent>": the latest burst's tree, the ground's
+// bends of it, its steps cut, and how many the same turn would have lost unbent.
+DEFINE_WORK_FUNC(KartBattle, LastBurst) { (void)ctx; data.reset(); data.writeString(self.LastBurst().c_str()); }
 DEFINE_WORK_FUNC(KartBattle, Here)      { (void)ctx; data.reset(); data.writeString(self.Here().c_str()); }
 DEFINE_WORK_FUNC(KartBattle, Delete)    { (void)ctx; (void)data; data.writeString(self.Delete() ? "deleted" : "FAILED"); }
 

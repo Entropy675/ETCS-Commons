@@ -1358,7 +1358,8 @@ DEFINE_WORK_FUNC_TYPED(Mesh, AddVertex, (float, x), (float, y), (float, z),
                        (float, nx), (float, ny), (float, nz))
 {
     (void)ctx;
-    ETCS_LOG("Mesh::AddVertex", "index " << self.AddVertex(x, y, z, nx, ny, nz));
+    // Not logged: a game bakes shapes while it runs, thousands of vertices at a time.
+    self.AddVertex(x, y, z, nx, ny, nz);
 }
 
 DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_t, c))
@@ -1367,6 +1368,28 @@ DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_
     if (!self.AddTriangle(a, b, c))
         ETCS_LOG("Mesh::AddTriangle", "(" << a << "," << b << "," << c << ") names a vertex past "
                  << self.VertexCount());
+}
+
+// Bend <cx> <cy> <cz> <dx> <dy> <dz> <r> <hold> -- a smooth push for the next CopyBent (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, Bend, (float, cx), (float, cy), (float, cz), (float, dx), (float, dy), (float, dz), (float, r), (float, hold))
+{
+    (void)ctx;
+    self.Bend(cx, cy, cz, dx, dy, dz, r, hold);
+}
+// Warp <seed> <freq> <amp> <scale> <ts> <tc> -- Perlin's noise in each axis for the next CopyBent (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, Warp, (uint32_t, seed), (float, freq), (float, amp), (float, scale), (float, ts), (float, tc))
+{
+    (void)ctx;
+    self.Warp(seed, freq, amp, scale, ts, tc);
+}
+// CopyBent <mesh> -- this mesh made a copy of that one, through the warp and the bends said since the last.
+DEFINE_WORK_FUNC_TYPED(Mesh, CopyBent, (ETCS::RID, src))
+{
+    (void)ctx;
+    ETCS::Entity* e = src ? ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), src) : nullptr;
+    Mesh* m = e && e->getSourceTag() == ETCS::Buffer("Mesh") ? dynamic_cast<Mesh*>(e) : nullptr;
+    if (!m) { ETCS_LOG("Mesh::CopyBent", "RID:" << src << " does not resolve as a Mesh."); return; }
+    self.CopyBent(*m);
 }
 
 DEFINE_WORK_FUNC(Mesh, Delete)

@@ -1,0 +1,12 @@
+#!/usr/bin/env etcs
+# One of the fire's meshes, empty: the battle bakes into it a part of one of
+# its trees of fire -- a tree's hottest steps, its middling, or its ends -- and
+# a burst's shell is drawn with it (KartBattle.h, a burst). Remade when the
+# trees are: a session's opening, and each round. A child of the world, since
+# a shape is named by where it is (Scene3D::SetMesh).
+#   run kart_fire_mesh.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Mesh fire)
+fire.Create()
+battle.AddFireMesh(@fire)

@@ -3,10 +3,13 @@
 
 #include "../../../core_defs.h"
 #include "../../../ontology.h"
+#include "../../../ontology/Noise.h"
+#include "../../../ontology/Epoch.h"
 #include "KartArms.h"
 #include "KartArena.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -315,6 +318,12 @@ public:
     void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); parkNode(r); }
     void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); parkNode(r); }
     void AddSparkNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_spark_nodes.push_back(r); parkNode(r); }
+    // The next of the fire's meshes, empty: the trees are baked into it (meshFireLocked).
+    void AddFireMesh(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_fire_meshes.push_back(r); meshFireLocked(m_fire_meshes.size() - 1); }
+    // The next shell's own mesh, empty: a burst's tree, bent to its ground, is copied into it (bentCopyLocked).
+    void AddBurstMesh(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_burst_meshes.push_back(r); }
+    // "<tree> <turn degrees> <bends> <steps> <cut> <cut unbent>": the latest burst's tree, for a test.
+    std::string LastBurst()         { std::lock_guard<std::mutex> g(m_mu); return m_last_burst.empty() ? std::string("-") : m_last_burst; }
     void AddSmokeNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_smoke_nodes.push_back(r); parkNode(r); }
     // The weapons' effects (fxLocked's comment): a ball each, and a ring with the mesh this battle bakes for it.
     void AddFxNode(ETCS::RID r)     { std::lock_guard<std::mutex> g(m_mu); m_fx_nodes.push_back(r); m_fx_busy.push_back(false); parkNode(r); }
@@ -1035,6 +1044,7 @@ private:
             uint64_t seed = 0;
             if (m_phase != Lobby || !(in >> seed) || !seed) return false;
             m_rng = seed;
+            bakeFiresLocked(seed ^ ETCS::EpochSeed());   // fresh fire for the round
             mapLocked(m_map, m_layout);   // the boxes out afresh, the shots gone
             for (Slot& s : m_slots) s.elims = s.deaths = 0;
             m_phase = Playing;
@@ -1084,6 +1094,7 @@ private:
         m_eye_set = false; m_menu = MenuStart;
         m_phase = Lobby; m_end = 0; m_round_secs = 180;
         m_rng = 0x9E3779B97F4A7C15ull;
+        bakeFiresLocked(ETCS::EpochSeed() ^ 0xF17E5EEDull);   // the lobby's: the epoch's own
         if (!m_defs.empty()) mapLocked(0, firstLayout(0));
     }
     // A map made from a seed, out before anyone chose a seed: one from its place.
@@ -1918,7 +1929,7 @@ private:
                         // Met a wall or the ground: it bursts on the side it came from, not inside.
                         if (hit < 0 && (wall || ground)) { s.x = was_x; s.y = was_y; s.z = was_z; }
                         if (s.kind == RocketShot)    burstLocked(s.x, s.y, s.z, F(4), 40, s.owner);
-                        else if (s.kind == BombShot) burstLocked(s.x, s.y, s.z, F(45, 10), 40, s.owner);
+                        else if (s.kind == BombShot) burstLocked(s.x, s.y, s.z, F(45, 10), 40, s.owner, 1);
                         else if (s.kind == HomingShot) burstLocked(s.x, s.y, s.z, F(3), 30, s.owner);
                         else if (hit >= 0)           damageLocked(static_cast<size_t>(hit), s.owner, s.kind == Pellet ? 10 : 4);
                     }
@@ -2164,35 +2175,54 @@ private:
     }
 
     /*
-     * A BURST IS A TREE OF FIRE, and the tree is what hurts. From the burst's
-     * point a dozen branches go out -- round it, a little up to well up --
-     * each in steps of a fifth of the burst's reach, turning a little at
-     * every step, forking now and then (less the further out), and carrying
-     * an energy that starts at the reach and is spent by what it goes
-     * through: air costs a unit of energy a unit of way; the ground and a
-     * deck's slab cost 8, a wall or a block 12. Before a step into anything
-     * denser than air a branch tries to go round it -- turned to either side,
-     * up, down -- and only goes in when nothing round it is open, so fire
-     * pours round a block and over a ramp's lip rather than through them.
+     * A BURST IS A TREE OF FIRE, and the tree is what hurts -- and the trees
+     * are BAKED. kFires of them are grown at a reach of one -- a dozen
+     * branches out round a point, a little up to well up, in steps of a
+     * fifth of the reach, turning a little at every step and forking now and
+     * then (less the further out) -- when a session opens, from the epoch
+     * (ontology/Epoch.h: every runtime that can join shares it), and again as
+     * each round starts, from the round's seed and the epoch. A burst is one of them, turned about +y and sized to its
+     * reach: which one, and how far turned, are the burst's own dice (the
+     * tick, the point, the bursts so far). So the fire looks different from
+     * one lobby and one round to the next, and costs nothing to grow.
+     *
+     * IT IS WARPED, THE GROUND BENDS IT, THEN WHAT IS DENSE CUTS IT. The
+     * tree, set down, is curved all through by a field of noise of its own
+     * (the warp), pushed toward the open by what is round the burst
+     * (bendsLocked: round an edge, over a wall), and a step that is still in
+     * a wall, a block, the ground or a
+     * deck's slab is not taken, nor anything that grew from it: the fire
+     * stops there. Of kTurns turns the dice offer, a burst takes the one
+     * that loses least -- so fire set off against a block pours round it and
+     * away, and what is behind the block is reached only the long way.
      *
      * A kart is hurt by the most energy any branch has where it passes
      * within its reach (or the whole of it, at the burst's own point):
-     * `max` times that over the reach. In the open that is the old straight
-     * falloff; behind a block, the long way round, it is less, or nothing.
-     * Every number is the rows' (Fixed), and the tree's dice are made from
-     * the tick, the point and the bursts so far -- the same tree, the same
-     * damage, on every runtime.
+     * `max` times that over the reach. In the open that is the straight
+     * falloff; behind a block, less, or nothing. Every number is the rows'
+     * (Fixed), so the same tree does the same damage on every runtime.
      *
-     * Drawn as it grows: the sparks a front reaches, the front out along the
-     * branches to the reach in kGrowTicks, then all of it fading over
-     * kFadeTicks -- each spark a glowing PUFF (Scene3D::SetGlow) about its
-     * step of the branch: nearly round, a little longer than it is wide and
-     * overlapping the next, so a branch reads as a string of small bursts
-     * rather than a line -- fire is too dissipative to draw thin lines. White-
-     * hot and fuller where its branch is strong, red and leaner where it is
-     * spent, round a core that swells and fades with it.
+     * DRAWN AS IT WAS BAKED. Each tree is baked into kShells meshes, its steps
+     * by what they carry -- white-hot near the point, orange, red at the ends
+     * -- each step a glowing PUFF about its part of the way: nearly round, a
+     * little longer than it is wide and overlapping the next, so a branch
+     * reads as a string of small bursts rather than a line (fire is too
+     * dissipative to draw thin lines). A burst is kShells nodes given those
+     * meshes, turned as its tree is, swelling from a third of their size to
+     * the whole in kGrowTicks and fading over kFadeTicks, round a core that
+     * swells and fades with them. The meshes are made when the trees are, not
+     * a burst; a burst's shells are COPIES of them bent as its tree was (the
+     * renderer bends them: Mesh.CopyBent), so a burst says a few dozen things
+     * to the scene and is drawn where its fire went. What a cut step was is
+     * still drawn: fire licks the face of a block it did not get past.
      */
-    struct Spark { Fixed x0, y0, z0, x1, y1, z1, e0, e1, d0; int shown = 0; };
+    static constexpr int kFires = 8, kShells = 3, kTurns = 6, kFireBranches = 12, kFireSteps = 64;
+    struct Spark { Fixed x0, y0, z0, x1, y1, z1, e0, e1, d0; };
+    // A tree as baked: its steps at a reach of one about (0, 0, 0), heading +z, each with the step it grew from.
+    struct FireStep { Fixed x0, y0, z0, x1, y1, z1, e0, e1, d0; int from = -1; };
+    struct Fire { std::vector<FireStep> steps; std::vector<Fixed> az; };
+    // A bend of a burst's tree by the ground round it (bendsLocked).
+    struct Bend { Fixed cx, cy, cz, dx, dy, dz, r; };
     /*
      * AND THEN THE SMOKE, from the fire: small dark puffs where branches
      * burned, and big pale clouds in the gaps between the first branches,
@@ -2213,12 +2243,19 @@ private:
         Fixed              x, y, z, reach;
         int64_t            born = 0;
         int                fade = -1;             // the glow's step last said
-        std::vector<Spark> sparks;
+        std::vector<Spark> sparks;                // its tree's steps as set down, less what was cut
         std::vector<float> az;                    // the first branches' bearings, for the gaps between
         std::vector<Puff>  puffs;
         int64_t            done = 0;              // the age the last puff is gone at
+        int                fire = -1;             // which tree, and its turn (sine, cosine)
+        Fixed              ts, tc;
+        std::vector<Bend>  bends;                 // the ground's bends round its point
+        uint32_t           noise = 0;             // its warp's seed
+        int                cut = 0;               // its tree's steps the dense cut
+        int                tint = 0;              // the weapon's fire: 0 a rocket's, 1 a bomb's (redder)
+        bool               shown = false;         // its shells up: drawn, not state
     };
-    static constexpr int kBursts = 3, kSparks = 64, kGrowTicks = 8, kFadeTicks = 30;
+    static constexpr int kBursts = 3, kGrowTicks = 8, kFadeTicks = 30, kFadeSteps = 5;
     static constexpr int kBranchPuffs = 8, kCloudPuffs = 6, kPuffs = kBranchPuffs + kCloudPuffs;
 
     // How hard the medium at a point is to go through, a unit of way: air 1.
@@ -2236,77 +2273,248 @@ private:
         if (!l.IsPositive()) { x = Fixed::Zero(); y = Fixed::One(); z = Fixed::Zero(); return; }
         x = x / l; y = y / l; z = z / l;
     }
-    void growLocked(Burst& b, uint64_t seed)
+    /*
+     * THE TREES, grown from `seed` at a reach of one: kFireBranches first
+     * branches round the point, then one step of every live branch in turn
+     * (so they grow together) until kFireSteps -- each step a fifth of the
+     * reach, turned a little, costing what it goes (air: a unit a unit), and
+     * now and then a fork off its way with most of what it has.
+     */
+    void bakeFiresLocked(uint64_t seed)
     {
-        b.sparks.clear();
-        struct Tip { Fixed x, y, z, dx, dy, dz, e, d; int depth; };
-        std::deque<Tip> tips;
+        m_fires.assign(kFires, Fire());
         uint64_t r = seed | 1;
         auto unit = [&r]() { return F(static_cast<int64_t>(KartArms::Next(r) % 2001) - 1000, 1000); };   // -1..1
-        const Fixed full = b.reach, step = b.reach / F(5);
-        const int first = 12;
-        b.az.clear();
-        for (int k = 0; k < first; ++k)
+        for (Fire& fire : m_fires)
         {
-            Fixed sn, cs;
-            const Fixed bearing = Fixed::TwoPi() * (F(k) + unit() * F(3, 10)) / F(first);
-            bearing.SinCos(sn, cs);
-            b.az.push_back(bearing.ToFloat());
-            Tip t{ b.x, b.y, b.z, sn, F(1, 10) + (unit() + Fixed::One()) * F(3, 10), cs, full, Fixed::Zero(), 0 };
-            unitize(t.dx, t.dy, t.dz);
-            tips.push_back(t);
-        }
-        // One step of every live branch in turn, so they grow together.
-        while (!tips.empty() && static_cast<int>(b.sparks.size()) < kSparks)
-        {
-            Tip t = tips.front(); tips.pop_front();
-            Fixed dx = t.dx + unit() * F(35, 100), dy = t.dy + unit() * F(25, 100), dz = t.dz + unit() * F(35, 100);
-            unitize(dx, dy, dz);
-            // The medium a step goes through: at its middle and its end, so a
-            // thin wall is not stepped over.
-            auto through = [&](Fixed ax, Fixed ay, Fixed az) {
-                return Fixed::Max(densityAt(t.x + ax * step * Fixed::Half(), t.y + ay * step * Fixed::Half(), t.z + az * step * Fixed::Half()),
-                                  densityAt(t.x + ax * step, t.y + ay * step, t.z + az * step));
-            };
-            Fixed rho = through(dx, dy, dz);
-            if (rho > Fixed::One())
+            struct Tip { Fixed x, y, z, dx, dy, dz, e, d; int depth, from; };
+            std::deque<Tip> tips;
+            const Fixed step = F(1, 5);
+            for (int k = 0; k < kFireBranches; ++k)
             {
-                // Round it: to one side, the other, up, then the far turns and down.
-                const int side = (KartArms::Next(r) & 1) ? 1 : -1;
-                const Fixed turns[5][2] = { { F(8, 10) * F(side), Fixed::Zero() }, { F(-8, 10) * F(side), Fixed::Zero() },
-                                            { Fixed::Zero(), F(1) }, { F(16, 10) * F(side), Fixed::Zero() }, { Fixed::Zero(), F(-1) } };
+                Fixed sn, cs;
+                const Fixed bearing = Fixed::TwoPi() * (F(k) + unit() * F(3, 10)) / F(kFireBranches);
+                bearing.SinCos(sn, cs);
+                fire.az.push_back(bearing);
+                Tip t{ Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), sn, F(1, 10) + (unit() + Fixed::One()) * F(3, 10), cs, Fixed::One(), Fixed::Zero(), 0, -1 };
+                unitize(t.dx, t.dy, t.dz);
+                tips.push_back(t);
+            }
+            while (!tips.empty() && static_cast<int>(fire.steps.size()) < kFireSteps)
+            {
+                Tip t = tips.front(); tips.pop_front();
+                Fixed dx = t.dx + unit() * F(35, 100), dy = t.dy + unit() * F(25, 100), dz = t.dz + unit() * F(35, 100);
+                unitize(dx, dy, dz);
+                const Fixed go = Fixed::Min(step, t.e);
+                FireStep st;
+                st.x0 = t.x; st.y0 = t.y; st.z0 = t.z;
+                t.x += dx * go; t.y += dy * go; t.z += dz * go;
+                st.x1 = t.x; st.y1 = t.y; st.z1 = t.z;
+                st.e0 = t.e; st.e1 = t.e - go; st.d0 = t.d; st.from = t.from;
+                fire.steps.push_back(st);
+                t.e -= go; t.d += go; t.dx = dx; t.dy = dy; t.dz = dz; t.from = static_cast<int>(fire.steps.size()) - 1;
+                if (!t.e.IsPositive()) continue;
+                if (t.depth < 3 && t.e > F(1, 4) && static_cast<int>(KartArms::Next(r) % 100) < 30 - t.depth * 8)
+                {
+                    Tip c = t;
+                    c.depth = t.depth + 1;
+                    c.e = t.e * F(7, 10);
+                    c.dx = t.dx + unit() * F(9, 10); c.dy = t.dy + unit() * F(6, 10); c.dz = t.dz + unit() * F(9, 10);
+                    unitize(c.dx, c.dy, c.dz);
+                    tips.push_back(c);
+                }
+                tips.push_back(t);
+            }
+        }
+        for (size_t m = 0; m < m_fire_meshes.size(); ++m) meshFireLocked(m);
+    }
+    /*
+     * THE WARP: the tree curved all through. Perlin's noise in each of the
+     * three axes (ontology/Noise.h: FireWarp, a Warp with Perlin in its
+     * slot), a field warpFreq cells to the reach whatever the reach, seeded
+     * by the burst's dice -- its push at a point warpAmp times the point's
+     * distance from the burst's: nothing at the middle, most at the ends. So the warp is stretched over the whole of
+     * the tree, and each branch bends along all its length, smoothly, rather
+     * than kinking somewhere. The bends below ride on it.
+     *
+     * THE BENDS: what the ground round a burst does to its tree. A burst
+     * looks out from its point -- kLooks bearings, a little up and well up,
+     * a quarter of its reach at a time -- and where a look meets something
+     * dense it tries the ways beside it: turned to either side, up, then
+     * further round. A BEND is made there, at the point met: a smooth push
+     * toward the first of those ways that is open, at the same distance, so
+     * a branch heading into a block is carried round its edge, or over it --
+     * or, where nothing beside is open, a push back the way it came. A bend
+     * fades to nothing over its reach ((1 - d^2/r^2)^2 at d), and is held off
+     * the burst's own point. The nearest kBends are kept. All of it in units
+     * of the reach, about the point, the arena's own axes, in the rows'
+     * integers: the same bends on every runtime.
+     *
+     * So the baked tree, made once with no idea where it would go off, is
+     * bent to where it did: the same tree pours round a corner here and
+     * over a wall there. The steps are cut by what is dense only after the
+     * bending, and the damage reads the bent tree; the picture is a copy of
+     * the tree's meshes put through the same bends by the renderer
+     * (Mesh.Bend, Mesh.CopyBent) -- so what is seen is what hurts.
+     */
+    static constexpr int kLooks = 12, kBends = 8;
+    static Fixed holdR() { return F(1, 4); }   // within this of its point, a bend is scaled down to nothing there
+    std::vector<Bend> bendsLocked(const Burst& b)
+    {
+        struct Met { Bend bend; Fixed t; };
+        std::vector<Met> met;
+        const Fixed lifts[2] = { F(1, 10), F(1, 2) };
+        auto way = [](Fixed a, Fixed lift, Fixed& x, Fixed& y, Fixed& z) {
+            Fixed sn, cs; a.SinCos(sn, cs);
+            x = sn; y = lift; z = cs; unitize(x, y, z);
+        };
+        auto open = [&](Fixed x, Fixed y, Fixed z, Fixed t) {
+            return densityAt(b.x + x * t * b.reach, b.y + y * t * b.reach, b.z + z * t * b.reach) == Fixed::One()
+                && densityAt(b.x + x * t * Fixed::Half() * b.reach, b.y + y * t * Fixed::Half() * b.reach, b.z + z * t * Fixed::Half() * b.reach) == Fixed::One();
+        };
+        for (const Fixed& lift : lifts)
+            for (int k = 0; k < kLooks; ++k)
+            {
+                const Fixed a = Fixed::TwoPi() * F(k, kLooks);
+                Fixed x, y, z;
+                way(a, lift, x, y, z);
+                Fixed t = Fixed::Zero();
+                for (int q = 1; q <= 4 && t.IsZero(); ++q)
+                    if (!open(x, y, z, F(q, 4))) t = F(q, 4);
+                if (t.IsZero()) continue;
+                // Beside it: either side, up, further round.
+                const Fixed turns[5][2] = { { F(6, 10), lift }, { F(-6, 10), lift }, { Fixed::Zero(), lift + F(7, 10) },
+                                            { F(12, 10), lift }, { F(-12, 10), lift } };
+                Bend bd;
+                bd.cx = x * t; bd.cy = y * t; bd.cz = z * t;
+                bd.dx = -x * t * Fixed::Half(); bd.dy = -y * t * Fixed::Half(); bd.dz = -z * t * Fixed::Half();
                 for (const auto& tn : turns)
                 {
-                    Fixed sn, cs;
-                    tn[0].SinCos(sn, cs);
-                    Fixed ax = dx * cs + dz * sn, ay = dy + tn[1], az = dz * cs - dx * sn;
-                    unitize(ax, ay, az);
-                    if (through(ax, ay, az) == Fixed::One())
-                    { dx = ax; dy = ay; dz = az; rho = Fixed::One(); break; }
+                    Fixed ox, oy, oz;
+                    way(a + tn[0], tn[1], ox, oy, oz);
+                    if (!open(ox, oy, oz, t)) continue;
+                    bd.dx = (ox - x) * t * F(9, 10); bd.dy = (oy - y) * t * F(9, 10); bd.dz = (oz - z) * t * F(9, 10);
+                    break;
                 }
+                bd.r = F(45, 100) + t * F(25, 100);
+                met.push_back({ bd, t });
             }
-            Fixed go = step, cost = rho * step;
-            if (cost > t.e) { go = t.e / rho; cost = t.e; }
-            Spark sp;
-            sp.x0 = t.x; sp.y0 = t.y; sp.z0 = t.z;
-            t.x += dx * go; t.y += dy * go; t.z += dz * go;
-            sp.x1 = t.x; sp.y1 = t.y; sp.z1 = t.z;
-            sp.e0 = t.e; sp.e1 = t.e - cost; sp.d0 = t.d;
-            b.sparks.push_back(sp);
-            t.e -= cost; t.d += go; t.dx = dx; t.dy = dy; t.dz = dz;
-            if (!t.e.IsPositive()) continue;
-            // A fork now and then: off the branch's way, with most of what it has.
-            if (t.depth < 3 && t.e > full / F(4) && static_cast<int>(KartArms::Next(r) % 100) < 30 - t.depth * 8)
-            {
-                Tip c = t;
-                c.depth = t.depth + 1;
-                c.e = t.e * F(7, 10);
-                c.dx = t.dx + unit() * F(9, 10); c.dy = t.dy + unit() * F(6, 10); c.dz = t.dz + unit() * F(9, 10);
-                unitize(c.dx, c.dy, c.dz);
-                tips.push_back(c);
-            }
-            tips.push_back(t);
+        std::stable_sort(met.begin(), met.end(), [](const Met& p, const Met& q) { return p.t < q.t; });
+        std::vector<Bend> out;
+        for (size_t k = 0; k < met.size() && out.size() < static_cast<size_t>(kBends); ++k) out.push_back(met[k].bend);
+        return out;
+    }
+    // The warp's noise is Perlin's; the renderer redraws it with the same one (bentCopyLocked: Mesh.Warp).
+    using FireWarp = ETCS::Noise::Warp<ETCS::Noise::Perlin, Fixed>;
+    static Fixed warpAmp()  { return F(45, 100); }
+    static Fixed warpFreq() { return F(3, 2); }
+    // How far apart a step is looked along for what is dense: under the
+    // thinnest thing fire must not pass (a pit's wall, 0.3), so a stretched step does not hop it.
+    static Fixed kSampleGap() { return F(1, 4); }
+    // A point about the burst's point (units of its reach, the arena's axes), put through the warp and the bends.
+    static void bendPoint(const Burst& b, Fixed& x, Fixed& y, Fixed& z)
+    {
+        const Fixed out = Fixed::Length(x, y, z);
+        const Fixed hold = Fixed::Min(Fixed::One(), out / holdR());
+        Fixed px = Fixed::Zero(), py = Fixed::Zero(), pz = Fixed::Zero();
+        FireWarp{ b.noise, warpFreq(), warpAmp() }.Push(x, y, z, px, py, pz);
+        for (const Bend& bd : b.bends)
+        {
+            const Fixed ex = x - bd.cx, ey = y - bd.cy, ez = z - bd.cz;
+            const Fixed q = (ex * ex + ey * ey + ez * ez) / (bd.r * bd.r);
+            if (!(q < Fixed::One())) continue;
+            const Fixed w = (Fixed::One() - q) * (Fixed::One() - q) * hold;
+            px += bd.dx * w; py += bd.dy * w; pz += bd.dz * w;
         }
+        x += px; y += py; z += pz;
+    }
+    // A burst's tree: one of the baked, turned, bent to the ground round it,
+    // and cut by what is dense still -- at the turn of kTurns that loses least.
+    void growLocked(Burst& b, uint64_t seed)
+    {
+        b.sparks.clear(); b.az.clear();
+        if (m_fires.empty()) bakeFiresLocked(1);
+        uint64_t r = seed | 1;
+        b.fire = static_cast<int>(KartArms::Next(r) % kFires);
+        b.bends = bendsLocked(b);
+        b.noise = static_cast<uint32_t>(KartArms::Next(r) >> 32);
+        const Fire& fire = m_fires[static_cast<size_t>(b.fire)];
+        const size_t n = fire.steps.size();
+        // A step's two ends about the point, turned and bent.
+        auto set = [&](Fixed ts, Fixed tc, Fixed x, Fixed y, Fixed z, Fixed& ox, Fixed& oy, Fixed& oz) {
+            ox = x * tc + z * ts; oy = y; oz = z * tc - x * ts;
+            bendPoint(b, ox, oy, oz);
+        };
+        auto at = [&](Fixed x, Fixed y, Fixed z) { return std::array<Fixed, 3>{ b.x + x * b.reach, b.y + y * b.reach, b.z + z * b.reach }; };
+        // Whether a step (its ends about the point, set) passes through
+        // anything dense: looked at every kSampleGap of its way, not only at
+        // its middle and end -- a warped, bent step can be long, and a block
+        // is one thick.
+        auto blocked = [&](Fixed x0, Fixed y0, Fixed z0, Fixed x1, Fixed y1, Fixed z1) {
+            const Fixed len = Fixed::Length(x1 - x0, y1 - y0, z1 - z0) * b.reach;
+            const int64_t looks = std::min<int64_t>(16, std::max<int64_t>(2, (len / kSampleGap()).ToInt() + 1));
+            for (int64_t k = 1; k <= looks; ++k)
+            {
+                const Fixed t = F(k) / F(looks);
+                const auto p = at(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, z0 + (z1 - z0) * t);
+                if (densityAt(p[0], p[1], p[2]) > Fixed::One()) return true;
+            }
+            return false;
+        };
+        std::vector<char> cut(n), best_cut;
+        Fixed best_lost = F(1000000), best_s = Fixed::Zero(), best_c = Fixed::One();
+        for (int k = 0; k < kTurns; ++k)
+        {
+            Fixed ts, tc;
+            (Fixed::TwoPi() * F(static_cast<int64_t>(KartArms::Next(r) % 360), 360)).SinCos(ts, tc);
+            Fixed lost = Fixed::Zero();
+            for (size_t i = 0; i < n; ++i)
+            {
+                const FireStep& st = fire.steps[i];
+                cut[i] = st.from >= 0 && cut[static_cast<size_t>(st.from)];
+                if (!cut[i])
+                {
+                    Fixed x0, y0, z0, x1, y1, z1;
+                    set(ts, tc, st.x0, st.y0, st.z0, x0, y0, z0);
+                    set(ts, tc, st.x1, st.y1, st.z1, x1, y1, z1);
+                    cut[i] = blocked(x0, y0, z0, x1, y1, z1);
+                }
+                if (cut[i]) lost += st.e0;
+            }
+            if (lost < best_lost) { best_lost = lost; best_cut = cut; best_s = ts; best_c = tc; }
+        }
+        b.ts = best_s; b.tc = best_c;
+        b.cut = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (best_cut[i]) { ++b.cut; continue; }
+            const FireStep& st = fire.steps[i];
+            Fixed x0, y0, z0, x1, y1, z1;
+            set(b.ts, b.tc, st.x0, st.y0, st.z0, x0, y0, z0);
+            set(b.ts, b.tc, st.x1, st.y1, st.z1, x1, y1, z1);
+            const auto p0 = at(x0, y0, z0), p1 = at(x1, y1, z1);
+            Spark sp;
+            sp.x0 = p0[0]; sp.y0 = p0[1]; sp.z0 = p0[2]; sp.x1 = p1[0]; sp.y1 = p1[1]; sp.z1 = p1[2];
+            sp.e0 = st.e0 * b.reach; sp.e1 = st.e1 * b.reach; sp.d0 = st.d0 * b.reach;
+            b.sparks.push_back(sp);
+        }
+        const float turn = std::atan2(b.ts.ToFloat(), b.tc.ToFloat());
+        for (const Fixed& a : fire.az) b.az.push_back(a.ToFloat() + turn);
+        // What the same turn would have lost unbent: for a test to weigh the bending by.
+        int straight = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const FireStep& st = fire.steps[i];
+            cut[i] = st.from >= 0 && cut[static_cast<size_t>(st.from)];
+            if (!cut[i])
+            {
+                cut[i] = blocked(st.x0 * b.tc + st.z0 * b.ts, st.y0, st.z0 * b.tc - st.x0 * b.ts,
+                                 st.x1 * b.tc + st.z1 * b.ts, st.y1, st.z1 * b.tc - st.x1 * b.ts);
+            }
+            straight += cut[i] ? 1 : 0;
+        }
+        m_last_burst = std::to_string(b.fire) + " " + std::to_string(static_cast<int>(std::lround(turn * 180.0f / kPi))) + " "
+                     + std::to_string(b.bends.size()) + " " + std::to_string(n) + " " + std::to_string(b.cut) + " " + std::to_string(straight);
     }
     // The most energy a branch has within a kart's reach of (x, y, z).
     static Fixed reachedBy(const Burst& b, Fixed x, Fixed y, Fixed z, Fixed reach)
@@ -2325,9 +2533,10 @@ private:
         return best;
     }
     // A burst: its tree, everyone it reaches but the one who set it off, and the fire.
-    void burstLocked(Fixed x, Fixed y, Fixed z, Fixed radius, int max, int owner)
+    void burstLocked(Fixed x, Fixed y, Fixed z, Fixed radius, int max, int owner, int tint = 0)
     {
         Burst& b = blastLocked(x, y, z, radius);
+        b.tint = tint;
         for (size_t j = 0; j < m_slots.size(); ++j)
         {
             if (static_cast<int>(j) == owner || !alive(m_slots[j])) continue;
@@ -2349,7 +2558,7 @@ private:
         }
         Burst& b = m_bursts[at];
         endBurstLocked(b);
-        b.live = true; b.x = x; b.y = y; b.z = z; b.reach = radius; b.born = static_cast<int64_t>(m_tick); b.fade = -1;
+        b.live = true; b.x = x; b.y = y; b.z = z; b.reach = radius; b.born = static_cast<int64_t>(m_tick); b.fade = -1; b.tint = 0;
         uint64_t seed = 0x9e3779b97f4a7c15ull ^ (m_tick * 0x100000001b3ull) ^ ++m_burst_seq;
         seed ^= static_cast<uint64_t>(x.raw) * 31 + static_cast<uint64_t>(y.raw) * 131 + static_cast<uint64_t>(z.raw) * 1031;
         growLocked(b, seed);
@@ -2369,8 +2578,8 @@ private:
             const Spark& sp = b.sparks[(static_cast<size_t>(i) * 2 + 1) * n / (kBranchPuffs * 2)];
             Puff p;
             p.x = sp.x1.ToFloat(); p.y = sp.y1.ToFloat(); p.z = sp.z1.ToFloat();
-            p.r0 = step * 0.9f; p.r1 = step * 2.4f; p.rise = 1.2f; p.dense = 0.75f; p.grey = 0.14f;
-            p.delay = kGrowTicks / 2 + i; p.life = 100 + 6 * i;
+            p.r0 = step * 1.0f; p.r1 = step * 2.7f; p.rise = 1.2f; p.dense = 0.85f; p.grey = 0.07f;
+            p.delay = kGrowTicks / 2 + i; p.life = 160 + 8 * i;
             b.puffs.push_back(p);
         }
         for (size_t j = 0; j + 1 < b.az.size() && static_cast<int>(b.puffs.size()) < kPuffs; j += 2)
@@ -2383,8 +2592,8 @@ private:
                 if (densityAt(Fixed::From(x), Fixed::From(y), Fixed::From(z)) != Fixed::One()) continue;
                 Puff p;
                 p.x = x; p.y = y; p.z = z;
-                p.r0 = reach * 0.3f; p.r1 = reach * 0.75f; p.rise = 0.8f; p.dense = 0.55f; p.grey = 0.3f;
-                p.delay = kGrowTicks; p.life = 150;
+                p.r0 = reach * 0.3f; p.r1 = reach * 0.8f; p.rise = 0.8f; p.dense = 0.7f; p.grey = 0.14f;
+                p.delay = kGrowTicks; p.life = 230;
                 b.puffs.push_back(p);
                 break;
             }
@@ -2407,13 +2616,15 @@ private:
             if (pa < 0) continue;
             const float t = static_cast<float>(pa) / static_cast<float>(p.life);
             const float thick = t < 0.15f ? t / 0.15f : 1.0f - (t - 0.15f) / 0.85f;
-            const int step = static_cast<int>(p.dense * thick * 20.0f + 0.5f);
-            if (pa > p.life || (step <= 0 && pa > 0)) { parkNode(node); p.shown = 2; continue; }
+            // Eight densities, each a verb: at least the first while it thickens,
+            // and put away only once it has thinned to nothing.
+            const int step = std::max(t < 0.15f ? 1 : 0, static_cast<int>(p.dense * thick * 8.0f + 0.5f));
+            if (pa > p.life || step <= 0) { parkNode(node); p.shown = 2; continue; }
             const float grow = 1.0f - (1.0f - t) * (1.0f - t);
             const float r = p.r0 + (p.r1 - p.r0) * grow;
             placeNode(node, Fixed::From(p.x), Fixed::From(p.y + p.rise * static_cast<float>(pa) / kHz), Fixed::From(p.z));
-            if (pa % 3 == 0 || !p.shown) verb(node, "Create", fmt3(r * 2.0f) + ", " + fmt3(r * 1.8f) + ", " + fmt3(r * 2.0f));
-            if (step != p.said && step > 0) { verb(node, "SetSmoke", fmt3(static_cast<float>(step) / 20.0f)); p.said = step; }
+            if (pa % 6 == 0 || !p.shown) verb(node, "Create", fmt3(r * 2.0f) + ", " + fmt3(r * 1.8f) + ", " + fmt3(r * 2.0f));
+            if (step != p.said && step > 0) { verb(node, "SetSmoke", fmt3(static_cast<float>(step) / 8.0f)); p.said = step; }
             if (!p.shown)
             {
                 verb(node, "SetColor", f4(p.grey, p.grey * 0.96f, p.grey * 0.92f, 1.0f));
@@ -2427,8 +2638,10 @@ private:
     {
         const size_t k = static_cast<size_t>(&b - m_bursts);
         if (k < m_blast_nodes.size()) parkNode(m_blast_nodes[k]);
-        for (size_t n = 0; n < b.sparks.size(); ++n)
-            if (b.sparks[n].shown && k * kSparks + n < m_spark_nodes.size()) parkNode(m_spark_nodes[k * kSparks + n]);
+        if (b.shown)
+            for (size_t n = 0; n < static_cast<size_t>(kShells); ++n)
+                if (k * kShells + n < m_spark_nodes.size()) undressLocked(m_spark_nodes[k * kShells + n]);
+        b.shown = false;
         b.sparks.clear();
     }
     void endBurstLocked(Burst& b)
@@ -2451,7 +2664,7 @@ private:
             const int64_t age = static_cast<int64_t>(m_tick) - b.born;
             puffsLocked(k, b, age);
             if (age > b.done) { endBurstLocked(b); continue; }
-            if (age > kGrowTicks + kFadeTicks) { if (!b.sparks.empty()) fireOutLocked(b); continue; }
+            if (age > kGrowTicks + kFadeTicks) { if (b.shown || !b.sparks.empty()) fireOutLocked(b); continue; }
             const Fixed front = b.reach * F(std::min<int64_t>(age + 1, kGrowTicks), kGrowTicks);
             const ETCS::RID core = static_cast<size_t>(k) < m_blast_nodes.size() ? m_blast_nodes[k] : 0;
             if (age <= kGrowTicks && core)
@@ -2460,35 +2673,142 @@ private:
                 verb(core, "Create", d + ", " + d + ", " + d);
                 if (age == 0) { placeNode(core, b.x, b.y, b.z); verb(core, "SetVisible", "1"); }
             }
-            for (size_t n = 0; n < b.sparks.size(); ++n)
+            // The glow, in kFadeSteps down once it is grown.
+            const int fade = age <= kGrowTicks ? 0 : std::min(kFadeSteps - 1, static_cast<int>((age - kGrowTicks) * kFadeSteps / kFadeTicks));
+            const float glow = 1.6f * (1.0f - static_cast<float>(fade) / kFadeSteps);
+            // Its shells: given their tree's meshes and turned as it is when it
+            // goes up, sized as it swells, dimmed as it fades -- each said when it changes.
+            // A rocket's fire white-hot to orange; a bomb's redder through and through, to tell them apart.
+            static const char* const hues[2][kShells] = { { "1.0, 0.86, 0.55, 1.0", "1.0, 0.55, 0.14, 1.0", "0.92, 0.25, 0.07, 1.0" },
+                                                          { "1.0, 0.38, 0.16, 1.0", "0.88, 0.1, 0.03, 1.0", "0.5, 0.02, 0.02, 1.0" } };
+            const char* const* hue = hues[b.tint ? 1 : 0];
+            const float swell = 0.35f + 0.65f * static_cast<float>(std::min<int64_t>(age + 1, kGrowTicks)) / kGrowTicks;
+            const std::string size = fmt3(kFireBox * b.reach.ToFloat() * swell);
+            for (int n = 0; n < kShells && b.fire >= 0; ++n)
             {
-                Spark& sp = b.sparks[n];
-                const size_t at = static_cast<size_t>(k) * kSparks + n;
-                if (sp.shown || sp.d0 > front || at >= m_spark_nodes.size()) continue;
+                const size_t at = static_cast<size_t>(k) * kShells + static_cast<size_t>(n);
+                const size_t mesh = static_cast<size_t>(b.fire) * kShells + static_cast<size_t>(n);
+                if (at >= m_spark_nodes.size() || mesh >= m_fire_meshes.size()) continue;
                 const ETCS::RID node = m_spark_nodes[at];
-                const Fixed sx = sp.x1 - sp.x0, sy = sp.y1 - sp.y0, sz = sp.z1 - sp.z0;
-                const float len = Fixed::Length(sx, sy, sz).ToFloat();
-                if (!(len > 0.01f)) continue;
-                const float hot = (sp.e0 / b.reach).ToFloat();       // 1 at the burst, 0 spent
-                // Round, not flattened: at most about 1.9 long to 1 across.
-                const float along = len * 1.15f, across = len * (0.6f + 0.3f * hot);
-                verb(node, "Create", fmt3(across) + ", " + fmt3(across) + ", " + fmt3(along));
-                verb(node, "SetColor", f4(1.0f, 0.25f + 0.65f * hot, 0.05f + 0.55f * hot * hot, 1.0f));
-                poseAlong(node, (sp.x0 + sp.x1) * Fixed::Half(), (sp.y0 + sp.y1) * Fixed::Half(), (sp.z0 + sp.z1) * Fixed::Half(), sx, sy, sz);
-                verb(node, "SetVisible", "1");
-                sp.shown = 1;
+                if (!b.shown)
+                {
+                    // The tree's mesh bent to this burst's ground: a copy of it, into this shell's own.
+                    const ETCS::RID shape = at < m_burst_meshes.size() ? bentCopyLocked(m_burst_meshes[at], m_fire_meshes[mesh], b) : m_fire_meshes[mesh];
+                    Dress& d = m_dress[node];
+                    if (d.mesh != shape) { verb(node, "SetMesh", std::to_string(shape)); d.mesh = shape; }
+                    poseFireLocked(node, b);
+                }
+                dressLocked(node, size + ", " + size + ", " + size, hue[n], glow * (n == 0 ? 1.0f : n == 1 ? 0.85f : 0.7f), 0.0f);
             }
-            // The glow, in ten steps down once it is grown.
-            const int step = age <= kGrowTicks ? 0 : static_cast<int>((age - kGrowTicks) * 10 / kFadeTicks);
-            if (step != b.fade)
+            b.shown = true;
+            if (fade != b.fade)
             {
-                b.fade = step;
-                const std::string glow = fmt3(1.6f * (1.0f - static_cast<float>(step) / 10.0f));
-                if (core) verb(core, "SetGlow", fmt3(0.8f * (1.0f - static_cast<float>(step) / 10.0f)));
-                for (size_t n = 0; n < b.sparks.size(); ++n)
-                    if (static_cast<size_t>(k) * kSparks + n < m_spark_nodes.size())
-                        verb(m_spark_nodes[static_cast<size_t>(k) * kSparks + n], "SetGlow", glow);
+                b.fade = fade;
+                if (core) verb(core, "SetGlow", fmt3(0.8f * (1.0f - static_cast<float>(fade) / kFadeSteps)));
             }
+        }
+    }
+    // `into` made a copy of `from` put through the burst's warp and bends: the
+    // warp as its seed and the turn into its frame, the bends said in the
+    // mesh's own frame -- the tree's, turned back, over kFireBox.
+    ETCS::RID bentCopyLocked(ETCS::RID into, ETCS::RID from, const Burst& b)
+    {
+        verb(into, "Warp", std::to_string(b.noise) + ", " + fmt3(warpFreq().ToFloat()) + ", " + fmt3(warpAmp().ToFloat()) + ", "
+                         + fmt3(kFireBox) + ", " + std::to_string(b.ts.ToFloat()) + ", " + std::to_string(b.tc.ToFloat()));
+        for (const Bend& bd : b.bends)
+        {
+            // The arena's axes back to the tree's (the inverse of the turn).
+            auto back = [&](Fixed x, Fixed z, float& ox, float& oz) {
+                ox = (x * b.tc - z * b.ts).ToFloat() / kFireBox; oz = (z * b.tc + x * b.ts).ToFloat() / kFireBox;
+            };
+            float cx, cz, dx, dz;
+            back(bd.cx, bd.cz, cx, cz);
+            back(bd.dx, bd.dz, dx, dz);
+            verb(into, "Bend", fmt3(cx) + ", " + fmt3(bd.cy.ToFloat() / kFireBox) + ", " + fmt3(cz) + ", " + fmt3(dx) + ", "
+                             + fmt3(bd.dy.ToFloat() / kFireBox) + ", " + fmt3(dz) + ", " + fmt3(bd.r.ToFloat() / kFireBox) + ", "
+                             + fmt3(holdR().ToFloat() / kFireBox));
+        }
+        verb(into, "CopyBent", std::to_string(from));
+        return into;
+    }
+    // A burst's shell where the burst is, turned as its tree was.
+    void poseFireLocked(ETCS::RID node, const Burst& b)
+    {
+        Causal_* c = causal(node);
+        if (!c) return;
+        std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+        OrderVector& r = c->RowsUnder();
+        r.PlaceAt(b.x, b.y, b.z);
+        Fixed w, y;
+        halfTurn(b.ts, b.tc, w, y);
+        r.qw = w; r.qx = r.qz = Fixed::Zero(); r.qy = y;
+    }
+    /*
+     * THE TREES' MESHES, baked into the empty ones the script made, kShells
+     * to a tree in order: a tree's steps that carry more than three fifths
+     * of its reach, more than three tenths, the rest. A step is a puff about
+     * its part of the way -- an ellipsoid 1.15 of the step long and 0.6 to
+     * 0.9 of it across by what it carries, so each overlaps the next -- in a
+     * box kFireBox reaches across with the tree's point at its middle, which
+     * is what a burst's node is sized to. Remade when the trees are.
+     */
+    static constexpr float kFireBox = 2.4f;
+    void meshFireLocked(size_t at)
+    {
+        const ETCS::RID mesh = at < m_fire_meshes.size() ? m_fire_meshes[at] : 0;
+        if (!mesh || m_fires.empty() || at >= static_cast<size_t>(kFires * kShells)) return;
+        const Fire& fire = m_fires[at / kShells];
+        const int shell = static_cast<int>(at % kShells);
+        const int around = 6, rings = 3;   // a puff of 14 corners: round enough when it glows
+        verb(mesh, "Clear", "");
+        int base = 0;
+        for (const FireStep& st : fire.steps)
+        {
+            const float hot = st.e0.ToFloat();
+            if ((hot > 0.6f ? 0 : hot > 0.3f ? 1 : 2) != shell) continue;
+            const float p0[3] = { st.x0.ToFloat(), st.y0.ToFloat(), st.z0.ToFloat() };
+            const float p1[3] = { st.x1.ToFloat(), st.y1.ToFloat(), st.z1.ToFloat() };
+            float a[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+            const float al = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+            if (!(al > 1e-4f)) continue;
+            for (float& v : a) v /= al;
+            float u[3] = { a[2], 0.0f, -a[0] };                         // across, level: a x up
+            const float ul = std::sqrt(u[0] * u[0] + u[2] * u[2]);
+            if (ul > 0.001f) { u[0] /= ul; u[2] /= ul; } else { u[0] = 1.0f; u[2] = 0.0f; }
+            const float w[3] = { a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0] };
+            const float along = 0.5f * 1.15f * al, across = 0.5f * al * (0.6f + 0.3f * hot);
+            auto vertex = [&](float su, float sw, float sa) {
+                float pos[3], nrm[3];
+                for (int i = 0; i < 3; ++i)
+                {
+                    pos[i] = ((p0[i] + p1[i]) * 0.5f + u[i] * su * across + w[i] * sw * across + a[i] * sa * along) / kFireBox;
+                    nrm[i] = u[i] * su / across + w[i] * sw / across + a[i] * sa / along;
+                }
+                const float nl = std::sqrt(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
+                verb(mesh, "AddVertex", fmt3(pos[0]) + ", " + fmt3(pos[1]) + ", " + fmt3(pos[2]) + ", "
+                                      + fmt3(nrm[0] / nl) + ", " + fmt3(nrm[1] / nl) + ", " + fmt3(nrm[2] / nl));
+            };
+            vertex(0.0f, 0.0f, -1.0f);
+            vertex(0.0f, 0.0f, 1.0f);
+            for (int g = 1; g < rings; ++g)
+                for (int i = 0; i < around; ++i)
+                {
+                    const float lat = kPi * g / rings, lon = 2.0f * kPi * i / around;
+                    vertex(std::sin(lat) * std::cos(lon), std::sin(lat) * std::sin(lon), -std::cos(lat));
+                }
+            auto ring = [&](int g, int i) { return std::to_string(base + 2 + (g - 1) * around + (i % around)); };
+            auto tri = [&](const std::string& p, const std::string& q, const std::string& t) { verb(mesh, "AddTriangle", p + ", " + q + ", " + t); };
+            for (int i = 0; i < around; ++i)
+            {
+                tri(std::to_string(base), ring(1, i + 1), ring(1, i));
+                tri(std::to_string(base + 1), ring(rings - 1, i), ring(rings - 1, i + 1));
+                for (int g = 1; g + 1 < rings; ++g)
+                {
+                    tri(ring(g, i), ring(g, i + 1), ring(g + 1, i + 1));
+                    tri(ring(g, i), ring(g + 1, i + 1), ring(g + 1, i));
+                }
+            }
+            base += 2 + (rings - 1) * around;
         }
     }
 
@@ -3440,7 +3760,11 @@ private:
     std::vector<Wisp> m_wisps;
     std::map<ETCS::RID, Dress> m_dress;
     std::set<ETCS::RID> m_baked;                        // the meshes this battle has baked
-    std::vector<ETCS::RID> m_spark_nodes;   // the bursts' sparks: kBursts x kSparks, glowing
+    std::vector<ETCS::RID> m_spark_nodes;   // the bursts' shells: kBursts x kShells, glowing
+    std::vector<ETCS::RID> m_fire_meshes;   // the trees' meshes: kFires x kShells, baked here
+    std::vector<Fire>      m_fires;         // the trees: from the epoch, then each round's seed and the epoch
+    std::vector<ETCS::RID> m_burst_meshes;  // each shell's own bent copy: kBursts x kShells
+    std::string            m_last_burst;    // "<tree> <turn> <bends> <steps> <cut> <cut unbent>", for a test
     std::vector<ETCS::RID> m_smoke_nodes;   // ...and their smoke: kBursts x kPuffs
     Burst      m_bursts[kBursts];
     uint64_t   m_burst_seq = 0;             // bursts so far: each one's tree is its own

@@ -44,11 +44,14 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   | oil     | 1  | a slick dropped behind for twelve seconds: on it a kart has a sixth of its grip and a third of its pedal |
   | shockwave | 1 | a ring out from your kart to nine: 1.5 to every kart it passes, and thrown outward |
 
-  Nothing hurts the kart that fired it. **A burst is a tree of fire**: branches grow out from
-  it along lines, forking, and bend round what is dense -- a block, a wall, the ground, a
-  deck -- rather than through it, losing strength with every unit they go. A kart is hurt by
-  the strongest branch that reaches it, so in the open that is the old falloff, and **behind
-  a block you are covered**. Every tab grows the same tree. The fire leaves **smoke**: dark
+  Nothing hurts the kart that fired it. **A burst is a tree of fire**, and the tree is a
+  fractal baked once: one short branch of five steps with a fork in it -- the fork being the
+  same branch again, smaller -- set down a dozen ways round the burst. Where a branch meets
+  something dense -- a block, a wall, the ground, a deck -- it stops and what it has left goes
+  on round it as the whole branch again, smaller still, rather than through. A kart is hurt
+  by the strongest branch that reaches it, so in the open that is the old falloff, and
+  **behind a block you are covered**. Every tab grows the same tree, and draws it from the
+  same fifteen shapes: a branch is one piece, not a spark a step. The fire leaves **smoke**: dark
   puffs where its branches burned and big pale clouds in the gaps between them, which swell as
   they rise and thin away.
 - **A kart at nothing is eliminated**: one to whoever did it, one against the kart, which is back

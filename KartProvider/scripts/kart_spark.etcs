@@ -1,7 +1,8 @@
 #!/usr/bin/env etcs
-# One spark of the bursts' fire: a glowing puff (Scene3D.SetGlow) on the
-# ember shape, held, solid to nothing. The battle sets it on a step of a
-# burst's tree, sizes and colours it there, and fades it (KartBattle.h).
+# One shell of a burst's fire: glowing (Scene3D.SetGlow), held, solid to
+# nothing. The battle gives it one of its baked trees' meshes, sets it at the
+# burst turned as the tree is, swells it and fades it (KartBattle.h). The
+# ember shape is only what it is until then.
 #   run kart_spark.etcs world=<Scene3D> battle=<KartBattle> ember=<Mesh>
 requires world [Drawable3D]
 requires battle [KartBattle]

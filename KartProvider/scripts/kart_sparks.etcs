@@ -1,5 +1,5 @@
 #!/usr/bin/env etcs
-# Sixteen sparks (kart_spark.etcs).
+# Sixteen of the fire's shells (kart_spark.etcs).
 #   run kart_sparks.etcs world=<Scene3D> battle=<KartBattle> ember=<Mesh>
 requires world [Drawable3D]
 requires battle [KartBattle]
