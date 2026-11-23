@@ -14,6 +14,7 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -41,7 +42,9 @@
  *                            seeded
  *   abandon                  (the host's, in a round) back to the lobby, the
  *                            round's scores discarded
- *   give <who> <weapon>      (the host's) a weapon handed over outright
+ *   give <who> <weapon> [spare|pickup]   (the host's) a weapon in hand
+ *                            outright; as the spare; or as a power-up hands
+ *                            one over (KartArms.h, two are carried)
  *
  * An AUTHOR is a seat: over a link, the key its link proved (shown by the
  * label it gave, ontology/Trace.h); here, the name this runtime gave.
@@ -313,6 +316,14 @@ public:
     void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); parkNode(r); }
     void AddSparkNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_spark_nodes.push_back(r); parkNode(r); }
     void AddSmokeNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_smoke_nodes.push_back(r); parkNode(r); }
+    // The weapons' effects (fxLocked's comment): a ball each, and a ring with the mesh this battle bakes for it.
+    void AddFxNode(ETCS::RID r)     { std::lock_guard<std::mutex> g(m_mu); m_fx_nodes.push_back(r); m_fx_busy.push_back(false); parkNode(r); }
+    void AddRingNode(ETCS::RID r, ETCS::RID mesh)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        bakeRingLocked(mesh);
+        m_ring_nodes.push_back(r); m_ring_busy.push_back(false); parkNode(r);
+    }
     void AddBoardRow(ETCS::RID r)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -436,13 +447,13 @@ public:
         std::lock_guard<std::mutex> g(m_mu);
         return m_authority && takeLocked(m_me, "abandon");
     }
-    bool Give(const std::string& who, const std::string& weapon)
+    bool Give(const std::string& who, const std::string& weapon, const std::string& where)
     {
         std::lock_guard<std::mutex> g(m_mu);
         // Named as people name them; the line names the seat.
         const int i = slotNamedLocked(who);
         if (!m_authority || i < 0) return false;
-        return takeLocked(m_me, "give " + m_slots[i].driver + " " + weapon);
+        return takeLocked(m_me, "give " + m_slots[i].driver + " " + weapon + (where.empty() ? "" : " " + where));
     }
 
     /*
@@ -667,7 +678,8 @@ public:
         return std::to_string(i) + " " + fmt3(x) + " " + fmt3(z) + " " + fmt3(s.hx.ToFloat()) + " " + fmt3(s.hz.ToFloat()) + " "
              + fmt1(speedOf(static_cast<size_t>(i))) + " " + std::to_string(s.hp) + " " + KartArms::Name(s.weapon)
              + " " + std::to_string(s.ammo) + " " + fmt3(y) + " " + (s.air ? "air" : "ground") + " " + fmt3(s.wheel.ToFloat())
-             + " " + fmt3(slide);
+             + " " + fmt3(slide) + " " + KartArms::Name(s.spare) + " " + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip)
+             + " " + std::to_string(s.dagger);
     }
     // Tyres <name> -- per tyre, fr fl rr rl, "<heat> <rope> <shown> <darkest>": its heat (J), how
     // long its mark's rope is laid behind it, how many segments are drawn,
@@ -756,7 +768,12 @@ private:
         Fixed       px, pz;                        // where the step found it: a wall of ground puts it back
         int         hp = kFullHp;
         uint8_t     weapon = KartArms::None, ammo = 0;
+        uint8_t     spare = KartArms::None, spare_ammo = 0;   // the second one carried (KartArms.h)
         int         cooldown = 0, boost = 0;
+        int         slip = 0;                      // ticks of oil still on the tyres
+        int         dagger = 0;                    // ticks of the smoke's dagger left
+        int         dagger_fx = -1;                // its blade: drawn, not state
+        Fixed       kx, kz;                        // a shockwave's throw the drive has not yet taken
         int         elims = 0, deaths = 0;         // this round's
         int         last_elims = 0, last_deaths = 0;   // the last round completed's: the lobby's
         int64_t     dead_until = -1;               // the tick it comes back; -1 alive
@@ -775,6 +792,8 @@ private:
         uint8_t kind = 0; int owner = -1;
         Fixed x, y, z, vx, vy, vz;
         int life = 0, armed = 0, node = -1;
+        int fx = -1, ring = -1;                    // a slick's node, a shockwave's: drawn, not state
+        int cloud[4] = { -1, -1, -1, -1 };         // a smoke's puffs: drawn, not state
     };
     struct BoardRow { ETCS::RID rid; std::string text; bool shown; };
     struct PadNodes { ETCS::RID plate = 0; ETCS::RID arrow[3] = { 0, 0, 0 }; };
@@ -916,6 +935,16 @@ private:
     // until it has flown as far (crossLife), so a shot from one corner can
     // still land in the other -- a long shot is a tactic, not a waste.
     static Fixed sniperReach() { return KartArena::Half() * F(283, 100); }
+    static Fixed homingSpeed() { return F(22); }
+    static Fixed homingSight() { return F(70); }      // how far a homing rocket sees a kart
+    static Fixed oilReach()    { return F(5, 2); }
+    static Fixed waveReach()   { return F(9); }
+    static Fixed waveThrow()   { return F(18); }
+    static Fixed smokeReach()  { return F(5); }
+    static Fixed daggerReach() { return F(26, 10); }   // up against: a kart's length, middle to middle
+    // A smoke bomb's cloud: thick five seconds, dissipating fifteen; its dagger, eight.
+    static constexpr int kSmokeThick = 5 * kHz, kSmokeTicks = 20 * kHz, kSmokeSteps = 10, kDaggerTicks = 8 * kHz;
+    static constexpr int kOilTicks = 12 * kHz, kSlipTicks = kHz, kWaveTicks = 16, kWispTicks = 36, kMineTicks = 20 * kHz;
     static int crossLife(Fixed speed) { return static_cast<int>((sniperReach() / speed * F(kHz)).ToInt()) + 1; }
     static Fixed voidAt()    { return F(-40); }        // where a fall outside ends, between rounds
     static Fixed lostAt()    { return F(-6); }
@@ -1024,12 +1053,16 @@ private:
         }
         if (verb == "give")
         {
-            std::string who, w;
-            in >> who >> w;
+            // In hand outright, whatever was there -- or, said so, as the
+            // spare, or as a power-up hands one over (armLocked).
+            std::string who, w, how;
+            in >> who >> w >> how;
             const int i = slotNamedLocked(who);
             const uint8_t weapon = KartArms::ByName(w);
-            if (i < 0 || weapon == KartArms::None) return false;
-            m_slots[i].weapon = weapon; m_slots[i].ammo = KartArms::Ammo(weapon); m_slots[i].cooldown = 0;
+            if (i < 0 || weapon == KartArms::None || (!how.empty() && how != "spare" && how != "pickup")) return false;
+            if (how == "pickup") armLocked(m_slots[i], weapon);
+            else if (how == "spare") { m_slots[i].spare = weapon; m_slots[i].spare_ammo = KartArms::Ammo(weapon); }
+            else { m_slots[i].weapon = weapon; m_slots[i].ammo = KartArms::Ammo(weapon); m_slots[i].cooldown = 0; }
             return true;
         }
         return false;
@@ -1043,8 +1076,9 @@ private:
     void restartLocked()
     {
         for (size_t i = 0; i < m_slots.size(); ++i) pitLocked(i);
-        for (Shot& s : m_shots) freeNode(s.node);
+        for (Shot& s : m_shots) dropShotLocked(s);
         m_shots.clear();
+        clearWispsLocked();
         for (Burst& b : m_bursts) endBurstLocked(b);
         m_keys = 0; m_sent_t = m_sent_s = m_sent_f = 0;
         m_eye_set = false; m_menu = MenuStart;
@@ -1059,8 +1093,9 @@ private:
     {
         m_phase = Lobby;
         m_end = 0;
-        for (Shot& s : m_shots) freeNode(s.node);
+        for (Shot& s : m_shots) dropShotLocked(s);
         m_shots.clear();
+        clearWispsLocked();
         respawnAllLocked();
     }
     void placeLocked(size_t i, Fixed x, Fixed z, Fixed dx, Fixed dz)
@@ -1091,7 +1126,9 @@ private:
     {
         Slot& s = m_slots[i];
         s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
-        s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
+        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.dagger = 0;
+        s.kx = s.kz = Fixed::Zero();
+        freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1; s.ram_safe = 0;
         verb(s.body, "SetVisible", "0");
         verb(s.body, "SetAnchored", "1");
@@ -1125,7 +1162,9 @@ private:
             if (nearest > best) { best = nearest; bx = p.x; bz = p.z; }
         }
         s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
-        s.hp = kFullHp; s.weapon = KartArms::None; s.ammo = 0; s.cooldown = s.boost = 0;
+        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.dagger = 0;
+        s.kx = s.kz = Fixed::Zero();
+        freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1;
         Fixed dx = -bx, dz = -bz;
         if (dx.IsZero() && dz.IsZero()) dz = Fixed::One();
@@ -1162,8 +1201,9 @@ private:
         if (m_live.generated) KartArena::Generate(m_layout, m_live);
         else KartArena::Prepare(m_live);
         drawMapLocked();
-        for (Shot& s : m_shots) freeNode(s.node);
+        for (Shot& s : m_shots) dropShotLocked(s);
         m_shots.clear();
+        clearWispsLocked();
         m_pickups.clear();
         size_t n = 0;
         for (const KartArena::Spot& sp : m_live.pickups)
@@ -1350,6 +1390,7 @@ private:
             if (m_phase != Lobby)
             {
                 for (size_t i = 0; i < m_slots.size(); ++i) if (alive(m_slots[i])) touchLocked(i);
+                for (size_t i = 0; i < m_slots.size(); ++i) if (alive(m_slots[i])) daggerLocked(i);
                 for (size_t i = 0; i < m_slots.size(); ++i) if (alive(m_slots[i])) fireLocked(i);
             }
             shotsLocked();
@@ -1392,6 +1433,10 @@ private:
         const Fixed hx = s.hx, hz = s.hz;
         Fixed vx, vy, vz;
         r.Velocity(m, vx, vy, vz);
+        // A shockwave's throw, taken on the ground like a pad's push: across
+        // the heading it is a slide for the tyres. In the air it passes under.
+        if (!s.air) { vx += s.kx; vz += s.kz; }
+        s.kx = s.kz = Fixed::Zero();
         // A pad under it pushes the way the pad points, whichever way the
         // kart does: along its heading that is speed, across it a slide for
         // the tyres. The work is the Impulse below, with the pedal's.
@@ -1410,6 +1455,7 @@ private:
         Fixed speed = vx * hx + vz * hz;
         wheelTurnLocked(s, steer, speed, step);
         if (s.boost > 0) --s.boost;
+        if (s.slip > 0) --s.slip;
         if (s.air) return;
         Fixed lx = vx - hx * speed, lz = vz - hz * speed;
         const Fixed rolled = speed;
@@ -1417,6 +1463,7 @@ private:
         const Fixed top = s.boost > 0 ? boostSpeed() : topSpeed();
         Fixed push = pushAt(speed, top);
         if (s.boost > 0 && push < boostPush()) push = boostPush();
+        if (s.slip > 0) push = push / F(3);   // oil: the tyres spin
         if (thr > 0)
         {
             if (speed.raw < 0) speed = Fixed::Min(speed + brake() * step, Fixed::Zero());
@@ -1464,7 +1511,8 @@ private:
         const Fixed on = wx * s.hx + wz * s.hz;
         Fixed ax = wx - s.hx * on, az = wz - s.hz * on;
         const Fixed across = Fixed::Length(ax, Fixed::Zero(), az);
-        const Fixed most = (braking ? brakeGrip() : grip()) * step;
+        Fixed most = (braking ? brakeGrip() : grip()) * step;
+        if (s.slip > 0) most = most / F(6);   // ...and hold a sixth of what they did
         if (across > most) { const Fixed keep = (across - most) / across; ax *= keep; az *= keep; }
         else               { ax = az = Fixed::Zero(); }
         Fixed nx = s.hx * on + ax, nz = s.hz * on + az;
@@ -1732,7 +1780,7 @@ private:
             case Mine:
             {
                 const Fixed mx = x - hx * F(2), mz = z - hz * F(2);
-                Shot& m = shootLocked(MineShot, i, mx, groundAt(mx, mz, y - kartY() + climb()) + F(1, 10), mz, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), 30 * kHz);
+                Shot& m = shootLocked(MineShot, i, mx, groundAt(mx, mz, y - kartY() + climb()) + F(1, 10), mz, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kMineTicks);
                 m.armed = 25;
                 break;
             }
@@ -1750,24 +1798,58 @@ private:
             case Minigun: shootLocked(Bullet, i, fx, fy, fz, hx * F(45), Fixed::Zero(), hz * F(45), crossLife(F(45))); s.cooldown = 5; break;
             case Fuse:    shootLocked(FuseShot, i, x, y + F(12, 10), z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), 125); break;
             case Sniper:  sniperLocked(i, x, fy, z, hx, hz); break;
+            case Homing:  shootLocked(HomingShot, i, fx, fy, fz, hx * homingSpeed(), Fixed::Zero(), hz * homingSpeed(), crossLife(homingSpeed())); break;
+            case Oil:
+            {
+                const Fixed ox = x - hx * F(3), oz = z - hz * F(3);
+                Shot& o = shootLocked(OilShot, i, ox, groundAt(ox, oz, y - kartY() + climb()) + F(4, 100), oz, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kOilTicks);
+                o.fx = takeFx();
+                if (o.fx >= 0) { placeNode(m_fx_nodes[o.fx], o.x, o.y, o.z); dressLocked(m_fx_nodes[o.fx], slickSize(1.0f), "0.05, 0.05, 0.08, 1.0", 0.0f, 0.0f); }
+                break;
+            }
+            case Smoke:
+            {
+                Shot& c = shootLocked(SmokeShot, i, x, groundAt(x, z, y - kartY() + climb()), z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kSmokeTicks);
+                s.dagger = kDaggerTicks;
+                for (int k = 0; k < 4; ++k)
+                {
+                    c.cloud[k] = takeFx();
+                    if (c.cloud[k] < 0) continue;
+                    Fixed sn, cs;
+                    (Fixed::TwoPi() * F(k, 4) + F(1, 3)).SinCos(sn, cs);
+                    const ETCS::RID n = m_fx_nodes[static_cast<size_t>(c.cloud[k])];
+                    placeNode(n, c.x + sn * F(2), c.y + F(1) + F(k % 2, 2), c.z + cs * F(2));
+                    dressLocked(n, "3.0, 2.0, 3.0", "0.55, 0.55, 0.58, 1.0", 0.0f, 0.5f);
+                }
+                break;
+            }
+            case Shockwave:
+            {
+                Shot& w = shootLocked(WaveShot, i, x, y, z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kWaveTicks);
+                w.ring = takeRing();
+                if (w.ring >= 0) placeNode(m_ring_nodes[w.ring], x, y, z);
+                break;
+            }
             default: break;
         }
-        if (s.ammo > 0 && --s.ammo == 0) s.weapon = None;
+        // Spent: the spare comes to hand.
+        if (s.ammo > 0 && --s.ammo == 0) { s.weapon = s.spare; s.ammo = s.spare_ammo; s.spare = None; s.spare_ammo = 0; }
     }
 
     Shot& shootLocked(uint8_t kind, size_t owner, Fixed x, Fixed y, Fixed z, Fixed vx, Fixed vy, Fixed vz, int life)
     {
         Shot s; s.kind = kind; s.owner = static_cast<int>(owner);
         s.x = x; s.y = y; s.z = z; s.vx = vx; s.vy = vy; s.vz = vz; s.life = life;
-        s.node = takeNode();
+        // A slick and a shockwave are drawn by their own effects (fx, ring).
+        s.node = (kind == KartArms::OilShot || kind == KartArms::WaveShot || kind == KartArms::SmokeShot) ? -1 : takeNode();
         if (s.node >= 0)
         {
             using namespace KartArms;
             const ETCS::RID n = m_shot_nodes[s.node];
-            const char* size = kind == RocketShot ? "0.35, 0.35, 0.9" : kind == Pellet ? "0.22, 0.22, 0.22"
+            const char* size = kind == HomingShot ? "0.3, 0.3, 0.8" : kind == RocketShot ? "0.35, 0.35, 0.9" : kind == Pellet ? "0.22, 0.22, 0.22"
                              : kind == Bullet ? "0.16, 0.16, 0.4" : kind == BombShot ? "0.55, 0.55, 0.55"
                              : kind == MineShot ? "0.9, 0.18, 0.9" : kind == FuseShot ? "0.5, 0.5, 0.5" : "0.1, 0.1, 1.0";
-            const char* colour = kind == RocketShot ? "0.95, 0.35, 0.10, 1.0" : kind == Pellet ? "1.0, 0.85, 0.3, 1.0"
+            const char* colour = kind == HomingShot ? "0.75, 0.3, 0.95, 1.0" : kind == RocketShot ? "0.95, 0.35, 0.10, 1.0" : kind == Pellet ? "1.0, 0.85, 0.3, 1.0"
                                : kind == Bullet ? "1.0, 0.95, 0.6, 1.0" : kind == BombShot ? "0.12, 0.12, 0.14, 1.0"
                                : kind == MineShot ? "0.55, 0.08, 0.08, 1.0" : kind == FuseShot ? "1.0, 0.15, 0.1, 1.0" : "0.4, 0.95, 1.0, 1.0";
             verb(n, "Create", size);
@@ -1821,9 +1903,10 @@ private:
             --s.life;
             switch (s.kind)
             {
-                case RocketShot: case Pellet: case Bullet: case BombShot:
+                case RocketShot: case Pellet: case Bullet: case BombShot: case HomingShot:
                 {
                     if (s.kind == BombShot) s.vy -= gravity() * dt();
+                    if (s.kind == HomingShot) { homeLocked(s); if (s.life % 4 == 0) wispLocked(s.x, s.y, s.z); }
                     const Fixed was_x = s.x, was_y = s.y, was_z = s.z;
                     s.x += s.vx * dt(); s.y += s.vy * dt(); s.z += s.vz * dt();
                     const int hit = kartAt(s.x, s.y, s.z, s.owner, F(25, 100));
@@ -1836,6 +1919,7 @@ private:
                         if (hit < 0 && (wall || ground)) { s.x = was_x; s.y = was_y; s.z = was_z; }
                         if (s.kind == RocketShot)    burstLocked(s.x, s.y, s.z, F(4), 40, s.owner);
                         else if (s.kind == BombShot) burstLocked(s.x, s.y, s.z, F(45, 10), 40, s.owner);
+                        else if (s.kind == HomingShot) burstLocked(s.x, s.y, s.z, F(3), 30, s.owner);
                         else if (hit >= 0)           damageLocked(static_cast<size_t>(hit), s.owner, s.kind == Pellet ? 10 : 4);
                     }
                     break;
@@ -1843,8 +1927,63 @@ private:
                 case MineShot:
                     if (s.armed > 0) --s.armed;
                     else if (kartAt(s.x, s.y, s.z, s.owner, F(6, 10)) >= 0) { gone = true; burstLocked(s.x, s.y, s.z, F(25, 10), 30, s.owner); }
+                    // Left alone it does not lie there for good: its last two
+                    // seconds it blinks, and then it bursts by itself.
+                    if (!gone && s.life <= 0) { gone = true; burstLocked(s.x, s.y, s.z, F(25, 10), 30, s.owner); }
+                    else if (!gone && s.life < 2 * kHz && s.life % 10 == 0 && s.node >= 0)
+                        verb(m_shot_nodes[s.node], "SetColor", (s.life / 10) % 2 ? "1.0, 0.9, 0.2, 1.0" : "0.55, 0.08, 0.08, 1.0");
+                    break;
+                case OilShot:
+                    // On the tyres of whoever is on it, but the kart that dropped it.
+                    for (size_t j = 0; j < m_slots.size(); ++j)
+                    {
+                        Fixed jx, jy, jz;
+                        if (static_cast<int>(j) == s.owner || !alive(m_slots[j]) || m_slots[j].air || !where(j, jx, jy, jz)) continue;
+                        if (Fixed::Length(jx - s.x, Fixed::Zero(), jz - s.z) <= oilReach() && (jy - s.y).Abs() < F(1)) m_slots[j].slip = kSlipTicks;
+                    }
+                    if (s.life <= 0) gone = true;
+                    else if ((s.life == 20 || s.life == 10) && s.fx >= 0)   // drying up
+                        dressLocked(m_fx_nodes[s.fx], slickSize(s.life / 30.0f), "0.05, 0.05, 0.08, 1.0", 0.0f, 0.0f);
+                    break;
+                case SmokeShot:
+                {
+                    // Thick for its first five seconds, then dissipating over
+                    // fifteen: swelling as it thins, in steps (each a verb).
+                    const int age = kSmokeTicks - s.life, thin = kSmokeTicks - kSmokeThick;
+                    const int step = age < kSmokeThick ? 0 : 1 + (age - kSmokeThick) * kSmokeSteps / thin;
+                    if (age == kHz / 2 || (age >= kSmokeThick && (age - kSmokeThick) % (thin / kSmokeSteps) == 0))
+                    {
+                        const float f = static_cast<float>(step) / kSmokeSteps;
+                        const std::string w = fmt1(4.2f + 2.6f * f), h = fmt1(2.8f + 1.6f * f);
+                        for (int c : s.cloud)
+                            if (c >= 0) dressLocked(m_fx_nodes[static_cast<size_t>(c)], w + ", " + h + ", " + w, "0.55, 0.55, 0.58, 1.0", 0.0f, 0.55f * (1.0f - f) + 0.02f);
+                    }
                     if (s.life <= 0) gone = true;
                     break;
+                }
+                case WaveShot:
+                {
+                    // The ring's front, out from where it was set off: every
+                    // kart it passes, once (`armed` keeps who), hurt and thrown.
+                    const Fixed front = waveReach() * F(kWaveTicks - s.life, kWaveTicks);
+                    for (size_t j = 0; j < m_slots.size(); ++j)
+                    {
+                        Fixed jx, jy, jz;
+                        if (static_cast<int>(j) == s.owner || (s.armed >> j & 1) || !alive(m_slots[j]) || !where(j, jx, jy, jz)) continue;
+                        const Fixed dx = jx - s.x, dz = jz - s.z, d = Fixed::Length(dx, Fixed::Zero(), dz);
+                        if (d > front + kartR() || (jy - s.y).Abs() > F(5, 2)) continue;
+                        s.armed |= 1 << j;
+                        if (d.IsPositive()) { m_slots[j].kx += dx / d * waveThrow(); m_slots[j].kz += dz / d * waveThrow(); }
+                        damageLocked(j, s.owner, 15);
+                    }
+                    if (s.ring >= 0)
+                    {
+                        const float across = 2.0f * (front.ToFloat() + 0.6f), t = static_cast<float>(kWaveTicks - s.life) / kWaveTicks;
+                        dressLocked(m_ring_nodes[s.ring], fmt1(across) + ", 0.6, " + fmt1(across), "0.45, 0.85, 1.0, 1.0", t < 0.5f ? 1.4f : t < 0.75f ? 0.9f : 0.45f, 0.0f);
+                    }
+                    if (s.life <= 0) gone = true;
+                    break;
+                }
                 case FuseShot:
                 {
                     Fixed ox, oy, oz;
@@ -1855,10 +1994,173 @@ private:
                 }
                 default: if (s.life <= 0) gone = true; break;   // a tracer fades
             }
-            if (gone) freeNode(s.node);
+            if (gone) dropShotLocked(s);
             else { nodeAtLocked(s); keep.push_back(s); }
         }
         m_shots.swap(keep);
+        wispsLocked();
+    }
+    void dropShotLocked(Shot& s)
+    {
+        freeNode(s.node); freeFx(s.fx); freeRing(s.ring); s.node = s.fx = s.ring = -1;
+        for (int& c : s.cloud) { freeFx(c); c = -1; }
+    }
+    // Is (x, z) in a cloud of smoke?
+    bool smokedAt(Fixed x, Fixed z) const
+    {
+        for (const Shot& s : m_shots)
+            if (s.kind == KartArms::SmokeShot && s.life > kSmokeTicks - kSmokeThick - (kSmokeTicks - kSmokeThick) * 2 / 3   // while it is thick enough to hide in
+                && Fixed::Length(x - s.x, Fixed::Zero(), z - s.z) < smokeReach()) return true;
+        return false;
+    }
+    /*
+     * THE DAGGER: every fifth of a second while it lasts, 8 to each kart
+     * whose middle is within a kart's length of this one's -- up against
+     * it, side by side, nose to tail. Its blade is drawn out of the nose.
+     */
+    void daggerLocked(size_t i)
+    {
+        Slot& s = m_slots[i];
+        if (s.dagger <= 0) return;
+        --s.dagger;
+        Fixed x, y, z;
+        if (!where(i, x, y, z)) return;
+        if (s.dagger % 10 == 0)
+            for (size_t j = 0; j < m_slots.size(); ++j)
+            {
+                Fixed jx, jy, jz;
+                if (j == i || !alive(m_slots[j]) || !where(j, jx, jy, jz)) continue;
+                if (Fixed::Length(jx - x, jy - y, jz - z) < daggerReach()) damageLocked(j, static_cast<int>(i), 8, "a dagger");
+            }
+        if (s.dagger_fx < 0 && s.dagger > 0) s.dagger_fx = takeFx();
+        if (s.dagger_fx >= 0)
+        {
+            if (s.dagger <= 0) { freeFx(s.dagger_fx); s.dagger_fx = -1; return; }
+            const ETCS::RID n = m_fx_nodes[static_cast<size_t>(s.dagger_fx)];
+            dressLocked(n, "0.12, 0.12, 1.4", "0.95, 0.95, 1.0, 1.0", 0.9f, 0.0f);
+            if (Causal_* c = causal(n))
+            {
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                OrderVector& r = c->RowsUnder();
+                r.PlaceAt(x + s.hx * F(13, 10), y, z + s.hz * F(13, 10));
+                Fixed w, yy;
+                halfTurn(s.hx, s.hz, w, yy);
+                r.qw = w; r.qx = r.qz = Fixed::Zero(); r.qy = yy;
+            }
+        }
+    }
+
+    // A homing rocket's turn: toward the nearest kart ahead of it, an eighth
+    // of the way round a tick, and toward its height -- at its own speed.
+    void homeLocked(Shot& s)
+    {
+        const Fixed speed = Fixed::Length(s.vx, Fixed::Zero(), s.vz);
+        if (!speed.IsPositive()) return;
+        const Fixed ux = s.vx / speed, uz = s.vz / speed;
+        int at = -1; Fixed best = homingSight(), bx, by, bz;
+        for (size_t j = 0; j < m_slots.size(); ++j)
+        {
+            Fixed jx, jy, jz;
+            if (static_cast<int>(j) == s.owner || !alive(m_slots[j]) || !where(j, jx, jy, jz) || smokedAt(jx, jz)) continue;   // smoke hides it
+            const Fixed dx = jx - s.x, dz = jz - s.z, d = Fixed::Length(dx, Fixed::Zero(), dz);
+            if (!(d < best) || !(dx * ux + dz * uz).IsPositive()) continue;
+            best = d; at = static_cast<int>(j); bx = dx; by = jy - s.y; bz = dz;
+        }
+        if (at < 0 || !best.IsPositive()) { s.vy = Fixed::Zero(); return; }
+        Fixed nx = ux + (bx / best - ux) / F(8), nz = uz + (bz / best - uz) / F(8);
+        const Fixed l = Fixed::Length(nx, Fixed::Zero(), nz);
+        if (!l.IsPositive()) return;
+        s.vx = nx / l * homingSpeed(); s.vz = nz / l * homingSpeed();
+        s.vy = Fixed::Max(F(-6), Fixed::Min(F(6), by * F(2)));
+    }
+
+    /*
+     * THE WEAPONS' EFFECTS, drawn only and never the trace's: a homing
+     * rocket's WISPS of smoke behind it, an oil SLICK flat on the ground, a
+     * shockwave's RING. Each a pooled node (kart_fx.etcs: a ball; kart_ring
+     * .etcs: the ring this battle baked), DRESSED when it changes and not
+     * otherwise -- a verb on a node is a line of the scene's record, so an
+     * effect says a handful in its life, not one a tick: a wisp swells in
+     * three steps, a slick dries in three, a ring is sized a tick (it is one
+     * node, where beads round it would be a dozen).
+     */
+    struct Dress { std::string size, colour; float glow = 0.0f, smoke = 0.0f; bool up = false; ETCS::RID mesh = 0; };
+    void dressLocked(ETCS::RID n, const std::string& size, const std::string& colour, float glow, float smoke)
+    {
+        Dress& d = m_dress[n];
+        if (d.size != size)     { verb(n, "Create", size); d.size = size; }
+        if (d.colour != colour) { verb(n, "SetColor", colour); d.colour = colour; }
+        if (d.glow != glow)     { verb(n, "SetGlow", fmt3(glow)); d.glow = glow; }
+        if (d.smoke != smoke)   { verb(n, "SetSmoke", fmt3(smoke)); d.smoke = smoke; }
+        if (!d.up)              { verb(n, "SetVisible", "1"); d.up = true; }
+    }
+    void undressLocked(ETCS::RID n)
+    {
+        Dress& d = m_dress[n];
+        if (!d.up) return;
+        parkNode(n);          // away, hidden, and small enough for its berth
+        d.up = false; d.size.clear();
+    }
+    static int takeOf(std::vector<bool>& busy)
+    {
+        for (size_t n = 0; n < busy.size(); ++n) if (!busy[n]) { busy[n] = true; return static_cast<int>(n); }
+        return -1;
+    }
+    int  takeFx()        { return takeOf(m_fx_busy); }
+    int  takeRing()      { return takeOf(m_ring_busy); }
+    void freeFx(int n)   { if (n >= 0 && n < static_cast<int>(m_fx_busy.size()))   { m_fx_busy[n] = false;   undressLocked(m_fx_nodes[n]); } }
+    void freeRing(int n) { if (n >= 0 && n < static_cast<int>(m_ring_busy.size())) { m_ring_busy[n] = false; undressLocked(m_ring_nodes[n]); } }
+    static std::string slickSize(float f) { const std::string d = fmt1(2.0f * 2.5f * f); return d + ", 0.08, " + d; }
+    struct Wisp { int node; int64_t born; };
+    void wispLocked(Fixed x, Fixed y, Fixed z)
+    {
+        // A quarter of the pool is kept back for the slicks.
+        size_t idle = 0;
+        for (bool b : m_fx_busy) if (!b) ++idle;
+        if (idle * 4 <= m_fx_busy.size()) return;
+        const int n = takeFx();
+        if (n < 0) return;
+        placeNode(m_fx_nodes[n], x, y, z);
+        dressLocked(m_fx_nodes[n], "0.5, 0.5, 0.5", "0.62, 0.6, 0.58, 1.0", 0.0f, 0.6f);
+        m_wisps.push_back({ n, static_cast<int64_t>(m_tick) });
+    }
+    void wispsLocked()
+    {
+        std::vector<Wisp> keep;
+        for (const Wisp& w : m_wisps)
+        {
+            const int64_t age = static_cast<int64_t>(m_tick) - w.born;
+            if (age >= kWispTicks) { freeFx(w.node); continue; }
+            if (age == kWispTicks / 3)          dressLocked(m_fx_nodes[w.node], "0.9, 0.9, 0.9", "0.62, 0.6, 0.58, 1.0", 0.0f, 0.4f);
+            else if (age == 2 * kWispTicks / 3) dressLocked(m_fx_nodes[w.node], "1.3, 1.3, 1.3", "0.62, 0.6, 0.58, 1.0", 0.0f, 0.2f);
+            keep.push_back(w);
+        }
+        m_wisps.swap(keep);
+    }
+    void clearWispsLocked() { for (const Wisp& w : m_wisps) freeFx(w.node); m_wisps.clear(); }
+    // The ring a shockwave is drawn as, baked into the mesh the script made
+    // for it: round the unit box's middle, level, its tube the box's height.
+    void bakeRingLocked(ETCS::RID mesh)
+    {
+        if (!mesh || !m_baked.insert(mesh).second) return;
+        const int around = 24, tube = 6;
+        const float R = 0.4f, r = 0.1f;
+        verb(mesh, "Clear", "");
+        for (int i = 0; i < around; ++i)
+            for (int j = 0; j < tube; ++j)
+            {
+                const float a = 2.0f * kPi * i / around, b = 2.0f * kPi * j / tube;
+                const float ca = std::cos(a), sa = std::sin(a), cb = std::cos(b), sb = std::sin(b);
+                verb(mesh, "AddVertex", fmt3((R + r * cb) * ca) + ", " + fmt3(0.5f * sb) + ", " + fmt3((R + r * cb) * sa) + ", "
+                                      + fmt3(cb * ca) + ", " + fmt3(sb) + ", " + fmt3(cb * sa));
+            }
+        auto at = [&](int i, int j) { return std::to_string(((i % around) * tube) + (j % tube)); };
+        for (int i = 0; i < around; ++i)
+            for (int j = 0; j < tube; ++j)
+            {
+                verb(mesh, "AddTriangle", at(i, j) + ", " + at(i, j + 1) + ", " + at(i + 1, j + 1));
+                verb(mesh, "AddTriangle", at(i, j) + ", " + at(i + 1, j + 1) + ", " + at(i + 1, j));
+            }
     }
 
     /*
@@ -2212,8 +2514,20 @@ private:
         v.dead_until = back;
     }
 
-    // The power-ups: a kart that drives over one gets a weapon off the dice,
-    // in place of what it had; the box is back eight seconds later.
+    // A weapon to a kart, of the two it carries (KartArms.h): more of one it
+    // has, else in hand, else the spare -- in place of what the spare was.
+    // What it came to, for the card's note.
+    const char* armLocked(Slot& s, uint8_t w)
+    {
+        const int more = KartArms::Ammo(w), most = 3 * more;
+        if (s.weapon == w) { s.ammo = static_cast<uint8_t>(std::min(most, s.ammo + more)); return "more "; }
+        if (s.weapon == KartArms::None) { s.weapon = w; s.ammo = static_cast<uint8_t>(more); s.cooldown = 0; return "you have a "; }
+        if (s.spare == w) { s.spare_ammo = static_cast<uint8_t>(std::min(most, s.spare_ammo + more)); return "more spare "; }
+        s.spare = w; s.spare_ammo = static_cast<uint8_t>(more);
+        return "your spare is a ";
+    }
+    // The power-ups: a kart that drives over one gets a weapon off the dice
+    // (armLocked); the box is back eight seconds later.
     void pickupsLocked()
     {
         for (Pickup& p : m_pickups)
@@ -2227,10 +2541,9 @@ private:
             if (j >= 0)
             {
                 Slot& s = m_slots[j];
-                s.weapon = static_cast<uint8_t>(1 + KartArms::Next(m_rng) % (KartArms::Count - 1));
-                s.ammo = KartArms::Ammo(s.weapon);
-                s.cooldown = 0;
-                if (s.driver == m_me) noteLocked(std::string("you have a ") + KartArms::Name(s.weapon));
+                const uint8_t got = static_cast<uint8_t>(1 + KartArms::Next(m_rng) % (KartArms::Count - 1));
+                const char* said = armLocked(s, got);
+                if (s.driver == m_me) noteLocked(std::string(said) + KartArms::Name(got));
                 p.back = static_cast<int64_t>(m_tick) + kPickupBack;
                 verb(p.node, "SetVisible", "0");
                 continue;
@@ -2677,7 +2990,9 @@ private:
                 + std::to_string(s.steer_held) + " " + std::to_string(s.hx.raw) + " "
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
                 + std::to_string(s.hp) + " " + std::to_string(s.weapon) + " " + std::to_string(s.ammo) + " "
-                + std::to_string(s.cooldown) + " " + std::to_string(s.boost) + " " + std::to_string(s.elims) + " "
+                + std::to_string(s.cooldown) + " " + std::to_string(s.boost) + " " + std::to_string(s.spare) + " "
+                + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.dagger) + " " + std::to_string(s.kx.raw) + " "
+                + std::to_string(s.kz.raw) + " " + std::to_string(s.elims) + " "
                 + std::to_string(s.deaths) + " " + std::to_string(s.last_elims) + " " + std::to_string(s.last_deaths) + " "
                 + std::to_string(s.dead_until) + " " + std::to_string(s.ram_safe);
             if (Causal_* k = causal(s.body))
@@ -2912,7 +3227,8 @@ private:
             else
             {
                 char hp[16]; std::snprintf(hp, sizeof hp, "%.1f", s.hp / 10.0);
-                t = std::string("HP ") + hp + "   " + (s.weapon ? std::string(KartArms::Name(s.weapon)) + " x" + std::to_string(s.ammo) : std::string("no weapon"));
+                t = std::string("HP ") + hp + "   " + (s.weapon ? std::string(KartArms::Name(s.weapon)) + " x" + std::to_string(s.ammo) : std::string("no weapon"))
+                  + (s.spare ? std::string(" (then ") + KartArms::Name(s.spare) + " x" + std::to_string(s.spare_ammo) + ")" : std::string());
             }
             t += "   " + std::to_string(s.elims) + (s.elims == 1 ? " elim" : " elims");
             t += m_phase == Playing ? "   " + clock(m_end - static_cast<int64_t>(m_tick)) + " left" : std::string("   round over");
@@ -3119,6 +3435,11 @@ private:
     std::vector<SpringNodes> m_spring_nodes;
     ETCS::RID m_floor = 0;
     std::vector<bool> m_shot_busy;
+    std::vector<ETCS::RID> m_fx_nodes, m_ring_nodes;   // the weapons' effects: drawn, not state
+    std::vector<bool> m_fx_busy, m_ring_busy;
+    std::vector<Wisp> m_wisps;
+    std::map<ETCS::RID, Dress> m_dress;
+    std::set<ETCS::RID> m_baked;                        // the meshes this battle has baked
     std::vector<ETCS::RID> m_spark_nodes;   // the bursts' sparks: kBursts x kSparks, glowing
     std::vector<ETCS::RID> m_smoke_nodes;   // ...and their smoke: kBursts x kPuffs
     Burst      m_bursts[kBursts];

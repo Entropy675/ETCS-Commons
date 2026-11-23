@@ -85,14 +85,15 @@ DEFINE_WORK_FUNC(GolfMatch, Configure)
 DEFINE_WORK_FUNC(GolfMatch, Reroll)     { (void)ctx; const bool ok = self.Reroll(); data.reset(); data.writeString(ok ? "ok" : "refused"); }
 DEFINE_WORK_FUNC(GolfMatch, StartRound) { (void)ctx; const bool ok = self.StartRound(); data.reset(); data.writeString(ok ? "ok" : "refused"); }
 DEFINE_WORK_FUNC(GolfMatch, Abandon)    { (void)ctx; const bool ok = self.Abandon(); data.reset(); data.writeString(ok ? "ok" : "refused"); }
-// Give <who> <power> -- the host's: a power handed over outright (GolfPowers.h names).
+// Give <who> <power> [spare|pickup] -- the host's: a power in hand outright, as
+// the spare, or as a spot hands one over (GolfPowers.h names).
 DEFINE_WORK_FUNC(GolfMatch, Give)
 {
     (void)ctx;
-    std::string who, power;
-    data >> who >> power;
+    std::string who, power, how;
+    data >> who >> power >> how;
     data.reset();
-    data.writeString(self.Give(who, power) ? "ok" : "refused");
+    data.writeString(self.Give(who, power, how) ? "ok" : "refused");
 }
 
 // The hand as verbs (window pixels), a key, and a shot or a power stated outright.
@@ -122,7 +123,7 @@ DEFINE_WORK_FUNC(GolfMatch, Hash)     { (void)ctx; data.reset(); data.writeStrin
 DEFINE_WORK_FUNC(GolfMatch, Snapshot) { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
 DEFINE_WORK_FUNC(GolfMatch, Note)     { (void)ctx; data.reset(); data.writeString(self.Note().c_str()); }
 DEFINE_WORK_FUNC(GolfMatch, Here)     { (void)ctx; data.reset(); data.writeString(self.Here().c_str()); }
-// Ball [<name>] -- "<slot> <x> <y> <z> <speed> <strokes> <total> <state> <power> <resting|moving>".
+// Ball [<name>] -- "<slot> <x> <y> <z> <speed> <strokes> <total> <state> <power> <resting|moving> <spare>".
 DEFINE_WORK_FUNC(GolfMatch, Ball)     { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Ball(who).c_str()); }
 DEFINE_WORK_FUNC(GolfMatch, Pull)     { (void)ctx; data.reset(); data.writeString(self.Pull().c_str()); }
 DEFINE_WORK_FUNC(GolfMatch, Delete)   { (void)ctx; (void)data; data.writeString(self.Delete() ? "deleted" : "FAILED"); }

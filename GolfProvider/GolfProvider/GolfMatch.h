@@ -137,7 +137,7 @@ public:
     void AddCupNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_cup = r; parkNode(r); }
     void AddTeeNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_tee = r; parkNode(r); }
     void AddSpotNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_spot_nodes.push_back(r); parkNode(r); }
-    void AddPuffNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_puff_nodes.push_back(r); m_puff_until.push_back(-1); parkNode(r); }
+    void AddPuffNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_puff_nodes.push_back(r); m_puff_until.push_back(-1); m_puff_size.emplace_back(); parkNode(r); }
     void AddPadNode(ETCS::RID plate, ETCS::RID a, ETCS::RID b, ETCS::RID c)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -290,13 +290,13 @@ public:
         std::lock_guard<std::mutex> g(m_mu);
         return m_authority && takeLocked(m_me, "abandon");
     }
-    bool Give(const std::string& who, const std::string& power)
+    bool Give(const std::string& who, const std::string& power, const std::string& how)
     {
         std::lock_guard<std::mutex> g(m_mu);
         // Named as people name them; the line names the seat.
         const int i = slotNamedLocked(who);
         if (!m_authority || i < 0) return false;
-        return takeLocked(m_me, "give " + m_slots[i].player + " " + power);
+        return takeLocked(m_me, "give " + m_slots[i].player + " " + power + (how.empty() ? "" : " " + how));
     }
 
     // ── what the families ask of a match ──────────────────────────────────
@@ -502,7 +502,7 @@ public:
     }
     std::string Hash() { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_tick) + " " + hashLocked(); }
     std::string Note() { std::lock_guard<std::mutex> g(m_mu); return m_note; }
-    // "<slot> <x> <y> <z> <speed> <strokes> <total> <holed|out|playing> <power> <resting|moving>", or "-".
+    // "<slot> <x> <y> <z> <speed> <strokes> <total> <holed|out|playing> <power> <resting|moving> <spare>", or "-".
     std::string Ball(const std::string& who)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -513,7 +513,7 @@ public:
         ballAt(s, x, y, z, &v);
         return std::to_string(i) + " " + fmt3(x.ToFloat()) + " " + fmt3(y.ToFloat()) + " " + fmt3(z.ToFloat()) + " " + fmt3(v.ToFloat()) + " "
              + std::to_string(s.strokes) + " " + std::to_string(s.total) + " " + (s.holed ? "holed" : s.done ? "out" : "playing") + " "
-             + GolfPowers::Name(s.power) + " " + (restingLocked(i) ? "resting" : "moving");
+             + GolfPowers::Name(s.power) + " " + (restingLocked(i) ? "resting" : "moving") + " " + GolfPowers::Name(s.spare);
     }
     // "x y z length mode": the pull as it stands (mode idle | orbiting | pulling | placing | down).
     std::string Pull()
@@ -553,7 +553,7 @@ private:
         bool        holed = false, done = false, out = true;   // out: off the course (parked)
         int64_t     park_at = -1;             // the tick a holed or finished ball leaves the course
         Fixed       fx, fy, fz;               // where its last shot was struck from: a lost ball goes back there
-        uint8_t     power = GolfPowers::None;
+        uint8_t     power = GolfPowers::None, spare = GolfPowers::None;   // the one in hand, and the next (GolfPowers.h)
         bool        shadow_shown = false;     // drawn, not state
     };
     struct PadNodes    { ETCS::RID plate = 0; ETCS::RID arrow[3] = { 0, 0, 0 }; };
@@ -566,6 +566,7 @@ private:
         Fixed   x, y, z, sx, cz, vx, vz;
         int64_t until = 0, next = 0;
         int     puffs[6] = { -1, -1, -1, -1, -1, -1 };
+        int     said = -1;                 // drawn: the step of its look last said
     };
     // A lightning strike's picture: a bolt, a flash and its smoke (drawn only).
     struct Strike { Fixed x, y, z; int64_t at = 0; int puffs[4] = { -1, -1, -1, -1 }; };
@@ -616,6 +617,11 @@ private:
     static Fixed strikeReach() { return F(10); }
     static Fixed strikeMost()  { return F(40); }      // the most a ball takes of one
     static Fixed strikeAround() { return F(6); }      // how far from the tornado it strikes
+    static Fixed magnetR()     { return F(10); }      // how far the cup's pull reaches
+    static Fixed magnetPull()  { return F(5); }
+    static Fixed magnetDrag()  { return F(4); }
+    static Fixed cannonReach() { return F(20); }      // 14 a second at 45 degrees: under the world's light
+    static Fixed freezeDrag()  { return F(2); }       // of the kinetic share, a second: a shot carries about a third as far
 
     static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
     static InputEvent event(uint8_t action, uint16_t key, float x, float y)
@@ -665,7 +671,7 @@ private:
                 {
                     Slot& s = m_slots[i];
                     s.player = author;
-                    s.strokes = 0; s.power = GolfPowers::None; s.last_total = -1;
+                    s.strokes = 0; s.power = s.spare = GolfPowers::None; s.last_total = -1;
                     // In a round already: from the next hole's tee at the
                     // worst total so far, so a late start is not a lead.
                     s.total = m_phase == Lobby ? 0 : worstTotalLocked(i);
@@ -696,7 +702,7 @@ private:
             const int i = slotOf(author);
             if (i < 0) return false;
             Slot& s = m_slots[i];
-            s.player.clear(); s.strokes = s.total = 0; s.last_total = -1; s.power = GolfPowers::None;
+            s.player.clear(); s.strokes = s.total = 0; s.last_total = -1; s.power = s.spare = GolfPowers::None;
             s.holed = s.done = false;
             parkBallLocked(static_cast<size_t>(i));
             return true;
@@ -719,7 +725,7 @@ private:
             uint64_t seed = 0;
             if (m_phase != Lobby || !(in >> seed) || !seed || m_live.holes.empty()) return false;
             m_rng = seed;
-            for (Slot& s : m_slots) { s.total = 0; s.strokes = 0; s.power = GolfPowers::None; }
+            for (Slot& s : m_slots) { s.total = 0; s.strokes = 0; s.power = s.spare = GolfPowers::None; }
             m_phase = Playing;
             holeLocked(0);
             noteLocked("the round is on: " + courseName(m_course) + ", " + std::to_string(m_live.holes.size()) + " holes");
@@ -734,12 +740,14 @@ private:
         }
         if (verb == "give")
         {
-            std::string who, p;
-            in >> who >> p;
+            // In hand outright -- or, said so, as the spare, or as a spot hands one over.
+            std::string who, p, how;
+            in >> who >> p >> how;
             const int i = slotNamedLocked(who);
             const uint8_t power = GolfPowers::ByName(p);
-            if (i < 0 || power == GolfPowers::None) return false;
-            m_slots[i].power = power;
+            if (i < 0 || power == GolfPowers::None || (!how.empty() && how != "spare" && how != "pickup")) return false;
+            if (how == "pickup") armLocked(m_slots[i], power);
+            else (how == "spare" ? m_slots[i].spare : m_slots[i].power) = power;
             return true;
         }
         return false;
@@ -754,7 +762,7 @@ private:
         for (size_t i = 0; i < m_slots.size(); ++i)
         {
             Slot& s = m_slots[i];
-            s.player.clear(); s.strokes = s.total = 0; s.last_total = -1; s.power = GolfPowers::None; s.holed = s.done = false;
+            s.player.clear(); s.strokes = s.total = 0; s.last_total = -1; s.power = s.spare = GolfPowers::None; s.holed = s.done = false;
             parkBallLocked(i);
         }
         m_phase = Lobby; m_end = 0; m_hole_secs = 120;
@@ -981,6 +989,8 @@ private:
         Fixed vx, vy, vz;
         r.Velocity(m, vx, vy, vz);
         Fixed ax = Fixed::Zero(), ay = Fixed::Zero(), az = Fixed::Zero();
+        bool held = false;
+        Fixed drag = Fixed::Zero();   // a power's, of the kinetic share a second
         Fixed top;
         const GolfCourse::Slab* on = GolfCourse::TopAt(m_play, r.x, r.z, top, r.y);
         const bool ground = on && r.y - ballR() - top < touching();
@@ -1005,7 +1015,7 @@ private:
                 ay += (kick - vy) / dt();
             }
         }
-        for (const Effect& e : m_effects)
+        for (Effect& e : m_effects)
         {
             const Fixed dx = e.x - r.x, dz = e.z - r.z, dy = e.y - r.y;
             if (e.kind == GolfPowers::BlackHole)
@@ -1025,11 +1035,38 @@ private:
                 az += ( dx / d) * F(9) + dz / d * F(5);
                 if (d < F(3, 2)) ay += F(14);
             }
+            else if (e.kind == GolfPowers::Magnet)
+            {
+                // The cup's pull on its user's ball alone, along the ground --
+                // and a drag with it, and less of both close in: a ball
+                // drawn to the cup comes to it slowly enough to drop.
+                const Fixed d = Fixed::Length(dx, Fixed::Zero(), dz);
+                if (static_cast<int>(i) != e.owner || d >= magnetR() || d < F(1, 10)) continue;
+                const Fixed a = magnetPull() * Fixed::Max(F(2, 5), Fixed::Min(Fixed::One(), d / F(4)));
+                ax += dx / d * a; az += dz / d * a;
+                drag = magnetDrag();
+            }
+            else if (e.kind == GolfPowers::Cannon && static_cast<int>(i) == e.owner)
+            {
+                // Its ball comes down dead: on the first ground it touches
+                // after the shot, most of its way is gone (and the power's work with it).
+                const int64_t flown = static_cast<int64_t>(m_tick) - (e.until - GolfPowers::kCannonTicks);
+                if (flown > 10 && ground) { drag = F(45); e.until = static_cast<int64_t>(m_tick) + 1; }
+            }
+            else if (e.kind == GolfPowers::Freeze && static_cast<int>(i) != e.owner) held = true;
         }
         if (!ax.IsZero() || !ay.IsZero() || !az.IsZero()) r.Accelerate(ax, ay, az, dt(), m);
         if (ground && on->kind == GolfCourse::Sand) r.Dissipate(Fixed::One() - sandDrag() * dt());
+        if (held) r.Dissipate(Fixed::One() - freezeDrag() * dt());   // in the cold: everything it does is slowed, not stopped
+        if (drag.IsPositive()) r.Dissipate(Fixed::One() - drag * dt());
     }
 
+    // A power to a ball, of the two it carries (GolfPowers.h): in hand if
+    // that is empty, else the spare -- in place of what the spare was.
+    static void armLocked(Slot& s, uint8_t power)
+    {
+        (s.power == GolfPowers::None ? s.power : s.spare) = power;
+    }
     // After the step: holed, lost, out of strokes, or through a spot.
     void afterLocked(size_t i)
     {
@@ -1059,14 +1096,13 @@ private:
             return;
         }
         if (m_phase == Playing && s.strokes >= kCap && restingLocked(static_cast<int>(i))) { finishLocked(i, kCap + 1, false); return; }
-        // A spot: a power, if it holds none.
-        if (s.power != GolfPowers::None) return;
+        // A spot: a power -- in hand, or the spare (armLocked).
         for (size_t n = 0; n < m_play.pickups.size(); ++n)
         {
             const GolfCourse::Spot& p = m_play.pickups[n];
             if (m_spot_back[n] > static_cast<int64_t>(m_tick)) continue;
             if (Fixed::Length(x - p.x, Fixed::Zero(), z - p.z) > GolfCourse::SpotReach() || (y - p.y).Abs() > F(3, 2)) continue;
-            s.power = static_cast<uint8_t>(1 + diceLocked() % (GolfPowers::Count - 1));
+            armLocked(s, static_cast<uint8_t>(1 + diceLocked() % (GolfPowers::Count - 1)));
             m_spot_back[n] = static_cast<int64_t>(m_tick) + kSpotBack;
             hide(m_spot_nodes.size() > n ? m_spot_nodes[n] : 0);
             break;
@@ -1077,7 +1113,15 @@ private:
     {
         const int64_t now = static_cast<int64_t>(m_tick);
         for (size_t n = 0; n < m_spot_back.size() && n < m_spot_nodes.size(); ++n)
+        {
             if (m_spot_back[n] && m_spot_back[n] <= now) { m_spot_back[n] = 0; verb(m_spot_nodes[n], "SetVisible", "1"); }
+            // Turning in place, as power-ups do (the kart's boxes the same).
+            if (Causal_* c = m_spot_back[n] ? nullptr : causal(m_spot_nodes[n]))
+            {
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                c->RowsUnder().RotateBy(Fixed::Zero(), Fixed::One(), Fixed::Zero(), F(6, 100));
+            }
+        }
         if (m_phase == Playing)
         {
             bool all = true, anyone = false;
@@ -1126,7 +1170,7 @@ private:
         if (kind == GolfPowers::None || s.player.empty() || (m_phase != Lobby && m_phase != Playing)) return false;
         Fixed bx, by, bz;
         if (s.out || !ballAt(s, bx, by, bz)) { bx = m_play.tee_x; by = m_play.tee_y; bz = m_play.tee_z; }
-        const Fixed reach = kind == GolfPowers::Teleport ? teleportReach() : placeReach();
+        const Fixed reach = kind == GolfPowers::Teleport ? teleportReach() : kind == GolfPowers::Cannon ? cannonReach() : placeReach();
         Fixed dx = x - bx, dz = z - bz;
         const Fixed d = Fixed::Length(dx, Fixed::Zero(), dz);
         if (d > reach) { x = bx + dx * reach / d; z = bz + dz * reach / d; }
@@ -1168,20 +1212,34 @@ private:
                 break;
             default:
             {
+                if (kind == GolfPowers::Magnet && !m_play.cup) return false;
+                if (kind == GolfPowers::Cannon)
+                {
+                    // From rest, at 45 degrees: over level ground it comes
+                    // down `far` away at a speed whose square is g x far.
+                    Causal_* k = causal(s.ball);
+                    const Fixed far = Fixed::Length(x - bx, Fixed::Zero(), z - bz);
+                    if (s.out || s.done || !k || !restingLocked(static_cast<int>(i)) || far < F(1)) return false;
+                    const Fixed speed = (F(98, 10) * far).Sqrt();
+                    std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
+                    k->RowsUnder().Impulse((x - bx) / far, Fixed::One(), (z - bz) / far, Fixed::Half() * k->MassUnder() * speed * speed);
+                    s.fx = bx; s.fy = by; s.fz = bz;   // lost from there, it goes back there
+                }
                 Effect e; e.kind = kind; e.owner = static_cast<int>(i);
                 e.x = x; e.z = z; e.y = top + (kind == GolfPowers::BlackHole ? F(1, 2) : Fixed::Zero());
                 e.sx = ys; e.cz = yc;
                 const int64_t now = static_cast<int64_t>(m_tick);
-                e.until = now + (kind == GolfPowers::BlackHole ? GolfPowers::kBlackHoleTicks : kind == GolfPowers::Wind ? GolfPowers::kWindTicks : GolfPowers::kTornadoTicks);
+                e.until = now + GolfPowers::Ticks(kind);
                 e.next = now + GolfPowers::kStrikeEvery;
-                if (kind == GolfPowers::Wind) { e.x = bx; e.z = bz; e.y = by; }
+                if (kind == GolfPowers::Wind || kind == GolfPowers::Cannon) { e.x = bx; e.z = bz; e.y = by; }
+                if (kind == GolfPowers::Magnet) { e.x = m_play.cup_x; e.z = m_play.cup_z; e.y = m_play.cup_y; }
                 takePuffsLocked(e);
                 m_effects.push_back(e);
                 break;
             }
         }
         noteLocked(labelLocked(s.player) + " put down a " + GolfPowers::Name(kind));
-        s.power = GolfPowers::None;
+        s.power = s.spare; s.spare = GolfPowers::None;   // used: the spare comes to hand
         return true;
     }
 
@@ -1371,7 +1429,7 @@ private:
     void freePuffsLocked(int* puffs, int count)
     {
         for (int k = 0; k < count; ++k)
-            if (puffs[k] >= 0) { m_puff_until[puffs[k]] = -1; parkNode(m_puff_nodes[puffs[k]]); puffs[k] = -1; }
+            if (puffs[k] >= 0) { m_puff_until[puffs[k]] = -1; m_puff_size[puffs[k]].clear(); parkNode(m_puff_nodes[puffs[k]]); puffs[k] = -1; }
     }
     void puffLook(int n, const char* colour, const char* soft, const char* amount)
     {
@@ -1384,7 +1442,7 @@ private:
     }
     void takePuffsLocked(Effect& e)
     {
-        const int count = e.kind == GolfPowers::BlackHole ? 2 : 6;
+        const int count = e.kind == GolfPowers::BlackHole ? 2 : e.kind == GolfPowers::Cannon ? 3 : 6;
         for (int k = 0; k < count; ++k) e.puffs[k] = takePuffLocked(e.until);
         if (e.kind == GolfPowers::BlackHole)
         {
@@ -1393,6 +1451,12 @@ private:
         }
         else if (e.kind == GolfPowers::Wind)
             for (int k = 0; k < count; ++k) puffLook(e.puffs[k], "0.85, 0.95, 1.0, 1.0", "SetGlow", "0.7");
+        else if (e.kind == GolfPowers::Magnet)
+            for (int k = 0; k < count; ++k) puffLook(e.puffs[k], k % 2 ? "0.95, 0.25, 0.25, 1.0" : "0.3, 0.5, 1.0, 1.0", "SetGlow", "1.1");
+        else if (e.kind == GolfPowers::Freeze)
+            for (int k = 0; k < count; ++k) puffLook(e.puffs[k], "0.75, 0.92, 1.0, 1.0", "SetSmoke", "0.45");
+        else if (e.kind == GolfPowers::Smoke)
+            for (int k = 0; k < count; ++k) puffLook(e.puffs[k], "0.6, 0.6, 0.62, 1.0", "SetSmoke", "0.9");
         else
             for (int k = 0; k < count; ++k) puffLook(e.puffs[k], "0.42, 0.42, 0.46, 1.0", "SetSmoke", "0.55");
     }
@@ -1404,7 +1468,7 @@ private:
         puffLook(s.puffs[1], "1.0, 0.95, 0.70, 1.0", "SetGlow", "1.8");     // the flash
         puffLook(s.puffs[2], "0.30, 0.30, 0.32, 1.0", "SetSmoke", "0.6");   // its smoke
         puffLook(s.puffs[3], "0.35, 0.34, 0.36, 1.0", "SetSmoke", "0.5");
-        if (s.puffs[0] >= 0) { verb(m_puff_nodes[s.puffs[0]], "Create", "0.25, 14.0, 0.25"); placeNode(m_puff_nodes[s.puffs[0]], s.x, s.y + F(7), s.z); }
+        if (s.puffs[0] >= 0) { resizePuff(s.puffs[0], "0.25, 14.0, 0.25"); placeNode(m_puff_nodes[s.puffs[0]], s.x, s.y + F(7), s.z); }
     }
     // Each tick: where every puff of every power is, and how big.
     void puffsLocked()
@@ -1414,13 +1478,15 @@ private:
         for (Effect& e : m_effects)
         {
             any = true;
-            const Fixed age = F(now - (e.until - (e.kind == GolfPowers::BlackHole ? GolfPowers::kBlackHoleTicks : e.kind == GolfPowers::Wind ? GolfPowers::kWindTicks : GolfPowers::kTornadoTicks)), kHz);
+            const int64_t ticks = now - (e.until - GolfPowers::Ticks(e.kind));
+            const Fixed age = F(ticks, kHz);
             Fixed s, c;
             if (e.kind == GolfPowers::BlackHole)
             {
-                (age * F(12)).SinCos(s, c);
-                sizePuff(e.puffs[0], F(7, 10) + s * F(1, 10), e.x, e.y, e.z);
-                sizePuff(e.puffs[1], F(22, 10) + c * F(3, 10), e.x, e.y, e.z);
+                // Breathing, in tenths: a size is a verb, and it is there half a minute.
+                (age * F(4)).SinCos(s, c);
+                sizePuff(e.puffs[0], F(7, 10) + F((s * F(3, 2)).ToInt(), 10), e.x, e.y, e.z);
+                sizePuff(e.puffs[1], F(22, 10) + F((c * F(7, 2)).ToInt(), 10), e.x, e.y, e.z);
             }
             else if (e.kind == GolfPowers::Wind)
                 for (int k = 0; k < 6; ++k)
@@ -1429,8 +1495,55 @@ private:
                     const Fixed along = F((static_cast<int64_t>(now) * 3 + k * 37) % 300, 10) - F(15);
                     const Fixed across = F(k - 3) * F(3, 2);
                     if (e.puffs[k] < 0) continue;
-                    poseStreak(m_puff_nodes[e.puffs[k]], e.x + e.sx * along + e.cz * across, e.y + F(1) + F(k % 3, 2), e.z + e.cz * along - e.sx * across, e.sx, e.cz);
+                    poseStreak(e.puffs[k], e.x + e.sx * along + e.cz * across, e.y + F(1) + F(k % 3, 2), e.z + e.cz * along - e.sx * across, e.sx, e.cz);
                 }
+            else if (e.kind == GolfPowers::Magnet)
+                for (int k = 0; k < 6; ++k)
+                {
+                    // Beads round the cup, red and blue by turns, closing on it and out again.
+                    (age * F(4) + Fixed::TwoPi() * F(k, 6)).SinCos(s, c);
+                    const Fixed out = F(3, 2) - F((ticks * 2 + k * 9) % 50, 50);
+                    sizePuff(e.puffs[k], F(35, 100), e.x + s * out, e.y + F(3, 10), e.z + c * out);
+                }
+            else if (e.kind == GolfPowers::Cannon)
+                for (int k = 0; k < 3; ++k)   // smoke where it was fired from, swelling as it rises (in steps: a size is a verb)
+                {
+                    const int64_t step = std::min<int64_t>(ticks, 60) / 6;
+                    sizePuff(e.puffs[k], F(6, 10) + F(step, 5) + F(k, 5), e.x + F(k - 1, 4), e.y + F(2, 10) + F(std::min<int64_t>(ticks, 60) * (k + 1), 60), e.z);
+                }
+            else if (e.kind == GolfPowers::Smoke)
+            {
+                // Thick, then dissipating fifteen seconds: swelling as it thins, in steps (each a verb).
+                const int thin = GolfPowers::kSmokeTicks - GolfPowers::kSmokeThick;
+                const int step = ticks < GolfPowers::kSmokeThick ? 0 : 1 + static_cast<int>((ticks - GolfPowers::kSmokeThick) * GolfPowers::kSmokeSteps / thin);
+                const int64_t grow = std::min<int64_t>(ticks, 25);
+                for (int k = 0; k < 6; ++k)
+                {
+                    Fixed sn, cs;
+                    (Fixed::TwoPi() * F(k, 6)).SinCos(sn, cs);
+                    const Fixed wide = F(24, 10) + F(grow, 25) + F(step, 4);
+                    sizePuff(e.puffs[k], wide, e.x + sn * F(13, 10), e.y + F(6, 10) + F(k % 3, 3), e.z + cs * F(13, 10));
+                }
+                if (step != e.said)
+                {
+                    e.said = step;
+                    const float f = static_cast<float>(step) / GolfPowers::kSmokeSteps;
+                    for (int k = 0; k < 6; ++k)
+                        if (e.puffs[k] >= 0) verb(m_puff_nodes[static_cast<size_t>(e.puffs[k])], "SetSmoke", fmt3(0.9f * (1.0f - f) + 0.02f));
+                }
+            }
+            else if (e.kind == GolfPowers::Freeze)
+            {
+                // A cold haze on each ball it holds (as many as there are puffs).
+                int k = 0;
+                for (size_t j = 0; j < m_slots.size() && k < 6; ++j)
+                {
+                    Fixed jx, jy, jz;
+                    if (static_cast<int>(j) == e.owner || m_slots[j].out || !ballAt(m_slots[j], jx, jy, jz)) continue;
+                    sizePuff(e.puffs[k++], F(7, 10), jx, jy, jz);
+                }
+                for (; k < 6; ++k) if (e.puffs[k] >= 0 && m_puff_size[e.puffs[k]] != "hid") { hide(m_puff_nodes[e.puffs[k]]); m_puff_size[e.puffs[k]] = "hid"; }
+            }
             else
                 for (int k = 0; k < 6; ++k)
                 {
@@ -1445,8 +1558,8 @@ private:
             const int64_t age = now - s.at;
             if (age > kHz) { freePuffsLocked(s.puffs, 4); m_strikes.erase(m_strikes.begin() + static_cast<long>(n)); continue; }
             any = true;
-            if (age > 6 && s.puffs[0] >= 0) { m_puff_until[s.puffs[0]] = -1; parkNode(m_puff_nodes[s.puffs[0]]); s.puffs[0] = -1; }
-            if (age > 10 && s.puffs[1] >= 0) { m_puff_until[s.puffs[1]] = -1; parkNode(m_puff_nodes[s.puffs[1]]); s.puffs[1] = -1; }
+            if (age > 6) freePuffsLocked(&s.puffs[0], 1);
+            if (age > 10) freePuffsLocked(&s.puffs[1], 1);
             sizePuff(s.puffs[1], F(15, 10) + F(age, 10), s.x, s.y + F(1, 2), s.z);
             const Fixed rise = F(age, 25);
             sizePuff(s.puffs[2], F(1) + rise, s.x - F(1, 2), s.y + F(1, 2) + rise, s.z);
@@ -1459,12 +1572,22 @@ private:
     {
         if (n < 0) return;
         const float d = size.ToFloat();
-        verb(m_puff_nodes[n], "Create", f3(d, d * 0.9f, d));
+        resizePuff(n, f3(d, d * 0.9f, d));
         placeNode(m_puff_nodes[n], x, y, z);
     }
-    void poseStreak(ETCS::RID r, Fixed x, Fixed y, Fixed z, Fixed sx, Fixed cz)
+    // A puff's size said when it changes, not a tick: a verb is a line of the
+    // scene's record, and most puffs are one size for as long as they last.
+    void resizePuff(int n, const std::string& size)
     {
-        verb(r, "Create", "0.12, 0.12, 2.2");
+        if (m_puff_size[n] == size) return;
+        if (m_puff_size[n] == "hid") verb(m_puff_nodes[n], "SetVisible", "1");
+        verb(m_puff_nodes[n], "Create", size);
+        m_puff_size[n] = size;
+    }
+    void poseStreak(int n, Fixed x, Fixed y, Fixed z, Fixed sx, Fixed cz)
+    {
+        const ETCS::RID r = m_puff_nodes[n];
+        resizePuff(n, "0.12, 0.12, 2.2");
         if (Causal_* c = causal(r))
         {
             std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
@@ -1730,7 +1853,8 @@ private:
             if (m_phase == Between) t += "   next hole in " + std::to_string((m_end - static_cast<int64_t>(m_tick) + kHz - 1) / kHz);
         }
         if (i >= 0 && m_slots[i].power != GolfPowers::None)
-            t += std::string("   power: ") + GolfPowers::Name(m_slots[i].power) + (m_armed ? " -- ARMED: click where it goes" : " (E)");
+            t += std::string("   power: ") + GolfPowers::Name(m_slots[i].power) + (m_armed ? " -- ARMED: click where it goes" : " (E)")
+               + (m_slots[i].spare != GolfPowers::None ? std::string("   then ") + GolfPowers::Name(m_slots[i].spare) : std::string());
         if (t == m_card_text) return;
         m_card_text = t;
         verb(m_card, "SetText", t);
@@ -1787,7 +1911,8 @@ private:
         for (const Slot& s : m_slots)
         {
             st += "|" + s.player + " " + std::to_string(s.strokes) + " " + std::to_string(s.total) + " " + std::to_string(s.holed) + std::to_string(s.done)
-                + std::to_string(s.out) + " " + std::to_string(s.park_at) + " " + std::to_string(s.power) + " " + std::to_string(s.fx.raw) + " "
+                + std::to_string(s.out) + " " + std::to_string(s.park_at) + " " + std::to_string(s.power) + " " + std::to_string(s.spare) + " "
+                + std::to_string(s.fx.raw) + " "
                 + std::to_string(s.fy.raw) + " " + std::to_string(s.fz.raw);
             if (Causal_* k = causal(s.ball))
             {
@@ -1927,6 +2052,7 @@ private:
     // The pools.
     std::vector<ETCS::RID> m_slab_nodes, m_spot_nodes, m_puff_nodes;
     std::vector<int64_t>   m_puff_until;           // drawn only: the tick each puff is free from, -1 free
+    std::vector<std::string> m_puff_size;          // ...and the size each was last given ("hid": up, not shown)
     std::vector<PadNodes>    m_pad_nodes;
     std::vector<SpringNodes> m_spring_nodes;
     ETCS::RID m_cup = 0, m_tee = 0;

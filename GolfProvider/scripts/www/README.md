@@ -20,18 +20,28 @@ modules/GolfProvider/scripts/golf.etcs`.
   **The camera's pitch is the loft**: look down at the ball for a putt, level for a lob.
 - **Let go of the right button while the left holds** a shot or a power and it is put down: the
   left's release then does nothing.
-- **Powers.** Roll through a gold box for one (if you hold none). **E** arms it and a **click**
-  puts it down where you point, no further than thirty from your ball:
+- **Powers.** Roll through a gold box (they turn, as the kart's do) for one. **You carry two**:
+  the one in hand and a spare -- a box with a power in hand goes to the spare, in place of what
+  was there, and the spare comes to hand when you use the one in hand. **E** arms it and a
+  **click** puts it down where you point, no further than thirty from your ball. **One that
+  works for a while works for half a minute** (or until the hole is over): everyone plays at
+  once, so it is there to be played round:
   - **pad** -- the kart's booster, pushing the way you look;
   - **bumper** -- a short wall across your view;
   - **spring** -- the kart's spring: throws a ball rolling onto it up;
   - **sand** -- a patch that drags hard;
-  - **black hole** -- pulls every ball near it in, for a little over a second;
-  - **wind** -- blows every ball on the hole the way you look, for three seconds;
+  - **black hole** -- pulls every ball near it in;
+  - **wind** -- blows every ball on the hole the way you look;
   - **teleport** -- your ball to where you point, ten at most;
-  - **tornado** -- wanders for seven seconds swirling balls near it, while lightning strikes
-    round it: each strike a burst whose energy spreads as it goes, so a ball takes the share its
-    size intercepts, a quarter of it through a wall.
+  - **tornado** -- wanders, swirling balls near it, while lightning strikes round it: each
+    strike a burst whose energy spreads as it goes, so a ball takes the share its size
+    intercepts, a quarter of it through a wall;
+  - **magnet** -- the cup pulls your own ball toward it from as far as ten off, slowly enough
+    to drop in;
+  - **cannon** -- your ball, at rest, fired in an arc to where you point (twenty at most), and
+    down dead where it lands; no stroke;
+  - **freeze** -- every other ball in the cold: it still plays, and its shots carry about a
+    third as far.
 - **A round** is the course's holes in order, each with a time (the lobby's setting). A hole is
   over for a ball when it drops in, or when it comes to rest after eight strokes (scored nine);
   for everyone when every ball is in, or the time runs out (anyone still out scored nine). A ball

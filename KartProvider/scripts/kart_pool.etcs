@@ -78,6 +78,17 @@ run kart_shots.etcs world=world battle=battle
 run kart_shots.etcs world=world battle=battle
 run kart_shots.etcs world=world battle=battle
 run kart_shots.etcs world=world battle=battle
+run kart_fxs.etcs world=world battle=battle ball=ball
+run kart_fxs.etcs world=world battle=battle ball=ball
+run kart_fxs.etcs world=world battle=battle ball=ball
+run kart_fxs.etcs world=world battle=battle ball=ball
+run kart_fxs.etcs world=world battle=battle ball=ball
+# ...and three shockwaves at once, on one ring.
+world.spawn(RenderProvider::Mesh hoop)
+hoop.Create()
+run kart_ring.etcs world=world battle=battle ring=hoop
+run kart_ring.etcs world=world battle=battle ring=hoop
+run kart_ring.etcs world=world battle=battle ring=hoop
 
 # Three bursts burning at once: each a core, sixty-four sparks laid along its
 # tree of fire and fourteen puffs of the smoke it leaves, on one ember shape --

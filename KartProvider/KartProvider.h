@@ -97,6 +97,10 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlastNode, (ETCS::RID, node))      { (void
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSparkNode, (ETCS::RID, node))      { (void)ctx; self.AddSparkNode(node); }
 // AddSmokeNode <node> -- a puff of the bursts' smoke: see-through, swelled, raised and thinned by the battle.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSmokeNode, (ETCS::RID, node))      { (void)ctx; self.AddSmokeNode(node); }
+// AddFxNode <node> -- one of the weapons' effects: a ball, a wisp of a homing rocket's smoke or a slick of oil as the battle dresses it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddFxNode, (ETCS::RID, node))         { (void)ctx; self.AddFxNode(node); }
+// AddRingNode <node> <mesh> -- a shockwave's ring: the node, and its (empty) mesh, which the battle bakes the ring into.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddRingNode, (ETCS::RID, node), (ETCS::RID, mesh)) { (void)ctx; self.AddRingNode(node, mesh); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBoardRow, (ETCS::RID, label))      { (void)ctx; self.AddBoardRow(label); }
 // AddPadNode <plate> <arrow> <arrow> <arrow> -- a pad of the pool: its plate
 // and the three arrows that run along it (kart_pad.etcs).
@@ -140,7 +144,7 @@ DEFINE_WORK_FUNC(KartBattle, Tick)  { (void)ctx; (void)data; self.Tick(); }
 // The host's lobby and round, each a line of the trace (refused on a guest,
 // and the settings refused outside the lobby): Configure <map> <seconds>,
 // Reroll (a new seed for a map made from one), StartRound, Abandon,
-// Give <driver> <weapon>.
+// Give <driver> <weapon> [spare|pickup] (in hand outright; as the spare; or as a power-up hands it over).
 DEFINE_WORK_FUNC(KartBattle, Configure)
 {
     (void)ctx;
@@ -155,10 +159,10 @@ DEFINE_WORK_FUNC(KartBattle, Abandon)    { (void)ctx; data.reset(); data.writeSt
 DEFINE_WORK_FUNC(KartBattle, Give)
 {
     (void)ctx;
-    std::string who, weapon;
-    data >> who >> weapon;
+    std::string who, weapon, where;
+    data >> who >> weapon >> where;
     data.reset();
-    data.writeString(self.Give(who, weapon) ? "ok" : "refused");
+    data.writeString(self.Give(who, weapon, where) ? "ok" : "refused");
 }
 // SetInvert <on> -- this runtime's wheel keys swapped (A right, D left): the
 // page's own setting, no line of the trace.
@@ -194,7 +198,7 @@ DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeStr
 // "<tick> <hash>": the last snapshot, what the trace's `hash` lines carry.
 DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
 // Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
-// <slide>", or "-".
+// <slide> <spare> <spare ammo> <oil ticks> <dagger ticks>", or "-".
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
 // Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
 // rope laid behind it, the segments drawn and the darkest (0..1); or "-".

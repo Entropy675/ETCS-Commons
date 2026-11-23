@@ -1,0 +1,14 @@
+#!/usr/bin/env etcs
+# A shockwave's ring: one node, glowing, drawn with the ring the battle bakes
+# into `ring` (an empty mesh until then) -- sized a tick as the wave goes out,
+# where beads round it would be a dozen nodes to move (KartBattle.h).
+#   run kart_ring.etcs world=<Scene3D> battle=<KartBattle> ring=<Mesh>
+requires world [Drawable3D]
+requires battle [KartBattle]
+requires ring [Mesh]
+world.spawn(RenderProvider::Scene3D wave)
+wave.Create(1.0, 0.6, 1.0)
+wave.SetMesh(@ring)
+wave.SetColor(0.45, 0.85, 1.0, 1.0)
+wave.SetAnchored(1)
+battle.AddRingNode(@wave, @ring)

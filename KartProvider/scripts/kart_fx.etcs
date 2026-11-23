@@ -1,0 +1,14 @@
+#!/usr/bin/env etcs
+# One of the weapons' effects: a ball, held. The battle makes it what it is
+# each time it takes it -- a puff of a homing rocket's trail, a slick of oil
+# flattened on the ground, a bead of a shockwave's ring -- and its colour,
+# glow and smoke with it (KartBattle.h, fxLocked).
+#   run kart_fx.etcs world=<Scene3D> battle=<KartBattle> ball=<Mesh>
+requires world [Drawable3D]
+requires battle [KartBattle]
+requires ball [Mesh]
+world.spawn(RenderProvider::Scene3D fx)
+fx.Create(1.0, 1.0, 1.0)
+fx.SetMesh(@ball)
+fx.SetAnchored(1)
+battle.AddFxNode(@fx)

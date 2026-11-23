@@ -23,20 +23,26 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   for it. Steer against the slide to catch it. Braking and sliding heat the tyres, and each leaves
   a **skid mark** where it ran, darker the harder it worked: forty units of trail that stay
   while you stand and are wiped from the far end as you drive on, either way.
-- **Drive over a gold box** for a weapon off the dice, in place of one you have not used up;
-  **Space** fires it. The box is back eight seconds later.
+- **Drive over a gold box** for a weapon off the dice; **Space** fires it. The box is back eight
+  seconds later. **You carry two**: the one in hand and a spare. A box with a weapon in hand
+  goes to the spare, in place of what was there, and the spare comes to hand when the one in
+  hand is spent. **The same weapon again is more of it** -- its ammo on top, up to three boxes'
+  worth -- whichever of the two it is.
 - A kart has **10 HP**, shown over it. Damage follows how hard a hit is to land:
 
   | weapon  | shots | damage |
   |---|---|---|
   | rocket  | 2  | flies until it has crossed the arena; a burst up to 4.0 at its centre |
-  | mine    | 2  | dropped behind, armed in half a second: a burst up to 3.0 |
+  | mine    | 2  | dropped behind, armed in half a second: a burst up to 3.0; left alone it blinks and bursts by itself after twenty seconds |
   | shotgun | 2  | five pellets in a short fan, 1.0 each |
   | boost   | 1  | two seconds faster; ramming a kart at speed, 2.0 |
   | bomb    | 2  | tossed up and forward, bursts where it lands: up to 4.0 |
   | minigun | 30 | while Space is held, 0.4 each; a round flies until it has crossed the arena |
   | fuse    | 1  | lit on your kart, bursts round it after 2.5 s: up to 5.0, not to you |
   | sniper  | 1  | an instant line: 10.0 dead on, 5.0 at the edge of a kart |
+  | homing  | 2  | a slower rocket that turns to the nearest kart ahead of it, trailing smoke: a burst up to 3.0 |
+  | oil     | 1  | a slick dropped behind for twelve seconds: on it a kart has a sixth of its grip and a third of its pedal |
+  | shockwave | 1 | a ring out from your kart to nine: 1.5 to every kart it passes, and thrown outward |
 
   Nothing hurts the kart that fired it. **A burst is a tree of fire**: branches grow out from
   it along lines, forking, and bend round what is dense -- a block, a wall, the ground, a
