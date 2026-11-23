@@ -138,6 +138,20 @@ DEFINE_WORK_FUNC_TYPED(GolfMatch, RightPress,   (float, x), (float, y)) { (void)
 DEFINE_WORK_FUNC_TYPED(GolfMatch, RightDrag, (float, x), (float, y)) { (void)ctx; self.RightDrag(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, RightRelease, (float, x), (float, y)) { (void)ctx; self.RightRelease(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, Wheel,   (float, notches))       { (void)ctx; self.Wheel(notches); }
+// Setting <name> <value> -- one of this runtime's settings (none of them the match's): look <pace>,
+// zoom <pace>, 1 as made. "ok" or "refused".
+DEFINE_WORK_FUNC(GolfMatch, Setting)
+{
+    (void)ctx;
+    const std::string line = data.toString();
+    const size_t sp = line.find(' ');
+    const bool ok = sp != std::string::npos && self.Setting(line.substr(0, sp), line.substr(sp + 1));
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// "look <scale> zoom <scale>": this runtime's settings.
+DEFINE_WORK_FUNC(GolfMatch, Settings) { (void)ctx; data.reset(); data.writeString(self.Settings().c_str()); }
+// ShowSettings <0|1> -- the settings open over the course, or shut (O does the same).
+DEFINE_WORK_FUNC_TYPED(GolfMatch, ShowSettings, (int32_t, on)) { (void)ctx; self.ShowSettings(on != 0); }
 // Key <code> <down> -- E arms a power, Tab the board, the host's Enter and Esc.
 DEFINE_WORK_FUNC_TYPED(GolfMatch, Key, (uint32_t, code), (int32_t, down)) { (void)ctx; self.Key(static_cast<uint16_t>(code), down != 0); }
 // Shoot <x> <y> <z> -- this runtime's shot along a pull (scene units).

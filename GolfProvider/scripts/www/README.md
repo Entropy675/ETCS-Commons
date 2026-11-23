@@ -18,9 +18,11 @@ modules/GolfProvider/scripts/golf.etcs`.
   long as it (to a cap), green to red with power. Let go to shoot. **Drag anywhere else, or with
   the right button,** to walk the camera round your ball; the **wheel** brings it in and out.
   **A shot starts along the ground your ball is on**, wherever the camera is when you take hold
-  of it -- on a slope, along the slope. **Loft is what the camera does after**: hold the right
-  button with the left and bring the camera down, and the shot tips up off the ground by as
-  much; bring it back up and the shot is along the ground again, and no lower.
+  of it -- on a slope, along the slope -- but not pinned to it: the drag's own rise off the
+  ground comes through damped, none of it for a tap and half of it at a full pull, so a putt
+  stays down and a long pull lifts. **More loft is what the camera does after**: hold the
+  right button with the left and bring the camera down, and the shot tips up by as much more;
+  bring it back up and it is back to the drag's own, and no lower.
 - **Let go of the right button while the left holds** a shot or a power and it is put down: the
   left's release then does nothing.
 - **Powers.** Roll through a gold box (they turn, as the kart's do) for one. **You carry two**:
@@ -45,6 +47,8 @@ modules/GolfProvider/scripts/golf.etcs`.
     down dead where it lands; no stroke;
   - **freeze** -- every other ball in the cold: it still plays, and its shots carry about a
     third as far.
+  - **smoke** -- a ring of smoke round your ball, spreading out to six over five seconds and
+    on to seven and a half as it thins away over fifteen: it hides the green from across it.
 - **A round** is the course's holes in order, each with a time (the lobby's setting). A hole is
   over for a ball when it drops in, or when it comes to rest after eight strokes (scored nine);
   for everyone when every ball is in, or the time runs out (anyone still out scored nine). A ball
@@ -57,6 +61,9 @@ modules/GolfProvider/scripts/golf.etcs`.
   has the same controls in HTML, and neither is where the state is: each says a line of the
   trace (`config`, `look`, `round`), so a change made in one shows in the other, on every
   tab. In a round the host can **abandon** it (**Esc**).
+- **Settings: O**, or the lobby's settings button, opens them over the course, in a round or
+  not: how fast a drag turns the camera and how far the wheel brings it in. They are this
+  tab's own, kept with your name, and none of them is the match's.
 - **The cup is round**: what a ball drops through is still a square gap (the ground is boxes),
   under a rim that covers its corners and over a round well.
 

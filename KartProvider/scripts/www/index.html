@@ -62,6 +62,20 @@
        all the same, or a narrow page has it lying over the panel beside it. */
     canvas#canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated; }
     #bootthrob { position: absolute; left: calc(50% - 48px); top: calc(50% - 48px); pointer-events: none; }
+    /* The pads: big, see-through buttons over the arena's bottom corners --
+       fire on the left; go, and the wheel, on the right -- for a thumb on a
+       tablet, and a click on a PC. Each press is the key's, held while it is
+       held. Hidden while the drawn menu is up: it has the pointer then. */
+    .pad { position: absolute; bottom: 16px; width: 104px; height: 104px; border-radius: 50%;
+           background: rgba(255, 255, 255, 0.1); border: 2px solid rgba(255, 255, 255, 0.22);
+           color: rgba(255, 255, 255, 0.3); font-size: 42px; line-height: 1; padding: 0;
+           touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer; }
+    .pad.held { background: rgba(255, 255, 255, 0.24); }
+    .pad.under-menu { display: none; }
+    #pad-fire { left: 16px; }
+    #pad-left { right: 136px; }
+    #pad-right { right: 16px; }
+    #pad-go { right: 76px; bottom: 132px; }
     aside { display: flex; flex-direction: column; gap: 10px; }
     section { border: 1px solid var(--line); background: var(--panel); padding: 8px 10px; }
     h3 { margin: 0 0 6px; font-weight: normal; color: var(--dim); font-size: 11px;
@@ -111,7 +125,11 @@
   <div id="main">
     <div id="stage">
       <canvas id="canvas" width="1024" height="768" tabindex="0"></canvas>
-      <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-square.svg"></canvas>
+      <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
+      <button id="pad-fire" class="pad" title="fire (Space)">&#x26A1;</button>
+      <button id="pad-left" class="pad" title="steer left (A)">&#x25C0;</button>
+      <button id="pad-right" class="pad" title="steer right (D)">&#x25B6;</button>
+      <button id="pad-go" class="pad" title="go (W)">&#x25B2;</button>
     </div>
 
     <aside>
@@ -169,7 +187,8 @@
       <section>
         <h3>Playing</h3>
         <div class="keys"><b>W</b> go &nbsp; <b>S</b> brake, reverse &nbsp; <b>A</b> <b>D</b> steer &nbsp; <b>Space</b> fire
-        &nbsp; <b>Q</b> <b>E</b> or a right-button drag look round &nbsp; <b>Tab</b> scores. Drive over a gold box
+        &nbsp; <b>Q</b> <b>E</b> or a right-button drag look round &nbsp; <b>Tab</b> scores &nbsp; <b>O</b> settings. The round buttons on the
+        arena are fire, go and the wheel too, for a touch screen. Drive over a gold box
         for a weapon; ramps throw you, hills slow you going up.
         In the lobby the host's arrows move the menu and <b>Enter</b> starts; in a round the host's <b>Esc</b>
         abandons it. Click the arena first so it has the keys.</div>
@@ -226,7 +245,7 @@
       }
       api.$('no-scores').classList.toggle('hidden', rows.length > 0);
     },
-    ready: function () { tellInvert(); }
+    ready: function () { tellInvert(); tellSettings(); }
   });
   /*
    * THE WHEEL'S KEYS, SWAPPED: this tab's own setting, kept with the name,
@@ -241,6 +260,76 @@
     if (page.runtimeUp() && page.nameLive('battle')) tellInvert();
     page.canvas.focus();
   });
+  /*
+   * THE SETTINGS (O on the canvas): the battle's to show and change, this
+   * tab's to keep -- told to the battle once it is up, and read back now and
+   * then so a change on the canvas is kept, and the invert box follows it.
+   */
+  function tellSettings() {
+    let kept = {};
+    try { kept = JSON.parse(window.localStorage.getItem('etcs-kart-settings') || '{}') || {}; } catch (e) {}
+    if (kept.marks !== undefined) page.ask('Setting', 'marks ' + kept.marks);
+    if (kept.look !== undefined) page.ask('Setting', 'look ' + kept.look);
+  }
+  setInterval(function () {
+    if (!page.runtimeUp() || !page.nameLive('battle')) return;
+    Promise.resolve(page.ask('Settings', '')).then(function (text) {
+      const p = String(text || '').trim().split(/\s+/);
+      if (p.length < 6 || p[0] !== 'invert') return;
+      const inverted = p[1] === '1';
+      if (invertEl.checked !== inverted) {
+        invertEl.checked = inverted;
+        try { window.localStorage.setItem('etcs-kart-invert', inverted ? '1' : '0'); } catch (e) {}
+      }
+      try { window.localStorage.setItem('etcs-kart-settings', JSON.stringify({ marks: p[3], look: p[5] })); } catch (e) {}
+    }).catch(function () {});
+  }, 2000);
+  /*
+   * THE PADS, under the drawn menu: hidden while it is up (the lobby's, or
+   * the settings), asked of the battle a few times a second.
+   */
+  const pads = ['pad-fire', 'pad-go', 'pad-left', 'pad-right'].map(function (id) { return document.getElementById(id); });
+  setInterval(function () {
+    if (!page.runtimeUp() || !page.nameLive('battle')) return;
+    Promise.resolve(page.ask('MenuUp', '')).then(function (up) {
+      if (up !== '0' && up !== '1') return;
+      for (const el of pads) el.classList.toggle('under-menu', up === '1');
+    }).catch(function () {});
+  }, 300);
+  /*
+   * THE PADS: a pointer down on one is its key down, up (or lost) its key
+   * up -- the battle's own Key, so a pad and the keyboard are one set of
+   * keys held. Left is left whatever invert says: the wheel's keys are
+   * swapped by the battle, so a pad says the key that turns the way it shows.
+   */
+  function pad(id, code) {
+    const el = document.getElementById(id);
+    let held = false;
+    const key = function () { return typeof code === 'function' ? code() : code; };
+    let sent = 0;
+    function down(ev) {
+      ev.preventDefault();
+      if (held || !page.runtimeUp() || !page.nameLive('battle')) return;
+      held = true; sent = key(); el.classList.add('held');
+      try { el.setPointerCapture(ev.pointerId); } catch (e) {}
+      page.ask('Key', sent + ' 1');
+    }
+    function up() {
+      if (!held) return;
+      held = false; el.classList.remove('held');
+      page.ask('Key', sent + ' 0');
+      page.canvas.focus();
+    }
+    el.addEventListener('pointerdown', down);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    el.addEventListener('lostpointercapture', up);
+    el.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+  }
+  pad('pad-fire', 32);
+  pad('pad-go', 87);
+  pad('pad-left', function () { return invertEl.checked ? 68 : 65; });
+  pad('pad-right', function () { return invertEl.checked ? 65 : 68; });
 })();
 </script>
 </body>

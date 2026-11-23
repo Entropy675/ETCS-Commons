@@ -11,18 +11,25 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
 - **Host a battle** and it is listed in the hall; anyone who opens the page sees it and **joins**,
   taking the next free kart of eight. The link under the button joins it directly.
 - **W** go, **S** brake and reverse, **A** / **D** turn the wheels left and right (**invert
-  steering** on the page swaps the two, for this tab). A press turns them to their lock at
-  once; held, they ease on to twice that over a second and a half, so a tap is a firm turn and
-  a long hold a hard one; let go, they come back. The kart turns by its speed and the wheels'
+  steering** on the page swaps the two, for this tab). A press turns them to half their lock
+  at once; held, they ease on to twice the lock over a second and a half, so a tap is a gentle
+  turn and a long hold a hard one; let go, they come back. The kart turns by its speed and the wheels'
   angle, so a kart standing still does not turn, and the faster it goes the less the wheels
   turn: at speed it carves an arc. Click the arena first so it has the keys.
-- **Speed builds.** Quick off the line, then slower the faster you go: full speed takes longer
-  than a run from one wall to the other, so speed kept is worth more than speed won back.
+- **Speed builds.** Slow off the line, then a steady climb, then a rush at the end: the speed
+  where a full turn starts to slide takes about four and a half seconds, full speed a little
+  over five, so speed kept is worth more than speed won back.
 - **The tyres grip only so hard.** Turn too sharply for your speed (or brake in a turn) and the
   kart slides out of it: a drift, which keeps more of your speed through a corner than braking
   for it. Steer against the slide to catch it. Braking and sliding heat the tyres, and each leaves
-  a **skid mark** where it ran, darker the harder it worked: forty units of trail that stay
+  a **skid mark** where it ran, darker the harder it worked: eighty units of trail that stay
   while you stand and are wiped from the far end as you drive on, either way.
+- **Settings: O**, or the lobby's settings button, opens them over the arena, in a round or
+  not: which way A and D turn, how much road the skid marks keep (off to 160 units), how fast
+  the look turns. They are this tab's own, kept with your name, and nothing in them is the
+  battle's: no other tab sees them, and none is in what the tabs check they agree on.
+- **Pads** on the arena, for a touch screen or a mouse: fire bottom left; go, and the wheel
+  left and right, bottom right. Held as a key is held; hidden while the menu is up.
 - **Drive over a gold box** for a weapon off the dice; **Space** fires it. The box is back eight
   seconds later. **You carry two**: the one in hand and a spare. A box with a weapon in hand
   goes to the spare, in place of what was there, and the spare comes to hand when the one in
@@ -33,25 +40,26 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   | weapon  | shots | damage |
   |---|---|---|
   | rocket  | 2  | flies until it has crossed the arena; a burst up to 4.0 at its centre |
-  | mine    | 2  | dropped behind, armed in half a second: a burst up to 3.0; left alone it blinks and bursts by itself after twenty seconds |
+  | mine    | 2  | dropped behind, armed in half a second: a wide red burst, up to 3.0; left alone it blinks and bursts by itself after twenty seconds |
   | shotgun | 2  | five pellets in a short fan, 1.0 each |
   | boost   | 1  | two seconds faster; ramming a kart at speed, 2.0 |
   | bomb    | 2  | tossed up and forward, bursts where it lands: up to 4.0 |
   | minigun | 30 | while Space is held, 0.4 each; a round flies until it has crossed the arena |
   | fuse    | 1  | lit on your kart, bursts round it after 2.5 s: up to 5.0, not to you |
   | sniper  | 1  | an instant line: 10.0 dead on, 5.0 at the edge of a kart |
-  | homing  | 2  | a slower rocket that turns to the nearest kart ahead of it, trailing smoke: a burst up to 3.0 |
-  | oil     | 1  | a slick dropped behind for twelve seconds: on it a kart has a sixth of its grip and a third of its pedal |
+  | homing  | 2  | a slower rocket that turns to the nearest kart ahead of it, trailing smoke: a purple burst up to 3.0 |
+  | oil     | 1  | a big slick dropped behind, then three smaller drops as you drive on, each for twelve seconds: on oil a kart has a sixth of its grip and a third of its pedal |
+  | smoke   | 1  | a ring of smoke round you, spreading out to eight over five seconds and on to ten as it thins away over fifteen: a homing rocket cannot see a kart in it while it is thick. And a **spear** out of your nose for eight seconds: 0.8 every fifth of a second to a kart up against yours |
   | shockwave | 1 | a ring out from your kart to nine: 1.5 to every kart it passes, and thrown outward |
 
-  Nothing hurts the kart that fired it. **A burst is a tree of fire**, and the tree is a
-  fractal baked once: one short branch of five steps with a fork in it -- the fork being the
-  same branch again, smaller -- set down a dozen ways round the burst. Where a branch meets
-  something dense -- a block, a wall, the ground, a deck -- it stops and what it has left goes
-  on round it as the whole branch again, smaller still, rather than through. A kart is hurt
-  by the strongest branch that reaches it, so in the open that is the old falloff, and
-  **behind a block you are covered**. Every tab grows the same tree, and draws it from the
-  same fifteen shapes: a branch is one piece, not a spark a step. The fire leaves **smoke**: dark
+  Nothing hurts the kart that fired it. **A burst is a tree of fire**: one of eight trees baked
+  for the lobby, and again each round, turned and sized to the burst. It is **warped** -- a
+  smooth noise in all three axes, pushing more the further out, so every branch curves along
+  its length -- and **bent by the ground** round it toward the open ways, then **cut** wherever
+  it still runs into something dense. A kart is hurt by the strongest branch that reaches it,
+  so **behind a block you are covered**. Every tab grows, warps, bends and cuts the same tree,
+  and draws it so: what you see is what hurts. A rocket's fire is orange, a bomb's and a mine's
+  red, a homing rocket's purple. The fire leaves **smoke**: dark
   puffs where its branches burned and big pale clouds in the gaps between them, which swell as
   they rise and thin away.
 - **A kart at nothing is eliminated**: one to whoever did it, one against the kart, which is back

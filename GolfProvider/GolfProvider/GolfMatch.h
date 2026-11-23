@@ -392,6 +392,8 @@ public:
         if (!down) return;
         // The lobby's menu has the keys while it is up (and a name being
         // typed has them all); M folds it away to knock a ball about.
+        if (key == kSettingsKey && m_menu_rid) { m_settings = !m_settings; m_editing = false; return; }
+        if (m_settings && settingsKeyLocked(key)) return;
         if (m_phase == Lobby && m_menu_rid && !m_me.empty() && m_ready && menuKeyLocked(key)) return;
         if (key == 'E' || key == 'e')
         {
@@ -435,8 +437,8 @@ public:
                 if (m_mode != Idle && input_button_state(ev, 0) == 0) { if (m_mode != Down) putDownLocked(); m_mode = Idle; }
                 if (m_right || m_mode == Orbit)
                 {
-                    m_yaw  += (x - m_last_x) * kTurn;
-                    m_pitch = clampf(m_pitch + (y - m_last_y) * kTurn, kMinPitch, kMaxPitch);
+                    m_yaw  += (x - m_last_x) * kTurn * m_look_speed;
+                    m_pitch = clampf(m_pitch + (y - m_last_y) * kTurn * m_look_speed, kMinPitch, kMaxPitch);
                     m_follow = true;
                     placeCameraLocked();
                 }
@@ -460,7 +462,7 @@ public:
                 m_mode = Idle;
                 break;
             case INPUT_SCROLL:
-                m_dist = clampf(m_dist * std::exp(-0.1f * static_cast<float>(ev.y)), kMinDist, kMaxDist);
+                m_dist = clampf(m_dist * std::exp(-0.1f * m_zoom_speed * static_cast<float>(ev.y)), kMinDist, kMaxDist);
                 m_follow = true;
                 placeCameraLocked();
                 break;
@@ -655,14 +657,16 @@ private:
     struct PadNodes    { ETCS::RID plate = 0; ETCS::RID arrow[3] = { 0, 0, 0 }; };
     struct SpringNodes { ETCS::RID plate = 0; ETCS::RID arrow[4] = { 0, 0, 0, 0 }; };
     struct BoardRow    { ETCS::RID rid; std::string text; bool shown; };
+    static constexpr int kEffectPuffs = 10;
     // A power at work: a black hole, a wind, a tornado (and what each draws).
     struct Effect
     {
         uint8_t kind = 0; int owner = -1;
         Fixed   x, y, z, sx, cz, vx, vz;
         int64_t until = 0, next = 0;
-        int     puffs[6] = { -1, -1, -1, -1, -1, -1 };
+        int     puffs[kEffectPuffs];       // drawn: a smoke's ring is all of them, the rest use six
         int     said = -1;                 // drawn: the step of its look last said
+        Effect() { for (int& p : puffs) p = -1; }
     };
     // A lightning strike's picture: a bolt, a flash and its smoke (drawn only).
     struct Strike { Fixed x, y, z; int64_t at = 0; int puffs[4] = { -1, -1, -1, -1 }; };
@@ -680,6 +684,7 @@ private:
     static constexpr uint16_t kLookButton = 1;          // the right button
     static constexpr float    kPi       = 3.14159265358979f;
     static constexpr float    kTurn     = 0.006f;       // radians a pixel of a look
+    static constexpr uint16_t kSettingsKey = 'O';        // opens and shuts the settings
     static constexpr float    kMinPitch = 0.05f, kMaxPitch = 1.45f;
     static constexpr float    kMinDist  = 2.0f,  kMaxDist  = 60.0f;
     static constexpr float    kShadowLift = 0.035f;     // a shadow's middle over its surface
@@ -1403,7 +1408,7 @@ private:
         for (size_t n = 0; n < m_effects.size();)
         {
             if (m_effects[n].until > now) { ++n; continue; }
-            freePuffsLocked(m_effects[n].puffs, 6);
+            freePuffsLocked(m_effects[n].puffs, kEffectPuffs);
             m_effects.erase(m_effects.begin() + static_cast<long>(n));
         }
     }
@@ -1448,7 +1453,7 @@ private:
     }
     void endEffectsLocked()
     {
-        for (Effect& e : m_effects) freePuffsLocked(e.puffs, 6);
+        for (Effect& e : m_effects) freePuffsLocked(e.puffs, kEffectPuffs);
         m_effects.clear();
         for (Strike& s : m_strikes) freePuffsLocked(s.puffs, 4);
         m_strikes.clear();
@@ -1581,7 +1586,7 @@ private:
     }
     void takePuffsLocked(Effect& e)
     {
-        const int count = e.kind == GolfPowers::BlackHole ? 2 : e.kind == GolfPowers::Cannon ? 3 : 6;
+        const int count = e.kind == GolfPowers::BlackHole ? 2 : e.kind == GolfPowers::Cannon ? 3 : e.kind == GolfPowers::Smoke ? kEffectPuffs : 6;
         for (int k = 0; k < count; ++k) e.puffs[k] = takePuffLocked(e.until);
         if (e.kind == GolfPowers::BlackHole)
         {
@@ -1595,7 +1600,7 @@ private:
         else if (e.kind == GolfPowers::Freeze)
             for (int k = 0; k < count; ++k) puffLook(e.puffs[k], "0.75, 0.92, 1.0, 1.0", "SetSmoke", "0.45");
         else if (e.kind == GolfPowers::Smoke)
-            for (int k = 0; k < count; ++k) puffLook(e.puffs[k], "0.6, 0.6, 0.62, 1.0", "SetSmoke", "0.9");
+            for (int k = 0; k < count; ++k) puffLook(e.puffs[k], "0.5, 0.5, 0.53, 1.0", "SetSmoke", "0.95");
         else
             for (int k = 0; k < count; ++k) puffLook(e.puffs[k], "0.42, 0.42, 0.46, 1.0", "SetSmoke", "0.55");
     }
@@ -1652,23 +1657,35 @@ private:
                 }
             else if (e.kind == GolfPowers::Smoke)
             {
-                // Thick, then dissipating fifteen seconds: swelling as it thins, in steps (each a verb).
-                const int thin = GolfPowers::kSmokeTicks - GolfPowers::kSmokeThick;
-                const int step = ticks < GolfPowers::kSmokeThick ? 0 : 1 + static_cast<int>((ticks - GolfPowers::kSmokeThick) * GolfPowers::kSmokeSteps / thin);
-                const int64_t grow = std::min<int64_t>(ticks, 25);
-                for (int k = 0; k < 6; ++k)
+                /*
+                 * A RING of smoke round where it went off, not a cloud on it:
+                 * out from one to six over its thick five seconds -- fast,
+                 * then slowing -- and on to seven and a half as it thins, so
+                 * it hides the green from anyone looking across it. Placed
+                 * every tick; its size and thickness said kSmokeSteps times
+                 * over its life (a verb a puff each): swelling all along,
+                 * dense while thick, thinning to nothing after.
+                 */
+                const int thick = GolfPowers::kSmokeThick, life = GolfPowers::kSmokeTicks;
+                const int64_t t = std::min<int64_t>(ticks, life);
+                Fixed r;
+                if (t < thick) { const Fixed v = Fixed::One() - F(t, thick); r = F(1) + F(5) * (Fixed::One() - v * v); }
+                else           r = F(6) + F(3, 2) * F(t - thick, life - thick);
+                const int step = static_cast<int>(t * GolfPowers::kSmokeSteps / life);
+                const Fixed wide = F(28, 10) + F(27, 10) * F(step, GolfPowers::kSmokeSteps);
+                for (int k = 0; k < kEffectPuffs; ++k)
                 {
                     Fixed sn, cs;
-                    (Fixed::TwoPi() * F(k, 6)).SinCos(sn, cs);
-                    const Fixed wide = F(24, 10) + F(grow, 25) + F(step, 4);
-                    sizePuff(e.puffs[k], wide, e.x + sn * F(13, 10), e.y + F(6, 10) + F(k % 3, 3), e.z + cs * F(13, 10));
+                    (Fixed::TwoPi() * F(k, kEffectPuffs) + F(t, 3000)).SinCos(sn, cs);
+                    sizePuff(e.puffs[k], wide, e.x + sn * r, e.y + F(7, 10) + F(k % 2, 3), e.z + cs * r);
                 }
                 if (step != e.said)
                 {
                     e.said = step;
-                    const float f = static_cast<float>(step) / GolfPowers::kSmokeSteps;
-                    for (int k = 0; k < 6; ++k)
-                        if (e.puffs[k] >= 0) verb(m_puff_nodes[static_cast<size_t>(e.puffs[k])], "SetSmoke", fmt3(0.9f * (1.0f - f) + 0.02f));
+                    const int at = step * life / GolfPowers::kSmokeSteps;
+                    const float thin = at < thick ? 0.0f : static_cast<float>(at - thick) / (life - thick);
+                    for (int k = 0; k < kEffectPuffs; ++k)
+                        if (e.puffs[k] >= 0) verb(m_puff_nodes[static_cast<size_t>(e.puffs[k])], "SetSmoke", fmt3(0.95f * (1.0f - thin) + 0.03f));
                 }
             }
             else if (e.kind == GolfPowers::Freeze)
@@ -1808,13 +1825,16 @@ private:
      * facing the camera gives a drag: so far to the side, so far down the
      * picture. The shot is opposite it, ALONG THE GROUND THE BALL IS ON --
      * the drag's way down the picture is the way the camera faces, level, and
-     * the whole is laid on the slope under the ball -- so from wherever the
-     * camera is when a ball is taken hold of, the shot starts as a putt along
-     * its surface. LOFT IS WHAT THE CAMERA DOES AFTER: lowered from where it
-     * was at the press (the right button, held with the left), the shot tips
-     * up off the ground by as much; raised again, back down to the ground and
-     * no further.
+     * the whole is laid on the slope under the ball. NOT LOCKED TO IT: the
+     * drag's own rise off the ground (as dragged, on the plane facing the
+     * camera) is let through damped, the more the longer the pull -- none of
+     * it for a tap, half of it at the full pull -- so a putt stays on the
+     * ground and a long pull lifts. MORE LOFT IS WHAT THE CAMERA DOES AFTER:
+     * lowered from where it was at the press (the right button, held with the
+     * left), the shot tips up by as much more; raised again, back down to
+     * the drag's own and no further.
      */
+    static constexpr float kRiseKept = 0.5f;   // of the drag's own rise off the ground, at the full pull
     void pullLocked(float px, float py)
     {
         const int i = slotOf(m_me);
@@ -1853,10 +1873,13 @@ private:
         for (int k = 0; k < 3; ++k) s[k] -= into * g[k];
         const float flat = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
         if (flat < 1e-5f) return;
-        // ...and tipped up off it by as much as the camera has come down since the press.
-        const float loft = clampf(m_pull_pitch - m_pitch, 0.0f, 1.4f), cl = std::cos(loft), sl = std::sin(loft);
+        // ...and tipped up off it: by the drag's own rise, damped the more the
+        // shorter the pull, and by as much as the camera has come down since the press.
         const float most = m_max_pull.ToFloat();
+        const float rise = std::asin(clampf((drag[0] * g[0] + drag[1] * g[1] + drag[2] * g[2]) / len, -1.0f, 1.0f));
         if (len > most) len = most;
+        const float kept = kRiseKept * (len / most) * std::max(0.0f, rise);
+        const float loft = clampf(kept + std::max(0.0f, m_pull_pitch - m_pitch), 0.0f, 1.4f), cl = std::cos(loft), sl = std::sin(loft);
         for (int k = 0; k < 3; ++k) s[k] = (s[k] / flat * cl + g[k] * sl) * len;
         m_pull[0] = Fixed::From(s[0]); m_pull[1] = Fixed::From(s[1]); m_pull[2] = Fixed::From(s[2]);
         m_pull_len = Fixed::From(len);
@@ -2048,10 +2071,59 @@ private:
             items.push_back("start");
             if (!m_defs.empty() && m_defs[m_course].generated) items.push_back("reroll");
         }
+        items.push_back("settings");
         items.push_back("fold");
         return items;
     }
-    bool menuShownLocked() const { return m_menu_rid && m_menu_open && m_phase == Lobby && !m_me.empty() && m_ready; }
+    bool menuShownLocked() const { return m_menu_rid && (m_settings || (m_menu_open && m_phase == Lobby && !m_me.empty() && m_ready)); }
+
+    /*
+     * THE SETTINGS: this runtime's own, and none of them the match's -- no
+     * line, nothing hashed: how fast a drag turns the camera, how far a
+     * notch of the wheel brings it in. O opens them over the course, in a
+     * round or in the lobby (whose menu has a button for them too), on the
+     * lobby's menu; Setting and Settings are the same for a page.
+     */
+    static constexpr float kPaceChoices[3] = { 0.5f, 1.0f, 2.0f };
+    static const char* paceName(float v) { return v < 0.75f ? "slow" : v > 1.5f ? "fast" : "normal"; }
+    bool settingLocked(const std::string& name, const std::string& value)
+    {
+        const float v = static_cast<float>(std::atof(value.c_str()));
+        if (!(v >= 0.1f && v <= 5.0f)) return false;
+        if (name == "look") { m_look_speed = v; return true; }
+        if (name == "zoom") { m_zoom_speed = v; return true; }
+        return false;
+    }
+    void settingStepLocked(const std::string& id, int dir)
+    {
+        float& v = id == "look" ? m_look_speed : m_zoom_speed;
+        if (id != "look" && id != "zoom") return;
+        int at = 0;
+        for (int k = 0; k < 3; ++k) if (kPaceChoices[k] <= v + 1e-3f) at = k;
+        v = kPaceChoices[(at + dir + 3) % 3];
+    }
+    bool settingsKeyLocked(uint16_t key)
+    {
+        static const char* const items[3] = { "look", "zoom", "close" };
+        const bool up = key == 265 || key == 'W', down = key == 264 || key == 'S';
+        const bool left = key == 263 || key == 'A', right = key == 262 || key == 'D';
+        const bool enter = key == 257 || key == 335 || key == ' ';
+        m_set_focus = ((m_set_focus % 3) + 3) % 3;
+        if (key == 256) { m_settings = false; return true; }
+        if (up)   { m_set_focus = (m_set_focus + 2) % 3; return true; }
+        if (down) { m_set_focus = (m_set_focus + 1) % 3; return true; }
+        if (!left && !right && !enter) return false;
+        const std::string at = items[m_set_focus];
+        if (at == "close") { if (enter) m_settings = false; return true; }
+        settingStepLocked(at, left ? -1 : 1);
+        return true;
+    }
+public:
+    bool Setting(const std::string& name, const std::string& value) { std::lock_guard<std::mutex> g(m_mu); return settingLocked(name, value); }
+    // "look <scale> zoom <scale>"
+    std::string Settings() { std::lock_guard<std::mutex> g(m_mu); return "look " + fmt3(m_look_speed) + " zoom " + fmt3(m_zoom_speed); }
+    void ShowSettings(bool on) { std::lock_guard<std::mutex> g(m_mu); m_settings = on && m_menu_rid; m_editing = false; }
+private:
     // A key in the lobby: true when it was the menu's.
     bool menuKeyLocked(uint16_t key)
     {
@@ -2078,7 +2150,7 @@ private:
         if (down) { m_menu = (m_menu + 1) % n; return true; }
         if (!left && !right && !enter) return false;
         const std::string& at = items[static_cast<size_t>(m_menu)];
-        if (at == "start" || at == "reroll" || at == "name" || at == "fold") { if (enter) menuActLocked(at, "press", 0); return true; }
+        if (at == "start" || at == "reroll" || at == "name" || at == "fold" || at == "settings") { if (enter) menuActLocked(at, "press", 0); return true; }
         // Enter anywhere else is the host's start, as it is with the menu folded.
         if (enter) { menuActLocked("start", "press", 0); return true; }
         menuActLocked(at, left ? "prev" : "next", 0);
@@ -2097,6 +2169,12 @@ private:
         if (id.empty() || id == "-") return false;   // off the panel
         if (m_editing && id != "name") { m_editing = false; if (validName(m_edit)) restyleLocked(-2, m_edit); }
         if (id == "+") return true;                  // on it, on nothing of it
+        if (m_settings)
+        {
+            m_set_focus = id == "look" ? 0 : id == "zoom" ? 1 : 2;
+            if (id == "close") m_settings = false; else settingStepLocked(id, part == "prev" ? -1 : 1);
+            return true;
+        }
         const std::vector<std::string> items = menuItemsLocked();
         for (size_t k = 0; k < items.size(); ++k) if (items[k] == id) m_menu = static_cast<int>(k);
         menuActLocked(id, part, n);
@@ -2106,6 +2184,7 @@ private:
     {
         const int dir = part == "prev" ? -1 : 1;
         if (id == "fold") { m_menu_open = false; return; }
+        if (id == "settings") { m_settings = true; m_set_focus = 0; m_editing = false; return; }
         if (id == "colour")
         {
             const int i = slotOf(m_me);
@@ -2147,6 +2226,17 @@ private:
         if (show != m_menu_shown) { verb(m_menu_rid, "SetHidden", show ? "0" : "1"); m_menu_shown = show; if (!show) m_editing = false; }
         if (!show) return;
         std::vector<std::string> L;
+        if (m_settings)
+        {
+            L.push_back("title|SETTINGS");
+            L.push_back("sub|this tab's own -- none of it is the match's");
+            L.push_back(std::string("choice|look|look|") + paceName(m_look_speed) + "|1");
+            L.push_back(std::string("choice|zoom|zoom|") + paceName(m_zoom_speed) + "|1");
+            L.push_back("button|close|done|1|1");
+            L.push_back("hint|arrows or click change them  O shuts");
+            sendMenuLocked(L, std::string(m_set_focus == 0 ? "look" : m_set_focus == 1 ? "zoom" : "close"));
+            return;
+        }
         const bool host = m_authority;
         const int me = slotOf(m_me);
         L.push_back("title|LOBBY");
@@ -2163,6 +2253,7 @@ private:
         }
         L.push_back(host ? std::string("button|start|start the round|1|1") : "button|start|" + labelLocked(m_owner) + " starts the round|0|0");
         if (host && !m_defs.empty() && m_defs[m_course].generated) L.push_back("button|reroll|new course|1|0");
+        L.push_back("button|settings|settings (O)|1|0");
         L.push_back("button|fold|knock a ball about|1|0");
         L.push_back("head|player        last");
         for (size_t i : rankLocked())
@@ -2177,7 +2268,13 @@ private:
                                             : host ? "arrows move it  Enter starts  M folds  or click"
                                                    : "arrows: your colour and name  M folds  or click"));
         previewLocked(L);
-        // Only what changed goes over.
+        const std::vector<std::string> items = menuItemsLocked();
+        const int n = static_cast<int>(items.size());
+        sendMenuLocked(L, items[static_cast<size_t>(((m_menu % n) + n) % n)]);
+    }
+    // Only what changed goes over.
+    void sendMenuLocked(const std::vector<std::string>& L, const std::string& focus)
+    {
         if (m_menu_sent.size() > L.size()) m_menu_sent.resize(L.size());
         for (size_t k = 0; k < L.size(); ++k)
         {
@@ -2186,9 +2283,6 @@ private:
             if (k < m_menu_sent.size()) m_menu_sent[k] = L[k]; else m_menu_sent.push_back(L[k]);
         }
         if (m_menu_lines != L.size()) { verb(m_menu_rid, "SetLines", std::to_string(L.size())); m_menu_lines = L.size(); }
-        const std::vector<std::string> items = menuItemsLocked();
-        const int n = static_cast<int>(items.size());
-        const std::string focus = items[static_cast<size_t>(((m_menu % n) + n) % n)];
         if (focus != m_menu_focus) { verb(m_menu_rid, "Focus", focus); m_menu_focus = focus; }
     }
     // The hole out from above, in the course's own colours: its ground and
@@ -2507,6 +2601,10 @@ private:
     bool     m_menu_open = true, m_editing = false;
     std::string m_edit, m_menu_focus;
     std::vector<std::string> m_menu_sent;
+    // The settings (Setting): this runtime's, none of them the match's.
+    bool     m_settings = false;
+    int      m_set_focus = 0;
+    float    m_look_speed = 1.0f, m_zoom_speed = 1.0f;
     size_t   m_menu_lines = 0;
 };
 

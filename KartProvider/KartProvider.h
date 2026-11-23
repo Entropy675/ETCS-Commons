@@ -182,6 +182,22 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, Look, (float, yaw), (float, pitch)) { (void)c
 DEFINE_WORK_FUNC(KartBattle, Eye)       { (void)ctx; data.reset(); data.writeString(self.Eye().c_str()); }
 // Frame <ms> -- the frame edge by hand, for a script with no window.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Frame, (float, ms)) { (void)ctx; self.Frame(ms); }
+// Setting <name> <value> -- one of this runtime's settings (none of them the battle's): invert 0|1,
+// marks <units of road a tyre's mark keeps>, look <the look's pace, 1 as made>. "ok" or "refused".
+DEFINE_WORK_FUNC(KartBattle, Setting)
+{
+    (void)ctx;
+    const std::string line = data.toString();
+    const size_t sp = line.find(' ');
+    const bool ok = sp != std::string::npos && self.Setting(line.substr(0, sp), line.substr(sp + 1));
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// "invert <0|1> marks <units> look <scale>": this runtime's settings.
+DEFINE_WORK_FUNC(KartBattle, Settings) { (void)ctx; data.reset(); data.writeString(self.Settings().c_str()); }
+// MenuUp -- "1" while the drawn menu (the lobby's, or the settings) is over the arena, else "0".
+DEFINE_WORK_FUNC(KartBattle, MenuUp) { (void)ctx; data.reset(); data.writeString(self.MenuUp() ? "1" : "0"); }
+// ShowSettings <0|1> -- the settings open over the arena, or shut (O does the same).
+DEFINE_WORK_FUNC_TYPED(KartBattle, ShowSettings, (int32_t, on)) { (void)ctx; self.ShowSettings(on != 0); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, Key, (uint32_t, code), (int32_t, down))
 {
     (void)ctx;

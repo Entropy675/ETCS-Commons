@@ -85,6 +85,11 @@ run kart_shots.etcs world=world battle=battle
 run kart_shots.etcs world=world battle=battle
 run kart_shots.etcs world=world battle=battle
 run kart_shots.etcs world=world battle=battle
+# Sixty-four effects: a smoke bomb's ring is ten of them, a slick and its
+# drops four, a homing rocket's wisps take what is spare.
+run kart_fxs.etcs world=world battle=battle ball=ball
+run kart_fxs.etcs world=world battle=battle ball=ball
+run kart_fxs.etcs world=world battle=battle ball=ball
 run kart_fxs.etcs world=world battle=battle ball=ball
 run kart_fxs.etcs world=world battle=battle ball=ball
 run kart_fxs.etcs world=world battle=battle ball=ball

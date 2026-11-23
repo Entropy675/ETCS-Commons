@@ -1382,6 +1382,13 @@ DEFINE_WORK_FUNC_TYPED(Mesh, Warp, (uint32_t, seed), (float, freq), (float, amp)
     (void)ctx;
     self.Warp(seed, freq, amp, scale, ts, tc);
 }
+// Parts <n> <ends> -- this mesh is runs of n vertices, the first two of each its poles: a bent copy of it
+// bends each part along the curve through its two ends (`ends` of the way to the poles) and its middle (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, Parts, (uint32_t, n), (float, ends))
+{
+    (void)ctx;
+    self.Parts(n, ends);
+}
 // CopyBent <mesh> -- this mesh made a copy of that one, through the warp and the bends said since the last.
 DEFINE_WORK_FUNC_TYPED(Mesh, CopyBent, (ETCS::RID, src))
 {

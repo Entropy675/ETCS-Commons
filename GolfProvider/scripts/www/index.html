@@ -111,7 +111,7 @@
   <div id="main">
     <div id="stage">
       <canvas id="canvas" width="1024" height="768" tabindex="0"></canvas>
-      <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-square.svg"></canvas>
+      <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
     </div>
 
     <aside>
@@ -169,7 +169,8 @@
       <section>
         <h3>Playing</h3>
         <div class="keys">Drag <b>your ball</b> back to aim -- the arrow is the shot -- and let go. Drag anywhere
-        else, or with the <b>right</b> button, to look round; the <b>wheel</b> zooms; the camera's pitch is the loft.
+        else, or with the <b>right</b> button, to look round; the <b>wheel</b> zooms. A shot starts along the ground,
+        a long pull lifts it a little, and bringing the camera down while you pull lofts it more. <b>O</b> settings.
         Roll through a gold box for a power: <b>E</b> arms it, a <b>click</b> puts it down where you point
         (pads, springs and winds go the way you look). Let go of the <b>right</b> button while the left holds a
         shot or a power to put it down. Everyone plays the hole at once: lowest total over the course wins.
@@ -190,7 +191,7 @@
 <script>
 (function () {
   const clock = function (secs) { return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'); };
-  EtcsSessionPage({
+  const page = EtcsSessionPage({
     game: 'game', kind: 'golf', noun: 'match', type: 'GolfProvider::GolfMatch',
     // The same name the kart page keeps: one person on the site, whichever game.
     nameKey: 'etcs-kart-name',
@@ -225,8 +226,28 @@
         scoresEl.appendChild(tr);
       }
       api.$('no-scores').classList.toggle('hidden', rows.length > 0);
-    }
+    },
+    ready: function () { tellSettings(); }
   });
+  /*
+   * THE SETTINGS (O on the canvas): the match's to show and change, this
+   * tab's to keep -- told to the match once it is up, and read back now and
+   * then so a change on the canvas is kept.
+   */
+  function tellSettings() {
+    let kept = {};
+    try { kept = JSON.parse(window.localStorage.getItem('etcs-golf-settings') || '{}') || {}; } catch (e) {}
+    if (kept.look !== undefined) page.ask('Setting', 'look ' + kept.look);
+    if (kept.zoom !== undefined) page.ask('Setting', 'zoom ' + kept.zoom);
+  }
+  setInterval(function () {
+    if (!page.runtimeUp() || !page.nameLive('game')) return;
+    Promise.resolve(page.ask('Settings', '')).then(function (text) {
+      const p = String(text || '').trim().split(/\s+/);
+      if (p.length < 4 || p[0] !== 'look') return;
+      try { window.localStorage.setItem('etcs-golf-settings', JSON.stringify({ look: p[1], zoom: p[3] })); } catch (e) {}
+    }).catch(function () {});
+  }, 2000);
 })();
 </script>
 </body>

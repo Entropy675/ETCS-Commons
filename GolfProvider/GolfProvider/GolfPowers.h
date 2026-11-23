@@ -64,7 +64,7 @@ inline bool Aimed(uint8_t k) { return k == Pad || k == Bumper || k == Wind; }
 constexpr int kAtWorkTicks = 30 * 50;
 constexpr int kStrikeEvery = 35;
 constexpr int kCannonTicks = 200;   // at most: until its ball comes down
-constexpr int kSmokeThick  = 5 * 50, kSmokeTicks = 20 * 50, kSmokeSteps = 10;   // thick, then dissipating fifteen seconds
+constexpr int kSmokeThick  = 5 * 50, kSmokeTicks = 20 * 50, kSmokeSteps = 30;   // thick, then dissipating fifteen seconds; said in thirty steps
 // How long a power is at work, of those that are for a while.
 constexpr int Ticks(uint8_t k)
 {

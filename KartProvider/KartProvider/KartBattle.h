@@ -495,6 +495,8 @@ public:
             if (down) m_look_keys |= bit; else m_look_keys &= ~bit;
             return;
         }
+        if (down && key == kSettingsKey && m_menu_rid) { m_settings = !m_settings; m_editing = false; return; }
+        if (down && m_settings && settingsKeyLocked(key)) return;
         if (down && m_ready && !m_defs.empty() && !m_me.empty())
         {
             if (m_phase == Lobby && menuKeyLocked(key)) return;
@@ -508,6 +510,11 @@ public:
         else if (key == ' ') bit = 4;
         if (bit < 0) return;
         if (bit < 5) { if (down) m_keys |= (1u << bit); else m_keys &= ~(1u << bit); }
+        sendKeysLocked();
+    }
+    // The keys held, said as a `drive` line when what they ask has changed.
+    void sendKeysLocked()
+    {
         const int t = ((m_keys & 1) ? 1 : 0) - ((m_keys & 2) ? 1 : 0);
         const int right = ((m_keys & 8) ? 1 : 0) - ((m_keys & 4) ? 1 : 0);
         const int s = m_invert ? -right : right;
@@ -523,10 +530,36 @@ public:
     // read again, so a change mid-turn is a `drive` line like any other.
     void SetInvert(bool on)
     {
-        { std::lock_guard<std::mutex> g(m_mu); if (m_invert == on) return; m_invert = on; }
-        Key(0, false);
+        std::lock_guard<std::mutex> g(m_mu);
+        if (m_invert == on) return;
+        m_invert = on;
+        sendKeysLocked();
     }
     bool Inverted() { std::lock_guard<std::mutex> g(m_mu); return m_invert; }
+
+    /*
+     * THE SETTINGS: this runtime's own, and none of them the battle's -- no
+     * line, nothing hashed: which way the wheel's keys turn, how much road a
+     * tyre's mark keeps (drawn only), how fast the look turns. O opens them
+     * over the arena, in a round or in the lobby (whose menu has a button
+     * for them too), drawn on the lobby's menu; Setting and Settings are the
+     * same for a page, which keeps them for the tab.
+     */
+    bool Setting(const std::string& name, const std::string& value)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        return settingLocked(name, value);
+    }
+    // "invert <0|1> marks <units> look <scale>"
+    std::string Settings()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        return "invert " + std::string(m_invert ? "1" : "0") + " marks " + std::to_string(m_mark_len.ToInt())
+             + " look " + fmt3(m_look_speed);
+    }
+    void ShowSettings(bool on) { std::lock_guard<std::mutex> g(m_mu); m_settings = on && m_menu_rid; m_editing = false; }
+    // Whether the drawn menu (the lobby's, or the settings) is over the arena: a page hides its pads under it.
+    bool MenuUp() { std::lock_guard<std::mutex> g(m_mu); return menuShownLocked(); }
 
     /*
      * LOOKING ROUND THE KART. The eye rides behind the kart; a drag with the
@@ -551,7 +584,7 @@ public:
                 if (!m_look_drag) break;
                 // Let go outside the window: the platform says it is up.
                 if (input_button_state(ev, kLookButton) == 0) { m_look_drag = false; break; }
-                turnLookLocked((ev.x - m_look_x) * kLookTurn, (ev.y - m_look_y) * kLookTurn);
+                turnLookLocked((ev.x - m_look_x) * kLookTurn * m_look_speed, (ev.y - m_look_y) * kLookTurn * m_look_speed);
                 m_look_x = ev.x; m_look_y = ev.y;
                 break;
             case INPUT_BUTTON_UP:
@@ -786,14 +819,14 @@ public:
     }
 
 private:
-    static constexpr int kMarkNodes = 24;   // a tyre's drawn segments at most
+    static constexpr int kMarkNodes = 32;   // a tyre's drawn segments at most
     /*
      * A TYRE'S MARK: the road it ran, as segments laid where it ran them and
      * left there, newest first, each as dark as what the tyre shed over it
      * (a level, 0..8; 0 is laid but not drawn). A segment is laid when the
      * way turns, the darkness changes, the tyre leaves or meets the ground,
      * or it is long enough -- so a reversal is a segment's end, and nothing
-     * already laid moves. A rope of fixed length: past markLength() of road
+     * already laid moves. A rope of fixed length: past the settings' length of road
      * the oldest goes, so going on, either way, wipes it from the far end.
      * Derived from the rows (the tyres' heat), so the same everywhere, but
      * drawn only: not in the hash.
@@ -823,7 +856,7 @@ private:
         int         thr = 0, steer = 0, fire = 0;
         int         press = 0;                     // a press of the trigger the tick has not yet seen
         Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
-        Fixed       wheel_ease;                    // how far past the lock a held wheel has eased: 0 at the press, 1 at the far lock
+        Fixed       wheel_ease;                    // how far a held wheel has eased: 0 at the press, 1 at twice the lock
         int         steer_held = 0;                // the way the wheel was being turned last tick
         Fixed       hx, hz;                        // the heading, level (the body is tilted to the ground)
         Fixed       vy;                            // up: the ground's pace under it, or a flight's
@@ -838,6 +871,7 @@ private:
         int         out_ticks = 0;                 // ticks beyond the walls, on end
         int         dagger = 0;                    // ticks of the smoke's dagger left
         int         dagger_fx = -1;                // its blade: drawn, not state
+        int         drips = 0, drip_in = 0;        // oil still to drip behind it, and the ticks to the next drop
         Fixed       kx, kz;                        // a shockwave's throw the drive has not yet taken
         int         elims = 0, deaths = 0;         // this round's
         int         last_elims = 0, last_deaths = 0;   // the last round completed's: the lobby's
@@ -852,13 +886,16 @@ private:
         Trail       trail[4];                      // each tyre's mark: drawn, not state
     };
     struct Pickup { Fixed x, y, z; int64_t back = 0; ETCS::RID node = 0; };
+    static constexpr int kSmokePuffs = 10;         // a smoke bomb's ring
     struct Shot
     {
         uint8_t kind = 0; int owner = -1;
         Fixed x, y, z, vx, vy, vz;
         int life = 0, armed = 0, node = -1;
         int fx = -1, ring = -1;                    // a slick's node, a shockwave's: drawn, not state
-        int cloud[4] = { -1, -1, -1, -1 };         // a smoke's puffs: drawn, not state
+        Fixed reach;                               // a slick's: how far out it is oil
+        int cloud[kSmokePuffs];                    // a smoke's ring of puffs: drawn, not state
+        Shot() { for (int& c : cloud) c = -1; }
     };
     struct BoardRow { ETCS::RID rid; std::string text; bool shown; };
     struct PadNodes { ETCS::RID plate = 0; ETCS::RID arrow[3] = { 0, 0, 0 }; };
@@ -889,6 +926,7 @@ private:
     static constexpr float    kBoomLeast  = 0.2f;      // of its length, however little is clear
     static constexpr uint16_t kLookButton = 1;         // the right button
     static constexpr float    kLookTurn   = 0.006f;    // radians a pixel dragged (golf's orbit)
+    static constexpr uint16_t kSettingsKey = 'O';      // opens and shuts the settings
     static constexpr double   kLookKeyRate = 2.0;      // radians a second, Q or E held
     static constexpr float    kLookDown   = -0.35f, kLookUp = 0.95f;   // the boom from nearly level to nearly overhead
     static constexpr double   kLookHoldMs = 700.0, kLookBackMs = 1500.0;
@@ -908,28 +946,36 @@ private:
     static Fixed F(int64_t n, int64_t d = 1) { return Fixed::FromInt(n) / Fixed::FromInt(d); }
     static Fixed dt()        { return F(1, kHz); }
     /*
-     * THE PEDAL: quick off the line, then less the nearer the top -- the
-     * launch's push falling with speed, never below pull() -- so the top is
-     * reached over about 80 units, more than a wall to the other. Speed is
+     * THE PEDAL: slow off the line, then a steady ramp, then a rush at the
+     * end -- its push by how near the top the kart is: startPush rising to
+     * rampPush over the first fifth, rampPush held to 72%, then up to
+     * spikePush by 82% and held to the top. So the speed a full lock slides
+     * at (16 or so) takes about four and a half seconds to build, and the
+     * last of the top half a second more: about 50 units in all. Speed is
      * worth keeping: a corner taken in a drift keeps more of it than one
      * braked for. A boost pushes hard (boostPush()) to its own top.
      */
-    static Fixed launch()    { return F(10); }
-    static Fixed pull()      { return F(2); }
+    static Fixed startPush() { return F(5, 2); }
+    static Fixed rampPush()  { return F(18, 5); }
+    static Fixed spikePush() { return F(10); }
     static Fixed topSpeed()  { return F(22); }
     static Fixed boostSpeed(){ return F(30); }
     static Fixed boostPush() { return F(18); }
     static Fixed pushAt(Fixed v, Fixed top)
     {
-        const Fixed p = launch() * (Fixed::One() - v / top);
-        return p > pull() ? p : pull();
+        const Fixed u = v.IsPositive() ? v / top : Fixed::Zero();
+        if (u < F(1, 5))   return startPush() + (rampPush() - startPush()) * u * F(5);
+        if (u < F(18, 25)) return rampPush();
+        if (u < F(41, 50)) return rampPush() + (spikePush() - rampPush()) * (u - F(18, 25)) * F(10);
+        return spikePush();
     }
     static Fixed brake()     { return F(20); }
     static Fixed reverseAcc(){ return F(5); }
     static Fixed reverseTop(){ return F(6); }
     static Fixed coast()     { return F(6, 10); }
     static Fixed wheelLock() { return F(45, 100); }   // the lock standing still: where a press puts the wheel at once
-    static Fixed steerEase() { return F(3, 2); }      // s: a hold eases the wheel on from the lock to twice it in this long
+    static Fixed steerJump() { return F(1, 2); }      // of the lock: where a press puts the wheel at once
+    static Fixed steerEase() { return F(3, 2); }      // s: a hold eases the wheel on from there to twice the lock in this long
     static Fixed steerBack() { return F(3); }         // rad/s: back toward the middle, let go
     // The lock at a speed: the full lock standing still, less the faster the
     // kart goes, so the turn a press gives at speed (speed x lock /
@@ -982,7 +1028,9 @@ private:
     // part way, deepening as it opens.
     static Fixed markFrom()  { return F(1, 5); }
     static Fixed markFull()  { return F(2); }
-    static Fixed markLength(){ return F(40); }      // the rope: this much road, and the segment over
+    // The rope -- this much road, and the segment over -- is the settings'
+    // (marks): kMarkLength unless this runtime says otherwise.
+    static constexpr int kMarkLength = 80;
     static Fixed markSegMax(){ return F(5, 2); }    // a dark segment at most; an unmarked run...
     static Fixed markRunMax(){ return F(4); }       // ...at most this
     static Fixed markTurn()  { return F(99, 100); } // a way turned past ~8 degrees ends a segment...
@@ -1015,13 +1063,20 @@ private:
     static Fixed sniperReach() { return KartArena::Half() * F(283, 100); }
     static Fixed homingSpeed() { return F(22); }
     static Fixed homingSight() { return F(70); }      // how far a homing rocket sees a kart
-    static Fixed oilReach()    { return F(5, 2); }
+    // Oil: one big slick where it is dropped, then kDrips drops behind the
+    // kart as it goes on, each smaller than the last (dripReach), kDripTicks apart.
+    static Fixed oilReach()    { return F(9, 2); }
+    static constexpr int kDrips = 3, kDripTicks = kHz / 3;
+    static Fixed dripReach(int k) { return k == 0 ? F(5, 2) : k == 1 ? F(7, 4) : F(6, 5); }
+    // A mine's burst: well past a bomb's (4.5), so one left lying, or driven
+    // onto, clears round it -- and as red as a bomb's.
+    static Fixed mineReach()   { return F(7); }
     static Fixed waveReach()   { return F(9); }
     static Fixed waveThrow()   { return F(18); }
-    static Fixed smokeReach()  { return F(5); }
     static Fixed daggerReach() { return F(26, 10); }   // up against: a kart's length, middle to middle
-    // A smoke bomb's cloud: thick five seconds, dissipating fifteen; its dagger, eight.
-    static constexpr int kSmokeThick = 5 * kHz, kSmokeTicks = 20 * kHz, kSmokeSteps = 10, kDaggerTicks = 8 * kHz;
+    // A smoke bomb's ring: thick five seconds, dissipating fifteen, dressed
+    // kSmokeSteps times over its life (each a verb a puff); its dagger, eight.
+    static constexpr int kSmokeThick = 5 * kHz, kSmokeTicks = 20 * kHz, kSmokeSteps = 30, kDaggerTicks = 8 * kHz;
     static constexpr int kOilTicks = 12 * kHz, kSlipTicks = kHz, kWaveTicks = 16, kWispTicks = 36, kMineTicks = 20 * kHz;
     static int crossLife(Fixed speed) { return static_cast<int>((sniperReach() / speed * F(kHz)).ToInt()) + 1; }
     static Fixed voidAt()    { return F(-40); }        // where a fall outside ends, between rounds
@@ -1229,7 +1284,7 @@ private:
     {
         Slot& s = m_slots[i];
         s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
-        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = 0;
+        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = s.drips = s.drip_in = 0;
         s.kx = s.kz = Fixed::Zero();
         freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1; s.ram_safe = 0;
@@ -1265,7 +1320,7 @@ private:
             if (nearest > best) { best = nearest; bx = p.x; bz = p.z; }
         }
         s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
-        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = 0;
+        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = s.drips = s.drip_in = 0;
         s.kx = s.kz = Fixed::Zero();
         freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1;
@@ -1493,7 +1548,7 @@ private:
             if (m_phase != Lobby)
             {
                 for (size_t i = 0; i < m_slots.size(); ++i) if (alive(m_slots[i])) touchLocked(i);
-                for (size_t i = 0; i < m_slots.size(); ++i) if (alive(m_slots[i])) daggerLocked(i);
+                for (size_t i = 0; i < m_slots.size(); ++i) if (alive(m_slots[i])) { daggerLocked(i); dripLocked(i); }
                 for (size_t i = 0; i < m_slots.size(); ++i) if (alive(m_slots[i])) fireLocked(i);
             }
             shotsLocked();
@@ -1681,12 +1736,12 @@ private:
     }
 
     /*
-     * THE WHEEL, turned by A and D. A press puts it at the lock for the
-     * kart's speed (lockAt) at once -- the wheel answers the key, not a
-     * moment after it -- and held, it eases on from there to twice the lock
-     * over steerEase: a tap is a firm turn, a long hold a hard one. Turned
-     * the other way it is at that side's lock at once and eases again from
-     * there. Let go, it goes back to the middle at steerBack; and past where
+     * THE WHEEL, turned by A and D. A press puts it at steerJump of the lock
+     * for the kart's speed (lockAt) at once -- the wheel answers the key, not
+     * a moment after it -- and held, it eases on from there to twice the
+     * lock over steerEase: a tap is a gentle turn, and most of the turn is
+     * in the hold, a long one a hard turn. Turned the other way it is at
+     * that side's jump at once and eases again from there. Let go, it goes back to the middle at steerBack; and past where
      * it should be (the kart speeding up with the wheel turned, so the lock
      * shrinking) it comes back at that pace too.
      */
@@ -1698,7 +1753,7 @@ private:
         if (steer != 0)
         {
             s.wheel_ease = Fixed::Min(s.wheel_ease + step / steerEase(), Fixed::One());
-            target = lockAt(speed) * (Fixed::One() + s.wheel_ease) * F(steer);
+            target = lockAt(speed) * (steerJump() + (F(2) - steerJump()) * s.wheel_ease) * F(steer);
             // Short of it: there at once (the press's jump, and the ease after it).
             if (((target - s.wheel) * F(steer)).IsPositive()) { s.wheel = target; return; }
         }
@@ -1925,27 +1980,16 @@ private:
             case Sniper:  sniperLocked(i, x, fy, z, hx, hz); break;
             case Homing:  shootLocked(HomingShot, i, fx, fy, fz, hx * homingSpeed(), Fixed::Zero(), hz * homingSpeed(), crossLife(homingSpeed())); break;
             case Oil:
-            {
-                const Fixed ox = x - hx * F(3), oz = z - hz * F(3);
-                Shot& o = shootLocked(OilShot, i, ox, groundAt(ox, oz, y - kartY() + climb()) + F(4, 100), oz, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kOilTicks);
-                o.fx = takeFx();
-                if (o.fx >= 0) { placeNode(m_fx_nodes[o.fx], o.x, o.y, o.z); dressLocked(m_fx_nodes[o.fx], slickSize(1.0f), "0.05, 0.05, 0.08, 1.0", 0.0f, 0.0f); }
+                // The big slick behind it now; the drops follow as it goes on (dripLocked).
+                slickLocked(i, x - hx * F(4), y, z - hz * F(4), oilReach());
+                s.drips = kDrips; s.drip_in = kDripTicks;
                 break;
-            }
             case Smoke:
             {
                 Shot& c = shootLocked(SmokeShot, i, x, groundAt(x, z, y - kartY() + climb()), z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kSmokeTicks);
                 s.dagger = kDaggerTicks;
-                for (int k = 0; k < 4; ++k)
-                {
-                    c.cloud[k] = takeFx();
-                    if (c.cloud[k] < 0) continue;
-                    Fixed sn, cs;
-                    (Fixed::TwoPi() * F(k, 4) + F(1, 3)).SinCos(sn, cs);
-                    const ETCS::RID n = m_fx_nodes[static_cast<size_t>(c.cloud[k])];
-                    placeNode(n, c.x + sn * F(2), c.y + F(1) + F(k % 2, 2), c.z + cs * F(2));
-                    dressLocked(n, "3.0, 2.0, 3.0", "0.55, 0.55, 0.58, 1.0", 0.0f, 0.5f);
-                }
+                for (int k = 0; k < kSmokePuffs; ++k) c.cloud[k] = takeFx();
+                smokeRingLocked(c);
                 break;
             }
             case Shockwave:
@@ -2044,17 +2088,17 @@ private:
                         if (hit < 0 && (wall || ground)) { s.x = was_x; s.y = was_y; s.z = was_z; }
                         if (s.kind == RocketShot)    burstLocked(s.x, s.y, s.z, F(4), 40, s.owner);
                         else if (s.kind == BombShot) burstLocked(s.x, s.y, s.z, F(45, 10), 40, s.owner, 1);
-                        else if (s.kind == HomingShot) burstLocked(s.x, s.y, s.z, F(3), 30, s.owner);
+                        else if (s.kind == HomingShot) burstLocked(s.x, s.y, s.z, F(3), 30, s.owner, 2);
                         else if (hit >= 0)           damageLocked(static_cast<size_t>(hit), s.owner, s.kind == Pellet ? 10 : 4);
                     }
                     break;
                 }
                 case MineShot:
                     if (s.armed > 0) --s.armed;
-                    else if (kartAt(s.x, s.y, s.z, s.owner, F(6, 10)) >= 0) { gone = true; burstLocked(s.x, s.y, s.z, F(25, 10), 30, s.owner); }
+                    else if (kartAt(s.x, s.y, s.z, s.owner, F(6, 10)) >= 0) { gone = true; burstLocked(s.x, s.y, s.z, mineReach(), 30, s.owner, 1); }
                     // Left alone it does not lie there for good: its last two
                     // seconds it blinks, and then it bursts by itself.
-                    if (!gone && s.life <= 0) { gone = true; burstLocked(s.x, s.y, s.z, F(25, 10), 30, s.owner); }
+                    if (!gone && s.life <= 0) { gone = true; burstLocked(s.x, s.y, s.z, mineReach(), 30, s.owner, 1); }
                     else if (!gone && s.life < 2 * kHz && s.life % 10 == 0 && s.node >= 0)
                         verb(m_shot_nodes[s.node], "SetColor", (s.life / 10) % 2 ? "1.0, 0.9, 0.2, 1.0" : "0.55, 0.08, 0.08, 1.0");
                     break;
@@ -2064,28 +2108,16 @@ private:
                     {
                         Fixed jx, jy, jz;
                         if (static_cast<int>(j) == s.owner || !alive(m_slots[j]) || m_slots[j].air || !where(j, jx, jy, jz)) continue;
-                        if (Fixed::Length(jx - s.x, Fixed::Zero(), jz - s.z) <= oilReach() && (jy - s.y).Abs() < F(1)) m_slots[j].slip = kSlipTicks;
+                        if (Fixed::Length(jx - s.x, Fixed::Zero(), jz - s.z) <= s.reach && (jy - s.y).Abs() < F(1)) m_slots[j].slip = kSlipTicks;
                     }
                     if (s.life <= 0) gone = true;
                     else if ((s.life == 20 || s.life == 10) && s.fx >= 0)   // drying up
-                        dressLocked(m_fx_nodes[s.fx], slickSize(s.life / 30.0f), "0.05, 0.05, 0.08, 1.0", 0.0f, 0.0f);
+                        dressLocked(m_fx_nodes[s.fx], slickSize(s.reach.ToFloat() * s.life / 30.0f), kOilColour, 0.0f, 0.0f);
                     break;
                 case SmokeShot:
-                {
-                    // Thick for its first five seconds, then dissipating over
-                    // fifteen: swelling as it thins, in steps (each a verb).
-                    const int age = kSmokeTicks - s.life, thin = kSmokeTicks - kSmokeThick;
-                    const int step = age < kSmokeThick ? 0 : 1 + (age - kSmokeThick) * kSmokeSteps / thin;
-                    if (age == kHz / 2 || (age >= kSmokeThick && (age - kSmokeThick) % (thin / kSmokeSteps) == 0))
-                    {
-                        const float f = static_cast<float>(step) / kSmokeSteps;
-                        const std::string w = fmt1(4.2f + 2.6f * f), h = fmt1(2.8f + 1.6f * f);
-                        for (int c : s.cloud)
-                            if (c >= 0) dressLocked(m_fx_nodes[static_cast<size_t>(c)], w + ", " + h + ", " + w, "0.55, 0.55, 0.58, 1.0", 0.0f, 0.55f * (1.0f - f) + 0.02f);
-                    }
                     if (s.life <= 0) gone = true;
+                    else smokeRingLocked(s);
                     break;
-                }
                 case WaveShot:
                 {
                     // The ring's front, out from where it was set off: every
@@ -2135,13 +2167,14 @@ private:
     {
         for (const Shot& s : m_shots)
             if (s.kind == KartArms::SmokeShot && s.life > kSmokeTicks - kSmokeThick - (kSmokeTicks - kSmokeThick) * 2 / 3   // while it is thick enough to hide in
-                && Fixed::Length(x - s.x, Fixed::Zero(), z - s.z) < smokeReach()) return true;
+                && Fixed::Length(x - s.x, Fixed::Zero(), z - s.z) < smokeRingR(kSmokeTicks - s.life) + F(3, 2)) return true;
         return false;
     }
     /*
      * THE DAGGER: every fifth of a second while it lasts, 8 to each kart
      * whose middle is within a kart's length of this one's -- up against
-     * it, side by side, nose to tail. Its blade is drawn out of the nose.
+     * it, side by side, nose to tail. Its blade is drawn out of the nose: a
+     * spear, longer than it cuts, so it reads as one.
      */
     void daggerLocked(size_t i)
     {
@@ -2162,12 +2195,12 @@ private:
         {
             if (s.dagger <= 0) { freeFx(s.dagger_fx); s.dagger_fx = -1; return; }
             const ETCS::RID n = m_fx_nodes[static_cast<size_t>(s.dagger_fx)];
-            dressLocked(n, "0.12, 0.12, 1.4", "0.95, 0.95, 1.0, 1.0", 0.9f, 0.0f);
+            dressLocked(n, "0.1, 0.1, 4.2", "0.95, 0.95, 1.0, 1.0", 0.9f, 0.0f);   // a spear: out of the nose, three times the old blade
             if (Causal_* c = causal(n))
             {
                 std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
                 OrderVector& r = c->RowsUnder();
-                r.PlaceAt(x + s.hx * F(13, 10), y, z + s.hz * F(13, 10));
+                r.PlaceAt(x + s.hx * F(27, 10), y, z + s.hz * F(27, 10));
                 Fixed w, yy;
                 halfTurn(s.hx, s.hz, w, yy);
                 r.qw = w; r.qx = r.qz = Fixed::Zero(); r.qy = yy;
@@ -2233,9 +2266,85 @@ private:
     }
     int  takeFx()        { return takeOf(m_fx_busy); }
     int  takeRing()      { return takeOf(m_ring_busy); }
-    void freeFx(int n)   { if (n >= 0 && n < static_cast<int>(m_fx_busy.size()))   { m_fx_busy[n] = false;   undressLocked(m_fx_nodes[n]); } }
+    // Freed, an effect is set square again: a slick tilted to a ramp, or a
+    // spear turned to a heading, would otherwise lend its turn to whatever takes it next.
+    void freeFx(int n)
+    {
+        if (n < 0 || n >= static_cast<int>(m_fx_busy.size())) return;
+        m_fx_busy[n] = false;
+        undressLocked(m_fx_nodes[n]);
+        if (Causal_* c = causal(m_fx_nodes[n]))
+        {
+            std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+            OrderVector& r = c->RowsUnder();
+            r.qw = Fixed::One(); r.qx = r.qy = r.qz = Fixed::Zero();
+        }
+    }
     void freeRing(int n) { if (n >= 0 && n < static_cast<int>(m_ring_busy.size())) { m_ring_busy[n] = false; undressLocked(m_ring_nodes[n]); } }
-    static std::string slickSize(float f) { const std::string d = fmt1(2.0f * 2.5f * f); return d + ", 0.08, " + d; }
+    static std::string slickSize(float reach) { const std::string d = fmt1(2.0f * reach); return d + ", 0.08, " + d; }
+    static constexpr const char* kOilColour = "0.05, 0.05, 0.08, 1.0";
+    // A slick of `reach` on the ground under (x, z), dropped by kart i, laid
+    // on its slope (a ramp's, a hill's); `lift` over the ground, so a drop on
+    // the big slick is seen on it.
+    void slickLocked(size_t i, Fixed x, Fixed y, Fixed z, Fixed reach, Fixed lift = Fixed::Zero())
+    {
+        Fixed gx = Fixed::Zero(), gz = Fixed::Zero();
+        const Fixed h = KartArena::Height(m_live, x, z, y - kartY() + climb(), Fixed::Zero(), &gx, &gz);
+        Shot& o = shootLocked(KartArms::OilShot, i, x, h + F(4, 100) + lift, z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kOilTicks);
+        o.reach = reach;
+        o.fx = takeFx();
+        if (o.fx >= 0)
+        {
+            poseNode(m_fx_nodes[o.fx], o.x, o.y, o.z, 0, Fixed::Zero(), Fixed::One(), gx, gz);
+            dressLocked(m_fx_nodes[o.fx], slickSize(reach.ToFloat()), kOilColour, 0.0f, 0.0f);
+        }
+    }
+    // The oil after the big slick: a drop behind the kart every kDripTicks
+    // as it goes on, each smaller than the last.
+    void dripLocked(size_t i)
+    {
+        Slot& s = m_slots[i];
+        if (s.drips <= 0 || --s.drip_in > 0) return;
+        Fixed x, y, z;
+        if (!where(i, x, y, z)) { s.drips = 0; return; }
+        const int k = kDrips - s.drips;
+        slickLocked(i, x - s.hx * F(2), y, z - s.hz * F(2), dripReach(k), F(k + 1, 200));
+        --s.drips; s.drip_in = kDripTicks;
+    }
+    /*
+     * A SMOKE BOMB IS A RING: kSmokePuffs puffs round where it went off,
+     * spreading from 1.5 out to 8 over its thick five seconds -- fast, then
+     * slowing -- and on to 10 as it thins over fifteen, so it walls a kart
+     * in and anyone outside out. Placed every tick (rows, not lines), turning
+     * slowly; dressed kSmokeSteps times over its life (a verb a puff each):
+     * swelling all along, dense while thick, thinning to nothing after.
+     */
+    static Fixed smokeRingR(int age)
+    {
+        if (age < kSmokeThick) { const Fixed v = Fixed::One() - F(age, kSmokeThick); return F(3, 2) + F(13, 2) * (Fixed::One() - v * v); }
+        return F(8) + F(2) * F(std::min(age, kSmokeTicks) - kSmokeThick, kSmokeTicks - kSmokeThick);
+    }
+    void smokeRingLocked(const Shot& c)
+    {
+        const int age = kSmokeTicks - c.life;
+        const Fixed r = smokeRingR(age);
+        for (int k = 0; k < kSmokePuffs; ++k)
+        {
+            if (c.cloud[k] < 0) continue;
+            Fixed sn, cs;
+            (Fixed::TwoPi() * F(k, kSmokePuffs) + F(age, 6 * kHz * 10)).SinCos(sn, cs);
+            placeNode(m_fx_nodes[static_cast<size_t>(c.cloud[k])], c.x + sn * r, c.y + F(6, 5) + F(k % 2, 2), c.z + cs * r);
+        }
+        const int step = age * kSmokeSteps / kSmokeTicks;
+        if (age > 0 && step == (age - 1) * kSmokeSteps / kSmokeTicks) return;
+        const int at = step * kSmokeTicks / kSmokeSteps;   // the age this step stands for
+        const float g = static_cast<float>(step) / kSmokeSteps;
+        const float thin = at < kSmokeThick ? 0.0f : static_cast<float>(at - kSmokeThick) / (kSmokeTicks - kSmokeThick);
+        const std::string w = fmt1(4.5f + 4.0f * g), h = fmt1(3.2f + 2.3f * g);
+        for (int k = 0; k < kSmokePuffs; ++k)
+            if (c.cloud[k] >= 0)
+                dressLocked(m_fx_nodes[static_cast<size_t>(c.cloud[k])], w + ", " + h + ", " + w, "0.5, 0.5, 0.53, 1.0", 0.0f, 0.95f * (1.0f - thin) + 0.03f);
+    }
     struct Wisp { int node; int64_t born; };
     void wispLocked(Fixed x, Fixed y, Fixed z)
     {
@@ -2366,7 +2475,7 @@ private:
         std::vector<Bend>  bends;                 // the ground's bends round its point
         uint32_t           noise = 0;             // its warp's seed
         int                cut = 0;               // its tree's steps the dense cut
-        int                tint = 0;              // the weapon's fire: 0 a rocket's, 1 a bomb's (redder)
+        int                tint = 0;              // the weapon's fire: 0 a rocket's, 1 a bomb's or a mine's (redder), 2 a homing rocket's (purple)
         bool               shown = false;         // its shells up: drawn, not state
     };
     static constexpr int kBursts = 3, kGrowTicks = 8, kFadeTicks = 30, kFadeSteps = 5;
@@ -2520,7 +2629,7 @@ private:
     }
     // The warp's noise is Perlin's; the renderer redraws it with the same one (bentCopyLocked: Mesh.Warp).
     using FireWarp = ETCS::Noise::Warp<ETCS::Noise::Perlin, Fixed>;
-    static Fixed warpAmp()  { return F(45, 100); }
+    static Fixed warpAmp()  { return F(9, 10); }
     static Fixed warpFreq() { return F(3, 2); }
     // How far apart a step is looked along for what is dense: under the
     // thinnest thing fire must not pass (a pit's wall, 0.3), so a stretched step does not hop it.
@@ -2554,23 +2663,39 @@ private:
         b.noise = static_cast<uint32_t>(KartArms::Next(r) >> 32);
         const Fire& fire = m_fires[static_cast<size_t>(b.fire)];
         const size_t n = fire.steps.size();
-        // A step's two ends about the point, turned and bent.
-        auto set = [&](Fixed ts, Fixed tc, Fixed x, Fixed y, Fixed z, Fixed& ox, Fixed& oy, Fixed& oz) {
-            ox = x * tc + z * ts; oy = y; oz = z * tc - x * ts;
-            bendPoint(b, ox, oy, oz);
+        /*
+         * A STEP IS A CURVE: its two ends and its middle, each turned and put
+         * through the warp and the bends (bendPoint), and the quadratic
+         * through the three -- the way the renderer bends the step's puff
+         * (Mesh.Parts: a bent copy bends each part along the curve through
+         * the same three points), so what is drawn is what was cut and what hurts.
+         */
+        using P3 = std::array<Fixed, 3>;
+        auto set = [&](Fixed ts, Fixed tc, Fixed x, Fixed y, Fixed z) {
+            P3 o{ x * tc + z * ts, y, z * tc - x * ts };
+            bendPoint(b, o[0], o[1], o[2]);
+            return o;
         };
-        auto at = [&](Fixed x, Fixed y, Fixed z) { return std::array<Fixed, 3>{ b.x + x * b.reach, b.y + y * b.reach, b.z + z * b.reach }; };
-        // Whether a step (its ends about the point, set) passes through
-        // anything dense: looked at every kSampleGap of its way, not only at
-        // its middle and end -- a warped, bent step can be long, and a block
-        // is one thick.
-        auto blocked = [&](Fixed x0, Fixed y0, Fixed z0, Fixed x1, Fixed y1, Fixed z1) {
-            const Fixed len = Fixed::Length(x1 - x0, y1 - y0, z1 - z0) * b.reach;
+        auto curve = [&](Fixed ts, Fixed tc, const FireStep& st, P3& c0, P3& cm, P3& c1) {
+            c0 = set(ts, tc, st.x0, st.y0, st.z0);
+            cm = set(ts, tc, (st.x0 + st.x1) * Fixed::Half(), (st.y0 + st.y1) * Fixed::Half(), (st.z0 + st.z1) * Fixed::Half());
+            c1 = set(ts, tc, st.x1, st.y1, st.z1);
+        };
+        // The curve at t (0 at c0, a half at cm, 1 at c1), about the point.
+        auto along = [](const P3& c0, const P3& cm, const P3& c1, Fixed t) {
+            const Fixed a = (t * t * F(2)) - t * F(3) + Fixed::One(), m = t * F(4) - t * t * F(4), e = t * t * F(2) - t;
+            return P3{ c0[0] * a + cm[0] * m + c1[0] * e, c0[1] * a + cm[1] * m + c1[1] * e, c0[2] * a + cm[2] * m + c1[2] * e };
+        };
+        auto at = [&](const P3& p) { return P3{ b.x + p[0] * b.reach, b.y + p[1] * b.reach, b.z + p[2] * b.reach }; };
+        // Whether a step's curve passes through anything dense: looked at
+        // every kSampleGap of its way, not only at its middle and end -- a
+        // warped, bent step can be long, and a block is one thick.
+        auto blocked = [&](const P3& c0, const P3& cm, const P3& c1) {
+            const Fixed len = (Fixed::Length(cm[0] - c0[0], cm[1] - c0[1], cm[2] - c0[2]) + Fixed::Length(c1[0] - cm[0], c1[1] - cm[1], c1[2] - cm[2])) * b.reach;
             const int64_t looks = std::min<int64_t>(16, std::max<int64_t>(2, (len / kSampleGap()).ToInt() + 1));
             for (int64_t k = 1; k <= looks; ++k)
             {
-                const Fixed t = F(k) / F(looks);
-                const auto p = at(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, z0 + (z1 - z0) * t);
+                const P3 p = at(along(c0, cm, c1, F(k) / F(looks)));
                 if (densityAt(p[0], p[1], p[2]) > Fixed::One()) return true;
             }
             return false;
@@ -2588,10 +2713,9 @@ private:
                 cut[i] = st.from >= 0 && cut[static_cast<size_t>(st.from)];
                 if (!cut[i])
                 {
-                    Fixed x0, y0, z0, x1, y1, z1;
-                    set(ts, tc, st.x0, st.y0, st.z0, x0, y0, z0);
-                    set(ts, tc, st.x1, st.y1, st.z1, x1, y1, z1);
-                    cut[i] = blocked(x0, y0, z0, x1, y1, z1);
+                    P3 c0, cm, c1;
+                    curve(ts, tc, st, c0, cm, c1);
+                    cut[i] = blocked(c0, cm, c1);
                 }
                 if (cut[i]) lost += st.e0;
             }
@@ -2603,14 +2727,18 @@ private:
         {
             if (best_cut[i]) { ++b.cut; continue; }
             const FireStep& st = fire.steps[i];
-            Fixed x0, y0, z0, x1, y1, z1;
-            set(b.ts, b.tc, st.x0, st.y0, st.z0, x0, y0, z0);
-            set(b.ts, b.tc, st.x1, st.y1, st.z1, x1, y1, z1);
-            const auto p0 = at(x0, y0, z0), p1 = at(x1, y1, z1);
-            Spark sp;
-            sp.x0 = p0[0]; sp.y0 = p0[1]; sp.z0 = p0[2]; sp.x1 = p1[0]; sp.y1 = p1[1]; sp.z1 = p1[2];
-            sp.e0 = st.e0 * b.reach; sp.e1 = st.e1 * b.reach; sp.d0 = st.d0 * b.reach;
-            b.sparks.push_back(sp);
+            P3 c0, cm, c1;
+            curve(b.ts, b.tc, st, c0, cm, c1);
+            // Two sparks a step, end to middle to end: the curve's chords, for the damage to read.
+            const P3 q[3] = { at(c0), at(cm), at(c1) };
+            const Fixed e[3] = { st.e0, (st.e0 + st.e1) * Fixed::Half(), st.e1 };
+            for (int h = 0; h < 2; ++h)
+            {
+                Spark sp;
+                sp.x0 = q[h][0]; sp.y0 = q[h][1]; sp.z0 = q[h][2]; sp.x1 = q[h + 1][0]; sp.y1 = q[h + 1][1]; sp.z1 = q[h + 1][2];
+                sp.e0 = e[h] * b.reach; sp.e1 = e[h + 1] * b.reach; sp.d0 = st.d0 * b.reach;
+                b.sparks.push_back(sp);
+            }
         }
         const float turn = std::atan2(b.ts.ToFloat(), b.tc.ToFloat());
         for (const Fixed& a : fire.az) b.az.push_back(a.ToFloat() + turn);
@@ -2622,8 +2750,8 @@ private:
             cut[i] = st.from >= 0 && cut[static_cast<size_t>(st.from)];
             if (!cut[i])
             {
-                cut[i] = blocked(st.x0 * b.tc + st.z0 * b.ts, st.y0, st.z0 * b.tc - st.x0 * b.ts,
-                                 st.x1 * b.tc + st.z1 * b.ts, st.y1, st.z1 * b.tc - st.x1 * b.ts);
+                const P3 c0{ st.x0 * b.tc + st.z0 * b.ts, st.y0, st.z0 * b.tc - st.x0 * b.ts }, c1{ st.x1 * b.tc + st.z1 * b.ts, st.y1, st.z1 * b.tc - st.x1 * b.ts };
+                cut[i] = blocked(c0, P3{ (c0[0] + c1[0]) * Fixed::Half(), (c0[1] + c1[1]) * Fixed::Half(), (c0[2] + c1[2]) * Fixed::Half() }, c1);
             }
             straight += cut[i] ? 1 : 0;
         }
@@ -2792,10 +2920,12 @@ private:
             const float glow = 1.6f * (1.0f - static_cast<float>(fade) / kFadeSteps);
             // Its shells: given their tree's meshes and turned as it is when it
             // goes up, sized as it swells, dimmed as it fades -- each said when it changes.
-            // A rocket's fire white-hot to orange; a bomb's redder through and through, to tell them apart.
-            static const char* const hues[2][kShells] = { { "1.0, 0.86, 0.55, 1.0", "1.0, 0.55, 0.14, 1.0", "0.92, 0.25, 0.07, 1.0" },
-                                                          { "1.0, 0.38, 0.16, 1.0", "0.88, 0.1, 0.03, 1.0", "0.5, 0.02, 0.02, 1.0" } };
-            const char* const* hue = hues[b.tint ? 1 : 0];
+            // A rocket's fire white-hot to orange; a bomb's and a mine's redder
+            // through and through; a homing rocket's purple, as it is magic.
+            static const char* const hues[3][kShells] = { { "1.0, 0.86, 0.55, 1.0", "1.0, 0.55, 0.14, 1.0", "0.92, 0.25, 0.07, 1.0" },
+                                                          { "1.0, 0.38, 0.16, 1.0", "0.88, 0.1, 0.03, 1.0", "0.5, 0.02, 0.02, 1.0" },
+                                                          { "0.95, 0.75, 1.0, 1.0", "0.68, 0.28, 1.0, 1.0", "0.4, 0.08, 0.7, 1.0" } };
+            const char* const* hue = hues[b.tint >= 0 && b.tint < 3 ? b.tint : 0];
             const float swell = 0.35f + 0.65f * static_cast<float>(std::min<int64_t>(age + 1, kGrowTicks)) / kGrowTicks;
             const std::string size = fmt3(kFireBox * b.reach.ToFloat() * swell);
             for (int n = 0; n < kShells && b.fire >= 0; ++n)
@@ -2875,6 +3005,10 @@ private:
         const int shell = static_cast<int>(at % kShells);
         const int around = 6, rings = 3;   // a puff of 14 corners: round enough when it glows
         verb(mesh, "Clear", "");
+        // Each puff a part, its poles first: a bent copy bends it along the
+        // curve through its step's two ends and middle -- the poles stand
+        // 1.15 times as far out as the ends, so the puffs overlap (growLocked: a step is a curve).
+        verb(mesh, "Parts", std::to_string(2 + (rings - 1) * around) + ", " + fmt3(1.0f / 1.15f));
         int base = 0;
         for (const FireStep& st : fire.steps)
         {
@@ -3249,7 +3383,7 @@ private:
         const size_t base = (i * 4 + static_cast<size_t>(t)) * kMarkNodes;
         Fixed rope = tr.run_d;
         for (const MarkSeg& m : tr.segs) rope += m.len;
-        while (!tr.segs.empty() && rope - tr.segs.back().len >= markLength())
+        while (!tr.segs.empty() && rope - tr.segs.back().len >= m_mark_len)
         {
             rope -= tr.segs.back().len;
             unmarkLocked(base, tr, tr.segs.back());
@@ -3425,7 +3559,7 @@ private:
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
                 + std::to_string(s.hp) + " " + std::to_string(s.weapon) + " " + std::to_string(s.ammo) + " "
                 + std::to_string(s.cooldown) + " " + std::to_string(s.boost) + " " + std::to_string(s.spare) + " "
-                + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.out_ticks) + " " + std::to_string(s.dagger) + " " + std::to_string(s.kx.raw) + " "
+                + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.out_ticks) + " " + std::to_string(s.dagger) + " " + std::to_string(s.drips) + " " + std::to_string(s.drip_in) + " " + std::to_string(s.kx.raw) + " "
                 + std::to_string(s.kz.raw) + " " + std::to_string(s.elims) + " "
                 + std::to_string(s.deaths) + " " + std::to_string(s.last_elims) + " " + std::to_string(s.last_deaths) + " "
                 + std::to_string(s.dead_until) + " " + std::to_string(s.ram_safe) + " " + std::to_string(s.colour) + " " + s.name;
@@ -3441,7 +3575,7 @@ private:
         }
         for (const Shot& s : m_shots)
             st += "|s" + std::to_string(s.kind) + " " + std::to_string(s.owner) + " " + std::to_string(s.x.raw) + " "
-                + std::to_string(s.y.raw) + " " + std::to_string(s.z.raw) + " " + std::to_string(s.life) + " " + std::to_string(s.armed);
+                + std::to_string(s.y.raw) + " " + std::to_string(s.z.raw) + " " + std::to_string(s.life) + " " + std::to_string(s.armed) + " " + std::to_string(s.reach.raw);
         for (const Pickup& p : m_pickups) st += "|p" + std::to_string(p.back);
         char buf[17];
         std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(XXH3_64bits(st.data(), st.size())));
@@ -3465,7 +3599,7 @@ private:
     void lookLocked(double dt_ms)
     {
         const int keys = ((m_look_keys & 2u) ? 1 : 0) - ((m_look_keys & 1u) ? 1 : 0);
-        if (keys != 0) turnLookLocked(static_cast<float>(keys * kLookKeyRate * dt_ms / 1000.0), 0.0f);
+        if (keys != 0) turnLookLocked(static_cast<float>(keys * kLookKeyRate * m_look_speed * dt_ms / 1000.0), 0.0f);
         if (keys != 0 || m_look_drag) return;
         m_look_idle_ms += dt_ms;
         if (m_look_idle_ms < kLookHoldMs || (m_look_yaw == 0.0f && m_look_pitch == 0.0f)) return;
@@ -3685,6 +3819,7 @@ private:
     std::vector<std::string> menuItemsLocked() const
     {
         std::vector<std::string> items;
+        if (m_settings) return { "invert", "marks", "look", "close" };
         const bool seated = slotOf(m_me) >= 0;
         if (m_authority) { items.push_back("map"); items.push_back("length"); }
         if (seated) { items.push_back("colour"); items.push_back("name"); }
@@ -3693,9 +3828,76 @@ private:
             items.push_back("start");
             if (!m_defs.empty() && m_defs[m_map].generated) items.push_back("reroll");
         }
+        items.push_back("settings");
         return items;
     }
-    bool menuShownLocked() const { return m_menu_rid && m_phase == Lobby && !m_me.empty() && m_ready; }
+    bool menuShownLocked() const { return m_menu_rid && (m_settings || (m_phase == Lobby && !m_me.empty() && m_ready)); }
+
+    // The settings' choices, in their order: the marks' road and the look's pace.
+    static constexpr int kMarkChoices[5] = { 0, 20, 40, 80, 160 };
+    static constexpr float kLookChoices[3] = { 0.5f, 1.0f, 2.0f };
+    bool settingLocked(const std::string& name, const std::string& value)
+    {
+        if (name == "invert")
+        {
+            if (value != "0" && value != "1") return false;
+            const bool on = value == "1";
+            if (on != m_invert) { m_invert = on; sendKeysLocked(); }
+            return true;
+        }
+        if (name == "marks")
+        {
+            const int v = std::atoi(value.c_str());
+            if (v < 0 || v > 400 || (v == 0 && value != "0")) return false;
+            m_mark_len = F(v);
+            for (size_t i = 0; i < m_slots.size(); ++i) for (int t = 0; t < 4; ++t) trimLocked(i, t);
+            return true;
+        }
+        if (name == "look")
+        {
+            const float v = static_cast<float>(std::atof(value.c_str()));
+            if (!(v >= 0.1f && v <= 5.0f)) return false;
+            m_look_speed = v;
+            return true;
+        }
+        return false;
+    }
+    // A step of a setting through its choices, -1 or +1.
+    void settingStepLocked(const std::string& id, int dir)
+    {
+        if (id == "invert") { settingLocked("invert", m_invert ? "0" : "1"); return; }
+        if (id == "marks")
+        {
+            int at = 0;
+            for (int k = 0; k < 5; ++k) if (F(kMarkChoices[k]) <= m_mark_len) at = k;
+            settingLocked("marks", std::to_string(kMarkChoices[(at + dir + 5) % 5]));
+            return;
+        }
+        if (id == "look")
+        {
+            int at = 0;
+            for (int k = 0; k < 3; ++k) if (kLookChoices[k] <= m_look_speed + 1e-3f) at = k;
+            m_look_speed = kLookChoices[(at + dir + 3) % 3];
+        }
+    }
+    // A key with the settings open: true when it was theirs (all but O, which shuts them, above).
+    bool settingsKeyLocked(uint16_t key)
+    {
+        const std::vector<std::string> items = menuItemsLocked();
+        const int n = static_cast<int>(items.size());
+        const bool up = key == 265 || key == 'W', down = key == 264 || key == 'S';
+        const bool left = key == 263 || key == 'A', right = key == 262 || key == 'D';
+        const bool enter = key == 257 || key == 335 || key == ' ';
+        m_set_focus = ((m_set_focus % n) + n) % n;
+        if (key == 256) { m_settings = false; return true; }
+        if (up)   { m_set_focus = (m_set_focus + n - 1) % n; return true; }
+        if (down) { m_set_focus = (m_set_focus + 1) % n; return true; }
+        if (!left && !right && !enter) return false;
+        const std::string& at = items[static_cast<size_t>(m_set_focus)];
+        if (at == "close") { if (enter) m_settings = false; return true; }
+        settingStepLocked(at, left ? -1 : 1);
+        return true;
+    }
 
     // A key in the lobby: true when it was the menu's.
     bool menuKeyLocked(uint16_t key)
@@ -3722,7 +3924,7 @@ private:
         if (down) { m_menu = (m_menu + 1) % n; return true; }
         if (!left && !right && !enter) return false;
         const std::string& at = items[static_cast<size_t>(m_menu)];
-        if (at == "start" || at == "reroll" || at == "name") { if (enter) menuActLocked(at, "press", 0); return true; }
+        if (at == "start" || at == "reroll" || at == "name" || at == "settings") { if (enter) menuActLocked(at, "press", 0); return true; }
         if (at == "colour") { menuActLocked(at, left ? "prev" : "next", 0); return true; }
         // Enter on a map made from a seed: the same map, a new seed.
         if (at == "map" && enter && m_defs[m_map].generated) { menuActLocked("reroll", "press", 0); return true; }
@@ -3742,7 +3944,8 @@ private:
         if (m_editing && id != "name") { m_editing = false; if (validName(m_edit)) restyleLocked(-2, m_edit); }
         if (id.empty() || id == "-" || id == "+") return;   // off the panel, or on nothing of it
         const std::vector<std::string> items = menuItemsLocked();
-        for (size_t k = 0; k < items.size(); ++k) if (items[k] == id) m_menu = static_cast<int>(k);
+        for (size_t k = 0; k < items.size(); ++k) if (items[k] == id) (m_settings ? m_set_focus : m_menu) = static_cast<int>(k);
+        if (m_settings) { if (id == "close") m_settings = false; else settingStepLocked(id, part == "prev" ? -1 : 1); return; }
         menuActLocked(id, part, n);
     }
     void menuActLocked(const std::string& id, const std::string& part, int n)
@@ -3759,6 +3962,7 @@ private:
             return;
         }
         if (id == "name") { const int i = slotOf(m_me); if (i >= 0) { m_editing = true; m_edit = nameOfLocked(static_cast<size_t>(i)); } return; }
+        if (id == "settings") { m_settings = true; m_set_focus = 0; m_editing = false; return; }
         if (!m_authority) return;
         if (id == "start") { roundLocked(); return; }
         if (id == "reroll") { if (m_defs[m_map].generated) configLocked(m_map, m_round_secs, true); return; }
@@ -3791,6 +3995,34 @@ private:
         if (show != m_menu_shown) { verb(m_menu_rid, "SetHidden", show ? "0" : "1"); m_menu_shown = show; if (!show) m_editing = false; }
         if (!show) return;
         std::vector<std::string> L;
+        if (m_settings) settingsLinesLocked(L);
+        else lobbyLinesLocked(L);
+        // Only what changed goes over.
+        if (m_menu_sent.size() > L.size()) m_menu_sent.resize(L.size());
+        for (size_t k = 0; k < L.size(); ++k)
+        {
+            if (k < m_menu_sent.size() && m_menu_sent[k] == L[k]) continue;
+            verb(m_menu_rid, "SetLine", std::to_string(k) + " " + L[k]);
+            if (k < m_menu_sent.size()) m_menu_sent[k] = L[k]; else m_menu_sent.push_back(L[k]);
+        }
+        if (m_menu_lines != L.size()) { verb(m_menu_rid, "SetLines", std::to_string(L.size())); m_menu_lines = L.size(); }
+        const std::vector<std::string> items = menuItemsLocked();
+        const int at = m_settings ? m_set_focus : m_menu;
+        const std::string focus = items.empty() ? "-" : items[static_cast<size_t>(((at % static_cast<int>(items.size())) + static_cast<int>(items.size())) % static_cast<int>(items.size()))];
+        if (focus != m_menu_focus) { verb(m_menu_rid, "Focus", focus); m_menu_focus = focus; }
+    }
+    void settingsLinesLocked(std::vector<std::string>& L)
+    {
+        L.push_back("title|SETTINGS");
+        L.push_back("sub|this tab's own -- none of it is the battle's");
+        L.push_back(std::string("choice|invert|wheel|") + (m_invert ? "swapped: A right, D left" : "A left, D right") + "|1");
+        L.push_back("choice|marks|marks|" + (m_mark_len.IsZero() ? std::string("off") : std::to_string(m_mark_len.ToInt()) + " units of road") + "|1");
+        L.push_back("choice|look|look|" + std::string(m_look_speed < 0.75f ? "slow" : m_look_speed > 1.5f ? "fast" : "normal") + "|1");
+        L.push_back("button|close|done|1|1");
+        L.push_back("hint|arrows or click change them  O shuts");
+    }
+    void lobbyLinesLocked(std::vector<std::string>& L)
+    {
         const bool host = m_authority;
         const int me = slotOf(m_me);
         L.push_back("title|LOBBY");
@@ -3807,6 +4039,7 @@ private:
         }
         L.push_back(host ? std::string("button|start|start the round|1|1") : "button|start|" + labelLocked(m_owner) + " starts the round|0|0");
         if (host && !m_defs.empty() && m_defs[m_map].generated) L.push_back("button|reroll|new layout|1|0");
+        L.push_back("button|settings|settings (O)|1|0");
         // The table is twenty letters wide beside the map: K for eliminations, D for deaths.
         L.push_back("head|driver        K   D");
         for (size_t i : rankLocked())
@@ -3820,18 +4053,6 @@ private:
                                             : host ? "arrows move it  Enter starts  or click"
                                                    : "arrows: your colour and name  or click"));
         previewLocked(L);
-        // Only what changed goes over.
-        if (m_menu_sent.size() > L.size()) m_menu_sent.resize(L.size());
-        for (size_t k = 0; k < L.size(); ++k)
-        {
-            if (k < m_menu_sent.size() && m_menu_sent[k] == L[k]) continue;
-            verb(m_menu_rid, "SetLine", std::to_string(k) + " " + L[k]);
-            if (k < m_menu_sent.size()) m_menu_sent[k] = L[k]; else m_menu_sent.push_back(L[k]);
-        }
-        if (m_menu_lines != L.size()) { verb(m_menu_rid, "SetLines", std::to_string(L.size())); m_menu_lines = L.size(); }
-        const std::vector<std::string> items = menuItemsLocked();
-        const std::string focus = items.empty() ? "-" : items[static_cast<size_t>(((m_menu % static_cast<int>(items.size())) + static_cast<int>(items.size())) % static_cast<int>(items.size()))];
-        if (focus != m_menu_focus) { verb(m_menu_rid, "Focus", focus); m_menu_focus = focus; }
     }
     // The map in play from above: its ground, what stands on it, its pads,
     // springs and boxes, and where karts start.
@@ -4088,6 +4309,11 @@ private:
     // This runtime's own: its keys, its eye, its card, its menu, its board.
     unsigned m_keys = 0;
     bool     m_invert = false;   // this runtime's wheel keys swapped (SetInvert)
+    // The settings (Setting): this runtime's, none of them the battle's.
+    bool     m_settings = false;                // open over the arena
+    int      m_set_focus = 0;
+    Fixed    m_mark_len = Fixed::FromInt(kMarkLength);
+    float    m_look_speed = 1.0f;
     int      m_sent_t = 0, m_sent_s = 0, m_sent_f = 0;
     int      m_menu = 0;                        // the menu's focus: a place in menuItemsLocked()
     bool     m_editing = false;                 // the name field has the keys

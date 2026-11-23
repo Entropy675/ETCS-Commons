@@ -44,7 +44,10 @@ run golf_springs.etcs world=world game=game disc=disc_shape dart=dart
 # Six spots for powers.
 run golf_spots.etcs world=world game=game
 run golf_spots.etcs world=world game=game
-# Twenty-four puffs the powers draw with: black holes, wind, tornadoes, lightning.
+# Forty puffs the powers draw with: black holes, wind, tornadoes, lightning,
+# and a smoke's ring of ten.
+run golf_puffs.etcs world=world game=game ball_shape=ball_shape
+run golf_puffs.etcs world=world game=game ball_shape=ball_shape
 run golf_puffs.etcs world=world game=game ball_shape=ball_shape
 run golf_puffs.etcs world=world game=game ball_shape=ball_shape
 run golf_puffs.etcs world=world game=game ball_shape=ball_shape
