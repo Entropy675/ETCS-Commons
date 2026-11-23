@@ -351,7 +351,7 @@ public:
     // ── what the families ask of a match ──────────────────────────────────
 
     bool ApplyConcrete(const std::string& author, const std::string& line) override { return applyLocked(author, line); }
-    void RestartConcrete() override { restartLocked(); }
+    void RestartConcrete() override { resetLocked(); }
     std::string HashConcrete() override { return hashLocked(); }
     void EndedConcrete() override { noteLocked("the match is over -- " + m_owner + " closed it"); }
     std::string OpeningConcrete() override { return "join"; }
@@ -886,7 +886,7 @@ private:
 
     // Back to the start: every ball off the course, the lobby on the first
     // course's first hole, the dice as made -- what every session begins from.
-    void restartLocked()
+    void resetLocked()
     {
         for (size_t i = 0; i < m_slots.size(); ++i)
         {

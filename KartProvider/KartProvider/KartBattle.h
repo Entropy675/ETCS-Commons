@@ -407,7 +407,7 @@ public:
     // Trace: a line, as its author (applyLocked), what "as made" is, the hash;
     // a seat opens with `join` and its stream's end is its `leave`.
     bool ApplyConcrete(const std::string& author, const std::string& line) override { return applyLocked(author, line); }
-    void RestartConcrete() override { restartLocked(); }
+    void RestartConcrete() override { resetLocked(); }
     std::string HashConcrete() override { return hashLocked(); }
     void EndedConcrete() override { noteLocked("the battle is over -- " + m_owner + " closed it"); }
     std::string OpeningConcrete() override { return "join"; }
@@ -1228,7 +1228,7 @@ private:
     // Back to the start: every kart in the pit as made, the shots gone, the
     // lobby on the first map, the dice as made. What a session begins from on
     // every runtime, so two of them start the same.
-    void restartLocked()
+    void resetLocked()
     {
         for (size_t i = 0; i < m_slots.size(); ++i) pitLocked(i);
         for (Shot& s : m_shots) dropShotLocked(s);
