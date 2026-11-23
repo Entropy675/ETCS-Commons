@@ -39,6 +39,8 @@
     "GolfProvider/scripts/golf_course_classic.etcs",
     "GolfProvider/scripts/golf_course_boosters.etcs",
     "GolfProvider/scripts/golf_course_terraces.etcs",
+    "GolfProvider/scripts/golf_course_ridge.etcs",
+    "GolfProvider/scripts/golf_course_channels.etcs",
     "GolfProvider/scripts/golf_play.etcs",
     "GolfProvider/scripts/golf_board.etcs",
     "GolfProvider/scripts/golf_board_row.etcs",

@@ -33,6 +33,9 @@ DEFINE_WORK_FUNC_TYPED(GolfMatch, SetOrbit, (float, distance), (float, yaw), (fl
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddBall, (ETCS::RID, ball), (ETCS::RID, shadow)) { (void)ctx; self.AddBall(ball, shadow); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddSlabNode, (ETCS::RID, rid))    { (void)ctx; self.AddSlabNode(rid); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddCupNode,  (ETCS::RID, rid))    { (void)ctx; self.AddCupNode(rid); }
+// BakeCup <rim> <rim mesh> <well mesh> -- the cup drawn round: the rim's node (coloured as the
+// course's turf) and the two empty meshes the match bakes the rim and the well into.
+DEFINE_WORK_FUNC_TYPED(GolfMatch, BakeCup, (ETCS::RID, rim), (ETCS::RID, rim_mesh), (ETCS::RID, well_mesh)) { (void)ctx; self.BakeCup(rim, rim_mesh, well_mesh); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddTeeNode,  (ETCS::RID, rid))    { (void)ctx; self.AddTeeNode(rid); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddSpotNode, (ETCS::RID, rid))    { (void)ctx; self.AddSpotNode(rid); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddPuffNode, (ETCS::RID, rid))    { (void)ctx; self.AddPuffNode(rid); }
@@ -45,6 +48,11 @@ DEFINE_WORK_FUNC_TYPED(GolfMatch, AddSpringNode, (ETCS::RID, plate), (ETCS::RID,
 // then its holes, each with what is on it.
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddCourse, (std::string, name))       { (void)ctx; self.AddCourse(name); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddRandomCourse, (std::string, name)) { (void)ctx; self.AddRandomCourse(name); }
+// SetTheme <turf r g b> <wall r g b> <sand r g b> <sky r g b> -- the latest course's look
+// (drawn only; a course without one has the first courses' green and blue).
+DEFINE_WORK_FUNC_TYPED(GolfMatch, SetTheme, (float, tr), (float, tg), (float, tb), (float, wr), (float, wg), (float, wb),
+                       (float, sr), (float, sg), (float, sb), (float, kr), (float, kg), (float, kb))
+{ (void)ctx; const float c[12] = { tr, tg, tb, wr, wg, wb, sr, sg, sb, kr, kg, kb }; self.SetTheme(c); }
 // AddHole <par> -- the next hole of the latest course.
 DEFINE_WORK_FUNC_TYPED(GolfMatch, AddHole, (uint32_t, par))             { (void)ctx; self.AddHole(par); }
 // AddGreen / AddWall / AddSand <x> <y> <z> <w> <h> <d> <tilt> <yaw> -- a slab: its

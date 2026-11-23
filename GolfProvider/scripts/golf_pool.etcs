@@ -27,7 +27,7 @@ run golf_slabs.etcs world=world game=game
 # The cup: a container under the gap in the green, its floor and flag inside.
 world.spawn(RenderProvider::Scene3D cup)
 cup.Create(0.7, 0.6, 0.7)
-run golf_cup.etcs part=cup
+run golf_cup.etcs part=cup game=game
 game.AddCupNode(@cup)
 # The tee's mark: wide enough for every ball side by side.
 world.spawn(RenderProvider::Scene3D tee)

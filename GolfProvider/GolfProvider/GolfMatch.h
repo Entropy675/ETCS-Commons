@@ -94,7 +94,45 @@ public:
     // ── this runtime's: the world, the eye, the card ─────────────────────
 
     void BindWorld(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_world = r; }
-    void BindCamera(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_camera = r; m_follow = true; }
+    /*
+     * THE CUP IS DRAWN ROUND. What a ball drops through is a square gap cut
+     * in the green (GolfCourse::CutCup: the ground is boxes), and what is
+     * seen is a round hole: a RIM at the green's top, in the turf's colour,
+     * over the gap's four corners -- a square with a circle out of it -- and
+     * a dark WELL down from it, a tube, in front of the gap's square sides.
+     * Both are drawn only and baked here into the two empty meshes the cup's
+     * script made (golf_cup.etcs). The corners stay open under the rim: a
+     * ball over one is over the gap, and its own width hides it.
+     */
+    void BakeCup(ETCS::RID rim, ETCS::RID rim_mesh, ETCS::RID well_mesh)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_cup_rim = rim; m_rim_said.clear();
+        const int around = 32;
+        auto v6 = [](float x, float y, float z, float nx, float ny, float nz) {
+            return fmt3(x) + ", " + fmt3(y) + ", " + fmt3(z) + ", " + fmt3(nx) + ", " + fmt3(ny) + ", " + fmt3(nz);
+        };
+        auto tri = [](ETCS::RID m, int a, int b, int c) { verb(m, "AddTriangle", std::to_string(a) + ", " + std::to_string(b) + ", " + std::to_string(c)); };
+        verb(rim_mesh, "Clear", "");
+        verb(well_mesh, "Clear", "");
+        for (int i = 0; i < around; ++i)
+        {
+            const float a = 2.0f * kPi * i / around, ca = std::cos(a), sa = std::sin(a);
+            const float out = 0.5f / std::max(std::fabs(ca), std::fabs(sa));   // to the square's edge that way
+            verb(rim_mesh, "AddVertex", v6(0.5f * ca, 0.0f, 0.5f * sa, 0.0f, 1.0f, 0.0f));
+            verb(rim_mesh, "AddVertex", v6(out * ca, 0.0f, out * sa, 0.0f, 1.0f, 0.0f));
+            verb(well_mesh, "AddVertex", v6(0.5f * ca, 0.5f, 0.5f * sa, -ca, 0.0f, -sa));
+            verb(well_mesh, "AddVertex", v6(0.5f * ca, -0.5f, 0.5f * sa, -ca, 0.0f, -sa));
+        }
+        for (int i = 0; i < around; ++i)
+        {
+            const int p = 2 * i, q = 2 * ((i + 1) % around);
+            // The rim's faces look up; the well's look in.
+            tri(rim_mesh, p, q + 1, p + 1); tri(rim_mesh, p, q, q + 1);
+            tri(well_mesh, p, p + 1, q + 1); tri(well_mesh, p, q + 1, q);
+        }
+    }
+    void BindCamera(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_camera = r; m_follow = true; m_sky_said.clear(); skyLocked(); }
     void BindCard(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_card = r; m_card_text.clear(); }
     void BindFps(ETCS::RID r)    { std::lock_guard<std::mutex> g(m_mu); m_fps = r; m_fps_ms = 0.0; m_fps_seen = -1; }
     // The arrow a pull draws, and its shadow on the ground under it.
@@ -166,6 +204,14 @@ public:
         if (name.empty()) return;
         GolfCourse::Course c; c.name = name;
         m_defs.push_back(c);
+    }
+    // The latest course's look: its turf, walls, sand and sky (rgb each).
+    void SetTheme(const float c[12])
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (m_defs.empty()) return;
+        GolfCourse::Theme& t = m_defs.back().theme;
+        for (int k = 0; k < 3; ++k) { t.turf[k] = c[k]; t.wall[k] = c[3 + k]; t.sand[k] = c[6 + k]; t.sky[k] = c[9 + k]; }
     }
     // A course made from a seed each time it is chosen (GolfCourse::Generate).
     void AddRandomCourse(const std::string& name)
@@ -1328,9 +1374,18 @@ private:
 
     // ── drawing what the trace laid (the same on every runtime) ──────────
 
+    // The sky and the cup's rim are the course's (its Theme): said when they change.
+    void skyLocked()
+    {
+        const GolfCourse::Theme& t = m_live.theme;
+        const std::string sky = f4(t.sky[0], t.sky[1], t.sky[2], 1.0f), turf = f4(t.turf[0], t.turf[1], t.turf[2], 1.0f);
+        if (m_camera && sky != m_sky_said) { verb(m_camera, "SetBackground", sky); m_sky_said = sky; }
+        if (m_cup_rim && turf != m_rim_said) { verb(m_cup_rim, "SetColor", turf); m_rim_said = turf; }
+    }
     void drawHoleLocked()
     {
         verb(m_world, "Move", "0, 0, 0");
+        skyLocked();
         for (size_t n = 0; n < m_play.slabs.size(); ++n) drawSlabLocked(n);
         for (size_t n = m_play.slabs.size(); n < m_slab_nodes.size(); ++n) parkNode(m_slab_nodes[n]);
         if (m_cup)
@@ -1361,9 +1416,11 @@ private:
         const GolfCourse::Slab& b = m_play.slabs[n];
         const ETCS::RID node = m_slab_nodes[n];
         verb(node, "Create", fmt3(b.w.ToFloat()) + ", " + fmt3(b.h.ToFloat()) + ", " + fmt3(b.d.ToFloat()));
-        static const char* colour[] = { "0.22, 0.62, 0.28, 1.0", "0.52, 0.36, 0.22, 1.0", "0.78, 0.70, 0.45, 1.0" };
+        // The course's own colours (its Theme): turf, wall, sand.
+        const GolfCourse::Theme& t = m_live.theme;
+        const float* colour = b.kind == GolfCourse::Wall ? t.wall : b.kind == GolfCourse::Sand ? t.sand : t.turf;
         static const char* solid[]  = { "0.3, 0.1", "0.7, 0.05", "0.1, 0.6" };   // the green's give, a bumper's, sand's
-        verb(node, "SetColor", colour[b.kind]);
+        verb(node, "SetColor", f4(colour[0], colour[1], colour[2], 1.0f));
         verb(node, "SetSolid", solid[b.kind]);
         if (Causal_* c = causal(node))
         {
@@ -2055,7 +2112,8 @@ private:
     std::vector<std::string> m_puff_size;          // ...and the size each was last given ("hid": up, not shown)
     std::vector<PadNodes>    m_pad_nodes;
     std::vector<SpringNodes> m_spring_nodes;
-    ETCS::RID m_cup = 0, m_tee = 0;
+    ETCS::RID m_cup = 0, m_tee = 0, m_cup_rim = 0;
+    std::string m_sky_said, m_rim_said;            // drawn: the course's sky and turf as last said
     std::map<ETCS::RID, uint32_t> m_berths;
     std::vector<BoardRow> m_board;
     std::string m_note;

@@ -642,8 +642,8 @@ public:
     std::string Faults()
     {
         std::lock_guard<std::mutex> g(m_mu);
-        std::string out;
-        int more = 0;
+        // Every map's, what is wrong before what is only bare: the answer holds a few lines (the log has all).
+        std::vector<std::string> all;
         for (size_t i = 0; i < m_defs.size(); ++i)
         {
             KartArena::Map m = m_defs[i];
@@ -654,10 +654,14 @@ public:
             for (std::string line; std::getline(lines, line);)
             {
                 if (line.empty()) continue;
-                line = m.name + ": " + line + "\n";
-                if (more == 0 && out.size() + line.size() <= 240) out += line; else ++more;
+                ETCS_LOG("KartBattle", "fault: " << m.name << ": " << line);
+                all.push_back(m.name + ": " + line + "\n");
             }
         }
+        std::stable_partition(all.begin(), all.end(), [](const std::string& l) { return l.find(": bare ") == std::string::npos; });
+        std::string out;
+        int more = 0;
+        for (const std::string& line : all) { if (more == 0 && out.size() + line.size() <= 240) out += line; else ++more; }
         if (out.empty()) return "none";
         if (more) return out + "+" + std::to_string(more) + " more";
         out.pop_back();
@@ -780,6 +784,7 @@ private:
         uint8_t     spare = KartArms::None, spare_ammo = 0;   // the second one carried (KartArms.h)
         int         cooldown = 0, boost = 0;
         int         slip = 0;                      // ticks of oil still on the tyres
+        int         out_ticks = 0;                 // ticks beyond the walls, on end
         int         dagger = 0;                    // ticks of the smoke's dagger left
         int         dagger_fx = -1;                // its blade: drawn, not state
         Fixed       kx, kz;                        // a shockwave's throw the drive has not yet taken
@@ -901,11 +906,11 @@ private:
     static Fixed padGain()   { return F(4); }
     static Fixed padTop()    { return F(40); }
     // A SPRING throws a kart up: as hard as a pad pushes one along in an
-    // eighth of a second, standing (7.5 u/s, a hop of 1.4), and springGain()
+    // eighth of a second, standing (7.5 u/s, a hop of 2.8), and springGain()
     // of the kart's speed over the ground on top -- 15 at 15 u/s, which is
-    // five and a half high and onto a storey; 18.5 at the top speed, eight
-    // and a half high and over the arena's wall. Again when it comes down on
-    // it. Its four arrows close on its middle.
+    // eleven high and onto a third storey; 18.5 at the top speed, seventeen
+    // high: over the arena's wall, or onto anything a map has. Again when it
+    // comes down on it. Its four arrows close on its middle.
     static Fixed springKick(Fixed speed) { return padPush() / F(8) + speed * springGain(); }
     static Fixed springGain(){ return Fixed::Half(); }
     static Fixed padArrow()  { return F(9, 10); }    // an arrow's length
@@ -928,17 +933,25 @@ private:
     static Fixed markMin()   { return F(1, 4); }    // ...this long at least
     static Fixed kartY()     { return F(25, 100); }   // the ride height: the body's centre over the ground
     static Fixed kartR()     { return F(1); }          // the reach a shot meets
-    static Fixed gravity()   { return F(20); }
+    static Fixed gravity()   { return F(10); }        // light: half of what it was -- air is where the fun is
     static Fixed climb()     { return F(35, 100); }   // more ground than this in one step is a wall
     static Fixed noseRise()  { return F(7, 10); }     // ...and this much under the nose (a slope of ~0.75)
     static Fixed bound()     { return KartArena::Half() - F(1); }   // the arena's inside, less a kart's reach
     // OVER THE WALL. The walls stop a kart whose feet are below wallRide():
     // their top (KartArena::WallTop) less what of the kart is under its feet.
-    // One higher goes over -- off a spring, a jump, a storey's edge -- rides
-    // the wall's top while it is over it, and past it has no ground: at
-    // lostAt() it is out, as one that comes down in lava is.
+    // One higher goes over -- off a spring, a jump, a storey's edge -- and
+    // comes down on THE RIM: mountains round the arena (kart_rim.etcs draws
+    // them), ground that climbs from the wall's top to rimRise() over it,
+    // rimDeep() out. Nothing stays up there: it is scree, with no grip, and
+    // a kart on it slides back down and in off the wall. Only one that
+    // clears the whole rim has no ground under it, and at lostAt() is out, as
+    // one that comes down in lava is -- and one that is somehow still beyond
+    // the walls after kOutTicks is out too, so nobody waits out a round there.
     static Fixed wallRide()  { return KartArena::WallTop() + kartR() - kartY(); }
-    static Fixed wallOut()   { return KartArena::Half() + F(1) + kartR(); }   // past the wall's far side
+    static Fixed rimDeep()   { return F(8); }
+    static Fixed rimRise()   { return F(12); }
+    static Fixed wallOut()   { return KartArena::Half() + rimDeep(); }   // past the rim's far side
+    static constexpr int kOutTicks = 3 * kHz;
     // The long arms reach across the arena, however big it is: the sniper
     // corner to corner at once, and a rocket or a round of the minigun lives
     // until it has flown as far (crossLife), so a shot from one corner can
@@ -1137,7 +1150,7 @@ private:
     {
         Slot& s = m_slots[i];
         s.thr = s.steer = s.fire = s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
-        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.dagger = 0;
+        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = 0;
         s.kx = s.kz = Fixed::Zero();
         freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1; s.ram_safe = 0;
@@ -1173,7 +1186,7 @@ private:
             if (nearest > best) { best = nearest; bx = p.x; bz = p.z; }
         }
         s.thr = s.steer = 0; s.press = 0; s.wheel = s.wheel_ease = Fixed::Zero(); s.steer_held = 0;
-        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.dagger = 0;
+        s.hp = kFullHp; s.weapon = s.spare = KartArms::None; s.ammo = s.spare_ammo = 0; s.cooldown = s.boost = s.slip = s.out_ticks = s.dagger = 0;
         s.kx = s.kz = Fixed::Zero();
         freeFx(s.dagger_fx); s.dagger_fx = -1;
         s.dead_until = -1;
@@ -1645,8 +1658,30 @@ private:
             // On the wall's top -- or a deck laid to it, if that is higher -- or past it all.
             const bool on_wall = far < wallOut() && r.y - kartY() >= wallRide() - climb();
             const bool deck = on_wall && far <= KartArena::Half() && g > wallRide() + kartY();
-            if (!deck) { g = (on_wall ? wallRide() : voidAt()) + kartY(); gx = gz = Fixed::Zero(); }
+            if (!deck)
+            {
+                // The rim: up from the wall's top the further out, and the
+                // way down it is in. Scree: no grip (as oil), and a pull
+                // down the slope whichever way the kart points.
+                const Fixed out = Fixed::Max(Fixed::Zero(), far - KartArena::Half());
+                const Fixed slope = rimRise() / rimDeep();
+                g = (on_wall ? wallRide() + slope * out : voidAt()) + kartY();
+                gx = gz = Fixed::Zero();
+                if (on_wall)
+                {
+                    const bool along_x = r.x.Abs() > r.z.Abs();
+                    const Fixed way = F((along_x ? r.x : r.z).raw > 0 ? 1 : -1);
+                    (along_x ? gx : gz) = slope * way;
+                    if (!s.air && !(r.y > g + F(5, 100)))
+                    {
+                        s.slip = std::max(s.slip, 3);
+                        (along_x ? s.kx : s.kz) -= way * gravity() * F(2) * slope * dt();
+                    }
+                }
+            }
         }
+        // Beyond the walls too long, however it got there or stays: out.
+        s.out_ticks = far > KartArena::Half() ? s.out_ticks + 1 : 0;
         bool wall = !over && g - r.y > climb();
         if (!wall && !over && sp.IsPositive() && !s.air)
         {
@@ -1694,8 +1729,8 @@ private:
         // Out: down on a lava pit's floor, or far enough down outside the walls.
         const KartArena::Pit* pit = s.air || over ? nullptr : KartArena::PitAt(m_live, x, z);
         const bool molten = pit && pit->lava && (y - kartY() + pit->depth).Abs() < F(5, 100);
-        if (molten || (over && y - kartY() < lostAt()))
-            damageLocked(static_cast<size_t>(&s - m_slots.data()), -1, kFullHp, molten ? "the lava" : "the drop");
+        if (molten || (over && y - kartY() < lostAt()) || s.out_ticks > kOutTicks)
+            damageLocked(static_cast<size_t>(&s - m_slots.data()), -1, kFullHp, molten ? "the lava" : s.out_ticks > kOutTicks ? "the mountains" : "the drop");
     }
     // Up turned onto the normal of ground that slopes (gx, gz): the half-way
     // spinor (w, x, 0, z).
@@ -3311,7 +3346,7 @@ private:
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
                 + std::to_string(s.hp) + " " + std::to_string(s.weapon) + " " + std::to_string(s.ammo) + " "
                 + std::to_string(s.cooldown) + " " + std::to_string(s.boost) + " " + std::to_string(s.spare) + " "
-                + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.dagger) + " " + std::to_string(s.kx.raw) + " "
+                + std::to_string(s.spare_ammo) + " " + std::to_string(s.slip) + " " + std::to_string(s.out_ticks) + " " + std::to_string(s.dagger) + " " + std::to_string(s.kx.raw) + " "
                 + std::to_string(s.kz.raw) + " " + std::to_string(s.elims) + " "
                 + std::to_string(s.deaths) + " " + std::to_string(s.last_elims) + " " + std::to_string(s.last_deaths) + " "
                 + std::to_string(s.dead_until) + " " + std::to_string(s.ram_safe);

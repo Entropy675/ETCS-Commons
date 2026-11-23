@@ -43,5 +43,7 @@ run golf_pool.etcs world=anchor game=game
 run golf_course_classic.etcs game=game
 run golf_course_boosters.etcs game=game
 run golf_course_terraces.etcs game=game
+run golf_course_ridge.etcs game=game
+run golf_course_channels.etcs game=game
 game.AddRandomCourse(random)
 game.Ready()

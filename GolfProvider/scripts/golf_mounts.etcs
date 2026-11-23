@@ -35,6 +35,8 @@ tree.MountFile(GolfProvider/scripts/golf_puff.etcs ACE_ROOT/modules/GolfProvider
 tree.MountFile(GolfProvider/scripts/golf_course_classic.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_classic.etcs)
 tree.MountFile(GolfProvider/scripts/golf_course_boosters.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_boosters.etcs)
 tree.MountFile(GolfProvider/scripts/golf_course_terraces.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_terraces.etcs)
+tree.MountFile(GolfProvider/scripts/golf_course_ridge.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_ridge.etcs)
+tree.MountFile(GolfProvider/scripts/golf_course_channels.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_course_channels.etcs)
 tree.MountFile(GolfProvider/scripts/golf_play.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_play.etcs)
 tree.MountFile(GolfProvider/scripts/golf_board.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_board.etcs)
 tree.MountFile(GolfProvider/scripts/golf_board_row.etcs ACE_ROOT/modules/GolfProvider/scripts/golf_board_row.etcs)

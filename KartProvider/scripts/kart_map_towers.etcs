@@ -1,0 +1,109 @@
+#!/usr/bin/env etcs
+# TOWERS: four storeys of sky -- 3.5, 7, 10.5 and 14 up. A grand ramp climbs
+# each side wall to the top, the west one going north and the east one south;
+# off each, at every storey it passes, a bridge runs in to the middle, where a
+# keep stands four decks high, each smaller than the one under it. Two towers
+# stand between, a spring under each. Up is by a ramp; across is by a bridge;
+# down is off any edge -- and whoever is highest sees everyone.
+#   run kart_map_towers.etcs battle=<KartBattle>
+# AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
+# <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
+# <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
+# <z> <width> <depth> <deep>; AddPickupUp <x> <z>, a box on the deck over the
+# spot (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
+# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor.
+requires battle [KartBattle]
+battle.AddMap(towers)
+
+# The grand ramps: fourteen wide, seventy-two long to fourteen up and twelve
+# level at the top. West: north from z -42. East: south from z 42. A pad at
+# the foot of each, pointing up it.
+battle.AddRamp(-84.0, 0.0, 0.0, 14.0, 72.0, 12.0, 0.0, 14.0)
+battle.AddRamp(84.0, 0.0, 180.0, 14.0, 72.0, 12.0, 0.0, 14.0)
+battle.AddPad(-84.0, -46.0, 0.0)
+battle.AddPad(84.0, 46.0, 180.0)
+
+# The keep: decks of 24, 20, 16 and 12 square, one over another, and a porch
+# on the first storey to the south and the north with a ramp up to each.
+battle.AddDeck(0.0, 0.0, 24.0, 24.0, 3.5)
+battle.AddDeck(0.0, 0.0, 20.0, 20.0, 7.0)
+battle.AddDeck(0.0, 0.0, 16.0, 16.0, 10.5)
+battle.AddDeck(0.0, 0.0, 12.0, 12.0, 14.0)
+battle.AddDeck(0.0, -20.0, 24.0, 16.0, 3.5)
+battle.AddDeck(0.0, 20.0, 24.0, 16.0, 3.5)
+battle.AddRamp(0.0, -38.5, 0.0, 10.0, 21.0, 0.0, 0.0, 3.5)
+battle.AddRamp(0.0, 38.5, 180.0, 10.0, 21.0, 0.0, 0.0, 3.5)
+
+# The bridges off the west ramp, eight wide, each from where the ramp comes up
+# to its storey and on up it a little (so the ramp beside a bridge is never
+# under it): to the south porch; to the keep's second deck; to the west tower
+# and on to the keep's third; and from the top, round to the keep's roof.
+battle.AddDeck(-44.5, -21.5, 65.0, 8.0, 3.5)
+battle.AddDeck(-43.5, -3.5, 67.0, 8.0, 7.0)
+battle.AddDeck(-58.5, 14.5, 37.0, 8.0, 10.5)
+battle.AddDeck(-32.0, 12.0, 16.0, 16.0, 10.5)
+battle.AddDeck(-32.0, 12.0, 16.0, 16.0, 3.5)
+battle.AddDeck(-16.0, 5.0, 16.0, 6.0, 10.5)
+battle.AddDeck(-36.5, 36.0, 81.0, 8.0, 14.0)
+battle.AddDeck(0.0, 19.0, 8.0, 26.0, 14.0)
+# ...and off the east ramp, the same turned about the middle.
+battle.AddDeck(44.5, 21.5, 65.0, 8.0, 3.5)
+battle.AddDeck(43.5, 3.5, 67.0, 8.0, 7.0)
+battle.AddDeck(58.5, -14.5, 37.0, 8.0, 10.5)
+battle.AddDeck(32.0, -12.0, 16.0, 16.0, 10.5)
+battle.AddDeck(32.0, -12.0, 16.0, 16.0, 3.5)
+battle.AddDeck(16.0, -5.0, 16.0, 6.0, 10.5)
+battle.AddDeck(36.5, -36.0, 81.0, 8.0, 14.0)
+battle.AddDeck(0.0, -19.0, 8.0, 26.0, 14.0)
+
+# A spring under each tower (up through its first deck) and under each
+# second-storey bridge, and cover in the yard.
+battle.AddSpring(-32.0, 12.0)
+battle.AddSpring(32.0, -12.0)
+battle.AddSpring(-50.0, -3.5)
+battle.AddSpring(50.0, 3.5)
+battle.AddBlock(-44.0, -56.0, 8.0, 8.0, 3.0, 0.0)
+battle.AddBlock(44.0, 56.0, 8.0, 8.0, 3.0, 0.0)
+battle.AddBlock(44.0, -64.0, 10.0, 2.0, 1.2, 45.0)
+battle.AddBlock(-44.0, 64.0, 10.0, 2.0, 1.2, 45.0)
+
+battle.AddSpawn(0.0, -80.0)
+battle.AddSpawn(0.0, 80.0)
+battle.AddSpawn(-60.0, -72.0)
+battle.AddSpawn(60.0, 72.0)
+battle.AddSpawn(60.0, -72.0)
+battle.AddSpawn(-60.0, 72.0)
+battle.AddSpawn(-56.0, 56.0)
+battle.AddSpawn(56.0, -56.0)
+
+battle.AddPickupUp(0.0, 0.0)
+battle.AddPickupUp(-32.0, 12.0)
+battle.AddPickupUp(32.0, -12.0)
+battle.AddPickupUp(-40.0, 36.0)
+battle.AddPickupUp(40.0, -36.0)
+battle.AddPickup(-84.0, 36.0)
+battle.AddPickup(84.0, -36.0)
+battle.AddPickup(0.0, -62.0)
+battle.AddPickup(0.0, 62.0)
+battle.AddPickup(-60.0, 30.0)
+battle.AddPickup(60.0, -30.0)
+
+# No bare stretches (KartArena::Faults, bare): where the ground ran on with
+# nothing on it, a bump to hop, a pad along the wall, a platform with a spring
+# beside it and a box on top, or a box.
+battle.AddHill(-88.0, -88.0, 6.0, 1.2)
+battle.AddPad(-88.0, 72.0, 180.0)
+battle.AddDeck(-64.0, 88.0, 8.0, 8.0, 2.5)
+battle.AddSpring(-64.0, 81.0)
+battle.AddPickupUp(-64.0, 88.0)
+battle.AddPickup(-48.0, -88.0)
+battle.AddHill(-24.0, 88.0, 6.0, 1.4)
+battle.AddPad(-16.0, -88.0, 90.0)
+battle.AddHill(16.0, -88.0, 6.0, 1.2)
+battle.AddPad(16.0, 88.0, 270.0)
+battle.AddDeck(48.0, 88.0, 8.0, 8.0, 2.5)
+battle.AddSpring(48.0, 81.0)
+battle.AddPickupUp(48.0, 88.0)
+battle.AddPickup(64.0, -88.0)
+battle.AddHill(80.0, 72.0, 6.0, 1.4)
+battle.AddPad(88.0, -72.0, 0.0)

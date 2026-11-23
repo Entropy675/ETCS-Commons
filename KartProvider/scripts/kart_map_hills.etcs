@@ -73,3 +73,8 @@ battle.AddPickup(66.0, -66.0)
 battle.AddPickup(-66.0, 66.0)
 battle.AddPickupUp(42.0, 24.0)
 battle.AddPickupUp(36.0, 60.0)
+
+# No bare stretches (KartArena::Faults, bare): where the ground ran on with
+# nothing on it, a bump to hop, a pad along the wall, a platform with a spring
+# beside it and a box on top, or a box.
+battle.AddHill(-32.0, 88.0, 6.0, 1.2)

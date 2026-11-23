@@ -50,6 +50,8 @@ modules/GolfProvider/scripts/golf.etcs`.
 - In the lobby the host sets the **course** and the **time a hole** and **starts** the round
   (**Enter**); in a round the host can **abandon** it (**Esc**). Between rounds anyone can knock
   a ball about on the first hole, uncounted.
+- **The cup is round**: what a ball drops through is still a square gap (the ground is boxes),
+  under a rim that covers its corners and over a round well.
 
 ## The courses
 
@@ -59,8 +61,17 @@ modules/GolfProvider/scripts/golf.etcs`.
   with a spring to clear it; a gap in the green two down and eight on, a pad to fling you over.
 - **terraces** -- down a staircase; up a climb whose slopes roll you back; a zigzag through
   part-walls with sand before the cup.
+- **ridge** -- high ground at dusk (teal turf, slate walls, a violet sky): a narrow hump; an
+  elbow, off the lane's side down a slope to a long shelf; a wide valley that narrows to a
+  climb.
+- **channels** -- a clay court in the evening (terracotta, teal walls, a warm sky), level all
+  the way: a chicane; a cross of four arms with the cup round the corner; a funnel.
 - **random** -- four holes from a seed: walled lanes, some with a terrace up or down a slope,
-  blocks, sand, pads up the lane, a spring before a block. **new course** rolls another.
+  blocks, sand, pads up the lane, a spring before a block, in one of four looks by its seed.
+  **new course** rolls another.
+
+A course has **its own colours** -- turf, walls, sand and the sky (`SetTheme`); one without
+has the first courses' green and blue.
 
 ## How it stays one match
 
@@ -83,7 +94,8 @@ A course is data (`golf_course_*.etcs`: `AddCourse`, then `AddHole` and each hol
 tee, pads, springs and spots); the match lays the hole in play from pools made at boot
 (`golf_pool.etcs`), so a new hole is a tick of the trace, not a script. A cup cuts the level
 green under it round a square gap. `game.Faults()` says what is wrong with a course -- a cup not
-in a level green, something standing on nothing, more slabs than the pool -- or `none`.
+in a level green, something standing on nothing, no ground all the way from a tee to its cup
+on a hole with no pad or spring to throw a ball, more slabs than the pool -- or `none`.
 
 From the terminal, while it runs: `game.Status()`, `game.Scores()`, `game.Ball()`,
 `game.Layout()`, `game.Give(<you> tornado)` (alone, you are the host), `world.SetGravity(0, -1.6, 0)`

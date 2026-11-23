@@ -15,8 +15,18 @@
 #                                            though it stands outside its
 #                                            space (fit leaves the anchored)
 #
-#   run golf_cup.etcs part=<a Scene3D, made 0.7 x 0.6 x 0.7>
+#   the hole is drawn round                  the gap in the green is square
+#                                            (the ground is boxes). A rim at
+#                                            the green's top, in the turf's
+#                                            colour, covers its corners, and a
+#                                            dark well hangs from it in front
+#                                            of its sides: both drawn only, on
+#                                            shapes the match bakes
+#                                            (GolfMatch::BakeCup)
+#
+#   run golf_cup.etcs part=<a Scene3D, made 0.7 x 0.6 x 0.7> game=<GolfMatch>
 requires part [Drawable3D]
+requires game [GolfMatch]
 part.SetVisible(0)
 part.SetAnchored(1)
 part.SetSpace(0.6)
@@ -36,3 +46,21 @@ flag.Create(0.6, 0.35, 0.03)
 flag.SetPosition(0.6, 2.75, 0.0)
 flag.SetColor(0.9, 0.15, 0.12, 1.0)
 flag.SetAnchored(1)
+# The round hole: the green's top is 0.75 over the cup's middle.
+part.spawn(RenderProvider::Mesh rim_shape)
+rim_shape.Create()
+part.spawn(RenderProvider::Mesh well_shape)
+well_shape.Create()
+part.spawn(RenderProvider::Scene3D rim)
+rim.Create(0.7, 0.02, 0.7)
+rim.SetMesh(@rim_shape)
+rim.SetPosition(0.0, 0.754, 0.0)
+rim.SetColor(0.22, 0.62, 0.28, 1.0)
+rim.SetAnchored(1)
+part.spawn(RenderProvider::Scene3D well)
+well.Create(0.7, 0.8, 0.7)
+well.SetMesh(@well_shape)
+well.SetPosition(0.0, 0.35, 0.0)
+well.SetColor(0.05, 0.05, 0.06, 1.0)
+well.SetAnchored(1)
+game.BakeCup(@rim, @rim_shape, @well_shape)

@@ -15,5 +15,6 @@ ETCS_TAG_BLOCK_HYBRID(GolfMatch,
      AddCourse, AddRandomCourse, AddHole, AddGreen, AddWall, AddSand, AddCup, AddTee, AddPad, AddSpring, AddSpot, Ready,
      Practice, Host, Join, Leave, Tick, Configure, Reroll, StartRound, Abandon, Give,
      Press, Drag, Release, RightPress, RightRelease, Wheel, Key, Shoot, Use, Frame, Run,
-     Status, Scores, Maps, Layout, Faults, Hash, Snapshot, Note, Here, Ball, Pull, Delete),
+     Status, Scores, Maps, Layout, Faults, Hash, Snapshot, Note, Here, Ball, Pull, Delete,
+     BakeCup, SetTheme),
     (Trace, Follow, Emit, Take, ConsumePointer, ConsumeKeys))

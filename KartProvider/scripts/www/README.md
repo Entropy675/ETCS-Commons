@@ -70,8 +70,13 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   to the kart's side of the ground -- down in a pit with it, under a deck with it -- instead of
   looking at it through a wall.
 - **The arena** is 192 units across inside its walls, which are four high: below their top they
-  stop you; over it -- off a spring at speed, a jump, a storey's edge -- you have left the
-  arena, and a kart that falls outside it is out, as one that comes down in lava is.
+  stop you. Over it -- off a spring at speed, a jump, a storey's edge -- are **the mountains**:
+  a rim round the arena that climbs twelve more, eight deep, all scree. Nothing stays up
+  there: a kart that comes down on it has no grip and slides back in off the wall. Only one
+  that clears the whole rim is out, as one that comes down in lava is -- and so is one that
+  is still beyond the walls after three seconds, however it stays there.
+- **Gravity is light** -- half of what it was: jumps carry, springs throw far, and the air is
+  where a round is won.
 - **The maps:** **bowl** (every wall banked, the banks meeting in the corners with a pad on each
   bank either side of every corner pointing away along it -- drift up into a corner and you are
   sent round the bowl one way or the other by whichever you come down on -- a ring road, and
@@ -86,11 +91,21 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   wall with a long ramp up to each end); **lava** (a pool of it in the middle: an island with
   a causeway to each shore, a deck over the island with a scaffold over each causeway -- two
   ways across, to two heights -- and two ring roads in the air round it, the higher along the
-  arena's wall); each with pads and springs; and **random** -- a new
+  arena's wall); **towers** (four storeys of sky, 3.5 to 14 up: a grand ramp up each side wall
+  to the top, a bridge in to the middle off each at every storey it passes, a keep there four
+  decks high and a tower either side of it; up by a ramp, across by a bridge, down off any
+  edge); **serpent** (five walls across, open east and west by turns, so the way winds -- with
+  a spring before the middle of each for the short cut over); each with pads and springs; and
+  **random** -- a new
   layout from a seed each time it is chosen (**new layout** on the page, or **Enter** on the
   map in the menu), the same on every tab: a storey on pillars with ramps up through it, one
   time in two a third to two thirds of the arena sunk with ramps out, banked walls, hills,
   jumps, raised decks and kickers, pads, springs and blocks.
+  **No map has a bare stretch**: everywhere you can drive is within twenty-six units of
+  something to drive at, over, under or round -- where a map ran on with nothing on it there
+  is a bump, a pad, a platform or a box -- and `battle.Faults()` says so of one that has. It
+  also says so of a bank whose lip stops short of the wall (a trench to be stuck in: the
+  bowl's and the skatepark's did).
 - **The ground has slopes.** A kart slows going up and gains going down; off a jump's lip at speed
   it flies and lands beyond it. Ground too steep to climb -- a lip met from the drop side, the side
   of a raised deck -- is a wall. Ramps are solid to the ground: nothing is under one.
@@ -103,8 +118,9 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   pads, boxes, spawns: a ramp in it as high as it is deep, its top at the edge, is a way out
   (several, on every map that has any), and so is a spring.
 - **Springs** -- round, their arrows closing on the middle -- throw a kart up: a hop standing,
-  and half its speed more on top, so five and a half units (onto a storey) at 15 u/s and over
-  the arena's wall at full speed; again when it comes down on one. The way onto a deck, out of
+  and half its speed more on top, so eleven units (onto a third storey) at 15 u/s and
+  seventeen at full speed -- over the arena's wall, or onto anything a map has; again when
+  it comes down on one. The way onto a deck, out of
   a pit, or out of the arena.
 - **Pads** push a kart that drives over them the way their arrows run -- a nudge standing, and
   harder the faster it is already going that way (four times its speed a second on top), up to

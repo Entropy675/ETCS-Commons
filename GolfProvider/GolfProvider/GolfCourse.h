@@ -63,7 +63,14 @@ struct Hole
     Fixed low;                                       // the lowest of it: under this, a ball is lost
     bool  settled = false;                           // Settle has run
 };
-struct Course { std::string name; bool generated = false; std::vector<Hole> holes; };
+// What a course looks like -- its turf, its walls, its sand and the sky over
+// it (rgb each): drawn, never played, so floats and no part of a hash.
+struct Theme
+{
+    float turf[3] = { 0.22f, 0.62f, 0.28f }, wall[3] = { 0.52f, 0.36f, 0.22f };
+    float sand[3] = { 0.78f, 0.70f, 0.45f }, sky[3]  = { 0.45f, 0.62f, 0.85f };
+};
+struct Course { std::string name; bool generated = false; std::vector<Hole> holes; Theme theme; };
 
 inline Fixed CupGap()       { return F(7, 10); }
 inline Fixed CupUnder()     { return F(3, 4); }     // the cup's middle under the green's top
@@ -184,6 +191,61 @@ inline void Settle(Hole& h)
     h.settled = true;
 }
 
+// Is there ground all the way from the tee to the cup? In half-unit steps,
+// each at most a quarter up or down (a slope of one in two): a slope that
+// does not meet its level at either end, a wall right across, a gap -- a
+// hole laid wrong -- has no such way. A spring, a drop or a lofted shot may
+// find another -- and a hole with a pad or a spring on it may be made to
+// need one (a wall to clear, a gap to be flung across), so only a hole with
+// neither is held to this (Faults).
+inline bool Walks(const Hole& h)
+{
+    Fixed x0 = F(100000), x1 = -x0, z0 = x0, z1 = -x0;
+    for (const Slab& b : h.slabs)
+    {
+        const Fixed r = (b.w + b.d) * Fixed::Half();
+        x0 = Fixed::Min(x0, b.x - r); x1 = Fixed::Max(x1, b.x + r);
+        z0 = Fixed::Min(z0, b.z - r); z1 = Fixed::Max(z1, b.z + r);
+    }
+    const Fixed cell = Fixed::Half();
+    const int nx = static_cast<int>(((x1 - x0) / cell).ToInt()) + 1, nz = static_cast<int>(((z1 - z0) / cell).ToInt()) + 1;
+    if (h.slabs.empty() || nx <= 0 || nz <= 0 || nx > 600 || nz > 600) return false;
+    auto at = [&](Fixed x, Fixed z) { return static_cast<int>(((z - z0) / cell).ToInt()) * nx + static_cast<int>(((x - x0) / cell).ToInt()); };
+    const Fixed none = F(-100000);
+    std::vector<Fixed> top(static_cast<size_t>(nx) * nz, none);
+    std::vector<char> seen(top.size(), 0);
+    for (int k = 0; k < nz; ++k)
+        for (int i = 0; i < nx; ++i)
+        {
+            Fixed y;
+            if (TopAt(h, x0 + cell * F(i) + cell * Fixed::Half(), z0 + cell * F(k) + cell * Fixed::Half(), y)) top[static_cast<size_t>(k) * nx + i] = y;
+        }
+    const int tee = at(h.tee_x, h.tee_z), cup = at(h.cup_x, h.cup_z);
+    if (tee < 0 || tee >= static_cast<int>(top.size()) || cup < 0 || cup >= static_cast<int>(top.size())) return false;
+    std::vector<int> open{ tee };
+    seen[static_cast<size_t>(tee)] = 1;
+    while (!open.empty())
+    {
+        const int c = open.back(); open.pop_back();
+        // The cup's cell is the gap: next to it, at its green's height, is at it.
+        if (c == cup) return true;
+        const int ci = c % nx, ck = c / nx;
+        static const int step[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+        for (const auto& s : step)
+        {
+            const int i = ci + s[0], k = ck + s[1];
+            if (i < 0 || k < 0 || i >= nx || k >= nz) continue;
+            const size_t n = static_cast<size_t>(k) * nx + i;
+            if (seen[n]) continue;
+            const bool hole = static_cast<int>(n) == cup && top[c] > h.cup_y - F(1, 4);
+            if (!hole && (top[n] == none || (top[n] - top[c]).Abs() > F(1, 4))) continue;
+            seen[n] = 1;
+            open.push_back(static_cast<int>(n));
+        }
+    }
+    return false;
+}
+
 // What is wrong with a course, "none" when nothing: what the match will not lay.
 inline std::string Faults(const Course& c)
 {
@@ -201,6 +263,7 @@ inline std::string Faults(const Course& c)
         for (const Pad& p : h.pads)    if (!TopAt(h, p.x, p.z, y)) say(n, "a pad stands on nothing");
         for (const Spot& p : h.springs) if (!TopAt(h, p.x, p.z, y)) say(n, "a spring stands on nothing");
         for (const Spot& p : h.pickups) if (!TopAt(h, p.x, p.z, y)) say(n, "a spot stands on nothing");
+        if (h.cup && h.pads.empty() && h.springs.empty() && !Walks(h)) say(n, "no ground all the way from the tee to the cup, and nothing to throw a ball");
     }
     return out.empty() ? "none" : out;
 }
@@ -338,6 +401,13 @@ inline Hole GenerateHole(Dice& r)
 inline Course Generate(uint64_t seed, const std::string& name)
 {
     Course c; c.name = name; c.generated = true;
+    // Its look by its seed, of a few: a course from a seed is told from the last.
+    static const Theme looks[4] = {
+        Theme{},
+        Theme{ { 0.30f, 0.58f, 0.50f }, { 0.36f, 0.38f, 0.46f }, { 0.84f, 0.83f, 0.76f }, { 0.44f, 0.38f, 0.64f } },
+        Theme{ { 0.74f, 0.47f, 0.31f }, { 0.17f, 0.36f, 0.40f }, { 0.93f, 0.86f, 0.66f }, { 0.93f, 0.76f, 0.54f } },
+        Theme{ { 0.42f, 0.46f, 0.70f }, { 0.20f, 0.20f, 0.30f }, { 0.80f, 0.78f, 0.86f }, { 0.08f, 0.09f, 0.18f } } };
+    c.theme = looks[seed % 4];
     Dice r(seed);
     for (int n = 0; n < 4; ++n) c.holes.push_back(GenerateHole(r));
     return c;
