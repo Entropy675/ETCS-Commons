@@ -423,7 +423,7 @@ public:
                 m_last_x = x; m_last_y = y;
                 m_pull_len = Fixed::Zero();
                 if (m_armed && heldPowerLocked() != GolfPowers::None) { m_mode = Placing; ghostLocked(x, y); }
-                else if (onMyBallLocked(x, y) && canShootLocked(slotOf(m_me))) m_mode = Pulling;
+                else if (onMyBallLocked(x, y) && canShootLocked(slotOf(m_me))) { m_mode = Pulling; m_pull_pitch = m_pitch; }
                 else m_mode = Orbit;
                 break;
             case INPUT_MOTION:
@@ -473,6 +473,8 @@ public:
     void Drag(float x, float y)         { Pointer(event(INPUT_MOTION, 0, x, y)); }
     void Release(float x, float y)      { Pointer(event(INPUT_BUTTON_UP, 0, x, y)); }
     void RightPress(float x, float y)   { Pointer(event(INPUT_BUTTON_DOWN, kLookButton, x, y)); }
+    // A drag with both held: the look turned while the left holds a pull (its loft).
+    void RightDrag(float x, float y)    { InputEvent e = event(INPUT_MOTION, 0, x, y); e.buttons |= input_button_bit(kLookButton); Pointer(e); }
     void RightRelease(float x, float y) { Pointer(event(INPUT_BUTTON_UP, kLookButton, x, y)); }
     void Wheel(float notches)           { Pointer(event(INPUT_SCROLL, 0, 0.0f, notches)); }
     // The lobby from anywhere: a press on the drawn menu (window pixels), or
@@ -1801,33 +1803,61 @@ private:
     }
     uint8_t heldPowerLocked() const { const int i = slotOf(m_me); return i < 0 ? static_cast<uint8_t>(GolfPowers::None) : m_slots[i].power; }
 
-    // The pull: where the pointer's line meets the plane through the ball
-    // facing the camera; the shot is from there back through the ball.
+    /*
+     * THE PULL. Where the pointer's line meets the plane through the ball
+     * facing the camera gives a drag: so far to the side, so far down the
+     * picture. The shot is opposite it, ALONG THE GROUND THE BALL IS ON --
+     * the drag's way down the picture is the way the camera faces, level, and
+     * the whole is laid on the slope under the ball -- so from wherever the
+     * camera is when a ball is taken hold of, the shot starts as a putt along
+     * its surface. LOFT IS WHAT THE CAMERA DOES AFTER: lowered from where it
+     * was at the press (the right button, held with the left), the shot tips
+     * up off the ground by as much; raised again, back down to the ground and
+     * no further.
+     */
     void pullLocked(float px, float py)
     {
         const int i = slotOf(m_me);
         Fixed bx, by, bz;
         Point3D o, d;
         if (i < 0 || !ballAt(m_slots[i], bx, by, bz) || !rayLocked(px, py, o, d)) return;
-        ViewFrustum v;
-        {
-            ETCS::Held<Camera_> cam = ETCS::resolve_held<Camera_>("Camera", m_camera);
-            if (!cam) return;
-            v = cam->GetView();
-        }   // no hold kept across the arrow's verbs, which emit
         const float b[3] = { bx.ToFloat(), by.ToFloat(), bz.ToFloat() };
-        float n[3] = { v.look_at.x - v.position.x, v.look_at.y - v.position.y, v.look_at.z - v.position.z };
-        const float nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-        if (nl <= 0.0f) return;
-        n[0] /= nl; n[1] /= nl; n[2] /= nl;
+        const float sy = std::sin(m_yaw), cy = std::cos(m_yaw), sp = std::sin(m_pitch), cp = std::cos(m_pitch);
+        // The camera's own axes at the ball: the way it looks, and up its picture.
+        const float n[3] = { cp * sy, -sp, cp * cy }, up[3] = { sp * sy, cp, sp * cy };
         const float den = d.x * n[0] + d.y * n[1] + d.z * n[2];
         if (std::fabs(den) < 1e-6f) return;
         const float t = ((b[0] - o.x) * n[0] + (b[1] - o.y) * n[1] + (b[2] - o.z) * n[2]) / den;
         if (t <= 0.0f) return;
-        float s[3] = { b[0] - (o.x + d.x * t), b[1] - (o.y + d.y * t), b[2] - (o.z + d.z * t) };   // opposite the drag
-        float len = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+        const float drag[3] = { b[0] - (o.x + d.x * t), b[1] - (o.y + d.y * t), b[2] - (o.z + d.z * t) };   // opposite the pointer
+        // What of it is up the picture, and the rest: across it, which is level already.
+        const float fore = drag[0] * up[0] + drag[1] * up[1] + drag[2] * up[2];
+        const float side[3] = { drag[0] - fore * up[0], 0.0f, drag[2] - fore * up[2] };
+        float len = std::sqrt(drag[0] * drag[0] + drag[1] * drag[1] + drag[2] * drag[2]);
+        if (len < 1e-5f) { m_pull_len = Fixed::Zero(); hideArrowLocked(); return; }
+        // Level: the picture's up is the camera's way ahead.
+        float s[3] = { side[0] + fore * sy, 0.0f, side[2] + fore * cy };
+        // Onto the ground under the ball, if it is on any.
+        float g[3] = { 0.0f, 1.0f, 0.0f };
+        Fixed top;
+        if (const GolfCourse::Slab* on = GolfCourse::TopAt(m_play, bx, bz, top, by))
+            if ((by - ballR() - top).ToFloat() < 0.3f)
+            {
+                OrderVector turn;
+                GolfCourse::Turn(*on, turn);
+                Fixed gx = Fixed::Zero(), gy = Fixed::One(), gz = Fixed::Zero();
+                turn.RotateVector(gx, gy, gz);
+                g[0] = gx.ToFloat(); g[1] = gy.ToFloat(); g[2] = gz.ToFloat();
+            }
+        const float into = s[0] * g[0] + s[1] * g[1] + s[2] * g[2];
+        for (int k = 0; k < 3; ++k) s[k] -= into * g[k];
+        const float flat = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+        if (flat < 1e-5f) return;
+        // ...and tipped up off it by as much as the camera has come down since the press.
+        const float loft = clampf(m_pull_pitch - m_pitch, 0.0f, 1.4f), cl = std::cos(loft), sl = std::sin(loft);
         const float most = m_max_pull.ToFloat();
-        if (len > most) { for (float& c : s) c *= most / len; len = most; }
+        if (len > most) len = most;
+        for (int k = 0; k < 3; ++k) s[k] = (s[k] / flat * cl + g[k] * sl) * len;
         m_pull[0] = Fixed::From(s[0]); m_pull[1] = Fixed::From(s[1]); m_pull[2] = Fixed::From(s[2]);
         m_pull_len = Fixed::From(len);
         arrowLocked(b, s, len);
@@ -2464,6 +2494,7 @@ private:
     bool     m_right = false, m_armed = false, m_board_held = false;
     float    m_last_x = 0.0f, m_last_y = 0.0f;
     Fixed    m_pull[3], m_pull_len;
+    float    m_pull_pitch = 0.0f;                  // the camera's pitch when the pull began: lower since is loft
     Fixed    m_ghost_at[3];
     bool     m_ghost_ok = false;
     double   m_card_ms = 0.0;

@@ -8,11 +8,13 @@
 #   run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye
 #
 # Then: drag your ball back to aim (the arrow is the shot, opposite the drag)
-# and let go to putt; drag anywhere else, or with the right button, to walk
-# the camera round the ball; the wheel brings it in and out. E arms a power,
-# and a left press and release puts it down where the pointer is; letting go
-# of the right button while the left holds a pull or a power puts it down.
-# The camera's pitch is the loft: look down for a putt, level for a lob.
+# and let go to putt -- along the ground it is on, wherever the camera is;
+# drag anywhere else, or with the right button, to walk the camera round the
+# ball; the wheel brings it in and out. Loft is the camera brought down while
+# a pull is held (the right button with the left): the shot tips up off the
+# ground by as much. E arms a power, and a left press and release puts it down
+# where the pointer is; letting go of the right button while the left holds a
+# pull or a power puts it down. In the lobby the menu is up: M folds it.
 
 requires game [GolfMatch]
 requires world [Drawable3D]
@@ -37,7 +39,7 @@ fps.SetPadding(4)
 fps.SetOrder(11)
 eye.spawn(RenderProvider::TextLabel howto)
 howto.Create(16)
-howto.SetText(drag your ball: shoot / drag or right-drag: look / E then click: power / let go of right: cancel / wheel: zoom / M: menu)
+howto.SetText(drag your ball: putt / right-drag: look, and while pulling: loft / E then click: power / let go of right: cancel / wheel: zoom / M: menu)
 howto.SetPosition(16, 724)
 howto.SetColor(0.75, 0.9, 0.8, 1.0)
 howto.SetBackground(0.0, 0.0, 0.0, 0.35)
@@ -59,6 +61,6 @@ menu.Create(640, 430)
 menu.SetOrder(20)
 game.BindMenu(@menu)
 game.SetPower(3.0, 12.0)
-# Looking down 55 degrees: the pull's plane tips the same 55 from upright, so
-# a straight-down drag leaves at 35 degrees -- a chip. Lower is loftier.
+# Looking down 55 degrees. A pull starts along the ground whatever this is;
+# bringing the camera down from where it was at the press is the loft.
 game.SetOrbit(7.0, 0.0, 55.0)

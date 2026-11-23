@@ -17,7 +17,10 @@ modules/GolfProvider/scripts/golf.etcs`.
 - **Drag your ball back** to aim: the arrow growing out of it is the shot -- opposite the drag, as
   long as it (to a cap), green to red with power. Let go to shoot. **Drag anywhere else, or with
   the right button,** to walk the camera round your ball; the **wheel** brings it in and out.
-  **The camera's pitch is the loft**: look down at the ball for a putt, level for a lob.
+  **A shot starts along the ground your ball is on**, wherever the camera is when you take hold
+  of it -- on a slope, along the slope. **Loft is what the camera does after**: hold the right
+  button with the left and bring the camera down, and the shot tips up off the ground by as
+  much; bring it back up and the shot is along the ground again, and no lower.
 - **Let go of the right button while the left holds** a shot or a power and it is put down: the
   left's release then does nothing.
 - **Powers.** Roll through a gold box (they turn, as the kart's do) for one. **You carry two**:

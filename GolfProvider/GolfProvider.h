@@ -134,6 +134,8 @@ DEFINE_WORK_FUNC_TYPED(GolfMatch, Press,   (float, x), (float, y)) { (void)ctx; 
 DEFINE_WORK_FUNC_TYPED(GolfMatch, Drag,    (float, x), (float, y)) { (void)ctx; self.Drag(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, Release, (float, x), (float, y)) { (void)ctx; self.Release(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, RightPress,   (float, x), (float, y)) { (void)ctx; self.RightPress(x, y); }
+// RightDrag <x> <y> -- the pointer moved with both buttons held: the look turned under a pull.
+DEFINE_WORK_FUNC_TYPED(GolfMatch, RightDrag, (float, x), (float, y)) { (void)ctx; self.RightDrag(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, RightRelease, (float, x), (float, y)) { (void)ctx; self.RightRelease(x, y); }
 DEFINE_WORK_FUNC_TYPED(GolfMatch, Wheel,   (float, notches))       { (void)ctx; self.Wheel(notches); }
 // Key <code> <down> -- E arms a power, Tab the board, the host's Enter and Esc.

@@ -16,5 +16,5 @@ ETCS_TAG_BLOCK_HYBRID(GolfMatch,
      Practice, Host, Join, Leave, Tick, Configure, Reroll, StartRound, Abandon, Give,
      Press, Drag, Release, RightPress, RightRelease, Wheel, Key, Shoot, Use, Frame, Run,
      Status, Scores, Maps, Layout, Faults, Hash, Snapshot, Note, Here, Ball, Pull, Delete,
-     BindMenu, MenuPress, Rename, Recolour, Livery, BakeCup, SetTheme),
+     BindMenu, MenuPress, Rename, Recolour, Livery, BakeCup, SetTheme, RightDrag),
     (Trace, Follow, Emit, Take, ConsumePointer, ConsumeKeys))
