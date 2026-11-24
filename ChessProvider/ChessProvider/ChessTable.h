@@ -2,6 +2,7 @@
 #define CHESSPROVIDER_CHESSTABLE_H__
 #include "ChessBoard.h"
 #include "ChessShare.h"
+#include <cstdlib>
 #include <sstream>
 #include <vector>
 
@@ -33,6 +34,12 @@
  * THE LABELS ARE THE SCRIPT'S, positioned there and handed here by RID
  * (ChatRow, BindLine, BindStatus), the way every panel in PaintProvider is
  * assembled: this type writes their text and their place, and owns none.
+ *
+ * REVIEW is the board's (ChessBoard::Review); the table steps it -- the
+ * arrows, Home and End, Esc for the live board, or `/back /fwd /first /last
+ * /live /ply <n> /at <n>w|b` -- and a press on the board while reviewing
+ * returns to live rather than moving. The page's own fields take the keys
+ * from the table while they have focus (Keys).
  */
 class ChessTable : public DeletableBase<ChessTable>
 {
@@ -44,6 +51,7 @@ public:
 
     static constexpr uint16_t KEY_ESCAPE = 256, KEY_ENTER = 257, KEY_TAB = 258, KEY_BACKSPACE = 259;
     static constexpr uint16_t KEY_LEFT_SHIFT = 340, KEY_RIGHT_SHIFT = 344;
+    static constexpr uint16_t KEY_RIGHT = 262, KEY_LEFT = 263, KEY_DOWN = 264, KEY_UP = 265, KEY_HOME = 268, KEY_END = 269;
     static constexpr int32_t  SLIDE_PX = 40;      // a frame's travel of the bars
     static constexpr int32_t  ROW_PX   = 16;      // a chat row's pitch: the 8px face, doubled
     static constexpr int32_t  ROW_X    = 8, ROW_Y = 10;
@@ -91,6 +99,20 @@ public:
         ChessGame*  g = game();
         if (!b || !g) return;
         const Point2D o = b->Origin();
+        // The picker answers first: a piece is the promotion, anything else
+        // puts it away.
+        if (b->Promoting())
+        {
+            const char pick = b->PromoAt(wx - o.x, wy - o.y);
+            b->Promote("", true);
+            select("");
+            if (!pick) return;
+            const std::string mv = m_promo_mv + pick;
+            const std::string r = g->Act(me(), "move", mv);
+            note(refused(r) ? (mv + ": " + lower(r)) : "");
+            return;
+        }
+        if (b->Reviewing() >= 0) { b->Review(-1); select(""); return; }
         const std::string sq = b->SquareAt(wx - o.x, wy - o.y);
         if (sq.empty()) return;
         const char p = g->PieceAt(sq);
@@ -100,7 +122,12 @@ public:
         if (mine)               { select(sq); return; }
         std::string mv = m_sel + sq;
         const char from = g->PieceAt(m_sel);
-        if ((from == 'P' && sq[1] == '8') || (from == 'p' && sq[1] == '1')) mv += "q";
+        if ((from == 'P' && sq[1] == '8') || (from == 'p' && sq[1] == '1'))
+        {
+            m_promo_mv = mv;
+            b->Promote(sq, from == 'P');
+            return;
+        }
         const std::string r = g->Act(me(), "move", mv);
         select("");
         note(refused(r) ? (mv + ": " + lower(r)) : "");
@@ -112,7 +139,15 @@ public:
         if (key == KEY_LEFT_SHIFT || key == KEY_RIGHT_SHIFT) { m_shift = down; return; }
         if (!down) return;
         if (key == KEY_TAB) { Toggle(); return; }
-        if (!m_open) return;
+        if (!m_open)
+        {
+            if (!m_keys) return;
+            if (key == KEY_LEFT || key == KEY_DOWN) StepReview(-1);
+            else if (key == KEY_RIGHT || key == KEY_UP) StepReview(1);
+            else if (key == KEY_HOME) First();
+            else if (key == KEY_END || key == KEY_ESCAPE) Live();
+            return;
+        }
         if (key == KEY_ESCAPE)    { Toggle(); return; }
         if (key == KEY_ENTER)     { Submit(); return; }
         if (key == KEY_BACKSPACE) { if (!m_line.empty()) m_line.pop_back(); return; }
@@ -142,7 +177,21 @@ public:
         std::string arg; std::getline(in, arg);
         if (!arg.empty() && arg[0] == ' ') arg.erase(0, 1);
         if (verb == "flip") { if (ChessBoard* b = board()) b->SetFlip(!b->Flipped()); return; }
-        if (verb == "help") { note("/sit white|black  /resign  /draw  /decline  /reset  /flip  /fen <fen>  /move e2e4"); return; }
+        if (verb == "help") { note("/sit white|black  /resign  /draw  /decline  /reset  /flip  /fen <fen>  /move e2e4  /back /fwd /first /last /live /ply <n> /at <n>w|b  /skin <white set> <black set>"); return; }
+        if (verb == "back")  { StepReview(-1); return; }
+        if (verb == "fwd")   { StepReview(1); return; }
+        if (verb == "first") { First(); return; }
+        if (verb == "last" || verb == "live") { Live(); return; }
+        if (verb == "ply")   { Show(std::atoll(arg.c_str())); return; }
+        if (verb == "at")    { At(arg); return; }
+        if (verb == "skin")
+        {
+            std::istringstream sk(arg);
+            std::string w, bl; sk >> w >> bl;
+            ChessBoard* b = board();
+            note(b && b->Skin(w, bl.empty() ? w : bl) ? "" : "/skin: no such set (" + (b ? b->Sets().substr(b->Sets().find('|') + 1) : std::string()) + ")");
+            return;
+        }
         if (verb == "fen")  { note(g->LoadFenStr(arg) == "INVALID" ? "that is not a position" : ""); return; }
         const std::string r = g->Act(me(), verb, arg);
         note(refused(r) ? ("/" + verb + ": " + lower(r)) : "");
@@ -155,6 +204,60 @@ public:
         if (m_open) { node_hidden(m_chat_pane, false); node_hidden(m_cmd_pane, false); }
     }
     bool Open() const { return m_open; }
+
+    // Whether keys from the window are the table's: a page whose own field
+    // has focus says not, so typing there never steps the board.
+    void Keys(bool on) { m_keys = on; }
+
+    // ── review ────────────────────────────────────────────────────────────
+    // One ply back or forward from what is shown; forward past the last is live.
+    void StepReview(int delta)
+    {
+        ChessBoard* b = board();
+        int64_t first = 0, last = 0;
+        if (!b || !range(first, last)) return;
+        const int64_t at = b->Reviewing() < 0 ? last : b->Reviewing();
+        Show(at + delta < first ? first : at + delta);
+    }
+    void First() { int64_t first = 0, last = 0; if (range(first, last)) Show(first); }
+    void Live()  { if (ChessBoard* b = board()) { b->Review(-1); b->Promote("", true); } }
+    // A ply by index; the last one is the live board.
+    void Show(int64_t ply)
+    {
+        ChessBoard* b = board();
+        int64_t first = 0, last = 0;
+        if (!b || !range(first, last)) return;
+        if (ply >= last) { b->Review(-1); return; }
+        select("");
+        b->Review(ply < first ? first : ply);
+    }
+    // The position after move <n> of white ("<n>w") or black ("<n>b").
+    void At(const std::string& arg)
+    {
+        ChessGame* g = game();
+        if (!g || arg.size() < 2) return;
+        const long n = std::atol(arg.c_str());
+        const bool white = arg.back() == 'w';
+        size_t base = 0;
+        const std::vector<std::string> plies = g->Plies(base);
+        for (size_t i = 1; i < plies.size(); ++i)
+        {
+            std::istringstream f(plies[i - 1]);
+            std::string uci, place, side, castle, ep, half, full;
+            f >> uci >> place >> side >> castle >> ep >> half >> full;
+            if (std::atol(full.c_str()) == n && (side == "w") == white) { Show(static_cast<int64_t>(base + i)); return; }
+        }
+    }
+    // "<ply shown> <last ply> <first ply> live|review".
+    std::string View() const
+    {
+        int64_t first = 0, last = 0;
+        if (!range(first, last)) return "0 0 0 live";
+        ChessBoard* b = board();
+        const int64_t r = b ? b->Reviewing() : -1;
+        const int64_t shown = r < 0 ? last : (r > last ? last : r);
+        return std::to_string(shown) + " " + std::to_string(last) + " " + std::to_string(first) + (r < 0 ? " live" : " review");
+    }
     const std::string& Line() const { return m_line; }
     const std::string& Selected() const { return m_sel; }
 
@@ -183,6 +286,17 @@ public:
     }
 
 private:
+    bool range(int64_t& first, int64_t& last) const
+    {
+        ChessGame* g = game();
+        if (!g) return false;
+        size_t base = 0;
+        const size_t n = g->Plies(base).size();
+        if (n == 0) return false;
+        first = static_cast<int64_t>(base);
+        last = static_cast<int64_t>(base + n - 1);
+        return true;
+    }
     std::string me()
     {
         if (ChessShare* s = share()) if (s->inSession()) return s->name();
@@ -331,9 +445,9 @@ private:
     std::vector<ETCS::RID> m_rows;
     std::vector<std::string> m_shown_rows;
     std::string m_shown_turn, m_shown_seats, m_shown_note, m_shown_line;
-    std::string m_sel, m_line, m_note;
+    std::string m_sel, m_line, m_note, m_promo_mv;
     int32_t  m_shown_x = 0, m_hidden_x = 0, m_bar_x = 0;
-    bool     m_open = false, m_shift = false;
+    bool     m_open = false, m_shift = false, m_keys = true;
     uint32_t m_tick = 0;
 };
 

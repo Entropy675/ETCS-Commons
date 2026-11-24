@@ -15,10 +15,10 @@ OUT=${OUT:-/tmp/etcs-chess-window}; rm -rf "$OUT"; mkdir -p "$OUT"
 command -v xvfb-run >/dev/null || { echo "xvfb-run is needed"; exit 2; }
 cat > "$OUT/probe.etcs" <<'P'
 #!/usr/bin/env etcs
-table.Click(420 604)
-table.Click(420 428)
-table.Click(420 164)
-table.Click(420 340)
+table.Click(432 624)
+table.Click(432 432)
+table.Click(432 144)
+table.Click(432 336)
 table.Toggle()
 table.Type(hello from the window)
 table.Submit()

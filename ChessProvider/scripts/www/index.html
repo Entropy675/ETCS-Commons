@@ -50,10 +50,12 @@
      * (boot_chess.etcs: a Window, a Surface, a ChessBoard in the tree), drawn
      * and clicked entirely on that side -- GLFW owns the canvas, a press on a
      * square reaches ChessTable::Click through the window's pointer stream,
-     * and this page never learns where a piece is. What is HTML here is what
-     * a window has no DOM for: the hall, the seats, the conversation and the
-     * line you type. On the OS those are the bars scripts/chess_table.etcs
-     * slides in; here they are this column.
+     * and this page never learns where a piece is. Review and promotion are
+     * the board's too: the bar on top of it and the arrow keys only say which
+     * ply (`table.Do(/back)`, ChessTable::Keys). What is HTML is what a window
+     * has no DOM for: whose move, the hall, the moves and talk, the line you
+     * type, the piece sets. On the OS those are the column and the bars
+     * scripts/chess_table.etcs adds.
      */
     #layout { display: grid; grid-template-rows: auto 1fr auto; min-height: 100%; }
     header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -65,11 +67,38 @@
     #status { font-size: 12px; color: var(--dim); max-width: 40ch; overflow: hidden;
               text-overflow: ellipsis; white-space: nowrap; }
     #status.ok { color: var(--ok); } #status.err { color: var(--err); }
-    #main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(300px, 380px); gap: 12px;
-            padding: 12px 14px; align-items: start; }
-    #stage { position: relative; aspect-ratio: 4 / 3; background: #1c1d21;
-             box-shadow: 0 0 0 1px var(--line); }
-    canvas#canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+    /* The board as big as the screen's height allows beside a column. */
+    #main { display: grid; grid-template-columns: minmax(280px, min(calc(100vh - 200px), 760px)) minmax(280px, 380px);
+            justify-content: center; gap: 16px; padding: 14px; align-items: start; }
+    #boardcol { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    /* THE BAR IS ATTACHED TO THE BOARD: same width, flush on its top edge,
+       one border round both -- a board's own toolbar, not buttons near it. */
+    #boardwrap { position: relative; border: 1px solid var(--line); background: var(--panel); }
+    #boardbar { display: flex; align-items: center; gap: 4px; padding: 4px 6px;
+                border-bottom: 1px solid var(--line); font-size: 12px; }
+    #boardbar button { padding: 0 8px; min-width: 2.4em; line-height: 1.6; }
+    #ply { color: var(--dim); margin-left: 6px; white-space: nowrap; }
+    #stage { position: relative; aspect-ratio: 1 / 1; background: #1c1d21; }
+    /* !important against the inline size emscripten's GLFW writes on its canvas. */
+    canvas#canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated; }
+    #turn { font-size: 15px; }
+    #fen { font-size: 11px; color: var(--dim); cursor: pointer; word-break: break-all; margin-top: 6px; }
+    #fen.copied { color: var(--ok); }
+    /* The piece sets, under the bar's button: a king of each, per side. */
+    #opts { position: absolute; right: 6px; top: 34px; z-index: 5; background: var(--panel);
+            border: 1px solid var(--sel); padding: 8px 10px; box-shadow: 0 6px 18px #0008; }
+    .optrow { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .optrow > span { width: 5ch; color: var(--dim); font-size: 12px; }
+    .optrow button { padding: 2px; width: 40px; height: 64px; display: flex; align-items: flex-end; justify-content: center; }
+    .optrow button.on { border-color: var(--sel); background: #2a2b20; }
+    .optrow img { height: 60px; image-rendering: pixelated; }
+    /* Game over, over the board until it is put away. */
+    #over { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+            background: rgba(20, 21, 15, 0.55); z-index: 4; }
+    #over.on { display: flex; }
+    #over .box { background: var(--panel); border: 1px solid var(--sel); padding: 16px 22px; text-align: center; }
+    #over h2 { margin: 0 0 4px; font-weight: normal; color: var(--sel); font-size: 18px; }
+    #over p { margin: 0 0 12px; color: var(--dim); font-size: 12px; }
     #bootthrob { position: absolute; left: calc(50% - 48px); top: calc(50% - 48px); pointer-events: none; }
     aside { display: flex; flex-direction: column; gap: 10px; }
     section { border: 1px solid var(--line); background: var(--panel); padding: 8px 10px; }
@@ -83,14 +112,23 @@
     .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     #turn { color: var(--sel); }
     #seats, #note { font-size: 12px; color: var(--dim); }
+    #seats b { color: var(--light); font-weight: normal; }
     #note { color: #c9975a; min-height: 1.3em; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     td { padding: 2px 4px; border-bottom: 1px solid var(--line); vertical-align: middle; }
     td.key { color: var(--sel); }
     .empty { color: var(--dim); font-size: 12px; padding: 4px 0; }
-    #chat { height: 200px; overflow-y: auto; font-size: 12px; white-space: pre-wrap;
-            background: var(--bg); padding: 4px 6px; border: 1px solid var(--line); }
-    #chat .n { color: var(--dim); }
+    /* THE MOVES AND THE TALK, one log: a move is a line you can click to see
+       the board after it; narration is grey, speech is plain. */
+    #chat { height: min(46vh, 440px); overflow-y: auto; font-size: 12px; white-space: pre-wrap;
+            background: var(--bg); padding: 4px 6px; border: 1px solid var(--line); margin-bottom: 6px; }
+    #chat div { padding: 0 2px; }
+    #chat .n { color: var(--dim); font-style: italic; }
+    #chat .mv { color: var(--dim); font-style: italic; cursor: pointer; }
+    #chat .num { font-style: normal; margin-right: .5ch; }
+    #chat .mv .num { color: var(--light); }
+    #chat .mv:hover { color: var(--sel); }
+    #chat .mv.on { color: var(--sel); background: #2a2b20; }
     input.line { width: 100%; background: var(--bg); color: var(--light); border: 1px solid var(--line);
                  padding: 4px 6px; font: inherit; }
     #link { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -109,7 +147,7 @@
                 color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-bottom: 0; }
     #dock-tab:hover { color: var(--sel); }
     iframe#shell { display: block; width: 100%; height: 180px; border: 0; border-top: 1px solid var(--line); background: var(--bg); }
-    @media (max-width: 760px) { #main { grid-template-columns: 1fr; } }
+    @media (max-width: 760px) { #main { grid-template-columns: minmax(0, 1fr); } }
     /* A runtime notice over the loading mark while it is up (takeNotice):
        above the ring, in the ring's own blue and violet. */
     #bootnotice {
@@ -121,16 +159,14 @@
       transition: opacity 0.6s; opacity: 1;
     }
     #bootnotice.gone { opacity: 0; }
-    /* FULLSCREEN THE STAGE (the header's button, as Paint's): the arena, and
-       what lies over it, has the whole screen. The picture is the window's
-       4:3 and stays it -- as big as the screen holds, bars either side -- for
-       the camera draws 4:3 whatever box it is shown in. Esc leaves. */
+    /* FULLSCREEN THE STAGE (the header's button, as Paint's): the board, as
+       big as the screen holds and square, dark either side. Esc leaves. */
     #stage:fullscreen, #stage:-webkit-full-screen {
-      width: 100%; height: 100%; aspect-ratio: auto; background: #000; box-shadow: none;
+      width: 100%; height: 100%; aspect-ratio: auto; background: #000;
       display: flex; align-items: center; justify-content: center;
     }
     #stage:fullscreen canvas#canvas, #stage:-webkit-full-screen canvas#canvas {
-      width: min(100vw, 133.333vh) !important; height: min(75vw, 100vh) !important;
+      width: min(100vw, 100vh) !important; height: min(100vw, 100vh) !important;
     }
   </style>
 </head>
@@ -146,35 +182,62 @@
   </header>
 
   <div id="main">
-    <div id="stage">
-      <canvas id="canvas" width="1024" height="768"></canvas>
-      <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
+    <div id="boardcol">
+      <div id="boardwrap">
+        <div id="boardbar">
+          <button id="rw-first" title="the position the game started from (Home)">&#x23EE;</button>
+          <button id="rw-back" title="back one move (&#x2190;)">&#x25C0;</button>
+          <button id="rw-fwd" title="forward one move (&#x2192;)" disabled>&#x25B6;</button>
+          <button id="rw-last" title="the latest position (End)" disabled>&#x23ED;</button>
+          <button id="rw-live" class="primary hidden" title="back to the live board (Esc)">live</button>
+          <span id="ply"></span>
+          <span class="spacer"></span>
+          <button id="flip" title="the board the other way up">flip</button>
+          <button id="pieces" title="the piece sets each side is drawn in">pieces</button>
+        </div>
+        <div id="stage">
+          <canvas id="canvas" width="768" height="768"></canvas>
+          <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
+          <div id="over"><div class="box">
+            <h2 id="over-title">game over</h2><p id="over-sub"></p>
+            <div class="row" style="justify-content:center">
+              <button id="over-new" class="primary" title="a new game; the seats open again">new game</button>
+              <button id="over-look" title="put this away and look at the board">look at the board</button>
+            </div>
+          </div></div>
+        </div>
+        <div id="opts" class="hidden">
+          <div class="optrow"><span>white</span><div class="row" id="opt-w"></div></div>
+          <div class="optrow"><span>black</span><div class="row" id="opt-b"></div></div>
+        </div>
+      </div>
     </div>
 
     <aside>
       <section>
         <h3>The game</h3>
-        <div id="turn">—</div>
+        <div id="turn">&mdash;</div>
         <div id="seats"></div>
         <div id="note"></div>
         <div class="row" style="margin-top:6px">
+          <button id="resign" title="give up the game">resign</button>
+          <button id="draw" title="offer a draw, or take one offered">offer draw</button>
+          <span class="spacer"></span>
           <button id="host" class="primary" title="open a table of your own, listed in the hall">open a table</button>
           <button id="leave" class="hidden" title="leave this table">leave</button>
-          <button id="flip" title="the board the other way up">flip</button>
-          <button id="resign" title="give up the game">resign</button>
-          <button id="draw" title="offer a draw, or take one offered">draw</button>
         </div>
         <div id="link" class="hidden" title="click to copy the link to this table"></div>
+        <div id="fen" title="the position, as FEN -- click to copy"></div>
       </section>
 
       <section>
         <h3>The hall</h3>
         <table><tbody id="hall"></tbody></table>
-        <div id="no-hall" class="empty">nobody is at a table yet — open one</div>
+        <div id="no-hall" class="empty">nobody is at a table yet &mdash; open one</div>
       </section>
 
       <section>
-        <h3>Say</h3>
+        <h3>Moves and talk</h3>
         <div id="chat"></div>
         <input id="say" class="line" placeholder="say something -- or /sit black, /resign, /draw, /fen ..., /help" maxlength="200" spellcheck="false">
       </section>
@@ -439,6 +502,74 @@
   $('flip').addEventListener('click', function () { doLine('/flip'); });
   $('resign').addEventListener('click', function () { doLine('/resign'); });
   $('draw').addEventListener('click', function () { doLine('/draw'); });
+  $('rw-first').addEventListener('click', function () { doLine('/first'); });
+  $('rw-back').addEventListener('click', function () { doLine('/back'); });
+  $('rw-fwd').addEventListener('click', function () { doLine('/fwd'); });
+  $('rw-last').addEventListener('click', function () { doLine('/live'); });
+  $('rw-live').addEventListener('click', function () { doLine('/live'); });
+  $('fen').addEventListener('click', function () {
+    const el = $('fen');
+    navigator.clipboard.writeText(el.textContent).then(function () {
+      el.classList.add('copied'); setTimeout(function () { el.classList.remove('copied'); }, 1200);
+    }).catch(function () {});
+  });
+
+  // THE KEYS ARE THE BOARD'S unless a field here has them: GLFW listens on the
+  // whole window, so typing "e4" in the chat would otherwise step the review.
+  function isField(el) { return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'); }
+  document.addEventListener('focusin', function (ev) { if (isField(ev.target) && runtimeUp() && nameLive('table')) callResult('table', 'Keys', '0'); });
+  document.addEventListener('focusout', function (ev) { if (isField(ev.target) && runtimeUp() && nameLive('table')) callResult('table', 'Keys', '1'); });
+
+  // ── the piece sets ────────────────────────────────────────────────────────
+  // CChess's four, a side each; the choice is this browser's (localStorage).
+  const SETS = ['white', 'black', 'beige', 'brown'];
+  const SET_DIR = 'ChessProvider/ChessProvider/CChess/piece_images/';
+  const KING = { white: 'white/King.png', black: 'black/King.png', beige: 'beige/King.png', brown: 'brown/king.png' };
+  let skin = { w: 'white', b: 'black' }, skinShown = '';
+  try {
+    const kept = (window.localStorage.getItem('etcs-chess-skin') || '').split(' ');
+    if (SETS.indexOf(kept[0]) >= 0 && SETS.indexOf(kept[1]) >= 0) skin = { w: kept[0], b: kept[1] };
+  } catch (e) {}
+  function renderOpts() {
+    ['w', 'b'].forEach(function (side) {
+      const row = $('opt-' + side); row.innerHTML = '';
+      SETS.forEach(function (name) {
+        const btn = document.createElement('button');
+        btn.title = name; btn.className = skin[side] === name ? 'on' : '';
+        btn.innerHTML = '<img alt="' + name + '" src="' + SET_DIR + KING[name] + '">';
+        btn.onclick = function () {
+          skin[side] = name;
+          try { window.localStorage.setItem('etcs-chess-skin', skin.w + ' ' + skin.b); } catch (e) {}
+          renderOpts(); applySkin();
+        };
+        row.appendChild(btn);
+      });
+    });
+  }
+  function applySkin() {
+    const want = skin.w + ' ' + skin.b;
+    if (want === skinShown || !runtimeUp() || !nameLive('board')) return;
+    callResult('board', 'Skin', want).then(function (r) { if (r === 'ok') skinShown = want; });
+  }
+  // Open from its button, closed by a click anywhere but inside it (a pick
+  // re-renders the row, so a click inside must not reach the document).
+  $('pieces').addEventListener('click', function (ev) { ev.stopPropagation(); $('opts').classList.toggle('hidden'); });
+  $('opts').addEventListener('click', function (ev) { ev.stopPropagation(); });
+  document.addEventListener('click', function () { $('opts').classList.add('hidden'); });
+  renderOpts();
+
+  // ── game over ─────────────────────────────────────────────────────────────
+  // Shown once when a game ends; put away, it stays away until the next ends.
+  let overSeen = '';
+  $('over-new').addEventListener('click', function () { $('over').classList.remove('on'); doLine('/reset'); });
+  $('over-look').addEventListener('click', function () { $('over').classList.remove('on'); });
+  function showOver(key, title, sub) {
+    if (!key) { overSeen = ''; $('over').classList.remove('on'); return; }
+    if (key === overSeen) return;
+    overSeen = key;
+    $('over-title').textContent = title; $('over-sub').textContent = sub;
+    $('over').classList.add('on');
+  }
   const sayEl = $('say');
   sayEl.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Enter') return;
@@ -448,35 +579,94 @@
 
   // ── what the page shows, polled ───────────────────────────────────────────
   const turnEl = $('turn'), seatsEl = $('seats'), noteEl = $('note'), chatEl = $('chat'), hallEl = $('hall');
-  let shownChat = '', shownHall = '', polling = false;
+  let shownHall = '', polling = false, shownFen = '';
   function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+
+  /*
+   * THE LOG, WHOLE, as it grows: the game's chat ring read in pages from where
+   * this page got to ("<base> <next>" then the lines -- ChessGame::ChatPage).
+   * A move is "* <n>. white plays e2e4" or "* <n>... black plays e7e5", and
+   * clicking one shows the board after it (/at <n>w|b); only the current
+   * game's moves click -- a "new game" line retires the ones before it.
+   */
+  let chatFrom = '', chatBusy = false;
+  const MOVE = /^\* (\d+)(\.|\.\.\.) (white|black) plays (\S+)$/;
+  function chatLine(l) {
+    const d = document.createElement('div');
+    const m = MOVE.exec(l);
+    if (m) {
+      d.className = 'mv';
+      d.dataset.at = m[1] + (m[3] === 'white' ? 'w' : 'b');
+      d.innerHTML = '<span class="num">' + esc(m[1] + m[2]) + '</span>' + esc(m[3] + ' ' + m[4]);
+      d.onclick = function () { if (d.classList.contains('mv')) doLine('/at ' + d.dataset.at); };
+    } else if (l.indexOf('* ') === 0) {
+      d.className = 'n'; d.textContent = l.slice(2);
+      if (/^\* new game/.test(l)) for (const e of chatEl.querySelectorAll('.mv')) { e.classList.remove('mv', 'on'); e.classList.add('n'); }
+    } else d.textContent = l;
+    return d;
+  }
+  async function readChat() {
+    if (chatBusy) return;
+    chatBusy = true;
+    try {
+      for (let pages = 0; pages < 20; pages++) {
+        const t = await callResult('game', 'Chat', chatFrom === '' ? '0' : chatFrom);
+        if (t == null) break;
+        const nl = t.indexOf('\n');
+        const head = (nl < 0 ? t : t.slice(0, nl)).trim().split(/\s+/);
+        const next = head[1] || chatFrom;
+        const lines = (nl < 0 ? '' : t.slice(nl + 1)).split('\n').filter(Boolean);
+        if (!lines.length || next === chatFrom) break;
+        const atEnd = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4;
+        for (const l of lines) chatEl.appendChild(chatLine(l));
+        while (chatEl.childNodes.length > 600) chatEl.removeChild(chatEl.firstChild);
+        if (atEnd) chatEl.scrollTop = chatEl.scrollHeight;
+        chatFrom = next;
+      }
+    } finally { chatBusy = false; }
+  }
+
+  // The bar's buttons and count, from the table ("<shown> <last> <first> live|review").
+  function showView(v) {
+    const p = (v || '0 0 0 live').trim().split(/\s+/);
+    const shown = +p[0], last = +p[1], first = +p[2], live = p[3] !== 'review';
+    $('ply').textContent = last === first ? 'the start' : (live ? 'move ' + (last - first) + ' of ' + (last - first) : 'move ' + (shown - first) + ' of ' + (last - first));
+    $('rw-back').disabled = shown <= first; $('rw-first').disabled = shown <= first;
+    $('rw-fwd').disabled = live; $('rw-last').disabled = live;
+    $('rw-live').classList.toggle('hidden', live);
+    // The move line the board is showing, lit.
+    const lines = chatEl.querySelectorAll('.mv');
+    lines.forEach(function (e, i) { e.classList.toggle('on', !live && i === lines.length - 1 - (last - shown)); });
+  }
+
   async function poll() {
     if (polling || !runtimeUp() || !nameLive('game')) return;
     polling = true;
     try {
+      applySkin();
       const me = myName();
       const st = await callResult('game', 'Status', me);
       if (st) {
         const p = st.trim().split(/\s+/);
         const side = p[0] === 'w' ? 'white' : 'black', state = p[1], role = p[2], offer = p[5], w = p[6], b = p[7];
-        let turn = side + ' to move';
+        let turn = side + ' to move', over = '', sub = '';
         if (state === 'check') turn += ', in check';
-        else if (state === 'checkmate') turn = (p[0] === 'w' ? 'black' : 'white') + ' wins by checkmate';
-        else if (state === 'stalemate') turn = 'stalemate';
-        else if (state === 'draw') turn = 'drawn';
-        else if (state && state.indexOf('resign-') === 0) turn = state.slice(7) + ' resigned';
+        else if (state === 'checkmate') { turn = (p[0] === 'w' ? 'black' : 'white') + ' wins by checkmate'; over = turn; sub = 'checkmate'; }
+        else if (state === 'stalemate') { turn = 'stalemate'; over = 'drawn'; sub = 'stalemate -- no move, and no check'; }
+        else if (state === 'draw') { turn = 'drawn'; over = 'drawn'; sub = 'by agreement'; }
+        else if (state && state.indexOf('resign-') === 0) { const r = state.slice(7); turn = r + ' resigned'; over = (r === 'white' ? 'black' : 'white') + ' wins'; sub = r + ' resigned'; }
         if (offer === 'theirs') turn += ' — a draw is offered'; else if (offer === 'mine') turn += ' — your draw offer stands';
         turnEl.textContent = turn;
-        seatsEl.textContent = 'white: ' + w + '   black: ' + b + (role !== 'viewer' ? '   you: ' + role : (session.mode ? '   you: watching' : '   hotseat: click to move either side'));
+        $('draw').textContent = offer === 'theirs' ? 'take the draw' : 'offer draw';
+        seatsEl.innerHTML = 'white <b>' + esc(w) + '</b> &nbsp; black <b>' + esc(b) + '</b>'
+          + (role !== 'viewer' ? ' &nbsp; you are ' + esc(role) : (session.mode ? ' &nbsp; you are watching' : ' &nbsp; hotseat: click to move either side'));
+        showOver(over ? state + '|' + w + '|' + b : '', over, sub);
       }
-      const tail = await callResult('game', 'Tail', '24');
-      if (tail != null && tail !== shownChat) {
-        shownChat = tail;
-        chatEl.innerHTML = tail.split('\n').filter(Boolean).map(function (l) {
-          return l.indexOf('* ') === 0 ? '<span class="n">' + esc(l) + '</span>' : esc(l);
-        }).join('\n');
-        chatEl.scrollTop = chatEl.scrollHeight;
-      }
+      await readChat();
+      const view = await callResult('table', 'View', '');
+      if (view != null) showView(view);
+      const fen = await callResult('game', 'Fen', '');
+      if (fen && fen !== shownFen) { shownFen = fen; $('fen').textContent = fen; }
       const rep = await callResult('table', 'Report', '');
       if (rep) { const m = /note '([^']*)'/.exec(rep); noteEl.textContent = m ? m[1] : ''; }
       if (session.hallUp) {

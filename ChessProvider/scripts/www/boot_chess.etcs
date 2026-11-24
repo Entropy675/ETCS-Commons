@@ -11,18 +11,24 @@
 #
 #   gpu, main, view   the device, the window, its surface -- paint's shape
 #   stage             the drawable root the frame edge presents
-#   board             a ChessBoard: the game as pixels, redrawn when it changed
+#   board             a ChessBoard: the game as pixels, redrawn when it changed,
+#                     in CChess's piece pictures (four sets, white's and
+#                     black's chosen by Skin)
 #   game, share       the board's game and this runtime's part in a session
 #                     (ChessGame.h, ChessShare.h); hosting and joining are
 #                     the templates chess_host.etcs / chess_join.etcs, run by
 #                     the page with `game=game share=share` when a table is
 #                     opened or joined -- the same on either substrate
 #   table             a ChessTable: presses in, Act out (ChessTable.h)
-#   turn, seats, note the column to the right of the board
 #
-# ENSURE, NOT SPAWN, for `stage`, `table`, `game` and `share`: the OS root
-# script makes them BEFORE running this, so it can hang its bars under the
-# stage and bind them to the table, and so their names are its globals (a
+# THE WINDOW IS THE BOARD: 768 square. Whose move it is, the chat and the
+# command line are the page's DOM beside the canvas; a window has none, so
+# scripts/chess_table.etcs adds them as a column and widens the window.
+#
+# ENSURE, NOT SPAWN, for `main`, `stage`, `table`, `game` and `share`: the OS
+# root script makes them BEFORE running this, so it can hang its bars under
+# the stage, bind them to the table and widen the window, and so their names
+# are its globals (a
 # sub-script's spawns are not) -- and then this script takes the ones that
 # exist and fills them in. Run alone, as the page runs it, ensure makes them,
 # and nothing differs. (Create on a compositor is idempotent for an unchanged
@@ -38,15 +44,15 @@
 spawn RenderProvider::Instance gpu
 gpu.Create()
 
-spawn WindowProvider::Window main
-main.Create(1024, 768, 'ETCS Chess')
+ensure WindowProvider::Window main
+main.Create(768, 768, 'ETCS Chess')
 
 main.spawn(RenderProvider::Surface view)
 view.Create(@gpu)
 view.Clear(0.11, 0.11, 0.13, 1.0)
 
 ensure RenderProvider::CompositeDrawable2D stage
-stage.Create(1024, 768)
+stage.Create(768, 768)
 stage.SetPosition(0, 0)
 stage.SetOrder(0)
 stage.SetBackground(0.11, 0.11, 0.13, 1.0)
@@ -56,37 +62,20 @@ ensure ChessProvider::ChessGame game
 ensure ChessProvider::ChessShare share
 share.Attach(@game)
 
-# ── the board: 704px, 88 a square, a 32px margin ─────────────────────────────
+# ── the board: 768px, 96 a square ────────────────────────────────────────────
 stage.spawn(ChessProvider::ChessBoard board)
-board.Create(704)
-board.SetPosition(32, 32)
+board.Create(768)
+board.SetPosition(0, 0)
 board.SetOrder(1)
 board.Bind(@game)
 
-# ── the column beside it ─────────────────────────────────────────────────────
-stage.spawn(RenderProvider::TextLabel turn)
-turn.Create()
-turn.SetPosition(768, 40)
-turn.SetSize(16)
-turn.SetColor(0.94, 0.89, 0.78, 1.0)
-turn.SetOrder(2)
-turn.SetText(white to move)
-
-stage.spawn(RenderProvider::TextLabel seats)
-seats.Create()
-seats.SetPosition(768, 76)
-seats.SetSize(8)
-seats.SetColor(0.80, 0.80, 0.84, 1.0)
-seats.SetOrder(2)
-seats.SetText(white: -   black: -)
-
-stage.spawn(RenderProvider::TextLabel note)
-note.Create()
-note.SetPosition(768, 104)
-note.SetSize(8)
-note.SetColor(0.85, 0.65, 0.40, 1.0)
-note.SetOrder(2)
-note.SetText()
+# The pieces: CChess's four sets, white's and black's by default. The page
+# stages them at these paths; a runtime finds them under ACE_ROOT/modules.
+board.LoadSet(white, ChessProvider/ChessProvider/CChess/piece_images/white)
+board.LoadSet(black, ChessProvider/ChessProvider/CChess/piece_images/black)
+board.LoadSet(beige, ChessProvider/ChessProvider/CChess/piece_images/beige)
+board.LoadSet(brown, ChessProvider/ChessProvider/CChess/piece_images/brown)
+board.Skin(white black)
 
 # ── the table ────────────────────────────────────────────────────────────────
 ensure ChessProvider::ChessTable table
@@ -94,7 +83,6 @@ table.Create()
 table.BindGame(@game)
 table.BindShare(@share)
 table.BindBoard(@board)
-table.BindStatus(@turn @seats @note)
 
 view.Compose(@stage)
 

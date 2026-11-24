@@ -1,3 +1,5 @@
+// stb_image is compiled here, once, and static (ChessBoard.h): PNG only.
+#define STB_IMAGE_IMPLEMENTATION
 #include "ChessProvider.h"
 
 // Four types. CChess's own ChessGame (and ChessGameLinux/Windows) WAS the
@@ -20,9 +22,9 @@ ETCS_TAG_BLOCK_HYBRID(ChessShare,
 // The picture and the seat. The board rides the frame edge (Animated) and
 // needs no verbs to be drawn; the table takes the window's two streams.
 ETCS_TAG_BLOCK_BASIC(ChessBoard,
-    Create, Bind, SetPosition, SetOrder, SetHidden, SetFlip, Select, SquareAt, Delete)
+    Create, Bind, SetPosition, SetOrder, SetHidden, SetFlip, Select, SquareAt, LoadSet, Skin, Sets, Review, PictureAt, Delete)
 
 ETCS_TAG_BLOCK_HYBRID(ChessTable,
     (Create, BindGame, BindShare, BindBoard, BindStatus, BindBars, BindLine, ChatRow,
-     Click, Key, Type, Submit, Do, Toggle, Step, Report, Delete),
+     Click, Key, Type, Submit, Do, Toggle, Step, Report, View, Keys, Delete),
     (ConsumePointer, ConsumeKeys))

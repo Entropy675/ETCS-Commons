@@ -175,6 +175,14 @@ public:
         std::lock_guard<std::mutex> hold(mu_);
         return pageLocked(history_, history_base_, parseIndex(from));
     }
+    // Every ply held, "<uci> <fen>" a line, the first the root; `base` is the
+    // first one's index (the history is a ring).
+    std::vector<std::string> Plies(size_t& base) const
+    {
+        std::lock_guard<std::mutex> hold(mu_);
+        base = history_base_;
+        return history_;
+    }
     std::string Seats() const
     {
         std::lock_guard<std::mutex> hold(mu_);
@@ -426,6 +434,13 @@ private:
         }
         else if (seat != who) return (who == other) ? "NOT YOUR TURN" : "NOT YOUR SEAT";
 
+        // The move's number, as the position before it states it.
+        std::string number;
+        {
+            const std::string before = board.toFENString();
+            const size_t sp = before.rfind(' ');
+            number = (sp == std::string::npos) ? std::string("1") : before.substr(sp + 1);
+        }
         Pos from(mv[0] - 'a', 8 - (mv[1] - '0'));
         Pos to  (mv[2] - 'a', 8 - (mv[3] - '0'));
 
@@ -451,7 +466,7 @@ private:
         recordHistoryLocked(mv);
 
         if (first_move) logLocked("game started");
-        logLocked(std::string(white_moved ? "white" : "black") + " plays " + mv
+        logLocked(number + (white_moved ? ". white plays " : "... black plays ") + mv
                   + (checkmate_ ? "#" : (board.sideToMoveInCheck() ? "+" : "")));
         if (!active_)
         {

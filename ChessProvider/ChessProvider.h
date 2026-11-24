@@ -156,6 +156,29 @@ DEFINE_WORK_FUNC(ChessBoard, SquareAt)
     data >> x >> y;
     data.writeString(self.SquareAt(x, y).c_str());
 }
+// LoadSet <name> <dir> -- a set of CChess piece pictures; answers how many of ten it took.
+DEFINE_WORK_FUNC(ChessBoard, LoadSet)
+{
+    (void)ctx;
+    std::string name;
+    data >> name;
+    const std::string dir = data.restAsString();
+    data.writeString(std::to_string(self.LoadSet(name, dir)).c_str());
+}
+// Skin <white set> [<black set>] -- the sets the sides are drawn in; one name is both.
+DEFINE_WORK_FUNC(ChessBoard, Skin)
+{
+    (void)ctx;
+    std::string w, b;
+    data >> w >> b;
+    data.writeString(self.Skin(w, b.empty() ? w : b) ? "ok" : "no such set");
+}
+// Sets -- "<white set> <black set>|<every set loaded>".
+DEFINE_WORK_FUNC(ChessBoard, Sets)    { (void)ctx; (void)data; data.writeString(self.Sets().c_str()); }
+// PictureAt <square> -- "<piece> <L|R>" at the ply shown, "-" for none.
+DEFINE_WORK_FUNC(ChessBoard, PictureAt) { (void)ctx; std::string sq; data >> sq; data.writeString(self.PictureAt(sq).c_str()); }
+// Review <ply> -- show that ply of the history; -1 the live board.
+DEFINE_WORK_FUNC_TYPED(ChessBoard, Review, (int64_t, ply)) { (void)ctx; self.Review(ply); }
 DEFINE_WORK_FUNC(ChessBoard, Delete)  { (void)ctx; (void)data; data.writeString(self.Delete() ? "deleted" : "FAILED"); }
 
 // ── ChessTable ────────────────────────────────────────────────────────────────
@@ -194,6 +217,10 @@ DEFINE_WORK_FUNC(ChessTable, Do)     { (void)ctx; self.Do(data.restAsString()); 
 DEFINE_WORK_FUNC(ChessTable, Toggle) { (void)ctx; (void)data; self.Toggle(); }
 DEFINE_WORK_FUNC(ChessTable, Step)   { (void)ctx; (void)data; self.Step(); }
 DEFINE_WORK_FUNC(ChessTable, Report) { (void)ctx; (void)data; data.writeString(self.Report().c_str()); }
+// View -- "<ply shown> <last ply> <first ply> live|review".
+DEFINE_WORK_FUNC(ChessTable, View)   { (void)ctx; (void)data; data.writeString(self.View().c_str()); }
+// Keys <0|1> -- whether the window's keys are the table's (a page field with focus says 0).
+DEFINE_WORK_FUNC_TYPED(ChessTable, Keys, (int32_t, on)) { (void)ctx; self.Keys(on != 0); }
 DEFINE_WORK_FUNC(ChessTable, Delete) { (void)ctx; (void)data; data.writeString(self.Delete() ? "deleted" : "FAILED"); }
 
 // main.ProducePointer() -> table.ConsumePointer() -- a left press is a click.

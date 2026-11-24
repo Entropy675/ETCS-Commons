@@ -4,12 +4,39 @@ This page is an ETCS runtime with a chess board in it. The board is drawn by
 that runtime (a `ChessBoard` in a window whose surface is the canvas), clicked
 through that runtime (the window's pointer stream, `ChessTable`), and judged
 by whichever runtime hosts the table -- yours, another player's, or the site's.
-What is HTML here is what a window has no DOM for: the hall, the seats, the
-conversation and the line you type. On the OS those are the bars
-`scripts/chess_table.etcs` slides in; here they are the column beside the
-board. The same boot script sets up both (`boot_chess.etcs`). The header's
-**fullscreen** button gives the board the whole screen (at its 4:3); the
-button again, or Esc, gives it back.
+What is HTML here is what a window has no DOM for: whose move it is, the hall,
+the moves and the talk, the line you type and the piece sets. On the OS those
+are the column and the bars `scripts/chess_table.etcs` adds beside the board;
+here they are the column beside the canvas, which is the board alone (768
+square). The same boot script sets up both (`boot_chess.etcs`). The header's
+**fullscreen** button gives the board the whole screen; the button again, or
+Esc, gives it back.
+
+## The board
+
+- **The pieces are CChess's pictures** (`ChessProvider/CChess/piece_images`):
+  four sets -- white, black, beige, brown -- loaded by the boot
+  (`board.LoadSet(<name> <dir>)`, decoded with stb_image) and chosen per side
+  (`board.Skin(<white> <black>)`). The bar's **pieces** button picks them, kept
+  per browser; at the OS prompt it is `/skin beige brown`. Rook, bishop, knight
+  and pawn come as a left and a right picture, and a piece keeps the one of
+  the half of the board it started on, through the whole game
+  (`ChessBoard::homeSides`; `board.PictureAt(e4)` says which).
+- **Review.** The bar on top of the board steps through the game: first, back,
+  forward, last, and **live** while you are looking back; the arrows, Home,
+  End and Esc do the same. It is the board's (`ChessBoard::Review`), stepped by
+  the table (`/back /fwd /first /last /live /ply <n> /at <n>w|b`, and
+  `table.View` for the count), so the OS window has it too. A press on the
+  board while reviewing goes back to live rather than moving. While a field of
+  the page has focus the keys are its own (`table.Keys 0`).
+- **Promotion is a choice**: a pawn that reaches the last rank opens a picker
+  on the board, queen, knight, rook and bishop from the square inward, and a
+  press on one makes the move.
+- **The log** is the game's chat ring, read whole as it grows: speech, the
+  narration, and every move numbered (`1. white e2e4`, `1... black e7e5`).
+  A move line is a link to the board after it.
+- **Game over** puts a box over the board, with **new game** (`/reset`) and a
+  way to put it away and look.
 
 Serve it with `serve_chess.etcs` (this module) or as part of the site
 (`scripts/run_website.etcs`, under `/chess/play/`). ETCS serves ETCS: the page,
@@ -59,13 +86,15 @@ the runtime is up, `chess_host.etcs` / `chess_join.etcs` for a table, with the
 boot's globals injected (`game=game share=share hall=halllist0`) since a later
 root script cannot name them. It beats `share.Tick` once a second while at a
 table (presence, and the hall entry for a host). It polls `game.Status`,
-`game.Tail`, `table.Report` and the hall mirror's `List` to draw the column.
-The line you type is `ChessTable.Do`: a leading slash is a verb (`/sit black`,
-`/resign`, `/draw`, `/flip`, `/fen ...`), the rest is said. The seat is the
+`game.Chat` (from where it got to), `game.Fen`, `table.View`, `table.Report`
+and the hall mirror's `List` to draw the column. The line you type is
+`ChessTable.Do`: a leading slash is a verb (`/sit black`, `/resign`, `/draw`,
+`/flip`, `/fen ...`, `/skin ...`, `/back`, `/help`), the rest is said. The seat is the
 table's, so the page needs to know neither your name nor whether it is a verb.
 
 The page never touches the board. It does not know where a piece is, which
-square was clicked, or whose move it is except as text to show. GLFW owns the
+square was clicked, which ply is shown, or whose move it is except as text to
+show. GLFW owns the
 canvas; a press reaches `ChessTable::Click` through the window's pointer
 stream, and the board redraws itself when the game changed
 (`ChessBoard::AnimatingConcrete`).
@@ -86,9 +115,13 @@ page's event loop is the thread GLFW delivers every press on.
 
 - `index.html` -- the page. Its bootstrap (manifest, wasm base, staging, glue)
   is PaintProvider's page's, the same contract.
-- `modules.json` -- what is loaded and staged; the boot script; the glue.
-- `boot_chess.etcs` -- the seat: window, surface, board, game, share, table,
-  the two pumps. The same file the OS runs (`scripts/chess_table.etcs`).
+- `modules.json` -- what is loaded and staged (the scripts and the forty piece
+  pictures); the boot script; the glue.
+- `chess-classic.html` -- the page before the board was the runtime's (a DOM
+  board over the HTTP node that is gone); the review bar and the log follow it.
+- `boot_chess.etcs` -- the seat: window, surface, board and its piece sets,
+  game, share, table, the two pumps. The same file the OS runs
+  (`scripts/chess_table.etcs`).
 - `../chess_mounts.etcs` -- the served surface, one list for every server.
 - `../chess_service.etcs`, `../chess_ranked_table.etcs` -- the site's side.
 - `../session/run.sh` -- both models, natively, end to end.
