@@ -26,3 +26,6 @@
 	path = PaintProvider/stb
 	url = https://github.com/nothings/stb.git
 	shallow = true
+[submodule "ChessProvider/stb"]
+	path = ChessProvider/stb
+	url = https://github.com/nothings/stb.git
