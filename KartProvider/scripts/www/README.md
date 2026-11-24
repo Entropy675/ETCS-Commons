@@ -82,8 +82,10 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   time, its row turns the builder on and the page reloads with it (`?with=builder`, then
   remembered: the tab keeps its drafts in `/persist/kart_builder.db`). A draft starts from
   the vehicle you ride; each row steps one of its numbers; **shape it** opens the modeller over
-  the window -- parts of any shape, colour and material, the red ones drawn in your colour --
-  and **Enter** or **done** keeps the shape. A part weighs its size at its material's density.
+  the window -- parts of any shape, colour and material, the red ones drawn in your colour, a
+  part's arrows dragged to move, turn or size it along one axis, and a sentence on any control
+  the pointer rests on (PaintProvider's README, "The 3D model") -- and **Enter** or **done**
+  keeps the shape. A part weighs its size at its material's density.
   Nothing leaves the tab until **use it**: the whole vehicle as one line, built by every tab,
   ridden by you, and shown beside your name in the lobby.
 - **Lock in** before a round: on one of the arena's vehicles, or on a build the host has
