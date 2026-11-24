@@ -199,6 +199,28 @@ public:
         readoutLocked();
         return true;
     }
+    // A material a part may be made of, by name (a game's: what it weighs is
+    // the game's to say). "-" is none, and every part's to begin with.
+    void AddMaterial(const std::string& name)
+    {
+        if (name.empty() || name == "-" || name.find(' ') != std::string::npos) return;
+        std::lock_guard<std::mutex> g(m_mu);
+        if (!materialKnownLocked(name)) m_materials.push_back(name);
+        cellsLocked();
+    }
+    // The material add makes a part of; outside the add tool, the selected
+    // part's too -- as SetShape.
+    bool SetMaterial(const std::string& name)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (!materialKnownLocked(name)) return false;
+        m_material = name;
+        if (m_tool != Tool::Add && m_sel >= 0 && m_parts[m_sel].material != name)
+            submitLocked("material " + std::to_string(m_sel) + " " + name, Why::Edit);
+        readoutLocked();
+        cellsLocked();
+        return true;
+    }
     // A grid to land on: positions and sizes on multiples of `step` (scene
     // units), turns on multiples of `degrees`. 0 is free.
     void SetSnap(float step, float degrees)
@@ -209,6 +231,20 @@ public:
     }
 
     // The bar's steppers: each press is the next one round.
+    void CycleMaterial()
+    {
+        std::string next;
+        {
+            std::lock_guard<std::mutex> g(m_mu);
+            std::vector<std::string> names{ "-" };
+            names.insert(names.end(), m_materials.begin(), m_materials.end());
+            const std::string& now = (m_tool != Tool::Add && m_sel >= 0) ? m_parts[m_sel].material : m_material;
+            size_t i = 0;
+            while (i < names.size() && names[i] != now) ++i;
+            next = names[(i + 1) % names.size()];
+        }
+        SetMaterial(next);
+    }
     void CycleShape()
     {
         std::string next;
@@ -577,6 +613,7 @@ private:
     {
         bool        used = false;
         std::string shape = "box";
+        std::string material = "-";   // what it is made of (AddMaterial); "-" none
         Fixed       x, y, z;
         Fixed       hx = Fixed::From(0.5), hy = Fixed::From(0.5), hz = Fixed::From(0.5);
         Fixed       col[4] = { Fixed::From(0.8), Fixed::From(0.8), Fixed::From(0.85), Fixed::One() };
@@ -946,7 +983,8 @@ private:
         const std::string line = "add " + std::to_string(id) + " " + m_shape + " "
             + raws({ Fixed::From(at.x), Fixed::From(at.y) + half, Fixed::From(at.z), half, half, half,
                      Fixed::From(c.r), Fixed::From(c.g), Fixed::From(c.b), Fixed::From(c.a),
-                     Fixed::One(), Fixed::Zero(), Fixed::Zero(), Fixed::Zero() });
+                     Fixed::One(), Fixed::Zero(), Fixed::Zero(), Fixed::Zero() })
+            + (m_material == "-" ? std::string() : " " + m_material);
         if (submitLocked(line, Why::Edit)) selectLocked(id);
     }
 
@@ -1022,6 +1060,7 @@ private:
             const std::string& role = m_captions[i].first;
             std::string t;
             if (role == "shape")       t = (m_tool != Tool::Add && m_sel >= 0) ? m_parts[m_sel].shape : m_shape;
+            else if (role == "material") t = (m_tool != Tool::Add && m_sel >= 0) ? m_parts[m_sel].material : m_material;
             else if (role == "axis")   t = m_axis < 0 ? "free" : (m_axis == 0 ? "x" : (m_axis == 1 ? "y" : "z"));
             else if (role == "snap")   t = (m_snap > 0.0f || m_turn_snap > 0.0f) ? "on" : "off";
             else if (role == "export") t = m_format;
@@ -1040,6 +1079,12 @@ private:
         uint32_t n = 0;
         for (const Part& p : m_parts) if (p.used) ++n;
         return n;
+    }
+    bool materialKnownLocked(const std::string& name) const
+    {
+        if (name == "-") return true;
+        for (const std::string& m : m_materials) if (m == name) return true;
+        return false;
     }
     bool shapeKnownLocked(const std::string& name) const
     {
@@ -1082,10 +1127,12 @@ private:
         axesLocked();
         readoutLocked();
     }
+    // An add, and its material after the numbers when it has one.
     static std::string addLine(size_t id, const Part& p)
     {
         return "add " + std::to_string(id) + " " + p.shape + " "
-             + raws({ p.x, p.y, p.z, p.hx, p.hy, p.hz, p.col[0], p.col[1], p.col[2], p.col[3], p.qw, p.qx, p.qy, p.qz });
+             + raws({ p.x, p.y, p.z, p.hx, p.hy, p.hz, p.col[0], p.col[1], p.col[2], p.col[3], p.qw, p.qx, p.qy, p.qz })
+             + (p.material == "-" ? std::string() : " " + p.material);
     }
     std::string linesLocked() const
     {
@@ -1121,8 +1168,11 @@ private:
             std::string shape; Fixed v[14];
             if (p.used || !(in >> shape) || !shapeKnownLocked(shape) || !fixed(v, 14) || !halves(v + 3)) return false;
             if (v[10].IsZero() && v[11].IsZero() && v[12].IsZero() && v[13].IsZero()) return false;
+            std::string made;
+            if (!(in >> made)) made = "-";
+            if (!materialKnownLocked(made)) return false;
             unit(v + 6);
-            p.used = true; p.shape = shape;
+            p.used = true; p.shape = shape; p.material = made;
             p.x = v[0]; p.y = v[1]; p.z = v[2]; p.hx = v[3]; p.hy = v[4]; p.hz = v[5];
             for (int i = 0; i < 4; ++i) p.col[i] = v[6 + i];
             p.qw = v[10]; p.qx = v[11]; p.qy = v[12]; p.qz = v[13];
@@ -1170,6 +1220,13 @@ private:
             if (!(in >> shape) || !shapeKnownLocked(shape)) return false;
             inverse = "shape " + sid + " " + p.shape;
             p.shape = shape;
+        }
+        else if (op == "material")
+        {
+            std::string made;
+            if (!(in >> made) || !materialKnownLocked(made)) return false;
+            inverse = "material " + sid + " " + p.material;
+            p.material = made;
         }
         else return false;
 
@@ -1303,6 +1360,8 @@ private:
     // This runtime's own: the tool, the selection, the eye, a drag in hand.
     Tool        m_tool = Tool::Select;
     std::string m_shape = "box";
+    std::vector<std::string> m_materials;   // AddMaterial: what a part may be made of
+    std::string m_material = "-";            // what add makes a part of
     int         m_axis = -1, m_sel = -1;
     float       m_snap = 0.0f, m_turn_snap = 0.0f;
     float       m_yaw = 0.6f, m_pitch = 0.5f, m_dist = 9.0f;

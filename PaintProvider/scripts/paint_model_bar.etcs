@@ -5,7 +5,7 @@
 #
 #     run paint_model_bar.etcs bar=<Drawable2D> palette=<PaintPalette> model=<PaintModeler> layout=<Layout>
 #
-# The 2D bar's shape (paint_toolbar.etcs) -- seventeen grow cells in a row the
+# The 2D bar's shape (paint_toolbar.etcs) -- grow cells in a row the
 # layout solves, each a compositor with its words as children -- and the same
 # row: the two bars take turns at it, since a hidden box takes no room in the
 # solve (Clayout::hidden). The swatches are the 2D bar's own six, declared to
@@ -220,6 +220,41 @@ m3_arrow_shape.SetOrder(2)
 palette.AddCall(@m3_arrow_shape, @model, PaintModeler.CycleShape)
 palette.StretchArrow(@m3_arrow_shape)
 model.BindCaption(shape, @m3_cap_shape)
+
+# The material add makes a part of, and outside the add tool the chosen
+# part's -- "-" none (PaintModeler::AddMaterial says which there are).
+bar.spawn(RenderProvider::CompositeDrawable2D m3_material)
+m3_material.Create(60, 64)
+m3_material.SetOrder(1)
+m3_material.SetBackground(0.16, 0.16, 0.2, 1.0)
+layout.AddBox(@m3_material, @bar, 1, 0.0, 1, 0.0)
+palette.AddCall(@m3_material, @model, PaintModeler.CycleMaterial)
+m3_material.spawn(RenderProvider::TextLabel m3_word_material)
+m3_word_material.Create()
+m3_word_material.SetPosition(8, 28)
+m3_word_material.SetSize(1)
+m3_word_material.SetColor(0.9, 0.9, 0.88, 1.0)
+m3_word_material.SetText(made)
+m3_word_material.SetOrder(2)
+palette.AddCall(@m3_word_material, @model, PaintModeler.CycleMaterial)
+m3_material.spawn(RenderProvider::TextLabel m3_cap_material)
+m3_cap_material.Create()
+m3_cap_material.SetPosition(8, 46)
+m3_cap_material.SetSize(1)
+m3_cap_material.SetColor(0.79, 0.71, 0.35, 1.0)
+m3_cap_material.SetText(-)
+m3_cap_material.SetOrder(2)
+palette.AddCall(@m3_cap_material, @model, PaintModeler.CycleMaterial)
+m3_material.spawn(RenderProvider::PolygonDrawable2D m3_arrow_material)
+m3_arrow_material.Create()
+m3_arrow_material.AddPoint(30, 0)
+m3_arrow_material.AddPoint(60, 12)
+m3_arrow_material.AddPoint(0, 12)
+m3_arrow_material.SetFill(0.92, 0.92, 0.90, 0.85)
+m3_arrow_material.SetOrder(2)
+palette.AddCall(@m3_arrow_material, @model, PaintModeler.CycleMaterial)
+palette.StretchArrow(@m3_arrow_material)
+model.BindCaption(material, @m3_cap_material)
 
 # The axis a move slides along, a turn turns about and a size stretches: x, y, z, free. Lit while one is set.
 bar.spawn(RenderProvider::CompositeDrawable2D m3_axis)

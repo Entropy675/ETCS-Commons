@@ -147,7 +147,7 @@ ETCS_TAG_BLOCK_BASIC(PaintCanvasMenu,
 // control-thread ends of the window's producers, not one-shot calls.
 ETCS_TAG_BLOCK_HYBRID(PaintRouter,
     (Create, AddPane, RemovePane, SetPassBudget,
-     Pointer, Press, Release, PressButton, ReleaseButton, Key, Type, Editing, Report, Delete),
+     Pointer, Press, Release, PressButton, ReleaseButton, Event, Key, Type, Editing, Report, Delete),
     (ConsumePointer, ConsumeInput))
 
 // PaintShare -- this page's part in a shared session: its role, the roster and
@@ -173,8 +173,8 @@ ETCS_TAG_BLOCK_BASIC(PaintVisitors,
 // (PaintModeler.h). HYBRID for the session's three streams.
 ETCS_TAG_BLOCK_HYBRID(PaintModeler,
     (Create, BindWorld, BindCamera, BindTool, BindSurface, BindReadout, BindLayout, BindShare, BindCell, BindCaption, AddPart, AddShape, BindAxis, AddPane,
-     Open, Close, Toggle, SetTool, SetAxis, SetShape, SetSnap, SetOrbit, LookAt,
-     CycleShape, CycleAxis, ToggleSnap, CycleFormat, ExportHere,
+     Open, Close, Toggle, SetTool, SetAxis, SetShape, AddMaterial, SetMaterial, SetSnap, SetOrbit, LookAt,
+     CycleShape, CycleMaterial, CycleAxis, ToggleSnap, CycleFormat, ExportHere,
      Press, Drag, Release, Wheel, Do, Undo, Redo, Save, Load, Export, Hash, Status, Report,
      Host, Join, Leave, Delete),
     (Emit, Absorb, Judge))

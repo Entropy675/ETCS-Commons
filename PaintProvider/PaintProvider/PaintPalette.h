@@ -1032,7 +1032,9 @@ private:
     void call_entry(ETCS::RID node, const Entry& e)
     {
         const std::string tag = e.action.substr(0, e.action.find('.'));
+        // This module's own by its tag; another module's (a game's) wherever it lives.
         ETCS::Entity* t = paint_resolve_tag(tag.c_str(), e.target);
+        if (!t) t = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), e.target);
         if (!t)
         {
             ETCS_LOG("PaintPalette", "RID:" << node << " calls " << e.action << " on RID:"

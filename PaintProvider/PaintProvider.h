@@ -2177,6 +2177,14 @@ DEFINE_WORK_FUNC_TYPED(PaintRouter, ReleaseButton, (uint32_t, button))
     self.ScriptReleaseButton(static_cast<uint16_t>(button));
 }
 
+// Event <action> <key> <buttons> <x> <y> -- an InputEvent's fields
+// (ontology/InputSource.h), for a type that has the window's edge itself.
+DEFINE_WORK_FUNC_TYPED(PaintRouter, Event, (uint32_t, action), (uint32_t, key), (uint32_t, buttons), (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.ScriptEvent(static_cast<uint8_t>(action), static_cast<uint16_t>(key), static_cast<uint8_t>(buttons), x, y);
+}
+
 DEFINE_WORK_FUNC(PaintRouter, Report)
 {
     (void)ctx; (void)data;
@@ -2923,6 +2931,7 @@ DEFINE_WORK_FUNC_TYPED(PaintModeler, BindShare,   (ETCS::RID, share))   { (void)
 DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCell,    (std::string, role), (ETCS::RID, node))  { (void)ctx; self.BindCell(role, node); }
 DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCaption, (std::string, role), (ETCS::RID, label)) { (void)ctx; self.BindCaption(role, label); }
 DEFINE_WORK_FUNC(PaintModeler, CycleShape)  { (void)ctx; (void)data; self.CycleShape(); }
+DEFINE_WORK_FUNC(PaintModeler, CycleMaterial) { (void)ctx; (void)data; self.CycleMaterial(); }
 DEFINE_WORK_FUNC(PaintModeler, CycleAxis)   { (void)ctx; (void)data; self.CycleAxis(); }
 DEFINE_WORK_FUNC(PaintModeler, ToggleSnap)  { (void)ctx; (void)data; self.ToggleSnap(); }
 DEFINE_WORK_FUNC(PaintModeler, CycleFormat) { (void)ctx; (void)data; self.CycleFormat(); }
@@ -2951,6 +2960,9 @@ DEFINE_WORK_FUNC_TYPED(PaintModeler, SetTool,  (std::string, name)) { (void)ctx;
 // SetAxis <x|y|z|none> -- the same one again lets go of it.
 DEFINE_WORK_FUNC_TYPED(PaintModeler, SetAxis,  (std::string, name)) { (void)ctx; self.SetAxis(name); }
 DEFINE_WORK_FUNC_TYPED(PaintModeler, SetShape, (std::string, name)) { (void)ctx; self.SetShape(name); }
+// AddMaterial <name> -- a material a part may be made of; SetMaterial <name|-> -- add's, and the chosen part's.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, AddMaterial, (std::string, name)) { (void)ctx; self.AddMaterial(name); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, SetMaterial, (std::string, name)) { (void)ctx; self.SetMaterial(name); }
 // SetSnap <units> <degrees> -- the grid moves, sizes and turns land on; 0 is free.
 DEFINE_WORK_FUNC_TYPED(PaintModeler, SetSnap, (float, step), (float, degrees)) { (void)ctx; self.SetSnap(step, degrees); }
 // SetOrbit <distance> <yaw> <pitch> -- the eye about what it looks at, degrees.
