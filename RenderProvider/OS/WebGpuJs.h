@@ -19,7 +19,24 @@
  * captured, since a growing shared memory replaces them.
  *
  *   open(stateAddr)  start the adapter/device request; the int32 at stateAddr
- *                    becomes 1 ready, -1 failed or lost. 0 while pending.
+ *                    becomes 1 ready, -1 failed, 0 while pending (and while
+ *                    a lost device is asked for again).
+ *   why()            where the pictures are drawn and why: the last thing
+ *                    said (note, below).
+ *
+ * WHY IT IS ON THE CPU IS SAID, once each time it changes, because from the
+ * outside a page drawing on its host raster looks like a slow page: no
+ * WebGPU in this browser, none for this GPU (no adapter: unsupported, or
+ * blocklisted), the device request refused, the device lost, a frame that
+ * threw. Said to the page's own hook (window.etcsGpuNote, the status line
+ * and terminal), else the terminal, and the console either way.
+ *
+ * A LOST DEVICE IS ASKED FOR AGAIN -- a GPU process restart or a driver
+ * reset is not the end of the page -- a second later, then two, four, up
+ * to kRetries times. Every surface's objects were the old device's, so they
+ * all go (drop); while it is pending the state is 0, the surfaces draw on
+ * the host, and the frame the new one is ready they come back to it
+ * (HostSurface chooses its sink every frame).
  *   close(stateAddr) forget that address (its instance is going).
  *   present(hdr)     draw one frame for one surface; 1 drawn (or nothing to
  *                    draw into), 0 finished -- no device, lost, or it threw.
@@ -39,36 +56,71 @@
  * listens to. Leaving the device removes it and the floor shows again.
  */
 static const char* const RP_WEBGPU_JS = R"JS(
-var G = { device: null, format: null, state: 0, pending: null, flags: [], P: {}, pipes: null };
+var G = { device: null, format: null, state: 0, pending: null, flags: [], P: {}, pipes: null,
+          why: '', tries: 0, retrying: false };
+var kRetries = 5;
 function heap32() { return Module.etcsHeap32(); }
 function setFlags(v) {
   var h = heap32();
   for (var i = 0; i < G.flags.length; i++) Atomics.store(h, G.flags[i] >> 2, v);
 }
-function open(addr) {
-  if (!navigator.gpu) return 0;
-  if (G.flags.indexOf(addr) < 0) G.flags.push(addr);
-  if (G.state !== 0) { Atomics.store(heap32(), addr >> 2, G.state); return G.state > 0 ? 1 : 0; }
-  if (!G.pending) {
-    G.pending = navigator.gpu.requestAdapter().then(function (a) {
-      if (!a) throw new Error('no WebGPU adapter');
-      return a.requestDevice();
-    }).then(function (d) {
-      G.device = d;
-      G.format = navigator.gpu.getPreferredCanvasFormat();
-      G.state = 1;
-      d.lost.then(function (info) {
-        console.warn('[etcs] WebGPU device lost: ' + (info && info.message));
-        G.device = null; G.state = -1; setFlags(-1);
-      });
-      setFlags(1);
-    }).catch(function (e) {
-      console.warn('[etcs] WebGPU unavailable: ' + e);
-      G.state = -1; setFlags(-1);
-    });
+function note(text, onGpu) {
+  if (text === G.why) return;
+  G.why = text;
+  var line = '[etcs] ' + text;
+  if (onGpu) console.info(line); else console.warn(line);
+  try {
+    if (typeof window.etcsGpuNote === 'function') window.etcsGpuNote(text, onGpu);
+    else if (typeof window.etcsTermWrite === 'function') window.etcsTermWrite(line + '\n');
+  } catch (e) {}
+}
+function acquire() {
+  G.retrying = false;
+  G.pending = navigator.gpu.requestAdapter().then(function (a) {
+    if (!a) throw new Error('the browser offers no WebGPU adapter for this GPU (unsupported, or blocklisted: see chrome://gpu)');
+    var info = a.info || {};
+    G.adapterSays = [info.vendor, info.architecture, info.description].filter(function (x) { return x; }).join(' ') || 'an adapter';
+    G.software = !!(a.isFallbackAdapter || info.isFallbackAdapter || /swiftshader|llvmpipe|lavapipe|software/i.test(G.adapterSays));
+    return a.requestDevice();
+  }).then(function (d) {
+    G.device = d;
+    G.format = navigator.gpu.getPreferredCanvasFormat();
+    G.state = 1; G.pending = null;
+    d.lost.then(function (info) { lost(d, info); });
+    setFlags(1);
+    note('drawing on the GPU: WebGPU on ' + G.adapterSays + (G.software ? ' -- a SOFTWARE adapter, so on the CPU after all' : ''), !G.software);
+  }).catch(function (e) {
+    G.state = -1; G.pending = null; setFlags(-1);
+    note('drawing on the CPU: ' + (String(e).indexOf('adapter') >= 0 ? String(e).replace(/^Error: /, '') : 'WebGPU would not give this page a device (' + e + ')'), false);
+  });
+}
+function lost(d, info) {
+  if (G.device !== d) return;
+  var msg = (info && info.message) || 'no reason given';
+  G.device = null; G.pipes = null;
+  for (var id in G.P) drop(id);
+  if (G.tries >= kRetries) {
+    G.state = -1; setFlags(-1);
+    note('drawing on the CPU: the WebGPU device was lost ' + (kRetries + 1) + ' times (last: ' + msg + '); not asking again', false);
+    return;
   }
+  var wait = 1000 << G.tries;
+  G.tries++;
+  G.state = 0; G.retrying = true; setFlags(0);
+  note('drawing on the CPU for now: the WebGPU device was lost (' + msg + '); asking for another in ' + (wait / 1000) + ' s', false);
+  setTimeout(acquire, wait);
+}
+function open(addr) {
+  if (!navigator.gpu) {
+    note('drawing on the CPU: this browser has no WebGPU (navigator.gpu) -- or not on this page: it needs https or localhost', false);
+    return 0;
+  }
+  if (G.flags.indexOf(addr) < 0) G.flags.push(addr);
+  if (G.state !== 0 || G.pending || G.retrying) { Atomics.store(heap32(), addr >> 2, G.state); return G.state >= 0 ? 1 : 0; }
+  acquire();
   return 1;
 }
+function why() { return G.why; }
 function close(addr) {
   var i = G.flags.indexOf(addr);
   if (i >= 0) G.flags.splice(i, 1);
@@ -375,12 +427,12 @@ function present(hdr) {
     d.queue.submit([ enc.finish() ]);
     return 1;
   } catch (err) {
-    console.warn('[etcs] WebGPU present failed: ' + err);
+    note('drawing on the CPU: a WebGPU frame failed (' + err + ')', false);
     drop(id);
     return 0;
   }
 }
-return { open: open, close: close, present: present, drop: drop, evict: evict };
+return { open: open, close: close, present: present, drop: drop, evict: evict, why: why };
 )JS";
 
 // Once per page, on the main thread. Every entry point below calls it first,

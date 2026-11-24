@@ -54,6 +54,9 @@ window.EtcsSessionPage = function (cfg) {
     toShell({ etcs: 'out', text: text });
   }
   window.etcsTermWrite = function (t) { if (t != null) termWrite(String(t)); };
+  // Where the pictures are drawn, and why when it is the CPU (RenderProvider's
+  // WebGpuJs.h says, once each time it changes): the status line and the terminal.
+  window.etcsGpuNote = function (text, onGpu) { log('[etcs] ' + text + '\n', onGpu ? 'ok' : 'err'); };
   const SHELL_DRAIN_MS = 250;
   let shellDrainTimer = 0, lastMenuJson = '';
   function drainShellOutput() {
