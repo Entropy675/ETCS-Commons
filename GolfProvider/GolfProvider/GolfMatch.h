@@ -278,6 +278,7 @@ public:
         m_ready = true;
         courseLocked(0, firstLayout(0));
         holeLocked(0);
+        readyLocked();   // a guest's lines that came before the courses were made (Trace)
     }
 
     // ── sessions (the families'); a match adds its hall line and its note ──
@@ -351,8 +352,14 @@ public:
     // ── what the families ask of a match ──────────────────────────────────
 
     bool ApplyConcrete(const std::string& author, const std::string& line) override { return applyLocked(author, line); }
-    void RestartConcrete() override { resetLocked(); }
+    void RestartConcrete() override { resetLocked(replayingLocked()); }
     std::string HashConcrete() override { return hashLocked(); }
+    bool ReadyConcrete() override { return m_ready; }   // no line before the courses are made (KartBattle's reason)
+    void ResyncedConcrete(uint64_t at) override
+    {
+        ETCS_LOG("GolfMatch", "this match differed from the host's at tick " << at << " -- replayed, and the same again");
+        noteLocked("the match differed from the host's -- put right");
+    }
     void EndedConcrete() override { noteLocked("the match is over -- " + m_owner + " closed it"); }
     std::string OpeningConcrete() override { return "join"; }
     std::string LeavingConcrete() override { return "leave"; }
@@ -886,7 +893,8 @@ private:
 
     // Back to the start: every ball off the course, the lobby on the first
     // course's first hole, the dice as made -- what every session begins from.
-    void resetLocked()
+    // `replay`: the trace is replayed next (Trace): this runtime's aim and menu are kept.
+    void resetLocked(bool replay = false)
     {
         for (size_t i = 0; i < m_slots.size(); ++i)
         {
@@ -898,9 +906,12 @@ private:
         }
         m_phase = Lobby; m_end = 0; m_hole_secs = 120;
         m_rng = 0x9E3779B97F4A7C15ull;
-        m_armed = false; m_mode = Idle; m_right = false;
-        m_menu = 0; m_editing = false; m_menu_open = true;
-        hideArrowLocked(); hideGhostLocked();
+        if (!replay)
+        {
+            m_armed = false; m_mode = Idle; m_right = false;
+            m_menu = 0; m_editing = false; m_menu_open = true;
+            hideArrowLocked(); hideGhostLocked();
+        }
         if (!m_defs.empty() && m_ready) { courseLocked(0, firstLayout(0)); holeLocked(0); }
     }
     uint64_t firstLayout(int c) const { return c < static_cast<int>(m_defs.size()) && m_defs[c].generated ? 0x5EEDull + static_cast<uint64_t>(c) : 0; }

@@ -81,9 +81,11 @@
  * late. Alone (Practice) the battle is the authority of a trace nobody
  * follows.
  *
- * A BATTLE THAT DIFFERS is reported, not repaired (ChessShare's rule): every
- * kSnapEvery ticks the host keeps its hash as a line, and a guest reaching
- * that line whose own hash is not the host's says so.
+ * A BATTLE THAT DIFFERS PUTS ITSELF RIGHT (Trace): every kSnapEvery ticks
+ * the host keeps its hash as a line, and a guest reaching that line whose
+ * own hash is not the host's replays its trace from the first line; only
+ * one that still differs says so. A guest takes no line until its arena
+ * is made (Ready): its lines wait.
  *
  * THE SESSION IS THE FAMILIES': the trace and its mirrors (Trace), time as
  * `tick` lines (Lockstep), and the streams' edges and the hall (Present) --
@@ -658,6 +660,7 @@ public:
         m_ready = true;
         mapLocked(0, firstLayout(0));
         respawnAllLocked();
+        readyLocked();   // a guest's lines that came before the arena was made (Trace)
     }
 
     // ── sessions ──────────────────────────────────────────────────────────
@@ -708,8 +711,17 @@ public:
     // Trace: a line, as its author (applyLocked), what "as made" is, the hash;
     // a seat opens with `join` and its stream's end is its `leave`.
     bool ApplyConcrete(const std::string& author, const std::string& line) override { return applyLocked(author, line); }
-    void RestartConcrete() override { resetLocked(); }
+    void RestartConcrete() override { resetLocked(replayingLocked()); }
     std::string HashConcrete() override { return hashLocked(); }
+    // No line before the arena is made: a guest's would be read against no
+    // maps and no vehicles (every ride refused, every kart the kart) and
+    // then Ready would put the first map and its spawns back under them.
+    bool ReadyConcrete() override { return m_ready; }
+    void ResyncedConcrete(uint64_t at) override
+    {
+        ETCS_LOG("KartBattle", "this battle differed from the host's at tick " << at << " -- replayed, and the same again");
+        noteLocked("the battle differed from the host's -- put right");
+    }
     void EndedConcrete() override { noteLocked("the battle is over -- " + m_owner + " closed it"); }
     std::string OpeningConcrete() override { return "join"; }
     std::string LeavingConcrete() override { return "leave"; }
@@ -1775,18 +1787,24 @@ private:
     // Back to the start: every kart in the pit as made, the shots gone, the
     // lobby on the first map, the dice as made. What a session begins from on
     // every runtime, so two of them start the same.
-    void resetLocked()
+    // `replay`: the trace is about to be replayed (TraceBase::checkLocked),
+    // so what is this runtime's alone -- its keys and what it last sent, its
+    // eye, its menu and garage -- is kept; the lines put the rest back.
+    void resetLocked(bool replay = false)
     {
         for (size_t i = 0; i < m_slots.size(); ++i) pitLocked(i);   // the seats' builds and locks with them
         for (Shot& s : m_shots) dropShotLocked(s);
         m_shots.clear();
         clearWispsLocked();
         for (Burst& b : m_bursts) endBurstLocked(b);
-        m_keys = 0; m_pedal = m_wheel = 0; m_sent_t = m_sent_s = m_sent_f = 0;
-        m_eye_set = false; m_menu = 0; m_editing = false;
-        // The garage begins again too, and asks again for what the store kept.
-        if (m_shaping) { m_shaping = false; closeGarageLocked(); }
-        m_in_garage = false; m_in_drivers = false; m_rejected = false;
+        if (!replay)
+        {
+            m_keys = 0; m_pedal = m_wheel = 0; m_sent_t = m_sent_s = m_sent_f = 0;
+            m_eye_set = false; m_menu = 0; m_editing = false;
+            // The garage begins again too, and asks again for what the store kept.
+            if (m_shaping) { m_shaping = false; closeGarageLocked(); }
+            m_in_garage = false; m_in_drivers = false; m_rejected = false;
+        }
         m_phase = Lobby; m_end = 0; m_round_secs = 180;
         m_rng = 0x9E3779B97F4A7C15ull;
         bakeFiresLocked(ETCS::EpochSeed() ^ 0xF17E5EEDull);   // the lobby's: the epoch's own
