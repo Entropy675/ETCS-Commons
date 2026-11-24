@@ -192,6 +192,8 @@ public:
     }
     // A wall of the arena: solid on every map, met by shots as by karts.
     void AddWall(ETCS::RID part) { std::lock_guard<std::mutex> g(m_mu); if (part) m_walls.push_back(part); }
+    // A crag of the rim (kart_rim.etcs): drawn only, but the eye keeps out of it.
+    void AddRim(ETCS::RID part) { std::lock_guard<std::mutex> g(m_mu); if (part) m_rim.push_back(part); }
 
     // A map by name, then what is on it (KartArena.h), each of the latest
     // map: blocks, ramps, hills, spawns and power-up spots.
@@ -1217,7 +1219,9 @@ private:
     // A kart's pose as one tick left it -- the body's (x y z, qw qx qy qz),
     // each wheel's (in the body's frame), the heading -- for drawing between
     // ticks (showLocked). Floats: a picture's numbers.
-    static constexpr int kSeen = 6;
+    static constexpr int kSeen = 32;   // a guest may draw this far behind (half a second): ticks come as the wire brings them
+    static constexpr double kSlackWant = 1.25;     // ...the least lead it keeps on the newest tick
+    static constexpr double kSlackRise = 0.0005;   // ...and how fast that lead creeps back up, ticks a millisecond
     struct Seen { uint64_t tick = 0; float body[7] = {}, wheel[4][7] = {}; float hx = 0.0f, hz = 1.0f; };
     struct Slot
     {
@@ -1311,9 +1315,15 @@ private:
     static constexpr float    kBoom       = 8.32f;     // its length: 7.5 behind and 3.6 over
     static constexpr float    kBoomRise   = 0.4475f;   // and that angle over the ground
     static constexpr int      kBoomSteps  = 32;        // the points along it tried against the ground: a quarter unit apart
-    static constexpr double   kEyeInMs = 30.0, kEyeOutMs = 120.0;   // the eye eased in to a shorter boom, and back out
+    static constexpr double   kEyeInMs = 60.0, kEyeOutMs = 250.0;   // the boom's clear share eased in, and back out
     static constexpr float    kBoomGap    = 0.25f;     // the least it keeps over the ground, or off a deck
-    static constexpr float    kBoomLeast  = 0.2f;      // of its length, however little is clear
+    static constexpr float    kBoomLeast  = 0.05f;     // of its length, however little is clear (its foot is over the kart)
+    static constexpr float    kBoomFoot   = 0.9f;      // where it starts over the kart's middle: its top
+    static constexpr float    kClearInPerMs = 1.0f / 200.0f;   // the most of it the eye comes in a millisecond: never a jolt
+    static constexpr float    kBoomFew    = 0.4f;      // less clear than this, and the boom lifts instead...
+    static constexpr float    kLiftMost   = 1.1f;      // ...by up to this (radians: from straight over the kart)
+    static constexpr double   kLiftUpMs = 90.0, kLiftDownMs = 500.0;
+    static constexpr float    kLiftSpare  = 0.03f;     // ...and a little more than it needs, not grazing what it clears   // ...eased up quickly, and back down slowly
     static constexpr uint16_t kLookButton = 1;         // the right button
     static constexpr uint16_t kDragButton = 0;         // the left, and a finger on a touch screen
     static constexpr float    kLookTurn   = 0.006f;    // radians a pixel dragged (golf's orbit)
@@ -4414,18 +4424,16 @@ private:
      * past the kart the way the boom points. The boom is shortened to what
      * it can see along: where the ground comes up through it (a pit's wall,
      * a ramp, a hill), a block stands in it (any block, a map's walls among
-     * them, turned or not), a deck lies between the kart and the eye, or it
-     * would pass out through the arena's wall below the wall's top or into
-     * the rim's slope past it, the eye comes in to this side of it -- into
-     * the pit with the kart, under the deck with it, in front of the block,
-     * inside the wall with it -- instead of looking at the kart through the
-     * ground, a block, or the back of a wall. Coming in is quick (the frame
-     * edge eases it in over kEyeInMs, out over kEyeOutMs), so the eye is not
-     * seen inside what it came in from.
+     * them, turned or not), a deck lies between the kart and the eye, it
+     * would pass out through the arena's wall below the wall's top, or into
+     * a crag of the rim (AddRim) -- the eye comes in to this side of it.
+     * Where that leaves too little (kBoomFew: backed to a wall, a kerb
+     * beside the kart) the boom swings up over the kart instead (liftLocked)
+     * and looks down nearer it. The frame edge eases all of it (cameraLocked).
      */
-    // The top of the highest block standing at (x, z), kBoomGap round it
-    // (the eye's own room), or far below the ground where there is none.
-    float blockOverLocked(float x, float z) const
+    // The top of the highest block standing at (x, z), `gap` round it (the
+    // eye's own room), or far below the ground where there is none.
+    float blockOverLocked(float x, float z, float gap) const
     {
         float top = -1000.0f;
         for (const KartArena::Block& b : m_live.blocks)
@@ -4435,21 +4443,25 @@ private:
             if (b.yaw % 360 != 0) { const float a = static_cast<float>(b.yaw) * kPi / 180.0f; sn = std::sin(a); cs = std::cos(a); }
             // Into the block's own frame (Faults turns the same way).
             const float u = dx * cs - dz * sn, v = dx * sn + dz * cs;
-            if (std::fabs(u) < b.w.ToFloat() * 0.5f + kBoomGap && std::fabs(v) < b.d.ToFloat() * 0.5f + kBoomGap)
+            if (std::fabs(u) < b.w.ToFloat() * 0.5f + gap && std::fabs(v) < b.d.ToFloat() * 0.5f + gap)
                 top = std::max(top, b.base.ToFloat() + b.h.ToFloat());
         }
         return top;
     }
-    void viewLocked(float eye[3], float at[3])
+    // The boom's aim: where it starts (over the kart), its free end before
+    // any lift, and what the eye looks at (nearer the kart, `lift` lifted);
+    // false in the lobby, where the eye is `end`, fixed.
+    bool aimLocked(float top[3], float end[3], float at[3], float lift = 0.0f)
     {
         // The lobby's: over the whole arena, from the south.
         const float half = KartArena::Half().ToFloat();
-        eye[0] = 0.0f; eye[1] = half * 1.94f; eye[2] = -half * 1.44f;
+        end[0] = 0.0f; end[1] = half * 1.94f; end[2] = -half * 1.44f;
         at[0] = at[1] = at[2] = 0.0f;
+        top[0] = end[0]; top[1] = end[1]; top[2] = end[2];
         const int i = slotOf(m_me);
-        if (m_phase == Lobby || i < 0 || !alive(m_slots[i])) return;
+        if (m_phase == Lobby || i < 0 || !alive(m_slots[i])) return false;
         Causal_* k = causal(m_slots[i].body);
-        if (!k) return;
+        if (!k) return false;
         float px, py, pz, fx, fz;
         if (drawnFresh(m_slots[i]))   // where it is drawn (showLocked), so the eye does not judder against it
         {
@@ -4467,7 +4479,20 @@ private:
         const float dx = fx * cy + fz * sy, dz = fz * cy - fx * sy;   // the heading, turned to the picture's right
         const float rise = kBoomRise + m_look_pitch;
         const float back = kBoom * std::cos(rise), up = kBoom * std::sin(rise);
-        at[0] = px + dx * 4.0f; at[1] = py + 0.6f; at[2] = pz + dz * 4.0f;
+        const float ahead = 4.0f * std::max(0.25f, 1.0f - lift / kLiftMost);   // lifted, it looks down nearer the kart
+        at[0] = px + dx * ahead; at[1] = py + 0.6f; at[2] = pz + dz * ahead;
+        top[0] = px; top[1] = py + kBoomFoot; top[2] = pz;
+        end[0] = px - dx * back; end[1] = py + up; end[2] = pz - dz * back;
+        return true;
+    }
+    /*
+     * How much of the boom from `top` to `end` is clear, kBoomLeast..1: tried
+     * at kBoomSteps points out from the kart, and where the first is blocked,
+     * narrowed between it and the last clear one -- so as the boom swings
+     * past an edge the share moves smoothly rather than a step at a time.
+     */
+    float clearLocked(const float top[3], const float end[3]) const
+    {
         // The arena's wall: how far out its inside is, and its top.
         const float inside = bound().ToFloat() + 1.0f;
         float wall_top = 0.0f;
@@ -4478,29 +4503,111 @@ private:
                 wall_top = std::max(wall_top, c->Order4().y.ToFloat() + c->Solid().hy.ToFloat());
             }
         const float rim_slope = (rimRise() / rimDeep()).ToFloat();   // the rim's rise a unit out
-        // From the kart's top out along the boom, as far as it is clear.
-        const float top = py + 0.9f;
-        const float ex = px - dx * back, ey = py + up, ez = pz - dz * back;
-        float clear = 1.0f;
-        for (int n = 1; n <= kBoomSteps; ++n)
-        {
-            const float t = static_cast<float>(n) / kBoomSteps;
-            const float qx = px + (ex - px) * t, qy = top + (ey - top) * t, qz = pz + (ez - pz) * t;
+        auto blocked = [&](float t) {
+            const float qx = top[0] + (end[0] - top[0]) * t, qy = top[1] + (end[1] - top[1]) * t, qz = top[2] + (end[2] - top[2]) * t;
             const Fixed x = Fixed::From(qx), z = Fixed::From(qz);
+            // The eye's room, none at the foot to its whole a unit out: a kart
+            // beside a kerb is not inside it, and nor is the boom's foot.
+            const float gap = kBoomGap * std::min(1.0f, std::hypot(qx - top[0], qz - top[2]));
             // Past the wall's inside: the wall to its top, then the rim's slope.
             const float out = std::max(std::fabs(qx), std::fabs(qz)) - inside;
-            bool blocked = KartArena::Solid(m_live, x, z).ToFloat() > qy - kBoomGap
-                        || (out > 0.0f && qy < wall_top + rim_slope * out + kBoomGap)
-                        || blockOverLocked(qx, qz) > qy - kBoomGap;
+            bool b = KartArena::Solid(m_live, x, z).ToFloat() > qy - gap
+                  || (out > 0.0f && qy < wall_top + rim_slope * out + gap)
+                  || blockOverLocked(qx, qz, gap) > qy - gap;
+            for (size_t c = 0; !b && c < m_crags.size(); ++c)   // inside a crag's ball, a gap round it
+            {
+                const Crag& k = m_crags[c];
+                const float ux = (qx - k.x) / (k.ax + gap), uy = (qy - k.y) / (k.ay + gap),
+                            uz = (qz - k.z) / (k.az + gap);
+                b = ux * ux + uy * uy + uz * uz < 1.0f;
+            }
             for (const KartArena::Deck& d : m_live.decks)
             {
-                if (blocked || !KartArena::DeckOver(d, x, z)) continue;
+                if (b || !KartArena::DeckOver(d, x, z)) continue;
                 const float plate = d.h.ToFloat(), under = plate - KartArena::DeckThick().ToFloat();
-                blocked = top < under ? qy > under - kBoomGap : (top > plate && qy < plate + kBoomGap);
+                b = top[1] < under ? qy > under - gap : (top[1] > plate && qy < plate + gap);
             }
-            if (blocked) { clear = std::max(kBoomLeast, static_cast<float>(n - 1) / kBoomSteps); break; }
+            return b;
+        };
+        for (int n = 1; n <= kBoomSteps; ++n)
+        {
+            float hi = static_cast<float>(n) / kBoomSteps;
+            if (!blocked(hi)) continue;
+            float lo = static_cast<float>(n - 1) / kBoomSteps;
+            for (int k = 0; k < 6; ++k) { const float mid = (lo + hi) * 0.5f; (blocked(mid) ? hi : lo) = mid; }
+            return std::max(kBoomLeast, lo);
         }
-        eye[0] = px + (ex - px) * clear; eye[1] = top + (ey - top) * clear; eye[2] = pz + (ez - pz) * clear;
+        return 1.0f;
+    }
+    // The boom from `top` to `end` swung up about its foot by `lift`, never past straight up.
+    static void liftedEnd(const float top[3], const float end[3], float lift, float out[3])
+    {
+        const float vx = end[0] - top[0], vy = end[1] - top[1], vz = end[2] - top[2];
+        const float h = std::hypot(vx, vz), l = std::hypot(h, vy);
+        if (lift <= 0.0f || h < 1e-4f) { for (int n = 0; n < 3; ++n) out[n] = end[n]; return; }
+        const float a = std::min(std::atan2(vy, h) + lift, 1.55f), across = l * std::cos(a) / h;
+        out[0] = top[0] + vx * across; out[1] = top[1] + l * std::sin(a); out[2] = top[2] + vz * across;
+    }
+    // Where the eye should be now (the Eye verb's answer): the boom, lifted as it needs, as far as it is clear.
+    void viewLocked(float eye[3], float at[3])
+    {
+        float top[3], end[3];
+        if (!aimLocked(top, end, at)) { for (int n = 0; n < 3; ++n) eye[n] = end[n]; return; }
+        const float lift = liftLocked(top, end);
+        aimLocked(top, end, at, lift);
+        float up[3];
+        liftedEnd(top, end, lift, up);
+        const float c = clearLocked(top, up);
+        for (int n = 0; n < 3; ++n) eye[n] = top[n] + (up[n] - top[n]) * c;
+    }
+    /*
+     * HOW MUCH THE BOOM LIFTS. Backed up to the wall, or to a block, the boom
+     * is clear for less than a kart's length: shortened that far, the eye
+     * would be in the kart, or held at kBoomLeast inside the wall. So where
+     * less than kBoomFew of it is clear, it swings up over the kart instead,
+     * by the least that makes kBoomFew clear (tried a tenth of a radian at a
+     * time, then narrowed), or failing that by what leaves the most clear.
+     */
+    float liftLocked(const float top[3], const float end[3])
+    {
+        cragsLocked();
+        auto clear = [&](float lift) { float up[3]; liftedEnd(top, end, lift, up); return clearLocked(top, up); };
+        if (clear(0.0f) >= kBoomFew) return 0.0f;
+        float best = 0.0f, most = clear(0.0f), lo = 0.0f;
+        for (int n = 1; n <= 10; ++n)
+        {
+            float hi = kLiftMost * n / 10.0f;
+            const float c = clear(hi);
+            if (c >= kBoomFew)
+            {
+                for (int k = 0; k < 5; ++k) { const float mid = (lo + hi) * 0.5f; (clear(mid) >= kBoomFew ? hi : lo) = mid; }
+                return std::min(hi + kLiftSpare, kLiftMost);
+            }
+            if (c > most + 0.01f) { most = c; best = hi; }
+            lo = hi;
+        }
+        return best;
+    }
+    // The crags' balls, read off their extents the first time the eye asks
+    // after one is added: a centre and three half extents each.
+    void cragsLocked()
+    {
+        while (m_crags.size() < m_rim.size())
+        {
+            Crag k{ 0, 0, 0, 0, 0, 0 };
+            ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), m_rim[m_crags.size()]);
+            std::string v;
+            if (Causal_* c = causal(m_rim[m_crags.size()]); c && e && e->valueOf(ETCS::Buffer("extent"), v) && v.size() == 24)
+            {
+                size_t at = 0;
+                int64_t w[3];
+                for (int64_t& x : w) ETCS::Entity::getWord(v, at, x);
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                const OrderVector& r = c->Order4();
+                k = Crag{ r.x.ToFloat(), r.y.ToFloat(), r.z.ToFloat(), Fixed::FromRaw(w[0]).ToFloat(), Fixed::FromRaw(w[1]).ToFloat(), Fixed::FromRaw(w[2]).ToFloat() };
+            }
+            m_crags.push_back(k);   // one that could not be read is a ball of nothing: never in the way
+        }
     }
     /*
      * DRAWN BETWEEN TICKS. The battle steps at kHz and the picture is made
@@ -4516,16 +4623,23 @@ private:
      *              last, plus the share of the next tick already owed (the
      *              wall time not yet a tick), so it moves at the clock's rate
      *              exactly, one tick behind
-     *   a guest    has no clock of its own: its drawn tick runs at kHz on the
-     *              frame edge, eased toward kBatch behind the last tick that
-     *              came in, never past it
+     *   a guest    has no clock of its own, and its ticks come as the wire
+     *              brings them: kBatch at a time, or a dozen after a stall.
+     *              Its drawn tick runs at kHz on the frame edge, a little
+     *              faster or slower (at most a tenth) so that the LEAST lead
+     *              the newest tick has had on it lately is kSlackWant -- not
+     *              the mean: aimed at the mean, every late batch found the
+     *              drawn tick at the newest and held it there, then let it
+     *              go, and a guest juddered worse than with no blend at all.
+     *              Never past the newest; kSeen behind, it starts again
      *
      * A blend over a jump (a respawn, the pit) is no motion: the newer pose
      * is drawn. The eye and the HP bars follow the drawn kart.
      */
     // Is the drawn pose this frame's? Frames stopped (a script stepping by
     // ticks, Run) leave it behind the rows; then the rows are followed.
-    bool drawnFresh(const Slot& s) const { return s.shown && m_tick <= s.drawn_at + 2 * kBatch + 1; }
+    // A guest's ticks can come a dozen at once between two frames: kSeen.
+    bool drawnFresh(const Slot& s) const { return s.shown && m_tick <= s.drawn_at + (m_authority ? 2 * kBatch + 1 : kSeen); }
     static void poseOf(const OrderVector& r, float p[7])
     {
         p[0] = r.x.ToFloat(); p[1] = r.y.ToFloat(); p[2] = r.z.ToFloat();
@@ -4580,11 +4694,17 @@ private:
         if (m_authority) at = static_cast<double>(m_tick) - 1.0 + m_wall_ms / tick_ms;
         else
         {
-            const double last = static_cast<double>(m_tick), aim = last - static_cast<double>(kBatch);
-            if (m_show < 0.0) m_show = aim;
-            m_show += dt_ms / tick_ms;
-            m_show += (aim - m_show) * std::min(1.0, dt_ms / 300.0);
-            m_show = std::max(last - 2.0 * kBatch - 1.0, std::min(last, m_show));
+            const double last = static_cast<double>(m_tick);
+            if (m_show < 0.0 || m_show > last + 0.5 || last - m_show > kSeen - 3)   // a start, a restart, a stall
+            {
+                m_show = last - kBatch - 1.0;
+                m_slack = kBatch + 1.0;
+            }
+            // The least lead lately: any lead less is taken at once, and it
+            // creeps back up (kSlackRise) so a calmer wire is drawn nearer.
+            m_slack = std::min(m_slack + dt_ms * kSlackRise, last - m_show);
+            const double rate = 1.0 + std::max(-0.1, std::min(0.1, (m_slack - kSlackWant) * 0.05));
+            m_show = std::min(last, m_show + dt_ms / tick_ms * rate);
             at = m_show;
         }
         if (at < 0.0) at = 0.0;
@@ -4631,21 +4751,43 @@ private:
         if (!m_camera) return;
         ETCS::Held<Camera_> cam = ETCS::resolve_held<Camera_>("Camera", m_camera);
         if (!cam) return;
-        float eye[3], at[3];
-        viewLocked(eye, at);
-        // In to a shorter boom quickly, back out slowly: the eye a step
-        // nearer what it looks at than it was is coming in from a wall.
-        const float want = std::hypot(eye[0] - at[0], eye[1] - at[1], eye[2] - at[2]);
-        const float have = std::hypot(m_eye[0] - at[0], m_eye[1] - at[1], m_eye[2] - at[2]);
-        const double ease = want < have - 0.05f ? kEyeInMs : kEyeOutMs;
+        /*
+         * EASED APART. The boom's swing -- its free end and what the eye
+         * looks at -- follows the kart over 120 ms, as it always has. The
+         * lift and how much of the boom is clear are asked of the boom as
+         * SHOWN (the swung one) and eased each on its own: the clear share
+         * in over kEyeInMs but never faster than kClearInPerMs, back out
+         * over kEyeOutMs; the lift up over kLiftUpMs, down over kLiftDownMs.
+         * Eased as one, as the boom swung past an edge sliding to a stop
+         * the ease flipped between fast and slow, and a kerb beside the kart
+         * snapped the eye in on to it: the eye jerked.
+         */
+        float top[3], end[3], at[3];
+        const bool round = aimLocked(top, end, at, m_lift);
         const float a = m_eye_set ? static_cast<float>(1.0 - std::exp(-dt_ms / 120.0)) : 1.0f;
-        const float ae = m_eye_set ? static_cast<float>(1.0 - std::exp(-dt_ms / ease)) : 1.0f;
+        for (int c = 0; c < 3; ++c) { m_boom[c] += (end[c] - m_boom[c]) * a; m_at_eased[c] += (at[c] - m_at_eased[c]) * a; }
+        // The lift swings the boom as SHOWN, so it takes at once, not after the swing's ease.
+        const float lift = round ? liftLocked(top, m_boom) : 0.0f;
+        m_lift = m_eye_set ? m_lift + (lift - m_lift) * static_cast<float>(1.0 - std::exp(-dt_ms / (lift > m_lift ? kLiftUpMs : kLiftDownMs))) : lift;
+        // How much is clear is asked of the boom as it is going to be: lifting,
+        // the share is not cut short for the few frames the lift takes.
+        float up[3], going[3];
+        liftedEnd(top, m_boom, round ? m_lift : 0.0f, up);
+        liftedEnd(top, m_boom, round ? std::max(lift, m_lift) : 0.0f, going);
+        const float want = round ? clearLocked(top, going) : 1.0f;
+        const double ease = want < m_clear ? kEyeInMs : kEyeOutMs;
+        if (!m_eye_set) m_clear = want;
+        else
+        {
+            const float step = (want - m_clear) * static_cast<float>(1.0 - std::exp(-dt_ms / ease));
+            m_clear += std::max(step, -kClearInPerMs * static_cast<float>(dt_ms));
+        }
         float moved = 0.0f;
         for (int c = 0; c < 3; ++c)
         {
-            const float de = (eye[c] - m_eye[c]) * ae, da = (at[c] - m_at[c]) * a;
-            m_eye[c] += de; m_at[c] += da;
-            moved += std::fabs(de) + std::fabs(da);
+            const float eye = round ? top[c] + (up[c] - top[c]) * m_clear : m_boom[c];
+            moved += std::fabs(eye - m_eye[c]) + std::fabs(m_at_eased[c] - m_at[c]);
+            m_eye[c] = eye; m_at[c] = m_at_eased[c];
         }
         if (m_eye_set && moved < 1e-4f) return;
         m_eye_set = true;
@@ -6120,6 +6262,9 @@ private:
 
     // The arena: its walls, its maps, the map in play, and the pools.
     std::vector<ETCS::RID> m_walls;
+    std::vector<ETCS::RID> m_rim;      // the rim's crags, as added...
+    struct Crag { float x, y, z, ax, ay, az; };
+    std::vector<Crag> m_crags;         // ...and each one's ball, once the eye first asks (they never move)
     std::vector<KartArena::Map> m_defs;
     KartArena::Map m_live;
     std::vector<Vehicle> m_vehicles;   // after the kart: what vehicle scripts added, in their order
@@ -6213,6 +6358,9 @@ private:
     bool     m_board_held = false;
     float    m_eye[3] = { 0.0f, 0.0f, 0.0f }, m_at[3] = { 0.0f, 0.0f, 0.0f };
     bool     m_eye_set = false;
+    float    m_boom[3] = { 0.0f, 0.0f, 0.0f }, m_at_eased[3] = { 0.0f, 0.0f, 0.0f };   // the boom's eased end and aim
+    float    m_clear = 1.0f;                // ...and the eased share of it that is clear
+    float    m_lift = 0.0f;                 // ...and how far it is swung up over the kart (liftLocked)
     bool     m_ready = false;      // the arena is made (Ready): the lobby is open
     // The look round the kart (lookLocked): how far the boom is swung from
     // behind the kart and raised, by what, and how long it has been let alone.
@@ -6221,6 +6369,7 @@ private:
     unsigned m_look_keys = 0;      // Q is bit 0, E bit 1
     bool     m_look_drag = false;
     double   m_show = -1.0;                  // a guest's drawn tick (showLocked); -1 not yet
+    double   m_slack = 0.0;                  // ...and the least lead the newest tick has had on it lately
     uint16_t m_look_button = kLookButton;   // the button the drag is on
     double   m_card_ms = 0.0;
     std::string m_card_text;

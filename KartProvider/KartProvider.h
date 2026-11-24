@@ -32,11 +32,12 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddKart, (ETCS::RID, body), (ETCS::RID, fr), 
     (void)ctx;
     self.AddKart(body, fr, fl, rr, rl, bar_back, bar_fill);
 }
-// The arena: a wall of every map; a map by name (or one made from a seed each
+// The arena: a wall of every map, and a crag of the rim (the eye keeps out of it); a map by name (or one made from a seed each
 // time it is chosen), then what is on it -- blocks, ramps, hills, spawns and
 // power-up spots (KartArena.h); the pools the map in play is drawn with; the
 // rows of the menu and the board.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddWall, (ETCS::RID, part))           { (void)ctx; self.AddWall(part); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddRim, (ETCS::RID, part))            { (void)ctx; self.AddRim(part); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddMap, (std::string, name))          { (void)ctx; self.AddMap(name); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddRandomMap, (std::string, name))    { (void)ctx; self.AddRandomMap(name); }
 // The vehicles a driver picks from in the lobby, after the kart: AddVehicle

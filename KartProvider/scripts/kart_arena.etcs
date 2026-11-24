@@ -62,7 +62,7 @@ run kart_wall.etcs part=wall_n battle=battle
 run kart_wall.etcs part=wall_s battle=battle
 run kart_wall.etcs part=wall_e battle=battle
 run kart_wall.etcs part=wall_w battle=battle
-run kart_rim.etcs anchor=anchor
+run kart_rim.etcs anchor=anchor battle=battle
 
 # ── the maps, in their order: the first is out when a session starts ───────
 run kart_map_bowl.etcs battle=battle

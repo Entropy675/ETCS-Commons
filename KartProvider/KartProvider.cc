@@ -10,7 +10,7 @@ ETCS_MODULE_EXPORT_MAIN(KartProvider, "KartBattle")
 // host's in (Follow), a seat out (Emit) and a guest's in (Take), and the
 // window's keys and pointer (ConsumeKeys, ConsumePointer).
 ETCS_TAG_BLOCK_HYBRID(KartBattle,
-    (Create, BindWorld, BindCamera, BindCard, BindFps, AddKart, AddWall, AddMap, AddRandomMap, AddVehicle, Tune, VehicleLook, Vehicles, Ride, Part, AddPartShape, AddMaterial, LiveryKey, AddLookMesh, AddTrim,
+    (Create, BindWorld, BindCamera, BindCard, BindFps, AddKart, AddWall, AddRim, AddMap, AddRandomMap, AddVehicle, Tune, VehicleLook, Vehicles, Ride, Part, AddPartShape, AddMaterial, LiveryKey, AddLookMesh, AddTrim,
      Build, Accept, Reject, LockDriver, LockIn, Standing, LookOf, BindGarage, GarageRow, GarageDone, BindBuilderStore, Wants, Garage, GaragePress, TuneOf, AddBlock, AddRamp, AddHill,
      AddPad, AddSpring, AddSpringOn, AddDeck, AddDeckAt, AddArc, AddPit, AddLava, AddSpawn, AddPickup, AddPickupUp, AddBlockNode, AddSlabNode, AddWedgeNode,
      AddDomeNode, AddArcNode, AddSlickNode, AddPickupNode, AddShotNode, AddBlastNode, AddSparkNode, AddFireMesh, AddBurstMesh, AddSmokeNode, AddFxNode, AddRingNode, AddBoardRow, AddGroundNode, AddMarkNode, AddPadNode,
