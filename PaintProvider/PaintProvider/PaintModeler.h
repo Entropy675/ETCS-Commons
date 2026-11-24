@@ -133,10 +133,11 @@ public:
         for (auto& s : m_shapes) if (s.first == name) { s.second = mesh; return; }
         m_shapes.emplace_back(name, mesh);
     }
-    // The three arrows drawn on the selected part: 0 x, 1 y, 2 z.
+    // The arrows drawn on the selected part: 0 x, 1 y, 2 z, and 3..5 the
+    // same axes the other way. Each is a handle: a drag on it keeps to its axis.
     void BindAxis(uint32_t axis, ETCS::RID node)
     {
-        if (axis > 2) return;
+        if (axis > 5) return;
         std::lock_guard<std::mutex> g(m_mu);
         m_axis_node[axis] = node;
         verb(node, "SetVisible", "0");
@@ -347,7 +348,7 @@ public:
                 // Let go where nobody told us: a drag ended unseen is put down
                 // where it started, since where it was let go is not known.
                 if (m_drag != Drag_::Idle && input_button_state(ev, m_button) == 0) { cancelDragLocked(); break; }
-                if (m_drag == Drag_::Idle) break;
+                if (m_drag == Drag_::Idle) { hoverArrowLocked(x, y); break; }
                 if (std::fabs(x - m_press_x) + std::fabs(y - m_press_y) > 2.0f) m_dragged = true;
                 dragLocked(x, y);
                 m_last_x = x; m_last_y = y;
@@ -490,6 +491,12 @@ public:
           << (m_axis < 0 ? "none" : (m_axis == 0 ? "x" : (m_axis == 1 ? "y" : "z"))) << ' ' << m_sel << ' '
           << countLocked() << ' ' << m_seq << ' ' << m_undo.size() << ' ' << m_redo.size();
         return o.str();
+    }
+    // The arrows, for a reader: "<arrow under the pointer> <axis a drag holds>", -1 none.
+    std::string Handles()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        return std::to_string(m_hover_arrow) + ' ' + std::to_string(m_grip);
     }
     // A part, for a reader: "<shape> <x y z> <w h d> <r g b a>" in scene units, or "-".
     std::string Report(uint32_t id)
@@ -797,6 +804,24 @@ private:
             m_drag = (m_button == PAINT_BUTTON_MIDDLE) ? Drag_::Pan : Drag_::Orbit;
             return;
         }
+        // An arrow of the chosen part, with a tool that moves, turns or sizes:
+        // the drag keeps to its axis, whatever the axis cell says.
+        if (m_sel >= 0 && (m_tool == Tool::Select || m_tool == Tool::Move || m_tool == Tool::Turn || m_tool == Tool::Size))
+        {
+            const int arrow = arrowAtLocked(o, d);
+            if (arrow >= 0)
+            {
+                m_grip = arrow % 3;
+                m_from = m_parts[m_sel];
+                m_live = m_from;
+                if (m_tool == Tool::Turn) m_drag = Drag_::Turn;
+                else if (m_tool == Tool::Size) m_drag = Drag_::Size;
+                else { m_drag = Drag_::Move; slideLocked(o, d, m_grab); }
+                axesLocked();
+                readoutLocked();
+                return;
+            }
+        }
         float t = 0.0f;
         const int hit = pickLocked(o, d, &t);
         switch (m_tool)
@@ -872,9 +897,10 @@ private:
                     if (p.z != from.z) p.z = std::round(p.z / m_snap) * m_snap;
                 }
                 m_live.x = Fixed::From(p.x); m_live.y = Fixed::From(p.y); m_live.z = Fixed::From(p.z);
-                if (m_axis == 0)      { m_live.y = m_from.y; m_live.z = m_from.z; }
-                else if (m_axis == 1) { m_live.x = m_from.x; m_live.z = m_from.z; }
-                else if (m_axis == 2) { m_live.x = m_from.x; m_live.y = m_from.y; }
+                const int ax = dragAxis();
+                if (ax == 0)      { m_live.y = m_from.y; m_live.z = m_from.z; }
+                else if (ax == 1) { m_live.x = m_from.x; m_live.z = m_from.z; }
+                else if (ax == 2) { m_live.x = m_from.x; m_live.y = m_from.y; }
                 drawLocked(m_sel, m_live);
                 break;
             }
@@ -882,7 +908,7 @@ private:
             {
                 float deg = (x - m_press_x) * kTurn * 180.0f / kPi;
                 if (m_turn_snap > 0.0f) deg = std::round(deg / m_turn_snap) * m_turn_snap;
-                const V3 a = axisOf(m_axis < 0 ? 1 : m_axis);
+                const V3 a = axisOf(dragAxis() < 0 ? 1 : dragAxis());
                 OrderVector q;
                 q.qw = m_from.qw; q.qx = m_from.qx; q.qy = m_from.qy; q.qz = m_from.qz;
                 q.RotateBy(Fixed::From(a.x), Fixed::From(a.y), Fixed::From(a.z), Fixed::From(static_cast<double>(deg) * 3.14159265358979 / 180.0));
@@ -898,9 +924,10 @@ private:
                     if (m_snap > 0.0f) { const double s = m_snap * 0.5; v = std::round(v / s) * s; if (v < s) v = s; }
                     return Fixed::From(v < kMinHalf ? kMinHalf : (v > kMaxHalf ? kMaxHalf : v));
                 };
-                m_live.hx = (m_axis < 0 || m_axis == 0) ? grown(m_from.hx) : m_from.hx;
-                m_live.hy = (m_axis < 0 || m_axis == 1) ? grown(m_from.hy) : m_from.hy;
-                m_live.hz = (m_axis < 0 || m_axis == 2) ? grown(m_from.hz) : m_from.hz;
+                const int ax = dragAxis();
+                m_live.hx = (ax < 0 || ax == 0) ? grown(m_from.hx) : m_from.hx;
+                m_live.hy = (ax < 0 || ax == 1) ? grown(m_from.hy) : m_from.hy;
+                m_live.hz = (ax < 0 || ax == 2) ? grown(m_from.hz) : m_from.hz;
                 drawLocked(m_sel, m_live);
                 break;
             }
@@ -912,6 +939,9 @@ private:
     {
         const Drag_ was = m_drag;
         m_drag = Drag_::Idle;
+        const bool gripped = m_grip >= 0;
+        m_grip = -1;
+        if (gripped) readoutLocked();
         if (was == Drag_::Orbit && !m_dragged && m_button == PAINT_BUTTON_LEFT) { selectLocked(-1); return; }
         if (m_sel < 0 || (was != Drag_::Move && was != Drag_::Turn && was != Drag_::Size)) return;
         const std::string id = std::to_string(m_sel);
@@ -933,6 +963,7 @@ private:
     {
         const Drag_ was = m_drag;
         m_drag = Drag_::Idle;
+        m_grip = -1;
         if (m_sel >= 0 && (was == Drag_::Move || was == Drag_::Turn || was == Drag_::Size))
         {
             drawLocked(m_sel, m_parts[m_sel]);
@@ -946,9 +977,9 @@ private:
     bool slideLocked(V3 o, V3 d, V3& at)
     {
         const V3 c = posOf(m_from);
-        if (m_axis >= 0)
+        if (dragAxis() >= 0)
         {
-            const V3 a = axisOf(m_axis), w = sub(c, o);
+            const V3 a = axisOf(dragAxis()), w = sub(c, o);
             const float b = dot(a, d), den = 1.0f - b * b;
             if (den < 1e-5f) return false;            // looking straight down the axis
             const float s = (b * dot(d, w) - dot(a, w)) / den;
@@ -1006,28 +1037,86 @@ private:
         axesLocked();
         readoutLocked();
     }
+    // The axis a drag keeps to: the arrow's it took hold of, else the axis cell's.
+    int dragAxis() const { return m_grip >= 0 ? m_grip : m_axis; }
+    // Arrow k of the chosen part (0..2 the axes, 3..5 the other way): from its
+    // centre out past its corner, and how thick -- the axis held, set or under
+    // the pointer drawn at twice the rest.
+    void arrowLocked(int k, V3& c, V3& d, float& len, float& thick) const
+    {
+        const Part& p = (m_drag == Drag_::Idle || m_drag == Drag_::Orbit || m_drag == Drag_::Pan) ? m_parts[m_sel] : m_live;
+        const V3 h = halfOf(p);
+        const float reach = std::sqrt(dot(h, h));
+        c = posOf(p);
+        d = mul(axisOf(k % 3), k < 3 ? 1.0f : -1.0f);
+        len = reach + 0.6f + reach * 0.25f;
+        thick = (dragAxis() == k % 3 || m_hover_arrow == k ? 0.14f : 0.07f) * (0.5f + reach * 0.5f);
+    }
     void axesLocked()
     {
-        for (int a = 0; a < 3; ++a)
+        for (int k = 0; k < 6; ++k)
         {
-            const ETCS::RID n = m_axis_node[a];
+            const ETCS::RID n = m_axis_node[k];
             if (!n) continue;
             if (m_sel < 0) { verb(n, "SetVisible", "0"); continue; }
-            const Part& p = (m_drag == Drag_::Idle || m_drag == Drag_::Orbit || m_drag == Drag_::Pan) ? m_parts[m_sel] : m_live;
-            const V3 c = posOf(p), h = halfOf(p), d = axisOf(a);
-            const float reach = std::sqrt(dot(h, h)), len = reach + 0.6f + reach * 0.25f;
-            const float thick = (m_axis == a ? 0.14f : 0.07f) * (0.5f + reach * 0.5f);
+            V3 c, d; float len, thick;
+            arrowLocked(k, c, d, len, thick);
             verb(n, "Create", f3(thick, len, thick));
             verb(n, "SetPosition", f3(c.x + d.x * len * 0.5f, c.y + d.y * len * 0.5f, c.z + d.z * len * 0.5f));
             verb(n, "Aim", f3(d.x, d.y, d.z));
             verb(n, "SetVisible", "1");
         }
     }
+    /*
+     * THE ARROW A RAY TAKES HOLD OF: the nearest along it whose shaft it passes
+     * within a grab's reach of -- a few drawn thicknesses, and a little more
+     * the further off it is, so a far arrow is no harder to take than a near
+     * one -- and not where the shaft leaves the part's centre, nor where it is
+     * inside or behind a part, so a press on a face is the part's. -1 none.
+     */
+    int arrowAtLocked(V3 o, V3 d)
+    {
+        if (m_sel < 0) return -1;
+        int best = -1;
+        float bt = 1e30f, front = 1e30f;
+        if (pickLocked(o, d, &front) < 0) front = 1e30f;
+        for (int k = 0; k < 6; ++k)
+        {
+            if (!m_axis_node[k]) continue;
+            V3 c, a; float len, thick;
+            arrowLocked(k, c, a, len, thick);
+            // The closest points of the ray (o + t d) and the shaft (c + s a).
+            const V3 w = sub(o, c);
+            const float b = dot(d, a), e = dot(d, w), f = dot(a, w), den = 1.0f - b * b;
+            if (den < 1e-6f) continue;                       // looking straight down it
+            float t = (b * f - e) / den, sv = (f - b * e) / den;
+            if (t <= 0.0f) continue;
+            sv = clampf(sv, 0.0f, len);
+            t = std::max(0.0f, dot(d, sub(add(c, mul(a, sv)), o)));
+            const V3 gap = sub(add(o, mul(d, t)), add(c, mul(a, sv)));
+            const float reach = thick * 2.5f + t * 0.012f;
+            if (sv < len * 0.2f || dot(gap, gap) > reach * reach || t > front + thick) continue;
+            if (t < bt) { bt = t; best = k; }
+        }
+        return best;
+    }
+    // The arrow under a pointer at rest, drawn thick so it reads as a handle.
+    void hoverArrowLocked(float x, float y)
+    {
+        int k = -1;
+        V3 o, d;
+        if (m_sel >= 0 && (m_tool == Tool::Select || m_tool == Tool::Move || m_tool == Tool::Turn || m_tool == Tool::Size)
+            && rayLocked(x, y, o, d)) k = arrowAtLocked(o, d);
+        if (k == m_hover_arrow) return;
+        m_hover_arrow = k;
+        axesLocked();
+    }
     void readoutLocked()
     {
         cellsLocked();
         if (!m_readout) return;
-        std::string t = std::string(toolName(m_tool)) + (m_axis < 0 ? "" : (m_axis == 0 ? "  x" : (m_axis == 1 ? "  y" : "  z")));
+        const int ax = dragAxis();
+        std::string t = std::string(toolName(m_tool)) + (ax < 0 ? "" : (ax == 0 ? "  x" : (ax == 1 ? "  y" : "  z")));
         if (m_sel >= 0) t += "  #" + std::to_string(m_sel) + " " + m_parts[m_sel].shape;
         else t += "  " + m_shape;
         t += "  " + std::to_string(countLocked()) + "/" + std::to_string(m_parts.size());
@@ -1341,7 +1430,7 @@ private:
 
     std::mutex m_mu;
     ETCS::RID  m_world = 0, m_camera = 0, m_tool_src = 0, m_readout = 0;
-    ETCS::RID  m_axis_node[3] = { 0, 0, 0 };
+    ETCS::RID  m_axis_node[6] = { 0, 0, 0, 0, 0, 0 };
     std::vector<ETCS::RID> m_panes2, m_panes3;
     ETCS::RID m_layout = 0, m_share = 0;
     std::vector<std::pair<std::string, ETCS::RID>> m_cells, m_captions;
@@ -1363,6 +1452,8 @@ private:
     std::vector<std::string> m_materials;   // AddMaterial: what a part may be made of
     std::string m_material = "-";            // what add makes a part of
     int         m_axis = -1, m_sel = -1;
+    int         m_grip = -1;          // the axis of the arrow a drag took hold of, -1 none: it holds for that drag
+    int         m_hover_arrow = -1;   // the arrow under the pointer (0..5), drawn thick
     float       m_snap = 0.0f, m_turn_snap = 0.0f;
     float       m_yaw = 0.6f, m_pitch = 0.5f, m_dist = 9.0f;
     V3          m_target;

@@ -1187,6 +1187,17 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddHoverLabel, (ETCS::RID, entry), (ETCS::R
     self.AddHoverLabel(entry, label);
 }
 
+// BindHint <label> -- the page's one hint; AddHint <node>, <sentence> -- what a
+// control does, shown above it while it is hovered (PaintPalette::show_hint).
+DEFINE_WORK_FUNC_TYPED(PaintPalette, BindHint, (ETCS::RID, label)) { (void)ctx; self.BindHint(label); }
+DEFINE_WORK_FUNC(PaintPalette, AddHint)
+{
+    (void)ctx;
+    ETCS::RID node = 0;
+    data >> node;
+    self.AddHint(node, data.restAsString());
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintPalette, AddRadiusDelta, (ETCS::RID, node), (float, delta))
 {
     (void)ctx;
@@ -3008,6 +3019,7 @@ DEFINE_WORK_FUNC(PaintModeler, Export)
 }
 DEFINE_WORK_FUNC(PaintModeler, Hash)     { (void)ctx; const std::string v = self.Hash();   data.reset(); data.writeString(v.c_str()); }
 DEFINE_WORK_FUNC(PaintModeler, Status)   { (void)ctx; const std::string v = self.Status(); data.reset(); data.writeString(v.c_str()); }
+DEFINE_WORK_FUNC(PaintModeler, Handles)  { (void)ctx; const std::string v = self.Handles(); data.reset(); data.writeString(v.c_str()); }
 // Report <id> -- "<shape> <x y z> <w h d> <r g b a>", or "-".
 DEFINE_WORK_FUNC(PaintModeler, Report)
 {

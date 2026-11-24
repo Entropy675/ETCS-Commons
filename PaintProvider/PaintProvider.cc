@@ -83,7 +83,7 @@ ETCS_TAG_BLOCK_BASIC(PaintPalette,
     BindTool, BindSurface, AddColor, AddSize, AddTool, PickTool, AddZoom,
     AddRadiusDelta, AddAlphaDelta, SetRadiusReadout, SetAlphaReadout,
     BindWheel, AddWheelArrow, AddModeArrow, AddArrow, SetModeReadout, SetShapeReadout, SetTipReadout,
-    SetHoldCapacity, AddHoverLabel,
+    SetHoldCapacity, AddHoverLabel, BindHint, AddHint,
     AddCall, StretchArrow, AddPopup, OpenPopup, ClosePopup, BindRouter,
     SetColorOf, Report, Delete)
 
@@ -175,6 +175,6 @@ ETCS_TAG_BLOCK_HYBRID(PaintModeler,
     (Create, BindWorld, BindCamera, BindTool, BindSurface, BindReadout, BindLayout, BindShare, BindCell, BindCaption, AddPart, AddShape, BindAxis, AddPane,
      Open, Close, Toggle, SetTool, SetAxis, SetShape, AddMaterial, SetMaterial, SetSnap, SetOrbit, LookAt,
      CycleShape, CycleMaterial, CycleAxis, ToggleSnap, CycleFormat, ExportHere,
-     Press, Drag, Release, Wheel, Do, Undo, Redo, Save, Load, Export, Hash, Status, Report,
+     Press, Drag, Release, Wheel, Do, Undo, Redo, Save, Load, Export, Hash, Status, Handles, Report,
      Host, Join, Leave, Delete),
     (Emit, Absorb, Judge))
