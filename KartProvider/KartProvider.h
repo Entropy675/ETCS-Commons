@@ -194,6 +194,8 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddHill, (float, x), (float, z), (float, radi
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPad, (float, x), (float, z), (float, yaw)) { (void)ctx; self.AddPad(x, z, yaw); }
 // AddSpring <x> <z> -- a round pad that throws a kart up.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpring, (float, x), (float, z))     { (void)ctx; self.AddSpring(x, z); }
+// AddSpringOn <x> <z> <height> -- a spring on the deck whose top is that high over the spot.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpringOn, (float, x), (float, z), (float, height)) { (void)ctx; self.AddSpringOn(x, z, height); }
 // AddDeck <x> <z> <width> <depth> <height> -- a level plane in the air: on
 // it from above, under it from below, through it going up.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddDeck, (float, x), (float, z), (float, width), (float, depth), (float, height))

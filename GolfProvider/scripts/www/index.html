@@ -16,7 +16,17 @@
       if (window !== window.top) return;
       const asked = parseFloat(new URLSearchParams(location.search).get('zoom'));
       const zoom = asked > 0 ? asked : (window.innerWidth >= 1000 ? 1.5 : 1);
-      if (zoom !== 1) document.documentElement.style.zoom = String(zoom);
+      if (zoom === 1) return;
+      // Off while something is fullscreen: the zoom scales the viewport's own
+      // units too, so a stage sized to the screen came out half as big again
+      // and ran off it.
+      const apply = function () {
+        const full = document.fullscreenElement || document.webkitFullscreenElement;
+        document.documentElement.style.zoom = full ? '' : String(zoom);
+      };
+      apply();
+      document.addEventListener('fullscreenchange', apply);
+      document.addEventListener('webkitfullscreenchange', apply);
     })();
   </script>
   <title>ETCS Golf</title>

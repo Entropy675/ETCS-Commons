@@ -16,7 +16,17 @@
       if (window !== window.top) return;
       const asked = parseFloat(new URLSearchParams(location.search).get('zoom'));
       const zoom = asked > 0 ? asked : (window.innerWidth >= 1000 ? 1.5 : 1);
-      if (zoom !== 1) document.documentElement.style.zoom = String(zoom);
+      if (zoom === 1) return;
+      // Off while something is fullscreen: the zoom scales the viewport's own
+      // units too, so a stage sized to the screen came out half as big again
+      // and ran off it.
+      const apply = function () {
+        const full = document.fullscreenElement || document.webkitFullscreenElement;
+        document.documentElement.style.zoom = full ? '' : String(zoom);
+      };
+      apply();
+      document.addEventListener('fullscreenchange', apply);
+      document.addEventListener('webkitfullscreenchange', apply);
     })();
   </script>
   <title>ETCS Kart</title>
@@ -84,6 +94,19 @@
                        pointer-events: none; }
     .pad.stick.held .knob { background: rgba(255, 255, 255, 0.32); }
     .pad.off { display: none; }
+    /* What fire fires: over the fire pad the weapon in hand, beside it the
+       spare (KartArms: a power-up fills the hand, then the spare), each an
+       icon and its ammo. Shown with the pads; they take no finger, so a drag
+       over them still looks round. */
+    .arm { position: absolute; bottom: 128px; right: 42px; width: 52px; height: 52px; border-radius: 10px;
+           display: flex; align-items: center; justify-content: center; pointer-events: none;
+           background: rgba(0, 0, 0, 0.28); border: 2px solid rgba(255, 255, 255, 0.22); color: rgba(255, 255, 255, 0.8); }
+    .arm svg { width: 70%; height: 70%; }
+    .arm .ammo { position: absolute; right: 4px; bottom: 1px; font-size: 11px; color: rgba(255, 255, 255, 0.9); }
+    .arm.empty { color: rgba(255, 255, 255, 0.25); }
+    #arm-spare { right: 100px; bottom: 136px; width: 36px; height: 36px; opacity: 0.75; }
+    #arm-spare .ammo { font-size: 9px; right: 3px; }
+    .arm.off { display: none; }
     aside { display: flex; flex-direction: column; gap: 10px; }
     section { border: 1px solid var(--line); background: var(--panel); padding: 8px 10px; }
     h3 { margin: 0 0 6px; font-weight: normal; color: var(--dim); font-size: 11px;
@@ -148,6 +171,8 @@
       <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
       <button id="pad-fire" tabindex="-1" class="pad off" title="fire (Space)">&#x26A1;</button>
       <div id="pad-stick" class="pad stick off" title="the stick: over is the wheel (A D), up the pedal (W), down the brake and reverse (S) -- harder the further out"><div class="knob"></div></div>
+      <div id="arm-hand" class="arm empty off"></div>
+      <div id="arm-spare" class="arm empty off"></div>
     </div>
 
     <aside>
@@ -307,13 +332,51 @@
    * says so (Driving), asked a few times a second.
    */
   const pads = ['pad-fire', 'pad-stick'].map(function (id) { return document.getElementById(id); });
+  const arms = [document.getElementById('arm-hand'), document.getElementById('arm-spare')];
   setInterval(function () {
     if (!page.runtimeUp() || !page.nameLive('battle')) return;
     Promise.resolve(page.ask('Driving', '')).then(function (on) {
-      for (const el of pads) el.classList.toggle('off', on !== '1');
+      for (const el of pads.concat(arms)) el.classList.toggle('off', on !== '1');
       if (on !== '1' && fingers.size) { fingers.clear(); padsSync(); }   // hidden under them: let go
+      if (on === '1') return Promise.resolve(page.ask('Kart', page.myName())).then(showArms);
     }).catch(function () {});
   }, 300);
+  /*
+   * THE WEAPONS' ICONS, drawn here in the page's own lines, one per
+   * KartArms::Name. Kart <name> says "... <weapon> <ammo> ... <spare>
+   * <spare ammo> ..." (fields 7, 8, 13, 14), "-" for none.
+   */
+  const ICONS = {
+    rocket: '<path d="M14 4c3-1 6 0 6 0s1 3 0 6l-7 7-6-6z"/><path d="M7 11l-3 1-1 3 4-1M13 17l-1 3-3 1 1-4"/><circle cx="15.5" cy="8.5" r="1.3"/>',
+    mine: '<circle cx="12" cy="13" r="5"/><path d="M12 4v3M12 19v2M4 13h3M17 13h3M6.3 7.3l2 2M17.7 7.3l-2 2M8.3 16.7l-1.6 1.6M15.7 16.7l1.6 1.6"/>',
+    shotgun: '<path d="M3 12h5"/><circle cx="13" cy="6" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="13" cy="18" r="1.5"/><circle cx="19.5" cy="8.5" r="1.2"/><circle cx="19.5" cy="15.5" r="1.2"/>',
+    boost: '<path d="M5 6l6 6-6 6M12 6l6 6-6 6"/>',
+    bomb: '<circle cx="10" cy="14" r="6"/><path d="M14.2 9.8l2.8-2.8M17 7c1-2 3-2.5 4-1.5"/>',
+    minigun: '<rect x="3" y="8" width="9" height="8" rx="2"/><path d="M12 9.5h9M12 12h9M12 14.5h9"/>',
+    fuse: '<circle cx="12" cy="13" r="7"/><path d="M12 13V9M10 3h4M12 3v3"/>',
+    sniper: '<circle cx="12" cy="12" r="7"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/>',
+    homing: '<circle cx="18" cy="6" r="3"/><path d="M3 21c1.5-8 5.5-13 11-14"/><path d="M11 4.5l3 2.5-2.5 3"/>',
+    oil: '<path d="M12 3c3 5 6 8 6 11a6 6 0 0 1-12 0c0-3 3-6 6-11z"/>',
+    shockwave: '<circle cx="12" cy="12" r="2"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/>',
+    smoke: '<path d="M7 18h10a4 4 0 0 0 0-8 5 5 0 0 0-9.6-1A4 4 0 0 0 7 18z"/>'
+  };
+  function showArm(el, weapon, ammo, which) {
+    const has = !!ICONS[weapon];
+    const shown = has ? weapon + ' ' + ammo : '';
+    if (el.dataset.shown === shown) return;
+    el.dataset.shown = shown;
+    el.classList.toggle('empty', !has);
+    el.title = which + ': ' + (has ? weapon + ' x' + ammo : 'nothing');
+    el.innerHTML = has ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"'
+                       + ' stroke-linejoin="round" aria-hidden="true">' + ICONS[weapon] + '</svg>'
+                       + (ammo > 1 ? '<span class="ammo">' + ammo + '</span>' : '') : '';
+  }
+  function showArms(text) {
+    const p = String(text || '').trim().split(/\s+/);
+    if (p.length < 15) return;
+    showArm(arms[0], p[7], parseInt(p[8], 10) || 0, 'in hand');
+    showArm(arms[1], p[13], parseInt(p[14], 10) || 0, 'spare');
+  }
   /*
    * THE PADS, BY FINGER. Every pointer down on a pad is kept until it is
    * lifted, with where it is now, and after any of them moves what is held

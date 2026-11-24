@@ -1,8 +1,8 @@
 #!/usr/bin/env etcs
-# HILLS: high ground and low. The south half of the arena is sunk -- hills
-# and boulders down there too, three ramps up its north edge and springs
-# -- and on the high ground a ridge to ride over, two jumps, and a deck in
-# the air over the north-east with a hill under it.
+# HILLS: high ground and low, and hills of every size. The south half of the
+# arena is sunk -- hills and boulders down there too, three ramps up its
+# north edge and springs -- and on the high ground a ridge to ride over, two
+# jumps, and a deck in the air over the north-east with a hill under it.
 #   run kart_map_hills.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
@@ -19,14 +19,19 @@ battle.AddPit(0.0, -54.0, 192.0, 84.0, 2.5)
 battle.AddRamp(-78.0, -21.75, 0.0, 15.0, 19.5, 0.0, 0.0, 2.5)
 battle.AddRamp(0.0, -21.75, 0.0, 15.0, 19.5, 0.0, 0.0, 2.5)
 battle.AddRamp(72.0, -21.75, 0.0, 15.0, 19.5, 0.0, 0.0, 2.5)
-# Hills: three down there, three up here -- each dome, drawn on under the
-# ground twice its radius out, kept over the arena's floor.
-battle.AddHill(-33.0, -42.0, 18.0, 2.7)
-battle.AddHill(33.0, -45.0, 14.0, 2.0)
-battle.AddHill(66.0, -66.0, 10.0, 1.8)
-battle.AddHill(42.0, 36.0, 14.0, 2.6)
-battle.AddHill(-27.0, 45.0, 14.0, 2.1)
-battle.AddHill(-66.0, 66.0, 10.0, 1.8)
+# Hills, no two alike: a broad one, a steep knoll, a long low swell and
+# bumps, down there and up here -- each dome drawn on under the ground twice
+# its radius out, kept over the arena's floor. None is steeper at its foot
+# than about 0.66 (2.2 x height / radius), short of what a kart calls a wall;
+# the one under the deck stays low enough to drive under it.
+battle.AddHill(-33.0, -48.0, 22.0, 4.0)
+battle.AddHill(30.0, -45.0, 10.0, 3.0)
+battle.AddHill(18.0, -62.0, 6.0, 1.1)
+battle.AddHill(66.0, -66.0, 5.0, 0.8)
+battle.AddHill(42.0, 36.0, 16.0, 2.6)
+battle.AddHill(-30.0, 57.0, 16.0, 3.4)
+battle.AddHill(-80.0, 40.0, 10.0, 2.4)
+battle.AddHill(-66.0, 66.0, 8.0, 1.4)
 # The ridge: a deck on the diagonal, up from the south-east, down to the north-west.
 battle.AddRamp(-6.0, 24.0, 315.0, 8.0, 10.0, 12.0, 10.0, 2.4)
 # Jumps, toward the middle.
@@ -65,10 +70,10 @@ battle.AddSpawn(54.0, 54.0)
 battle.AddSpawn(-66.0, -66.0)
 
 # Boxes: on the hills, and on the deck.
-battle.AddPickup(-33.0, -42.0)
+battle.AddPickup(-33.0, -48.0)
 battle.AddPickup(42.0, 36.0)
-battle.AddPickup(-27.0, 45.0)
-battle.AddPickup(33.0, -45.0)
+battle.AddPickup(-30.0, 57.0)
+battle.AddPickup(30.0, -45.0)
 battle.AddPickup(66.0, -66.0)
 battle.AddPickup(-66.0, 66.0)
 battle.AddPickupUp(42.0, 24.0)
@@ -77,4 +82,4 @@ battle.AddPickupUp(36.0, 60.0)
 # No bare stretches (KartArena::Faults, bare): where the ground ran on with
 # nothing on it, a bump to hop, a pad along the wall, a platform with a spring
 # beside it and a box on top, or a box.
-battle.AddHill(-32.0, 88.0, 6.0, 1.2)
+battle.AddHill(-32.0, 88.0, 4.0, 0.7)

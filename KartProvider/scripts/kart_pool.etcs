@@ -71,6 +71,8 @@ run kart_pads.etcs world=world battle=battle dart=dart
 # Eight springs: a tyre's shape laid flat is the plate.
 run kart_springs.etcs world=world battle=battle disc=tyre dart=dart
 run kart_springs.etcs world=world battle=battle disc=tyre dart=dart
+run kart_springs.etcs world=world battle=battle disc=tyre dart=dart
+run kart_springs.etcs world=world battle=battle disc=tyre dart=dart
 
 # As many boxes as the busiest map has spots: twenty.
 run kart_pickups.etcs world=world battle=battle

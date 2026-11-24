@@ -12,7 +12,7 @@ ETCS_MODULE_EXPORT_MAIN(KartProvider, "KartBattle")
 ETCS_TAG_BLOCK_HYBRID(KartBattle,
     (Create, BindWorld, BindCamera, BindCard, BindFps, AddKart, AddWall, AddMap, AddRandomMap, AddVehicle, Tune, VehicleLook, Vehicles, Ride, Part, AddPartShape, AddMaterial, LiveryKey, AddLookMesh, AddTrim,
      Build, Accept, Reject, LockDriver, LockIn, Standing, LookOf, BindGarage, GarageRow, GarageDone, BindBuilderStore, Wants, Garage, GaragePress, TuneOf, AddBlock, AddRamp, AddHill,
-     AddPad, AddSpring, AddDeck, AddPit, AddLava, AddSpawn, AddPickup, AddPickupUp, AddBlockNode, AddSlabNode, AddWedgeNode,
+     AddPad, AddSpring, AddSpringOn, AddDeck, AddPit, AddLava, AddSpawn, AddPickup, AddPickupUp, AddBlockNode, AddSlabNode, AddWedgeNode,
      AddDomeNode, AddPickupNode, AddShotNode, AddBlastNode, AddSparkNode, AddFireMesh, AddBurstMesh, AddSmokeNode, AddFxNode, AddRingNode, AddBoardRow, AddGroundNode, AddMarkNode, AddPadNode,
      AddSpringNode, Ready, Practice, Host, Join, Leave, Tick, Configure, Reroll, StartRound, Abandon, Give, Key,
      SetInvert, Look, Frame, Run, Status, Scores, Maps, Layout, Faults, Kart, Tyres, Eye, Hash, Snapshot, Note, Here, LastBurst, Delete,

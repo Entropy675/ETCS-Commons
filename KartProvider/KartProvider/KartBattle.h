@@ -501,6 +501,13 @@ public:
         std::lock_guard<std::mutex> g(m_mu);
         if (!m_defs.empty()) m_defs.back().springs.push_back({ Fixed::From(x), Fixed::From(z), Fixed::Zero() });
     }
+    // A spring on the deck whose top is `height` up over (x, z).
+    void AddSpringOn(float x, float z, float height)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (!m_defs.empty() && height > 0)
+            m_defs.back().springs.push_back({ Fixed::From(x), Fixed::From(z), Fixed::Zero(), Fixed::From(height) });
+    }
     void AddDeck(float x, float z, float width, float depth, float height)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -1007,7 +1014,7 @@ public:
         for (const auto& r : m_live.ramps)  { put(r.x); put(r.z); put(r.width); put(r.up); put(r.flat); put(r.down); put(r.height); st += std::to_string(r.yaw) + "|"; }
         for (const auto& k : m_live.hills)  { put(k.x); put(k.z); put(k.radius); put(k.height); st += "|"; }
         for (const auto& p : m_live.pads)   { put(p.x); put(p.z); st += std::to_string(p.yaw) + "|"; }
-        for (const auto& p : m_live.springs) { put(p.x); put(p.z); st += "|"; }
+        for (const auto& p : m_live.springs) { put(p.x); put(p.z); put(p.on); st += "|"; }
         for (const auto& d : m_live.decks)  { put(d.x); put(d.z); put(d.w); put(d.d); put(d.h); st += "|"; }
         for (const auto& p : m_live.pits)   { put(p.x); put(p.z); put(p.w); put(p.d); put(p.depth); st += "|"; }
         for (const auto& p : m_live.spawns) { put(p.x); put(p.z); }
@@ -2348,8 +2355,7 @@ private:
         const Fixed step = dt();
         // A spring under it throws it up, whatever way it was going.
         if (!s.air)
-            if (const KartArena::Spring* up = KartArena::SpringAt(m_live, r.x, r.z))
-                if ((g - vehicleOf(s).ride - up->y).Abs() < F(5, 100)) { s.air = true; s.vy = springKick(sp); }
+            if (KartArena::SpringAt(m_live, r.x, r.z, g - vehicleOf(s).ride)) { s.air = true; s.vy = springKick(sp); }
         if (!s.air)
         {
             const Fixed flying = y + s.vy * step - gravity() * step * step * Fixed::Half();

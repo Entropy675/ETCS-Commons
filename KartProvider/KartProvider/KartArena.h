@@ -34,7 +34,7 @@
  * A PAD lies on the ground -- level, or one slope: a bank's -- and pushes
  * what drives over it the way it points (yaw, as a ramp's): PadWidth() across,
  * PadLength() along. A SPRING is a round one, SpringRadius() about its middle,
- * on level ground, that throws a kart up.
+ * on level ground or on a deck (`on`, that deck's top), that throws a kart up.
  *
  * THE GROUND HAS LEVELS, and they are meant big: half a map sunk, a storey
  * over a third of it. A PIT is a floor sunk below the arena's, its sides
@@ -80,7 +80,7 @@ namespace KartArena
         Fixed sx, cz;                  // derived: the way it pushes (sin yaw, cos yaw)
         Fixed y, gx, gz;               // derived: the ground it lies on at its middle, and that ground's slope
     };
-    struct Spring { Fixed x, z; Fixed y; };          // y derived, as a pad's
+    struct Spring { Fixed x, z; Fixed y; Fixed on = Fixed::Zero(); };   // on: the deck top it lies on, 0 the ground; y derived
     struct Deck   { Fixed x, z, w, d, h; };          // its top at h, w along x, d along z
     struct Pit    { Fixed x, z, w, d, depth; bool lava = false; };   // its floor at -depth; lava: a kart on that floor is out
     struct Map
@@ -148,10 +148,13 @@ namespace KartArena
         }
         return nullptr;
     }
-    inline const Spring* SpringAt(const Map& m, Fixed x, Fixed z)
+    // The spring a kart standing at `feet` over (x, z) is on, or null: one on a
+    // deck is not under a kart on the ground there, nor the other way round.
+    inline const Spring* SpringAt(const Map& m, Fixed x, Fixed z, Fixed feet)
     {
         for (const Spring& p : m.springs)
-            if ((x - p.x) * (x - p.x) + (z - p.z) * (z - p.z) <= SpringRadius() * SpringRadius()) return &p;
+            if ((x - p.x) * (x - p.x) + (z - p.z) * (z - p.z) <= SpringRadius() * SpringRadius()
+                && (feet - p.y).Abs() < F(5, 100)) return &p;
         return nullptr;
     }
     inline bool Over(Fixed x, Fixed z, Fixed cx, Fixed cz, Fixed w, Fixed d)
@@ -228,7 +231,7 @@ namespace KartArena
             h.y0 = -h.b * half_root3;
         }
         for (Pad& p : m.pads)       p.y = Solid(m, p.x, p.z, &p.gx, &p.gz);
-        for (Spring& p : m.springs) p.y = Solid(m, p.x, p.z);
+        for (Spring& p : m.springs) p.y = p.on.IsPositive() ? p.on : Solid(m, p.x, p.z);
     }
 
     /*
@@ -239,7 +242,8 @@ namespace KartArena
      *   pad      solid ground in one piece under the whole plate -- level, or
      *            one slope; its middle clear of blocks; no other pad over
      *            it, no spawn at it
-     *   spring   the same on level ground, and no pad at it
+     *   spring   the same on level ground, and no pad at it; one on a deck,
+ *            on that deck all round, no ground standing up through it
      *   block    level solid ground under it: not on a ramp or a hill, and
      *            wholly in a pit or wholly out
      *   ramp     one that ends in a drop facing a wall runs on into the
@@ -366,7 +370,21 @@ namespace KartArena
         }
         for (const Spring& p : m.springs)
         {
-            plate("spring", p.x, p.z, Fixed::Zero(), Fixed::One(), SpringRadius(), SpringRadius(), true, nullptr);
+            if (p.on.IsPositive())
+            {
+                bool held = true;
+                for (int i = -2; i <= 2; ++i)
+                    for (int j = -2; j <= 2; ++j)
+                    {
+                        if (i * i + j * j > 4) continue;
+                        const Fixed px = p.x + SpringRadius() * F(i, 2), pz = p.z + SpringRadius() * F(j, 2);
+                        bool deck = false;
+                        for (const Deck& d : m.decks) deck = deck || (d.h == p.on && Over(px, pz, d.x, d.z, d.w, d.d));
+                        held = held && deck && Solid(m, px, pz) < p.on;
+                    }
+                if (!held) say("spring", p.x, p.z, "not on one deck at its height");
+            }
+            else plate("spring", p.x, p.z, Fixed::Zero(), Fixed::One(), SpringRadius(), SpringRadius(), true, nullptr);
             for (const Spot& a : m.spawns) if (within(a, p.x, p.z, F(7, 2))) say("spring", p.x, p.z, "at a spawn");
         }
         for (size_t i = 0; i < m.blocks.size(); ++i)

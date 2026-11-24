@@ -3,15 +3,16 @@
 # each side wall to the top, the west one going north and the east one south;
 # off each, at every storey it passes, a bridge runs in to the middle, where a
 # keep stands four decks high, each smaller than the one under it. Two towers
-# stand between, a spring under each. Up is by a ramp; across is by a bridge;
-# down is off any edge -- and whoever is highest sees everyone.
+# stand between, a spring under each. Up is by a ramp or a spring; across is
+# by a bridge; down is off any edge -- and whoever is highest sees everyone.
 #   run kart_map_towers.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
 # <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
 # <z> <width> <depth> <deep>; AddPickupUp <x> <z>, a box on the deck over the
 # spot (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
-# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor.
+# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor. AddSpringOn
+# <x> <z> <height>: a spring on the deck that high over the spot.
 requires battle [KartBattle]
 battle.AddMap(towers)
 
@@ -66,6 +67,19 @@ battle.AddBlock(-44.0, -56.0, 8.0, 8.0, 3.0, 0.0)
 battle.AddBlock(44.0, 56.0, 8.0, 8.0, 3.0, 0.0)
 battle.AddBlock(44.0, -64.0, 10.0, 2.0, 1.2, 45.0)
 battle.AddBlock(-44.0, 64.0, 10.0, 2.0, 1.2, 45.0)
+
+# Springs up on the decks. On each porch, under the roof's bridge: taken at
+# speed it throws a kart up through that bridge and onto it: the first storey
+# to the top in one. On each first- and second-storey bridge, and on each
+# tower's top: a bounce, and the view from it.
+battle.AddSpringOn(0.0, -24.0, 3.5)
+battle.AddSpringOn(0.0, 24.0, 3.5)
+battle.AddSpringOn(-60.0, -21.5, 3.5)
+battle.AddSpringOn(60.0, 21.5, 3.5)
+battle.AddSpringOn(-24.0, -3.5, 7.0)
+battle.AddSpringOn(24.0, 3.5, 7.0)
+battle.AddSpringOn(-36.0, 8.0, 10.5)
+battle.AddSpringOn(36.0, -8.0, 10.5)
 
 battle.AddSpawn(0.0, -80.0)
 battle.AddSpawn(0.0, 80.0)
