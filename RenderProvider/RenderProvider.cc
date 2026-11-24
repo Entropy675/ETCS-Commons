@@ -73,13 +73,13 @@ ETCS_TAG_BLOCK_HYBRID(Scene3D,
 ETCS_TAG_BLOCK_BASIC(Camera3D,
     Create, SetPosition, SetOrder, SetBackground, MoveTo, ResizeTo,
     LookAt, SetLens, SetScene, SetDeviceProjection,
-    Render, Draw, Clear, DrawRect, Blit, Delete, Renders)
+    Render, Draw, Clear, DrawRect, Blit, Delete, Renders, OnDevice)
 
 // Geometry: a shape a Scene3D node names by RID (Scene3D.SetMesh). Spawned
 // anywhere, shared by every node that names it; sent to the device once,
 // and rasterised from the same triangles on the host.
 ETCS_TAG_BLOCK_BASIC(Mesh,
-    Create, Clear, Box, AddVertex, AddTriangle, Delete, Sphere, Arrow, Cylinder, Bend, Warp, CopyBent, Parts, AddBox)
+    Create, Clear, Box, AddVertex, AddTriangle, Delete, Sphere, Arrow, Cylinder, Bend, Warp, CopyBent, Parts, AddBox, Unit, AddPart)
 
 // Text, as a Drawable2D that also claims Glyphs -- so a caption is a CHILD of
 // whatever it labels and needs no drawing code at the call site. Its font is

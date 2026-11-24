@@ -28,9 +28,13 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   not: which way A and D turn, how much road the skid marks keep (off to 160 units), how fast
   the look turns. They are this tab's own, kept with your name, and nothing in them is the
   battle's: no other tab sees them, and none is in what the tabs check they agree on.
-- **Pads** on the arena, for a touch screen or a mouse: fire bottom left, and bottom right the
-  arrows as keys are laid out -- go over brake, the wheel either side. Held as a key is held;
-  hidden while the menu is up.
+- **Pads** on the arena, for a touch screen or a mouse: bottom left **a stick** -- push its knob
+  over to steer, up to go, down to brake and then reverse, each harder the further out (the
+  middle is dead) -- and fire bottom right. The stick keeps the thumb that took it wherever it
+  goes; fire is held while a finger is on it. Both at once work. Shown only while a round is
+  being driven: not while the page loads, in the lobby, or under the settings.
+- **Fullscreen**, the header's button: the arena and its pads fill the screen (at its 4:3, bars
+  either side). The button again, or Esc, gives it back.
 - **Drive over a gold box** for a weapon off the dice; **Space** fires it. The box is back eight
   seconds later. **You carry two**: the one in hand and a spare. A box with a weapon in hand
   goes to the spare, in place of what was there, and the spare comes to hand when the one in
@@ -49,8 +53,8 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   | fuse    | 1  | lit on your kart, bursts round it after 2.5 s: up to 5.0, not to you |
   | sniper  | 1  | an instant line: 10.0 dead on, 5.0 at the edge of a kart |
   | homing  | 2  | a slower rocket that turns to the nearest kart ahead of it, trailing smoke: a purple burst up to 3.0 |
-  | oil     | 1  | a big slick dropped behind, then three smaller drops as you drive on, each for twelve seconds: on oil a kart has a sixth of its grip and a third of its pedal |
-  | smoke   | 1  | a ring of smoke round you, spreading out to eight over five seconds and on to ten as it thins away over fifteen: a homing rocket cannot see a kart in it while it is thick. And a **spear** out of your nose for eight seconds: 0.8 every fifth of a second to a kart up against yours |
+  | oil     | 1  | a big slick dropped behind, then three smaller drops as you drive on, each for twelve seconds. Oil goes on every tyre that touches it -- yours too, once you have left it and come back over it -- and a kart loses grip and pedal by how many of its tyres are oiled: all of them, a sixth of its grip and a third of its pedal |
+  | smoke   | 1  | a ring of smoke round you, spreading out to sixteen over five seconds and on to twenty as it thins away over fifteen: a homing rocket cannot see a kart in it while it is thick. And a **spear** out of your nose for eight seconds: 0.8 every fifth of a second to a kart up against yours |
   | shockwave | 1 | a ring out from your kart to nine: 1.5 to every kart it passes, and thrown outward |
 
   Nothing hurts the kart that fired it. **A burst is a tree of fire**: one of eight trees baked
@@ -74,13 +78,28 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   of the trace (`config`, `look`, `round`), so a change made in one shows in the other, and on
   every tab. A guest sees the host's settings change and cannot change them; a colour or a
   name is its owner's, in the lobby only.
+- **Your own vehicles: the garage**, the lobby's second page, and your tab's alone. The first
+  time, its row turns the builder on and the page reloads with it (`?with=builder`, then
+  remembered: the tab keeps its drafts in `/persist/kart_builder.db`). A draft starts from
+  the vehicle you ride; each row steps one of its numbers; **shape it** opens the modeller over
+  the window -- parts of any shape, colour and material, the red ones drawn in your colour, a
+  part's arrows dragged to move, turn or size it along one axis, and a sentence on any control
+  the pointer rests on (PaintProvider's README, "The 3D model") -- and **Enter** or **done**
+  keeps the shape. A part weighs its size at its material's density.
+  Nothing leaves the tab until **use it**: the whole vehicle as one line, built by every tab,
+  ridden by you, and shown beside your name in the lobby.
+- **Lock in** before a round: on one of the arena's vehicles, or on a build the host has
+  accepted. The round starts only when everyone is locked in (`*` in the table; `?` is a build
+  waiting for the host). The host's **drivers** page accepts a build, sends a driver back to the
+  kart, or keeps them to the arena's vehicles until it lets them go.
 - **A round's settings are locked** until it is over: the clock runs out (the results stand for
   six seconds, then the lobby, which keeps them), or the host **abandons** it (**Esc**, or the
   page's button) -- back to the lobby, its scores discarded.
 - **Hold Tab** in a round for the scores on the arena. The top right corner counts this tab's
   **frames a second**.
-- **Look round the kart** with **Q** and **E**, or by dragging with the right button (up and
-  down too): the eye swings round the kart and, let alone, drifts back behind it. It also keeps
+- **Look round the kart** with **Q** and **E**, or by dragging on the arena -- either mouse
+  button, or a finger on a touch screen (up and down too): the eye swings round the kart and,
+  let alone a moment (a finger held still counts), drifts back behind it. It also keeps
   to the kart's side of the ground -- down in a pit with it, under a deck with it -- instead of
   looking at it through a wall.
 - **The arena** is 192 units across inside its walls, which are four high: below their top they
@@ -118,8 +137,9 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   **No map has a bare stretch**: everywhere you can drive is within twenty-six units of
   something to drive at, over, under or round -- where a map ran on with nothing on it there
   is a bump, a pad, a platform or a box -- and `battle.Faults()` says so of one that has. It
-  also says so of a bank whose lip stops short of the wall (a trench to be stuck in: the
-  bowl's and the skatepark's did).
+  also says so of a bank whose lip stops short of the wall, even by a hair (a trench to be
+  stuck in): **every bank runs on into its wall**, the bowl's, the skatepark's and a seeded
+  map's alike, so not even a slim bike finds floor between a bank and a wall.
 - **The ground has slopes.** A kart slows going up and gains going down; off a jump's lip at speed
   it flies and lands beyond it. Ground too steep to climb -- a lip met from the drop side, the side
   of a raised deck -- is a wall. Ramps are solid to the ground: nothing is under one.

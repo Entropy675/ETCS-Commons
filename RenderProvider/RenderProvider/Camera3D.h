@@ -6,6 +6,7 @@
 #include "SceneSink.h"
 
 #include <cmath>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -273,8 +274,10 @@ public:
          * means "a new composition starts here" exactly as it does for
          * PolygonDrawable2D and a window surface on a device.
          */
-        if (this->DeviceProjection()) Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
-        else                          ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        const bool device = this->DeviceProjection();
+        if (device) Clear(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        else        ClearTo(m_bg[0], m_bg[1], m_bg[2], m_bg[3]);
+        m_on_device.store(device);
         ++m_renders;
         return scene->Project(this) != nullptr;
     }
@@ -350,6 +353,22 @@ public:
                       uint32_t w, uint32_t h, float opacity) override
     {
         if (!source) return;
+        /*
+         * THROUGH A DEVICE A BLIT IS RECORDED TOO, like a rect: by the
+         * source's RID, replayed onto the destination (DrawInto), which takes
+         * the source's bytes and keeps its copy as current as the source is
+         * (HostSurface::captureLocked). Composited here instead, it went into
+         * this camera's host buffer, which a device frame never shows: a
+         * raster child -- the lobby's Menu, a Throbber -- drew nothing.
+         */
+        if (this->DeviceProjection())
+        {
+            std::lock_guard<std::mutex> lk(m_ops_mtx);
+            Op op{Op::Kind::Blit, x, y, w, h, {0.0f, 0.0f, 0.0f, opacity}};
+            op.source = source->getRID();
+            m_ops.push_back(op);
+            return;
+        }
         Pixels_* px = static_cast<Pixels_*>(
             source->getInterfacePointer(ETCS::Buffer("Pixels")));
         if (!px)
@@ -382,11 +401,12 @@ public:
      */
     struct Op
     {
-        enum class Kind : uint8_t { Clear, Rect };
+        enum class Kind : uint8_t { Clear, Rect, Blit };
         Kind     kind;
         int32_t  x, y;
         uint32_t w, h;
-        float    c[4];
+        float    c[4];               // a rect's colour; a blit's opacity in c[3]
+        ETCS::RID source = 0;        // a blit's source
     };
 
     // ── Drawable_ dispatch: render-if-stale, then one blit ───────────────
@@ -456,9 +476,14 @@ public:
             std::vector<Op> ops;
             { std::lock_guard<std::mutex> lk(m_ops_mtx); ops = m_ops; }
             for (const Op& o : ops)
+            {
                 if (o.kind == Op::Kind::Rect)
                     dst->DrawRect(base.x + m_x + o.x, base.y + m_y + o.y, o.w, o.h,
                                   o.c[0], o.c[1], o.c[2], o.c[3]);
+                else if (o.kind == Op::Kind::Blit)
+                    if (ETCS::Held<Surface_> src = ETCS::resolve_held<Surface_>("Surface", o.source))
+                        dst->Blit(src.get(), base.x + m_x + o.x, base.y + m_y + o.y, o.w, o.h, o.c[3]);
+            }
             return;
         }
 
@@ -507,6 +532,9 @@ public:
     // form of the claim above -- a settled scene stops incrementing it, and a
     // scene under WASD does not.
     uint64_t Renders() const { return m_renders; }
+    // Did the last of them go through the device (the GPU), or on the host
+    // (the CPU)? What a frame counter says beside its number.
+    bool OnDevice() const { return m_on_device.load(); }
 
 private:
     /*
@@ -629,6 +657,7 @@ private:
     bool               m_scene_lands = true;    // DeviceProjectionLands, asked at each draw
     mutable std::mutex m_scene_mtx;
     uint64_t  m_renders = 0;
+    std::atomic<bool> m_on_device{ false };   // the last render's sink: the device, or the host
 };
 
 #endif

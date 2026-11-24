@@ -2,15 +2,18 @@
 # SKATEPARK: two jumps down the middle, a gap jump across it (launch, a gap,
 # a landing), a raised deck with a ramp at each end on either side, the north
 # and south walls banked, four low walls -- and a gallery in the air along
-# each side wall, a long ramp up to each of its ends: speed, air, and the
-# high ground.
+# each side wall, a long ramp up to each of its ends, narrow bridges across
+# at three heights, four long curved ramps round the middle: speed, air, and
+# the high ground.
 #   run kart_map_skatepark.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
 # <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
 # <z> <width> <depth> <deep>; AddPickupUp <x> <z>, a box on the deck over the
 # spot (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
-# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor.
+# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor. AddArc <x> <z>
+# <radius> <from> <turn> <width> <up> <flat> <down> <height>: a ramp bent round
+# (x, z), from bearing `from`, clockwise from above for turn 1.
 requires battle [KartBattle]
 battle.AddMap(skatepark)
 
@@ -21,10 +24,11 @@ battle.AddRamp(-25.5, 0.0, 90.0, 8.0, 10.0, 0.0, 0.0, 3.0)
 battle.AddRamp(6.0, 0.0, 90.0, 8.0, 0.0, 2.0, 10.0, 3.0)
 battle.AddRamp(-51.0, 0.0, 0.0, 10.0, 10.0, 12.0, 10.0, 3.0)
 battle.AddRamp(51.0, 0.0, 0.0, 10.0, 10.0, 12.0, 10.0, 3.0)
-# The banks, up to the north and south walls: their lips on the karts' bound
-# (95), no trench under them.
-battle.AddRamp(0.0, 86.0, 0.0, 90.0, 18.0, 0.0, 0.0, 3.0)
-battle.AddRamp(0.0, -86.0, 180.0, 90.0, 18.0, 0.0, 0.0, 3.0)
+# The banks, up to the north and south walls and on into them, to their
+# outside (97): no floor between a lip and its wall. 3 high at the karts'
+# bound (95).
+battle.AddRamp(0.0, 87.0, 0.0, 90.0, 20.0, 0.0, 0.0, 3.3333)
+battle.AddRamp(0.0, -87.0, 180.0, 90.0, 20.0, 0.0, 0.0, 3.3333)
 # The galleries: a deck in the air along the west wall and one along the
 # east, the side lanes under them.
 battle.AddDeck(-78.0, 0.0, 33.0, 84.0, 5.0)
@@ -39,10 +43,36 @@ battle.AddPad(-78.0, 85.5, 180.0)
 battle.AddPad(-78.0, -85.5, 0.0)
 battle.AddPad(78.0, 85.5, 180.0)
 battle.AddPad(78.0, -85.5, 0.0)
-battle.AddBlock(36.0, 63.0, 10.0, 6.0, 3.0, 0.0)
-battle.AddBlock(-36.0, 63.0, 10.0, 6.0, 3.0, 0.0)
-battle.AddBlock(36.0, -63.0, 10.0, 6.0, 3.0, 0.0)
-battle.AddBlock(-36.0, -63.0, 10.0, 6.0, 3.0, 0.0)
+# The four low walls, ground with a level top (a ramp all flat): 3 up in the
+# north, 4 in the south.
+battle.AddRamp(36.0, 63.0, 0.0, 10.0, 0.0, 6.0, 0.0, 3.0)
+battle.AddRamp(-36.0, 63.0, 0.0, 10.0, 0.0, 6.0, 0.0, 3.0)
+battle.AddRamp(36.0, -63.0, 0.0, 10.0, 0.0, 6.0, 0.0, 4.0)
+battle.AddRamp(-36.0, -63.0, 0.0, 10.0, 0.0, 6.0, 0.0, 4.0)
+
+# The bridges, four wide, at three heights. Across the middle at the
+# galleries' height, one each side of the high deck, gallery to gallery.
+battle.AddDeck(0.0, 24.0, 123.0, 4.0, 5.0)
+battle.AddDeck(0.0, -24.0, 123.0, 4.0, 5.0)
+# Between the low walls, wall to wall, and a ramp up onto each wall's outer
+# face from the side lane.
+battle.AddDeck(0.0, 63.0, 62.0, 4.0, 3.0)
+battle.AddRamp(-49.0, 63.0, 90.0, 6.0, 16.0, 0.0, 0.0, 3.0)
+battle.AddRamp(49.0, 63.0, 270.0, 6.0, 16.0, 0.0, 0.0, 3.0)
+battle.AddDeck(0.0, -63.0, 62.0, 4.0, 4.0)
+battle.AddRamp(-53.0, -63.0, 90.0, 6.0, 24.0, 0.0, 0.0, 4.0)
+battle.AddRamp(53.0, -63.0, 270.0, 6.0, 24.0, 0.0, 0.0, 4.0)
+
+# THE CARVES: four long curved ramps on a ring 36 out from the middle, one
+# in each corner of the floor between the jumps and the side decks, each a
+# fifty-degree turn (31.42 along its middle), clockwise. North-east and
+# south-west kick up the whole way to a lip at 2.4; north-west and south-east
+# rise to 2 and come back down. Under the bridges they stay low enough to
+# drive beneath.
+battle.AddArc(0.0, 0.0, 36.0, 20.0, 1.0, 5.0, 31.42, 0.0, 0.0, 2.4)
+battle.AddArc(0.0, 0.0, 36.0, 200.0, 1.0, 5.0, 31.42, 0.0, 0.0, 2.4)
+battle.AddArc(0.0, 0.0, 36.0, 290.0, 1.0, 5.0, 12.0, 7.42, 12.0, 2.0)
+battle.AddArc(0.0, 0.0, 36.0, 110.0, 1.0, 5.0, 12.0, 7.42, 12.0, 2.0)
 
 # Pads at the foot of each deck's ramps, pointing up them.
 battle.AddPad(-51.0, -36.0, 0.0)

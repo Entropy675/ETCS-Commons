@@ -20,6 +20,13 @@
  *     ready(api)                    once, when the runtime first answers
  *   })
  *
+ * EXTRAS (modules.json "extras"): more modules and scripts from the same
+ * store, by name, for a page that asks -- ?with=<name>[,<name>] on the link,
+ * or a file it keeps in /persist ("remember") being there from last time.
+ * Each runs its "after" script once the game answers, handed "names" (the
+ * boot's globals), and one the game asks for (its Wants) is kept and the page
+ * reloaded with it.
+ *
  * The page's elements, by id: status canvas shell name host leave link turn
  * seats round note scores no-scores scores-title map length reroll start
  * abandon who-sets hall no-hall bootthrob, and if the game has a look (its
@@ -54,6 +61,9 @@ window.EtcsSessionPage = function (cfg) {
     toShell({ etcs: 'out', text: text });
   }
   window.etcsTermWrite = function (t) { if (t != null) termWrite(String(t)); };
+  // Where the pictures are drawn, and why when it is the CPU (RenderProvider's
+  // WebGpuJs.h says, once each time it changes): the status line and the terminal.
+  window.etcsGpuNote = function (text, onGpu) { log('[etcs] ' + text + '\n', onGpu ? 'ok' : 'err'); };
   const SHELL_DRAIN_MS = 250;
   let shellDrainTimer = 0, lastMenuJson = '';
   function drainShellOutput() {
@@ -295,7 +305,8 @@ window.EtcsSessionPage = function (cfg) {
     if (polling || !runtimeUp() || !nameLive(GAME)) return;
     polling = true;
     try {
-      if (!readied) { readied = true; if (cfg.ready) cfg.ready(api); }
+      if (!readied) { readied = true; if (cfg.ready) cfg.ready(api); runExtras(); }
+      await askWants();
       const st = await ask('Status', '');
       if (st) {
         sceneUp = true;
@@ -480,10 +491,111 @@ window.EtcsSessionPage = function (cfg) {
     const boot = (j && j.boot) ? strip(j.boot) : '';
     const glue = (j && j.glue) ? strip(j.glue) : '';
     const base = (j && j.base) ? String(j.base).trim() : '';
+    const extras = (j && j.extras && typeof j.extras === 'object') ? j.extras : {};
     log('[etcs] modules.json -> ' + wasm.join(', ') + '\n');
     if (scripts.length) log('[etcs] scripts -> ' + scripts.join(', ') + '\n');
     man_module_count = wasm.length;
-    return { wasm: wasm, scripts: scripts, boot: boot, glue: glue, base: base };
+    return { wasm: wasm, scripts: scripts, boot: boot, glue: glue, base: base, extras: extras };
+  }
+
+  /*
+   * THE EXTRAS THIS PAGE LOADS: those the link names (?with=), and those
+   * whose kept file IndexedDB still holds (IDBFS keeps /persist in the
+   * database named for the mount, a file a record keyed by its path). Each
+   * one's modules go in before the module it names ("before", else the end),
+   * its scripts after the base's.
+   */
+  const extrasOn = [], extrasOff = [];
+  function idbHolds(path) {
+    return new Promise(function (resolve) {
+      if (!window.indexedDB || !path) return resolve(false);
+      const mount = '/' + path.split('/')[1];
+      let req;
+      try { req = window.indexedDB.open(mount); } catch (e) { return resolve(false); }
+      req.onerror = function () { resolve(false); };
+      req.onsuccess = function () {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('FILE_DATA')) { db.close(); return resolve(false); }
+        try {
+          const get = db.transaction('FILE_DATA', 'readonly').objectStore('FILE_DATA').get(path);
+          get.onsuccess = function () { db.close(); resolve(!!get.result); };
+          get.onerror = function () { db.close(); resolve(false); };
+        } catch (e) { db.close(); resolve(false); }
+      };
+    });
+  }
+  async function mergeExtras(man) {
+    const asked = (QS.get('with') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    for (const name of Object.keys(man.extras)) {
+      if (name.charAt(0) === '_') continue;
+      const x = man.extras[name] || {};
+      const on = asked.indexOf(name) >= 0 || (x.remember && await idbHolds(String(x.remember)));
+      if (!on) { extrasOff.push({ name: name, x: x }); continue; }
+      const mods = normalizeWasmList(x.modules || []).filter(function (m) { return man.wasm.indexOf(m) < 0; });
+      const before = x.before ? normalizeWasmList([x.before])[0] : '';
+      const at = before && man.wasm.indexOf(before) >= 0 ? man.wasm.indexOf(before) : man.wasm.length;
+      man.wasm.splice.apply(man.wasm, [at, 0].concat(mods));
+      for (const sc of (x.scripts || [])) { const t = String(sc).trim().replace(/^\.\//, ''); if (t && man.scripts.indexOf(t) < 0) man.scripts.push(t); }
+      extrasOn.push({ name: name, x: x });
+      log('[etcs] with ' + name + ' -> ' + mods.join(', ') + '\n', 'ok');
+    }
+    man_module_count = man.wasm.length;
+  }
+  function runExtras() {
+    for (const e of extrasOn) if (e.x.after) runTemplate(String(e.x.after), {}, String(e.x.names || ''));
+  }
+  // An extra the game asks for (GAME.Wants names it): its file kept, and the
+  // page again with it on the link.
+  let reloading = false;
+  async function askWants() {
+    if (reloading || !extrasOff.some(function (e) { return e.x.wants; })) return;
+    const want = String(await ask('Wants', '') || '').trim();
+    const e = extrasOff.find(function (o) { return o.name === want && o.x.wants; });
+    if (!e) return;
+    reloading = true;
+    log('[etcs] turning on ' + want + ': the page reloads with it\n', 'ok');
+    const go = function () {
+      const q = new URLSearchParams(window.location.search);
+      const w = (q.get('with') || '').split(',').filter(Boolean);
+      if (w.indexOf(want) < 0) w.push(want);
+      q.set('with', w.join(','));
+      window.location.search = q.toString();
+    };
+    persistNow('extra ' + want, go);
+  }
+
+  /*
+   * /persist OUTLIVES THE TAB: IDBFS, a MEMFS view of an IndexedDB store,
+   * read in before main() runs (a database opened before its file arrives
+   * would be a fresh one written over it) and written back when the runtime
+   * says (window.etcsPersist, the sqlite leaf) and on pagehide.
+   */
+  let persistTimer = 0;
+  function persistNow(why, then) {
+    const fs = etcsFS();
+    if (!fs || !fs.syncfs) { if (then) then(); return; }
+    fs.syncfs(false, function (err) {
+      if (err) log('[etcs] /persist: write to IndexedDB failed (' + why + '): ' + err + '\n', 'err');
+      if (then) then();
+    });
+  }
+  if (typeof window.etcsPersist !== 'function') {
+    window.etcsPersist = function (why) {
+      clearTimeout(persistTimer);
+      persistTimer = setTimeout(function () { persistNow(why || 'requested'); }, 250);
+    };
+    window.addEventListener('pagehide', function () { persistNow('pagehide'); });
+  }
+  function mountPersist() {
+    try {
+      FS.mkdir('/persist');
+      FS.mount(IDBFS, {}, '/persist');
+      Module.addRunDependency('etcs-persist');
+      FS.syncfs(true, function (err) {
+        if (err) log('[etcs] /persist: could not read IndexedDB: ' + err + '\n', 'err');
+        Module.removeRunDependency('etcs-persist');
+      });
+    } catch (e) { log('[etcs] /persist: IDBFS unavailable (' + e + ') -- nothing kept will outlive this tab\n', 'err'); }
   }
   const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
   function checkStaged(name, kind, buf) {
@@ -548,6 +660,7 @@ window.EtcsSessionPage = function (cfg) {
   async function boot() {
     setStatus('fetching…');
     const man = await fetchManifest();
+    await mergeExtras(man);
     setStatus('locating runtime…');
     await resolveWasmBase(man.base, man.wasm[0]);
     const blobs = Object.assign({}, await fetchAll(man.wasm, 'module', wasm_base), await fetchAll(man.scripts, 'script', null));
@@ -571,6 +684,7 @@ window.EtcsSessionPage = function (cfg) {
           }
           log('[etcs] MEMFS preload complete (' + Object.keys(blobs).length + ' files)\n');
         } catch (e) { log('[etcs] preRun FS error: ' + e + '\n', 'err'); }
+        mountPersist();
       }],
       onRuntimeInitialized: function () {
         setStatus('runtime ready', 'ok');

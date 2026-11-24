@@ -1,0 +1,11 @@
+#!/usr/bin/env etcs
+# A HOLDER: a node at the origin that draws nothing itself and holds what is
+# put in it -- anchored, so when nothing in it changes it is still, skipped
+# by the interaction and drawn as one mesh (ontology/CausalBase.h, A STILL
+# SUBTREE; Scene3D, a still container's picture). At the origin, so what is
+# in it is placed in the world's own frame.
+#   run kart_holder.etcs holder=<Scene3D>
+requires holder [Drawable3D]
+holder.Create(1.0, 1.0, 1.0)
+holder.SetAnchored(1)
+holder.SetVisible(0)

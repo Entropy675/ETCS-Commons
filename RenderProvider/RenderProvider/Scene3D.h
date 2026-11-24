@@ -6,6 +6,7 @@
 #include "SceneSink.h"
 #include "SceneExport.h"
 #include "Mesh.h"
+#include "Baked.h"
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +16,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -159,7 +161,7 @@ public:
         }
         else CausalBase<Scene3D>::onValue(key, value);
     }
-    ~Scene3D() = default;
+    ~Scene3D() { BakedMeshes::Drop(getRID()); }
 
     // ── the solid (CausalBase, ontology/Causal.h) ─────────────────────────
     //
@@ -235,12 +237,14 @@ public:
     void SetPosition(float x, float y, float z)
     {
         { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().PlaceAt(Fixed::From(x), Fixed::From(y), Fixed::From(z)); }
+        RowsWritten();
         markViewersDirty();
     }
     void Move(float dx, float dy, float dz)
     {
         { std::lock_guard<std::recursive_mutex> lk(TreeMutex());
           Rows().PlaceAt(Order4().x + Fixed::From(dx), Order4().y + Fixed::From(dy), Order4().z + Fixed::From(dz)); }
+        RowsWritten();
         markViewersDirty();
     }
 
@@ -287,14 +291,16 @@ public:
     {
         { std::lock_guard<std::recursive_mutex> lk(TreeMutex());
           Rows().Orient(Fixed::From(ax), Fixed::From(ay), Fixed::From(az), Fixed::From(degrees * 3.14159265358979 / 180.0)); }
+        RowsWritten();
         markViewersDirty();
     }
     void Aim(float dx, float dy, float dz)
     {
         { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Aim(Fixed::From(dx), Fixed::From(dy), Fixed::From(dz)); }
+        RowsWritten();
         markViewersDirty();
     }
-    void Halt() { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
+    void Halt() { { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); } RowsWritten(); }
     /*
      * STEPPED BY ITS DRIVER ALONE (the value behind "driven"): a projection
      * reads this tree and changes nothing -- no observed step, no look. For a
@@ -718,6 +724,7 @@ public:
     // The family's step: what a held key pushes with and what drag takes,
     // then the rows advance (CausalBase::AdvanceConcrete).
     void AdvanceConcrete(Fixed dt) override { stepOver(dt); }
+    bool StillConcrete() const override { return m_motion.load(std::memory_order_relaxed) == 0; }   // a held key pushes
     Fixed MassConcrete() const override { return m_mass; }
 
     // The driver and the hash are the family's; named here so the verbs and
@@ -915,6 +922,29 @@ public:
             && std::fabs(p.z) <= m_half.z;
     }
 
+    /*
+     * WHERE THIS NODE IS DRAWN, when a stepper has blended it between two
+     * steps (Drawable3D.h, ShowAt): the projection walk draws it, and its
+     * children about it, there; the rows -- and everything that reads them,
+     * contacts, depth, the hash -- are untouched. A change is a change of
+     * picture, so the viewers are told.
+     */
+    void ShowAtConcrete(ShownPose pose) override
+    {
+        {
+            std::lock_guard<std::mutex> g(m_shown_mu);
+            if (!pose.on && !m_shown.on) return;
+            if (pose.on == m_shown.on && pose.x == m_shown.x && pose.y == m_shown.y && pose.z == m_shown.z
+                && pose.qw == m_shown.qw && pose.qx == m_shown.qx && pose.qy == m_shown.qy && pose.qz == m_shown.qz) return;
+            m_shown = pose;
+        }
+        // A picture of a still container holds where its nodes were drawn
+        // (pictureLocked): this one and every container it is in now draw elsewhere.
+        for (ETCS::Entity* n = this; n && isOwnLeaf(n); n = n->getParent())
+            static_cast<Scene3D*>(n->getTrueType())->m_shown_gen.fetch_add(1, std::memory_order_relaxed);
+        markViewersDirty();
+    }
+
     // The whole-node span, over the eight corners of the WHOLE SUBTREE --
     // not just this box. A container's depth is the depth of what is in it,
     // which is what makes this usable as the ordering key the family's
@@ -1040,7 +1070,8 @@ public:
             if (void* raw = camera->getInterfacePointer(ETCS::Buffer(RP_SCENE_SINK)))
             {
                 std::vector<Node> nodes;
-                collectSubtree(Point3D{0,0,0}, nodes);
+                collectSubtree(Point3D{0,0,0}, nodes, true, &v);
+                cullLocked(nodes, v);
                 softSort(nodes, v);
                 coverRows();
                 projectToDevice(static_cast<SceneSink*>(raw), v, nodes);
@@ -1076,15 +1107,18 @@ public:
         m_depth_cam = camera->getRID();
 
         std::vector<Node> nodes;
-        collectSubtree(Point3D{0,0,0}, nodes);
+        collectSubtree(Point3D{0,0,0}, nodes, true, &v);
+        cullLocked(nodes, v);
         softSort(nodes, v);
         coverRows();
         for (const Node& n : nodes)
         {
             // The same picture the device makes: a node's Mesh with its
-            // triangles, the box otherwise, both placed by T*R*S.
-            if (const Mesh* mesh = n.mesh ? meshOf(n.mesh) : nullptr) rasterMesh(sink, v, n, *mesh);
-            else                                                        rasterBox(sink, v, n);
+            // triangles, the box otherwise, both placed by T*R*S; a still
+            // container's merged solids as they were merged.
+            if (n.baked) { if (const auto b = BakedMeshes::Get(n.mesh)) rasterBaked(sink, v, n, *b); }
+            else if (const Mesh* mesh = n.mesh ? meshOf(n.mesh) : nullptr) rasterMesh(sink, v, n, *mesh);
+            else                                                             rasterBox(sink, v, n);
         }
 
         // The camera now holds an image of me, so it is an observer of me in
@@ -1176,6 +1210,7 @@ public:
         { std::vector<uint64_t> cams; ObserverRids(cams);
           for (uint64_t c : cams) Unobserve(c); }
         { std::lock_guard<std::recursive_mutex> lk(TreeMutex()); Rows().Rest(); }
+        RowsWritten();
         ClearHeld();
     }
 
@@ -1201,6 +1236,9 @@ private:
         bool soft() const { return glow > 0.0f || smoke > 0.0f; }
         Matrix4   rot;        // the node's own row 3, for the device (the host draws boxes axis-aligned)
         ETCS::RID mesh;       // 0: the unit box, scaled to the extent
+        bool      baked = false;   // mesh is a still container's merged solids (Baked.h), at unit scale
+        Point3D   bc{ 0, 0, 0 };   // the sphere about what it draws, once known (sphereOf)
+        float     br = -1.0f;
     };
 
     // The camera's pose and lens, resolved once per projection into the form
@@ -1363,10 +1401,24 @@ private:
     // A child's position is stated relative to its parent's CENTRE, which is
     // the 3D reading of Drawable2D's parent-relative rule, and is why one
     // translation at the root relocates everything below it.
-    void collectSubtree(Point3D origin, std::vector<Node>& out, bool root = true)
+    // A projection's walk passes its view: still containers are drawn from
+    // their pictures, and a picture out of view is left out whole. Every
+    // other walk (depth, export) reads the nodes themselves.
+    void collectSubtree(Point3D origin, std::vector<Node>& out, bool root = true, const View* view = nullptr)
     {
-        const Point3D p = Pos();
+        ShownPose shown;
+        { std::lock_guard<std::mutex> g(m_shown_mu); shown = m_shown; }
+        const Point3D p = shown.on ? Point3D{ shown.x, shown.y, shown.z } : Pos();
         const Point3D abs{ origin.x + p.x, origin.y + p.y, origin.z + p.z };
+        if (view && !root && pictureLocked(abs, out, *view)) return;
+        walkOwnLocked(abs, shown, out, root, view);
+        // The whole walk, solids first and the soft ones -- glow, smoke --
+        // after (each tested against every solid's depth, SetGlow, SetSmoke);
+        // softSort puts those farthest first, for the eye that draws them.
+        if (root) std::stable_partition(out.begin(), out.end(), [](const Node& n) { return !n.soft(); });
+    }
+    void walkOwnLocked(Point3D abs, const ShownPose& shown, std::vector<Node>& out, bool root, const View* view)
+    {
         if (!Hidden())
         {
             Node n;
@@ -1381,16 +1433,222 @@ private:
             // that one is the viewer's, not the box's. The root by being the
             // root, not by being drawn first: under a hidden root the first
             // node drawn is a child, and its facing is its own.
-            n.rot  = root ? Matrix4::Identity() : Order4().ToMatrix4();
+            if (root) n.rot = Matrix4::Identity();
+            else if (shown.on)
+            {
+                OrderVector facing;
+                facing.qw = Fixed::From(shown.qw); facing.qx = Fixed::From(shown.qx);
+                facing.qy = Fixed::From(shown.qy); facing.qz = Fixed::From(shown.qz);
+                n.rot = facing.ToMatrix4();
+            }
+            else n.rot = Order4().ToMatrix4();
             n.rot.at(0,3) = n.rot.at(1,3) = n.rot.at(2,3) = 0.0f;
             n.mesh = meshRid();
             out.push_back(n);
         }
-        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out, false); }
-        // The whole walk, solids first and the soft ones -- glow, smoke --
-        // after (each tested against every solid's depth, SetGlow, SetSmoke);
-        // softSort puts those farthest first, for the eye that draws them.
-        if (root) std::stable_partition(out.begin(), out.end(), [](const Node& n) { return !n.soft(); });
+        { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->collectSubtree(abs, out, false, view); }
+    }
+
+    /*
+     * A STILL CONTAINER'S PICTURE. A container whose subtree is still
+     * (CausalBase, A STILL SUBTREE) draws the same nodes every frame until
+     * something climbs out of it -- a verb, a membership, a write said with
+     * RowsWritten, any of which moves its epoch -- or a node in it is drawn
+     * somewhere new (ShowAt: m_shown_gen), or a mesh it draws with changes.
+     * So the nodes are walked once and kept, in the container's own frame,
+     * and the opaque ones are merged into one mesh (Baked.h) with each node's
+     * colour as its tint: the device draws the container in one call, the
+     * host rasters it as one mesh, and the sphere about the whole is what the
+     * view is tested against. What is not merged -- glow, smoke, translucent
+     * colour, another container's picture -- is kept as nodes and drawn as
+     * nodes. The rows are not read for it, and no rows depend on it: a
+     * picture, kept.
+     */
+    struct Picture
+    {
+        uint32_t          epoch = 0;
+        uint64_t          gen = 0;
+        std::vector<std::pair<ETCS::RID, uint64_t>> meshes;   // each mesh drawn, at the version drawn
+        bool              baked = false;
+        Point3D           bake_c{ 0, 0, 0 };
+        float             bake_r = 0.0f;
+        std::vector<Node> loose;                              // relative to the container
+        Point3D           c{ 0, 0, 0 };                       // and about everything, relative
+        float             r = 0.0f;
+    };
+    bool pictureLocked(Point3D abs, std::vector<Node>& out, const View& view)
+    {
+        if (ownChildren()->empty() || !StillUnder())
+        {
+            if (m_pic) { m_pic.reset(); BakedMeshes::Drop(getRID()); }
+            return false;
+        }
+        const uint32_t epoch = hashEpoch();
+        const uint64_t gen = m_shown_gen.load(std::memory_order_relaxed);
+        if (!m_pic || m_pic->epoch != epoch || m_pic->gen != gen || !meshesCurrent(*m_pic)) paintLocked(abs, epoch, gen);
+        const Picture& pic = *m_pic;
+        if (!inView(view, Point3D{ abs.x + pic.c.x, abs.y + pic.c.y, abs.z + pic.c.z }, pic.r)) return true;
+        if (pic.baked)
+        {
+            Node b;
+            b.pos = abs;
+            b.half = Point3D{ 0.5f, 0.5f, 0.5f };   // unit scale: the merged mesh is in the container's frame
+            b.color[0] = b.color[1] = b.color[2] = b.color[3] = 1.0f;
+            b.glow = b.smoke = 0.0f;
+            b.rot = Matrix4::Identity();
+            b.mesh = getRID();
+            b.baked = true;
+            b.bc = Point3D{ abs.x + pic.bake_c.x, abs.y + pic.bake_c.y, abs.z + pic.bake_c.z };
+            b.br = pic.bake_r;
+            out.push_back(b);
+        }
+        for (Node n : pic.loose)
+        {
+            n.pos = Point3D{ n.pos.x + abs.x, n.pos.y + abs.y, n.pos.z + abs.z };
+            n.bc = Point3D{ n.bc.x + abs.x, n.bc.y + abs.y, n.bc.z + abs.z };
+            out.push_back(n);
+        }
+        return true;
+    }
+    static bool meshesCurrent(const Picture& pic)
+    {
+        for (const auto& [rid, version] : pic.meshes)
+        {
+            const Mesh* m = meshOf(rid);
+            if (!m || m->Version() != version) return false;
+        }
+        return true;
+    }
+    void paintLocked(Point3D abs, uint32_t epoch, uint64_t gen)
+    {
+        ShownPose shown;
+        { std::lock_guard<std::mutex> g(m_shown_mu); shown = m_shown; }
+        std::vector<Node> nodes;
+        walkOwnLocked(abs, shown, nodes, false, nullptr);
+        auto pic = std::make_unique<Picture>();
+        pic->epoch = epoch; pic->gen = gen;
+        auto baked = std::make_shared<BakedMesh>();
+        std::vector<Node> merged;
+        for (Node& n : nodes)
+        {
+            n.pos = Point3D{ n.pos.x - abs.x, n.pos.y - abs.y, n.pos.z - abs.z };
+            const Mesh* mesh = n.mesh ? meshOf(n.mesh) : nullptr;
+            if (n.mesh && mesh) pic->meshes.emplace_back(n.mesh, mesh->Version());
+            const bool opaque = !n.soft() && n.color[3] >= 1.0f && !n.baked && (n.mesh == 0 || mesh);
+            if (opaque) merged.push_back(n);
+            else { sphereOf(n); pic->loose.push_back(n); }
+        }
+        std::sort(pic->meshes.begin(), pic->meshes.end());
+        pic->meshes.erase(std::unique(pic->meshes.begin(), pic->meshes.end()), pic->meshes.end());
+        if (merged.size() < 2)
+            for (Node& n : merged) { sphereOf(n); pic->loose.push_back(n); }
+        else
+        {
+            std::vector<float> box; std::vector<uint32_t> boxIx;
+            device_unit_box(box, boxIx);
+            float lo[3] = { 0, 0, 0 }, hi[3] = { 0, 0, 0 };
+            bool first = true;
+            for (const Node& n : merged)
+            {
+                const Mesh* mesh = n.mesh ? meshOf(n.mesh) : nullptr;
+                const std::vector<float>&    vb = mesh ? mesh->Vertices() : box;
+                const std::vector<uint32_t>& ib = mesh ? mesh->Indices()  : boxIx;
+                const uint32_t base = static_cast<uint32_t>(baked->vertices.size() / kDeviceVertexFloats);
+                const float s[3] = { n.half.x * 2.0f, n.half.y * 2.0f, n.half.z * 2.0f };
+                const float tint = device_tint(n.color[0], n.color[1], n.color[2]);
+                for (size_t i = 0; i + 5 < vb.size(); i += 6)
+                {
+                    // Where the device would put it (modelOf: T R S), and its
+                    // normal as mesh.vert turns a lit solid's: R S n, normalised.
+                    const float lx = vb[i] * s[0], ly = vb[i + 1] * s[1], lz = vb[i + 2] * s[2];
+                    const float nx0 = vb[i + 3] * s[0], ny0 = vb[i + 4] * s[1], nz0 = vb[i + 5] * s[2];
+                    float q[3], m[3];
+                    for (int r = 0; r < 3; ++r)
+                    {
+                        q[r] = n.rot.at(r, 0) * lx + n.rot.at(r, 1) * ly + n.rot.at(r, 2) * lz;
+                        m[r] = n.rot.at(r, 0) * nx0 + n.rot.at(r, 1) * ny0 + n.rot.at(r, 2) * nz0;
+                    }
+                    q[0] += n.pos.x; q[1] += n.pos.y; q[2] += n.pos.z;
+                    const float ml = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+                    if (ml > 0.0f) { m[0] /= ml; m[1] /= ml; m[2] /= ml; }
+                    baked->vertices.insert(baked->vertices.end(), { q[0], q[1], q[2], m[0], m[1], m[2], tint });
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        if (first || q[k] < lo[k]) lo[k] = q[k];
+                        if (first || q[k] > hi[k]) hi[k] = q[k];
+                    }
+                    first = false;
+                }
+                for (uint32_t ix : ib) baked->indices.push_back(base + ix);
+            }
+            pic->bake_c = Point3D{ (lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f, (lo[2] + hi[2]) * 0.5f };
+            float rr = 0.0f;
+            for (size_t i = 0; i + kDeviceVertexFloats <= baked->vertices.size(); i += kDeviceVertexFloats)
+            {
+                const float dx = baked->vertices[i] - pic->bake_c.x, dy = baked->vertices[i + 1] - pic->bake_c.y, dz = baked->vertices[i + 2] - pic->bake_c.z;
+                rr = std::max(rr, dx * dx + dy * dy + dz * dz);
+            }
+            pic->bake_r = std::sqrt(rr);
+            pic->baked = true;
+            baked->version = BakedMeshes::NextVersion();
+            BakedMeshes::Put(getRID(), baked);
+        }
+        if (!pic->baked) BakedMeshes::Drop(getRID());
+        // The sphere about everything: the bake's and each loose node's.
+        float lo[3], hi[3];
+        bool any = false;
+        auto grow = [&](Point3D c, float r) {
+            const float a[3] = { c.x - r, c.y - r, c.z - r }, b[3] = { c.x + r, c.y + r, c.z + r };
+            for (int k = 0; k < 3; ++k) { lo[k] = any ? std::min(lo[k], a[k]) : a[k]; hi[k] = any ? std::max(hi[k], b[k]) : b[k]; }
+            any = true;
+        };
+        if (pic->baked) grow(pic->bake_c, pic->bake_r);
+        for (const Node& n : pic->loose) grow(n.bc, n.br);
+        if (any)
+        {
+            pic->c = Point3D{ (lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f, (lo[2] + hi[2]) * 0.5f };
+            pic->r = 0.5f * std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        }
+        m_pic = std::move(pic);
+    }
+
+    /*
+     * WHAT THE VIEW CANNOT SHOW IS NOT DRAWN: a node whose sphere lies wholly
+     * outside the frustum, or that would cover less than a pixel. The sphere
+     * is the mesh's own (Mesh::Bounds) through the node's T R S -- not the
+     * box's, which a mesh built in its own coordinates need not stay inside.
+     */
+    void sphereOf(Node& n) const
+    {
+        if (n.br >= 0.0f) return;
+        float c[3] = { 0.0f, 0.0f, 0.0f }, r = 0.8660254f;   // the unit box
+        if (n.mesh) if (const Mesh* m = meshOf(n.mesh)) m->Bounds(c, r);
+        const float s[3] = { n.half.x * 2.0f, n.half.y * 2.0f, n.half.z * 2.0f };
+        const float l[3] = { c[0] * s[0], c[1] * s[1], c[2] * s[2] };
+        n.bc = Point3D{ n.pos.x + n.rot.at(0, 0) * l[0] + n.rot.at(0, 1) * l[1] + n.rot.at(0, 2) * l[2],
+                        n.pos.y + n.rot.at(1, 0) * l[0] + n.rot.at(1, 1) * l[1] + n.rot.at(1, 2) * l[2],
+                        n.pos.z + n.rot.at(2, 0) * l[0] + n.rot.at(2, 1) * l[1] + n.rot.at(2, 2) * l[2] };
+        n.br = r * std::max(s[0], std::max(s[1], s[2]));
+    }
+    static bool inView(const View& v, Point3D c, float r)
+    {
+        const float dx = c.x - v.eye.x, dy = c.y - v.eye.y, dz = c.z - v.eye.z;
+        const float z = dx * v.fwd.x + dy * v.fwd.y + dz * v.fwd.z;
+        if (z + r < v.near_p || z - r > v.far_p) return false;
+        const float x = dx * v.right.x + dy * v.right.y + dz * v.right.z;
+        const float y = dx * v.up.x + dy * v.up.y + dz * v.up.z;
+        const float tx = v.tan_half * v.aspect, ty = v.tan_half;
+        // A side plane through the eye at the half angle, its distance r out.
+        if (std::fabs(x) - z * tx > r * std::sqrt(1.0f + tx * tx)) return false;
+        if (std::fabs(y) - z * ty > r * std::sqrt(1.0f + ty * ty)) return false;
+        // Less than a pixel across: r / (z ty) of half the height, doubled.
+        if (z > r && r * static_cast<float>(v.h) < z * ty) return false;
+        return true;
+    }
+    void cullLocked(std::vector<Node>& nodes, const View& v) const
+    {
+        for (Node& n : nodes) sphereOf(n);
+        nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [&](const Node& n) { return !inView(v, n.bc, n.br); }), nodes.end());
     }
     // The soft nodes at the walk's end, farthest from the eye first: smoke
     // laid over smoke and fire is only right that way round.
@@ -1802,6 +2060,29 @@ private:
             const float cosl = len > 0.0f ? (nx * lx + ny * ly + nz * lz) / len : 0.0f;
             const float lit  = 0.45f + 0.55f * (cosl > 0.0f ? cosl : 0.0f);
             const float col[4] = { n.color[0] * lit, n.color[1] * lit, n.color[2] * lit, n.color[3] };
+            clipAndFill(sink, v, pa, pb, pc, col);
+        }
+    }
+
+    // A still container's merged solids on the host: lit as rasterMesh lights
+    // a triangle, from its first vertex's normal (already turned), in its tint.
+    void rasterBaked(const Sink& sink, const View& v, const Node& n, const BakedMesh& b)
+    {
+        const std::vector<float>&    vb = b.vertices;
+        const std::vector<uint32_t>& ib = b.indices;
+        constexpr size_t K = kDeviceVertexFloats;
+        static const float lx = 0.4f / 1.0028f, ly = 0.8f / 1.0028f, lz = 0.45f / 1.0028f;
+        for (size_t t = 0; t + 2 < ib.size(); t += 3)
+        {
+            const uint32_t a = ib[t], bb = ib[t + 1], c = ib[t + 2];
+            if ((a + 1) * K > vb.size() || (bb + 1) * K > vb.size() || (c + 1) * K > vb.size()) continue;
+            const Point3D pa = toView(v, Point3D{ n.pos.x + vb[a * K], n.pos.y + vb[a * K + 1], n.pos.z + vb[a * K + 2] });
+            const Point3D pb = toView(v, Point3D{ n.pos.x + vb[bb * K], n.pos.y + vb[bb * K + 1], n.pos.z + vb[bb * K + 2] });
+            const Point3D pc = toView(v, Point3D{ n.pos.x + vb[c * K], n.pos.y + vb[c * K + 1], n.pos.z + vb[c * K + 2] });
+            const float cosl = vb[a * K + 3] * lx + vb[a * K + 4] * ly + vb[a * K + 5] * lz;
+            const float lit  = 0.45f + 0.55f * (cosl > 0.0f ? cosl : 0.0f);
+            const uint32_t tint = static_cast<uint32_t>(vb[a * K + 6]);
+            const float col[4] = { (tint & 255u) / 255.0f * lit, ((tint >> 8) & 255u) / 255.0f * lit, ((tint >> 16) & 255u) / 255.0f * lit, 1.0f };
             clipAndFill(sink, v, pa, pb, pc, col);
         }
     }
@@ -2297,13 +2578,24 @@ private:
         std::lock_guard<std::recursive_mutex> lk(TreeMutex());
         Rows().Cover(parts.data(), parts.size());
     }
+    // A still container's parts are what they were (A STILL SUBTREE), kept
+    // relative to it and added back in Fixed: the cover is the same, to the bit.
     void gatherParts(Fixed ox, Fixed oy, Fixed oz, std::vector<OrderVector>& out)
     {
         Fixed ax, ay, az;
+        bool still = false;
         {
             std::lock_guard<std::recursive_mutex> lk(TreeMutex());   // one whole position, not a mid-step one
             ax = ox + Order4().x; ay = oy + Order4().y; az = oz + Order4().z;
+            still = !ownChildren()->empty() && StillUnder();
+            if (still && m_parts_kept && m_parts_epoch == hashEpoch())
+            {
+                for (OrderVector p : m_parts) { p.x += ax; p.y += ay; p.z += az; out.push_back(p); }
+                return;
+            }
+            m_parts_kept = false;
         }
+        const size_t from = out.size();
         if (!Hidden())
         {
             OrderVector p;
@@ -2312,6 +2604,12 @@ private:
             out.push_back(p);
         }
         { const auto kids = ownChildren(); for (Scene3D* kid : *kids) kid->gatherParts(ax, ay, az, out); }
+        if (!still) return;
+        std::lock_guard<std::recursive_mutex> lk(TreeMutex());
+        m_parts.assign(out.begin() + static_cast<long>(from), out.end());
+        for (OrderVector& p : m_parts) { p.x -= ax; p.y -= ay; p.z -= az; }
+        m_parts_epoch = hashEpoch();
+        m_parts_kept = true;
     }
 
     // Reduce the wide bitset to the six bits the projection reads. Called on
@@ -2396,6 +2694,14 @@ private:
     // a sub-pixel disagreement in a value that is about to be turned into an
     // angle, which is not a hazard worth a fence.
     std::atomic<int32_t> m_ptr_x{0};
+    // ShowAt's: where the projection draws this node, when not its rows.
+    std::mutex m_shown_mu;
+    ShownPose  m_shown;
+    std::atomic<uint64_t> m_shown_gen{ 0 };   // a ShowAt here or below: a picture holding it is stale
+    std::unique_ptr<Picture> m_pic;           // this container's, while it is still (pictureLocked)
+    std::vector<OrderVector> m_parts;         // gatherParts' answer below here, relative, at m_parts_epoch
+    uint32_t                 m_parts_epoch = 0;
+    bool                     m_parts_kept = false;
     std::atomic<int32_t> m_ptr_y{0};
     // Until the pointer has been seen once, the look holds whatever LookAt
     // set -- so a scene renders as authored rather than snapping to whatever

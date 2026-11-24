@@ -1,4 +1,4 @@
-# ETCS Paint in the browser — two canvases
+# ETCS Paint in the browser
 
     cd modules/PaintProvider/scripts && etcs serve_paint.etcs
     then open https://localhost:8443/
@@ -16,11 +16,10 @@ the site's landing page, which is where it reads like it leads. The two
 isolation headers are the same pair `serve_paint.etcs` sets, hoisted to the
 server because there is one server.
 
-The page holds the runtime, two canvases and the terminal:
+The page holds the runtime, one canvas and the terminal:
 
-    #canvas    1024x768   the sheet -- strokes land here
-    #toolbar    640x64    the palette strip, above the ETCS Shell block
-    iframe      shell     ShellProvider's own page, embedded as the terminal
+    #canvas    the window's framebuffer, the size of the stage box
+    iframe     shell     ShellProvider's own page, embedded as the terminal
 
 Deploy is build, and that is all of it — there is no copy step any more:
 
@@ -40,88 +39,47 @@ Window, Render, Paint, Shell and Chess among them -- and lists any module with n
 manifest of its own as not built rather than guessing. `ace wasm make module
 <n>` builds one.)
 
-## Why the second canvas is a second SURFACE, not a second window
+## One tree, laid out to the window
 
-A browser window cannot host two canvases, and the reason is not a gap in this
-code. emscripten's GLFW owns exactly one canvas — `Browser.getCanvas()` — and:
+Everything the page draws is a node under `sheet_root`: the paper and its
+ruler, the toolbar, the layer, animation and sharing windows, the popups, and
+the model's pane and bar. The toolbar is a `CompositeDrawable2D` on the sheet
+whose seventeen cells are layout boxes (`paint_toolbar.etcs`): the solver
+(`LayoutProvider::Layout`) gives every cell an equal share of the bar, and
+`layout.FollowResize(@main)` solves again at every size the window takes.
 
-- every one of its input handlers begins `if (event.target != Browser.getCanvas())
-  return`, so events on any other element are dropped before GLFW sees them;
-- `glfwCreateWindow` ends with `GLFW.active = win`, and every handler dispatches
-  to `GLFW.active.<callback>`, so a second window silently takes the first one's
-  input;
-- and `GLFW.adjustCanvasDimensions()` resizes that one canvas to the new window's
-  size.
+The page states that size. `stageResize` in `index.html` calls
+`main.ResizeTo(w, h)` with the stage box's size (divided by the UI scale, see
+"On a phone"), and the framebuffer is exactly those pixels, so a pointer and
+the picture under it share one scale on both axes.
 
-So a second GLFW window would cost the first one its input and its dimensions and
-still be pointed at the same element. A second SURFACE has none of those
-properties: presenting is a `putImageData` and nothing about it is global. That is
-why the target belongs to the surface (`RenderProvider/OS/HostSurface.h`), named
-rather than numbered, with `"canvas"` as the default so a session that never
-mentions one behaves exactly as it did before targets existed.
+## One pointer channel, routed
 
-    main.spawn(RenderProvider::Surface bar_view)
-    bar_view.Create(@gpu)
-    bar_view.SetTarget(toolbar)
-    bar_view.ResizeTo(640, 64)
+    detach PaintProvider/scripts/paint_routed_pointer.etcs window=main router=router
+    main.ProduceEvents() -> router.ConsumeInput()
 
-`ResizeTo` drops the follow, because being told a size and following the window's
-cannot both be live — `PollResize` would snap the strip back to 1024x768 at the
-next frame boundary. Stating the precedence in one place beats a flag every reader
-has to correlate.
+`PaintRouter` decides which pane the pointer is over before anything reads it.
+Each pane's `PaintInput` has its root (`BindRoot`) and the palette
+(`BindPalette`), and that pair is what makes a press at a point mean "that
+swatch" rather than "draw here" (`Drawable2D_::PickAt`). Only a pick on the
+canvas node (`BindCanvas`) is the picture.
 
-On the OS side those same lines describe a REGION of the one window, which is what
-a toolbar is there; `SetTarget` answers honestly from the Vulkan backend (a
-swapchain has one target, and it says so) rather than storing a name nothing
-reads. The script does not change — what the target names does.
+The page itself calls verbs for discrete things -- the size, an upload, a
+download, sharing, a model export -- through `etcs_web_call`
+(`loaders/etcs.cc`), which resolves a global name (a boot script runs as root,
+so its names ARE the globals) and dispatches through the same path the
+executor uses for an ordinary action:
 
-## The strip's input comes from the page, through work functions
-
-The sheet's pointer arrives on an edge, off the event loop:
-
-    detach paint_pointer.etcs window=main input=input
-
-The strip's cannot, because its events are never in that stream. So the page drives
-it the way a script would:
-
-    etcs_web_call("bar_input", "Pointer", "412, 22")   //  bar_input.Pointer(412, 22)
-    etcs_web_call("bar_input", "Press",   "")          //  bar_input.Press()
-
-`etcs_web_call` (loaders/etcs.cc) resolves a global name — a boot script runs as
-root, so its names ARE the globals — and dispatches through the same path the
-executor uses for an ordinary action. It knows nothing about palettes: every verb
-a module exports is reachable the moment the module is loaded, with no per-verb
-glue to write and nothing to keep in step.
+    etcs_web_call("main", "ResizeTo", "1257, 709")    //  main.ResizeTo(1257, 709)
 
 BY NAME, NOT BY RID, and not only for readability: a RID is a full 64-bit hash and
 a JS number carries 53 bits, so a RID crossing that boundary as a number would
 arrive silently wrong for most values.
 
-It is for DISCRETE events. The call is synchronous on the calling thread, so a call
-per pointer *move* would put the page's event loop behind the module's stream for
-every sample. The handler forwards moves only while the button is down, which is
-what makes dragging across swatches work without paying for hover.
-
-Two things in PaintProvider had to change for that to work, and both were the
-script path diverging from the stream path rather than anything new:
-
-- `ScriptPointer`/`ScriptPress`/`ScriptRelease` called `HandleEvent` directly, so a
-  machine with a root bound routed everything arriving on an edge and nothing
-  arriving from a script. Routing is a property of how the machine is CONFIGURED
-  (`BindRoot`), not of which transport delivered the event, so they go through
-  `RouteEvent` now — which falls through to `HandleEvent` when no root is bound, so
-  an unrouted machine behaves exactly as it did.
-- a press carries no position (`x`/`y` are meaningful for `INPUT_MOTION` only), so
-  routing one on its own coordinates picks whatever sits at the origin — nothing.
-  The routed key edge already fills it from the last position the pointer channel
-  delivered; `ScriptPress`/`ScriptRelease` now do the same. Before that fix a
-  swatch click was a pick at (0,0) every time, which is silence rather than an
-  error.
-
-`bar_input` is a second `PaintInput` with `BindRoot(@bar)` and
-`BindPalette(@palette)` — that pair is what makes a press at a point mean "that
-swatch" rather than "draw here" (`Drawable2D_::PickAt`). Two input machines because
-there are two spaces, not because there are two devices.
+A script drives the pointer the same way: `ScriptPointer`, `ScriptPress` and
+`ScriptRelease` go through `RouteEvent`, as an event from the stream does, and
+a press carries no position, so it routes at the last position the pointer
+channel delivered (`RoutedCursorX/Y`).
 
 ## Colour in the terminal
 
@@ -138,8 +96,9 @@ where an escape is bytes on screen rather than a colour.
 
 ## The drawing area is INSET, and the ruler lives in the margin
 
-`paper_pane` is a 952x632 pane at (36, 36) inside `sheet_root`, and the band around
-it is where the edge ruler's marks every 100 px go. Drawn along the inside of the
+`paper_pane` is a pane inside `sheet_root` -- 952x632 at (36, 36) on the
+1024x768 sheet it is declared on, and whatever the layout gives it after that --
+and the band around it is where the edge ruler's marks every 100 px go. Drawn along the inside of the
 drawing area instead they are on the picture — over the paper near the edges, and
 paintable, so a stroke near a corner goes through the scale it is being checked
 against (boot_paint_panels.etcs, at `paper_pane`).
@@ -228,14 +187,13 @@ exported verb, a page load, an import.
 
 ## Selecting, and moving what is selected
 
-The `move` slice is the first tool, between the last swatch and `brush` -- the
-one tool that does not mark comes before the ones that do. The `select` slice
-sits between `brush` and `anim` in the bar, which is now
-seventeen slices (960x64, 32px in from either edge of the 1024 sheet; rect and
-oval share one `shape` slice whose arrow steps rect, oval, triangle, diamond, star,
-with the current outline's name under the word in gold, as `select`'s mode is
-under its word; the two steppers at the end carry `size` and `opacity` captions
-the same way, always shown). One tool, four ways of drawing the boundary — the
+`move` is not on the bar: the one tool that does not mark sits with the
+navigation, left of undo and the zoom steps. The `select` slice sits between
+`brush` and `anim` in the bar, which is seventeen slices -- six swatches, nine
+tools and two steppers (rect and oval share one `shape` slice whose arrow steps
+rect, oval, triangle, diamond, star, with the current outline's name under the
+word in gold, as `select`'s mode is under its word; the two steppers at the end
+carry `size` and `opacity` captions the same way, always shown). One tool, four ways of drawing the boundary — the
 word under `select` says which, and the arrow at the top of the slice steps
 through them:
 
@@ -608,8 +566,8 @@ wherever a preset lands.
 
 1920x1080 is 8.3 MB of raster per layer, and the guard that refuses a page too
 big for the heap (`paint_heap_can_take`) passes it comfortably: the web loader
-links with a 1 GB heap and the runtime's own arenas hold about 240 MB of it
-after boot. Worth knowing at that size: a page saved to the store is its layers'
+links with a heap of 2 GB less one page (`ETCS_WEB_MEMORY`, `loaders/Makefile`)
+and the runtime's own arenas hold about 240 MB of it after boot. Worth knowing at that size: a page saved to the store is its layers'
 raw bytes, so a two-layer 1920x1080 page is about 16 MB per save.
 
 ## The gear: a new canvas, a resize, save and load
@@ -663,7 +621,7 @@ the verb to type instead (`doc.ExportImage(<path>)` / `doc.ImportImage(<path>)`)
 since no file dialog exists there yet.
 
 **Memory.** The wasm heap is fixed at the size the loader was built with
-(`-sINITIAL_MEMORY`, 512 MB by ACE's default; growth is off for the reason
+(`-sINITIAL_MEMORY`, 2 GB less one page by default; growth is off for the reason
 `loaders/Makefile` gives) and the runtime's own arenas take ~240 MB of it after
 boot, so a page is a budget. `resize`, `new` and every import ask first
 (`paint_heap_can_take`: every layer at the new size, the mask, and the one old
@@ -813,12 +771,12 @@ framebuffer smaller than its box and lets the canvas stretch back over it
 (`UI_SCALE`, `stageResize` in `index.html`), so every pane, row and button the
 boot script lays out in its own pixels is that much bigger on the glass, with no
 script knowing; GLFW maps a touch through the same ratio, and the picture keeps
-its own pixels through the zoom. The scale is the width's to give -- one at
-512 CSS pixels and under, two at 1024 and over -- because the toolbar is laid
-out 640 wide and scaled down to fit anything narrower: below that width it is
-already as small as the width makes it, and halving the framebuffer would only
-halve the picture. `?ui=<n>` overrides. A phone held upright therefore gets no
-bigger toolbar; that wants the reflow noted under "What is not solved".
+its own pixels through the zoom. The scale is the width's to give -- the
+width over 512 CSS pixels, between one and two -- and stays one when the page
+is stacked (under 62rem wide) or under 640 pixels tall, where dividing the
+stage's little height would leave the paper a strip under the toolbar.
+`?ui=<n>` (1 to 4) overrides. A phone held upright therefore gets no bigger
+toolbar.
 
 **The keyboard comes up when something takes keys.** A phone raises its
 keyboard for a focused field, and the canvas has none. So the page keeps one,
@@ -837,6 +795,76 @@ turns it on for a look).
 **A short screen is the canvas's.** Under 30rem of height -- a phone on its
 side -- the terminal keeps a 4rem strip and the stage takes the rest, where the
 terminal's 15rem floor used to leave the picture a sliver.
+
+## Hints
+
+Rest the pointer on a control and a sentence says what it is, just above it --
+or below it, with no room above -- and goes when the pointer leaves. Every cell
+of both bars has one, and so do the page's own controls: move, undo, redo, redo
+alt, the zoom steps, the gear and the mode cell.
+
+One label a page does it (`palette.BindHint(@hint)`, a child of `sheet_root`
+over everything, the popups included), and a control is given its sentence by
+node (`palette.AddHint(@node, <sentence>)` -- the rest of the line is the
+sentence, commas and all). A hover on anything inside a node is that node's: the
+palette walks up from the node under the pointer to the first one with a
+sentence (`PaintPalette::show_hint`), so a cell's word and arrow need none of
+their own. A word beside a control rather than inside it (the gear's `menu`,
+the undo row's words) is a sibling, and carries the sentence too.
+
+"Hint", not "tip": a tip is the brush's nib (`brush.SetTip`, the brush slice's
+caption).
+
+## The 3D model
+
+The gold cell under the picture (`3d`, and `2d` while it is open) turns the page
+into a modeller and back (`model.Toggle()`). The page stays one page: the
+camera is a `Drawable2D` that owns pixels (`RenderProvider/Camera3D.h`), in the
+picture's own pane, and the switch is which set of nodes is shown
+(`PaintModeler::AddPane`) and a solve of the layout. The toolbar row shows the
+3D bar (`paint_model_bar.etcs`) where the 2D one was; a hidden box takes no
+room. `paint_model.etcs` is the whole wiring.
+
+A model is parts. A part is a box, sphere, cylinder, pyramid or wedge
+(`paint_model_shapes.etcs`), with a colour and a material -- steel, alloy,
+plastic, wood or foam on this page (`model.AddMaterial`; a game's builder brings
+its own list).
+
+    select  Q   click a part to choose it; a drag turns the eye round what it looks at
+    move    G   drag a part across the view, on the plane facing the eye
+    turn    R   drag sideways to turn it, about the up axis
+    size    S   drag up to grow it, down to shrink it, on all three axes
+    add     A   click the floor or a part to set a new part there
+    paint   P   click a part to give it the colour in hand
+    delete      click a part to remove it; Delete removes the chosen one
+    axis    X Y Z   hold move, turn and size to one axis
+    snap        a quarter unit, and fifteen degrees
+
+The middle button pans, the wheel moves the eye in and out, Esc lets go of the
+part, and ctrl+z and ctrl+y walk the history. Each edit is one line (`add`,
+`move`, `turn`, `size`, `color`, `material`, `shape`, `del`), which is what the
+history keeps, what `model.Do(<line>)` takes, and what `model.Save(<path>)`
+writes and `model.Load(<path>)` reads back.
+
+**The arrows are handles.** The chosen part has six, one each way along x
+(red), y (green) and z (blue). A drag that starts on one, with select, move,
+turn or size in hand, keeps to that arrow's axis for the whole drag, whatever
+the axis cell says: select and move slide the part along it, turn turns it
+about it, size sizes it along it. The arrows are tested before the part, but a
+press on a face is the part's: an arrow inside or behind a part is not taken,
+nor is one near the part's middle. The arrow under the pointer is drawn thick,
+as the set axis is. `model.Handles` says which arrow is under the pointer and
+which axis a drag holds.
+
+**Out.** The export cell writes the model in the format its caption shows --
+glb, obj with its mtl, or stl -- and its arrow steps the format. On the page
+the file comes down as `model.<fmt>` (`PaintModeler::ExportHere` asks the page,
+as `load` does); natively it is written beside the runtime.
+`model.Export(<path>)` takes the format from the path's extension.
+
+**Shared.** In a session the model rides the same room with a record of its
+own (`paint_host.etcs`): the host's page judges every line and takes a guest's
+only from a writer (`PaintModeler::JudgeLine`).
 
 ## Deploying
 
@@ -858,11 +886,6 @@ path like a stroke, so the stack goes back to the previous `layers` entry -- but
 a merge's carried bytes go with it, and a keyframe of the surviving layer taken
 before the merge is what the layer falls back to. Nobody has undone a merge in a
 room yet; when somebody does, that is where to look.
-
-The strip renders and picks, but it does not follow the window: `ResizeTo` made it
-a fixed 640x64, so a very narrow viewport scales it down rather than reflowing the
-swatches. Reflow is a layout question for the 2D tree
-(`paint_toolbar.etcs` states absolute positions in bar space), not for the surface.
 
 Each surface draws on the host, or through WebGPU while a Device under it is
 ready (`view.Create(@gpu)` attaches one when the page has WebGPU). The device draws

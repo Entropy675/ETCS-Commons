@@ -33,121 +33,29 @@ requires palette [PaintPalette]
 requires brush   [PaintTool]
 requires layout  [Layout]
 
-# ── the pane, INSIDE the page's own ──────────────────────────────────────────
+# ── the pane and its bar: a model's, as any page has them ───────────────────
 #
-# A child of the page's pane rather than a sibling, for the layout's sake: a
-# box is placed relative to its layout parent (LayoutProvider/Clayout.h), and
-# the page's pane is what the window's size already arrives at. So this pane
-# fills it at any size by being declared under it, and nothing new follows the
-# window. Order 5 puts it over the picture; it covers the pane whole.
-#
+# Inside the page's own pane (a child of it, for the layout's sake: a box is
+# placed relative to its layout parent, and the page's pane is what the
+# window's size already arrives at), over the picture; the bar in the toolbar
+# row, the same row as the 2D bar -- a hidden box takes no room.
+run paint_model_pane.etcs model=model pane=paper row=sheet palette=palette brush=brush layout=layout input=input
+
+# What a part may be made of: a name the model's lines carry (the material
+# cell steps through them), for whatever weighs it -- a game's builder has its
+# own list, from the game (KartProvider's kart_looks.etcs).
+model.AddMaterial(steel)
+model.AddMaterial(alloy)
+model.AddMaterial(plastic)
+model.AddMaterial(wood)
+model.AddMaterial(foam)
+
 # The page's pane is RETAINED, so what is composed over it stays in its raster
-# after this is hidden -- which is why the modeller is handed the canvas
-# (BindSurface) and draws the page again when the model closes.
-#
-# A compositor around the camera because hiding is a compositor's verb and not
-# a camera's (RenderProvider.cc's tag blocks), and because the tools need a
-# parent that is not the picture.
-paper.spawn(RenderProvider::CompositeDrawable2D pane3d)
-pane3d.Create(952, 632)
-pane3d.SetPosition(0, 0)
-pane3d.SetOrder(5)
-pane3d.SetBackground(0.10, 0.11, 0.14, 1.0)
-pane3d.SetHidden(1)
-
-pane3d.spawn(RenderProvider::Camera3D eye)
-eye.Create(952, 632)
-eye.SetPosition(0, 0)
-eye.SetOrder(1)
-eye.SetBackground(0.16, 0.18, 0.22, 1.0)
-eye.SetLens(50.0, 0.05, 600.0)
-
-# ── the room ─────────────────────────────────────────────────────────────────
-#
-# DRIVEN (Scene3D::SetDriven): a picture of this world steps nothing in it.
-# Nothing here moves but by a line, and a part left where a drag put it must
-# not be somewhere else the next frame.
-spawn RenderProvider::Scene3D world
-world.Create(1.0, 1.0, 1.0)
-world.SetVisible(0)
-world.SetDriven(1)
-eye.SetScene(@world)
-
-# The ground a new part stands on: y = 0 is its top (PaintModeler::addAtLocked).
-world.spawn(RenderProvider::Scene3D floor)
-floor.Create(24.0, 0.04, 24.0)
-floor.SetPosition(0.0, -0.02, 0.0)
-floor.SetColor(0.30, 0.32, 0.36, 1.0)
-
-# ── the hand ─────────────────────────────────────────────────────────────────
-model.BindCamera(@eye)
-model.BindTool(@brush)
+# after this is hidden -- which is why the modeller is handed the canvas, and
+# draws the page again when the model closes.
 model.BindSurface(@canvas)
-model.SetOrbit(11.0, 35.0, 28.0)
-model.LookAt(0.0, 0.5, 0.0)
 
-run paint_model_world.etcs world=world model=model
-
-# The axes on the selected part: x red, y green, z blue. Siblings of the model,
-# not parts of it -- the modeller sizes, aims and shows them and nothing else.
-world.spawn(RenderProvider::Mesh axis_shape)
-axis_shape.Create()
-axis_shape.Arrow(0.35, 0.3)
-
-world.spawn(RenderProvider::Scene3D axis_x)
-axis_x.Create(0.1, 1.0, 0.1)
-axis_x.SetColor(0.90, 0.30, 0.28, 1.0)
-axis_x.SetMesh(@axis_shape)
-model.BindAxis(0, @axis_x)
-
-world.spawn(RenderProvider::Scene3D axis_y)
-axis_y.Create(0.1, 1.0, 0.1)
-axis_y.SetColor(0.35, 0.80, 0.40, 1.0)
-axis_y.SetMesh(@axis_shape)
-model.BindAxis(1, @axis_y)
-
-world.spawn(RenderProvider::Scene3D axis_z)
-axis_z.Create(0.1, 1.0, 0.1)
-axis_z.SetColor(0.35, 0.50, 0.95, 1.0)
-axis_z.SetMesh(@axis_shape)
-model.BindAxis(2, @axis_z)
-
-# ── the two modes ────────────────────────────────────────────────────────────
-#
-# Shown with the model: its pane and its bar. Hidden with it: the 2D bar, and
-# the layer window, which is the document's and would lie over the camera.
-model.AddPane(3, @pane3d)
+# Hidden with the model: the 2D bar, and the layer window, which is the
+# document's and would lie over the camera.
 model.AddPane(2, @layers)
 model.AddPane(2, @bar)
-model.BindLayout(@layout)
-
-# The 3D bar: the toolbar row while the model is open, hidden -- so taking no
-# room -- until then.
-sheet.spawn(RenderProvider::CompositeDrawable2D bar3d)
-bar3d.Create(960, 64)
-bar3d.SetOrder(20)
-bar3d.SetBackground(0.16, 0.16, 0.19, 1.0)
-bar3d.SetHidden(1)
-layout.AddBox(@bar3d, @sheet, 1, 0.0, 2, 64.0)
-layout.SetDirection(@bar3d, 0)
-run paint_model_bar.etcs bar=bar3d palette=palette model=model layout=layout
-model.AddPane(3, @bar3d)
-
-# A hit on the camera is the modeller's, as a hit on the canvas is the tool's;
-# the wheel, the keys, undo and redo follow while the model is open.
-input.BindModeler(@model, @eye)
-
-layout.AddBox(@pane3d, @paper, 1, 0.0, 1, 0.0)
-layout.AddBox(@eye, @pane3d, 1, 0.0, 1, 0.0)
-
-# What is in hand, in the camera's corner: the tool, the axis, the chosen part,
-# the parts used of the pool.
-pane3d.spawn(RenderProvider::TextLabel m3_readout)
-m3_readout.Create(8)
-m3_readout.SetPosition(8, 8)
-m3_readout.SetPadding(3)
-m3_readout.SetColor(0.80, 0.80, 0.84, 1.0)
-m3_readout.SetBackground(0.106, 0.110, 0.078, 0.80)
-m3_readout.SetText(select)
-m3_readout.SetOrder(10)
-model.BindReadout(@m3_readout)

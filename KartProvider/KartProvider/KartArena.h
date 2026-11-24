@@ -30,11 +30,17 @@
  *   hill   a dome of `radius` and `height`: the top of an ellipsoid twice the
  *          radius across, sunk so it meets the ground at a slope of about
  *          2.2 x height / radius, never a wall
+ *   arc    a ramp bent round a centre: `width` across a circle of `radius`,
+ *          starting at bearing `from` (degrees, as a yaw) and running
+ *          `up + flat + down` along that circle, clockwise seen from above
+ *          for `turn` 1, the other way for -1. The profile is measured along
+ *          the circle, so its edges are circles too and the turn has no
+ *          joins; toward the centre the same rise is steeper (radius / r)
  *
  * A PAD lies on the ground -- level, or one slope: a bank's -- and pushes
  * what drives over it the way it points (yaw, as a ramp's): PadWidth() across,
  * PadLength() along. A SPRING is a round one, SpringRadius() about its middle,
- * on level ground, that throws a kart up.
+ * on level ground or on a deck (`on`, that deck's top), that throws a kart up.
  *
  * THE GROUND HAS LEVELS, and they are meant big: half a map sunk, a storey
  * over a third of it. A PIT is a floor sunk below the arena's, its sides
@@ -80,8 +86,17 @@ namespace KartArena
         Fixed sx, cz;                  // derived: the way it pushes (sin yaw, cos yaw)
         Fixed y, gx, gz;               // derived: the ground it lies on at its middle, and that ground's slope
     };
-    struct Spring { Fixed x, z; Fixed y; };          // y derived, as a pad's
-    struct Deck   { Fixed x, z, w, d, h; };          // its top at h, w along x, d along z
+    struct Spring { Fixed x, z; Fixed y; Fixed on = Fixed::Zero(); };   // on: the deck top it lies on, 0 the ground; y derived
+    struct Arc
+    {
+        Fixed x, z, radius; int from = 0, turn = 1;
+        Fixed width, up, flat, down, height;
+        Fixed a0;                      // derived: `from` in radians, [0, 2pi)
+        Fixed base;                    // derived: what it stands on, as a ramp's
+        Fixed length() const { return up + flat + down; }
+    };
+    // Its top at h, `w` across and `d` along its yaw (yaw 0: w along x, d along z).
+    struct Deck   { Fixed x, z, w, d, h; int yaw = 0; Fixed sx = Fixed::Zero(), cz = Fixed::One(); };   // sx, cz derived
     struct Pit    { Fixed x, z, w, d, depth; bool lava = false; };   // its floor at -depth; lava: a kart on that floor is out
     struct Map
     {
@@ -90,6 +105,7 @@ namespace KartArena
         std::vector<Block> blocks;
         std::vector<Ramp>  ramps;
         std::vector<Hill>  hills;
+        std::vector<Arc>   arcs;
         std::vector<Pad>   pads;
         std::vector<Spring> springs;
         std::vector<Deck>  decks;
@@ -125,6 +141,76 @@ namespace KartArena
         gx = rise * r.sx; gz = rise * r.cz;
         return true;
     }
+    // atan for |t| <= 1 in the rows' own integers -- halved once to |u| <=
+    // tan(pi/8), then the series -- so every runtime has the same raw angle.
+    inline Fixed Atan1(Fixed t)
+    {
+        const Fixed u = t / (Fixed::One() + (Fixed::One() + t * t).Sqrt());
+        const Fixed u2 = u * u;
+        Fixed term = u, sum = u;
+        for (int n = 1; n < 16; ++n) { term = -(term * u2); sum += term / F(2 * n + 1); }
+        return sum * F(2);
+    }
+    // The bearing of (dx, dz) as a yaw is: from +z toward +x, in [0, 2pi).
+    inline Fixed Bearing(Fixed dx, Fixed dz)
+    {
+        const Fixed ax = dx.Abs(), az = dz.Abs();
+        if (ax.IsZero() && az.IsZero()) return Fixed::Zero();
+        Fixed a = ax <= az ? Atan1(ax / az) : Fixed::Pi() * Fixed::Half() - Atan1(az / ax);
+        if (dz.raw < 0) a = Fixed::Pi() - a;
+        if (dx.raw < 0) a = Fixed::TwoPi() - a;
+        return a;
+    }
+    // A profile's height `s` along it, and its rise there per unit along.
+    inline Fixed Profile(Fixed s, Fixed up, Fixed flat, Fixed down, Fixed height, Fixed& rise)
+    {
+        rise = Fixed::Zero();
+        if (s < up)               { rise = height / up; return height * s / up; }
+        if (s <= up + flat)       return height;
+        rise = -height / down;
+        return height * (up + flat + down - s) / down;
+    }
+    // How far round an arc (x, z) is, along its middle; false off it.
+    inline bool ArcAlong(const Arc& c, Fixed x, Fixed z, Fixed& s, Fixed& d)
+    {
+        const Fixed dx = x - c.x, dz = z - c.z;
+        d = Fixed::Length(dx, Fixed::Zero(), dz);
+        if (!d.IsPositive() || (d - c.radius).Abs() > c.width * Fixed::Half()) return false;
+        Fixed round = (Bearing(dx, dz) - c.a0) * F(c.turn);
+        if (round.raw < 0) round += Fixed::TwoPi();
+        if (!(round < Fixed::TwoPi())) round -= Fixed::TwoPi();
+        s = round * c.radius;
+        return !(s > c.length());
+    }
+    inline bool ArcAt(const Arc& c, Fixed x, Fixed z, Fixed& h, Fixed& gx, Fixed& gz)
+    {
+        Fixed s, d, rise;
+        if (!ArcAlong(c, x, z, s, d)) return false;
+        h = Profile(s, c.up, c.flat, c.down, c.height, rise);
+        // Along the way it runs at (x, z), steeper toward the centre.
+        const Fixed slope = rise * c.radius / d;
+        gx = slope * F(c.turn) * (z - c.z) / d;
+        gz = -slope * F(c.turn) * (x - c.x) / d;
+        return true;
+    }
+    // A point on an arc's middle `s` along it.
+    inline void ArcPoint(const Arc& c, Fixed s, Fixed& x, Fixed& z)
+    {
+        Fixed sn, cs;
+        (c.a0 + F(c.turn) * s / c.radius).SinCos(sn, cs);
+        x = c.x + c.radius * sn; z = c.z + c.radius * cs;
+    }
+    // Is (x, z) under a deck, turned or not?
+    inline bool DeckOver(const Deck& d, Fixed x, Fixed z)
+    {
+        const Fixed dx = x - d.x, dz = z - d.z;
+        return (dx * d.cz - dz * d.sx).Abs() <= d.w * Fixed::Half() && (dx * d.sx + dz * d.cz).Abs() <= d.d * Fixed::Half();
+    }
+    // A point of a deck, `across` and `along` from its middle in its own frame.
+    inline void DeckPoint(const Deck& d, Fixed across, Fixed along, Fixed& x, Fixed& z)
+    {
+        x = d.x + across * d.cz + along * d.sx; z = d.z - across * d.sx + along * d.cz;
+    }
     inline bool HillAt(const Hill& k, Fixed x, Fixed z, Fixed& h, Fixed& gx, Fixed& gz)
     {
         const Fixed dx = x - k.x, dz = z - k.z;
@@ -148,10 +234,13 @@ namespace KartArena
         }
         return nullptr;
     }
-    inline const Spring* SpringAt(const Map& m, Fixed x, Fixed z)
+    // The spring a kart standing at `feet` over (x, z) is on, or null: one on a
+    // deck is not under a kart on the ground there, nor the other way round.
+    inline const Spring* SpringAt(const Map& m, Fixed x, Fixed z, Fixed feet)
     {
         for (const Spring& p : m.springs)
-            if ((x - p.x) * (x - p.x) + (z - p.z) * (z - p.z) <= SpringRadius() * SpringRadius()) return &p;
+            if ((x - p.x) * (x - p.x) + (z - p.z) * (z - p.z) <= SpringRadius() * SpringRadius()
+                && (feet - p.y).Abs() < F(5, 100)) return &p;
         return nullptr;
     }
     inline bool Over(Fixed x, Fixed z, Fixed cx, Fixed cz, Fixed w, Fixed d)
@@ -178,6 +267,8 @@ namespace KartArena
             if (RampAt(r, x, z, h, gx, gz) && (!stood || h + r.base > best)) { best = h + r.base; bgx = gx; bgz = gz; on = OnRamp; stood = true; }
         for (const Hill& k : m.hills)
             if (HillAt(k, x, z, h, gx, gz) && (!stood || h + k.base > best)) { best = h + k.base; bgx = gx; bgz = gz; on = OnHill; stood = true; }
+        for (const Arc& c : m.arcs)
+            if (ArcAt(c, x, z, h, gx, gz) && (!stood || h + c.base > best)) { best = h + c.base; bgx = gx; bgz = gz; on = OnRamp; stood = true; }
         if (!stood)
             if (const Pit* p = PitAt(m, x, z)) { best = -p->depth; on = InPit; }
         if (gx_out) *gx_out = bgx;
@@ -194,7 +285,7 @@ namespace KartArena
     {
         Fixed best = Solid(m, x, z, gx_out, gz_out, what);
         for (const Deck& d : m.decks)
-            if (d.h > best && d.h <= feet + reach && Over(x, z, d.x, d.z, d.w, d.d))
+            if (d.h > best && d.h <= feet + reach && DeckOver(d, x, z))
             {
                 best = d.h;
                 if (gx_out) *gx_out = Fixed::Zero();
@@ -215,11 +306,14 @@ namespace KartArena
     {
         for (Ramp& r : m.ramps) Turn(r.yaw, r.sx, r.cz);
         for (Pad& p : m.pads)   Turn(p.yaw, p.sx, p.cz);
+        for (Deck& d : m.decks) Turn(d.yaw, d.sx, d.cz);
+        for (Arc& c : m.arcs)   c.a0 = Fixed::TwoPi() * F(((c.from % 360) + 360) % 360, 360);
         // What stands in a pit stands on its floor.
         auto floor = [&m](Fixed x, Fixed z) { const Pit* p = PitAt(m, x, z); return p ? -p->depth : Fixed::Zero(); };
         for (Ramp& r : m.ramps)   r.base = floor(r.x, r.z);
         for (Block& b : m.blocks) b.base = floor(b.x, b.z);
         for (Hill& h : m.hills)   h.base = floor(h.x, h.z);
+        for (Arc& c : m.arcs)     { Fixed x, z; ArcPoint(c, c.length() * Fixed::Half(), x, z); c.base = floor(x, z); }
         const Fixed half_root3 = F(3).Sqrt() / F(2);   // where an ellipsoid twice as wide meets the ground
         for (Hill& h : m.hills)
         {
@@ -228,7 +322,7 @@ namespace KartArena
             h.y0 = -h.b * half_root3;
         }
         for (Pad& p : m.pads)       p.y = Solid(m, p.x, p.z, &p.gx, &p.gz);
-        for (Spring& p : m.springs) p.y = Solid(m, p.x, p.z);
+        for (Spring& p : m.springs) p.y = p.on.IsPositive() ? p.on : Solid(m, p.x, p.z);
     }
 
     /*
@@ -239,15 +333,19 @@ namespace KartArena
      *   pad      solid ground in one piece under the whole plate -- level, or
      *            one slope; its middle clear of blocks; no other pad over
      *            it, no spawn at it
-     *   spring   the same on level ground, and no pad at it
+     *   spring   the same on level ground, and no pad at it; one on a deck,
+     *            on that deck all round, no ground standing up through it
      *   block    level solid ground under it: not on a ramp or a hill, and
      *            wholly in a pit or wholly out
-     *   ramp     one that ends in a drop facing a wall has its lip on the
-     *            karts' bound (a kart's reach inside the wall), or well
-     *            back from it: no trench under the lip to be stuck in
+     *   ramp     one that ends in a drop facing a wall runs on into the
+     *            wall (its lip past the wall's inside), or stops well back
+     *            from it: no trench under the lip to be stuck in -- not
+     *            even the hairline a lip on the karts' bound leaves
      *   deck     room to drive under it, over the ground there (a block
      *            under one is a pillar)
-     *   pit      a ramp or a hill wholly in it or wholly out, and a hill
+     *   arc      less than a full circle round, narrower than its radius, and
+     *            its inside edge no steeper than a kart can climb
+     *   pit      a ramp, an arc or a hill wholly in it or wholly out, and a hill
      *            outside it well back (its dome is drawn on under the
      *            ground and would show in the pit); no spawn at its edge;
      *            a way out -- a spring in it, or a ramp in it as high as
@@ -285,7 +383,27 @@ namespace KartArena
         };
         for (const Block& b : m.blocks)   box(b.x, b.z, b.w, b.d, b.yaw);
         for (const Ramp& r : m.ramps)     box(r.x, r.z, r.width, r.length(), r.yaw);
-        for (const Deck& d : m.decks)     box(d.x, d.z, d.w, d.d, 0);
+        for (const Deck& d : m.decks)
+        {
+            if (d.yaw % 90 == 0) { box(d.x, d.z, d.w, d.d, d.yaw); continue; }
+            // Turned: by discs along its length.
+            const Fixed r = Fixed::Min(d.w, d.d) * Fixed::Half(), run = Fixed::Max(d.w, d.d) * Fixed::Half() - r;
+            const bool along = d.d >= d.w;
+            for (Fixed t = -run; !(t > run); t += F(2))
+            {
+                Fixed x, z;
+                DeckPoint(d, along ? Fixed::Zero() : t, along ? t : Fixed::Zero(), x, z);
+                round(x, z, r);
+            }
+        }
+        // An arc by discs along its middle, two units apart.
+        for (const Arc& c : m.arcs)
+            for (Fixed t = Fixed::Zero(); !(t > c.length()); t += F(2))
+            {
+                Fixed x, z;
+                ArcPoint(c, t, x, z);
+                round(x, z, c.width * Fixed::Half());
+            }
         for (const Pit& p : m.pits)
         {
             const auto e = rect(p.x, p.z, p.w, p.d);
@@ -365,7 +483,21 @@ namespace KartArena
         }
         for (const Spring& p : m.springs)
         {
-            plate("spring", p.x, p.z, Fixed::Zero(), Fixed::One(), SpringRadius(), SpringRadius(), true, nullptr);
+            if (p.on.IsPositive())
+            {
+                bool held = true;
+                for (int i = -2; i <= 2; ++i)
+                    for (int j = -2; j <= 2; ++j)
+                    {
+                        if (i * i + j * j > 4) continue;
+                        const Fixed px = p.x + SpringRadius() * F(i, 2), pz = p.z + SpringRadius() * F(j, 2);
+                        bool deck = false;
+                        for (const Deck& d : m.decks) deck = deck || (d.h == p.on && DeckOver(d, px, pz));
+                        held = held && deck && Solid(m, px, pz) < p.on;
+                    }
+                if (!held) say("spring", p.x, p.z, "not on one deck at its height");
+            }
+            else plate("spring", p.x, p.z, Fixed::Zero(), Fixed::One(), SpringRadius(), SpringRadius(), true, nullptr);
             for (const Spot& a : m.spawns) if (within(a, p.x, p.z, F(7, 2))) say("spring", p.x, p.z, "at a spawn");
         }
         for (size_t i = 0; i < m.blocks.size(); ++i)
@@ -380,9 +512,12 @@ namespace KartArena
                                               b.z - turn[i].s * hw * F(u) + turn[i].c * hd * F(v)) == b.base;
             if (!level) say("block", b.x, b.z, "not on level ground");
         }
-        // A ramp that ends in a drop facing a wall, short of the karts' bound
-        // by less than a kart can turn in: the trench under its lip is a place
-        // to fall into, be stuck in, and not be seen.
+        // A ramp that ends in a drop facing a wall, short of the wall by
+        // less than a kart can turn in: the floor between its lip and the
+        // wall is a trench to fall into, be stuck in, and not be seen. A lip
+        // right on the karts' bound is one too: the ground's sums there are a
+        // hair either side of it, and a slim ride finds the hair. Only ground
+        // as high just past the lip (another ramp, a deck) fills it.
         for (const Ramp& r : m.ramps)
         {
             if (!r.down.IsZero()) continue;
@@ -391,9 +526,9 @@ namespace KartArena
             const Fixed hl = r.length() * Fixed::Half();
             const Fixed ex = r.x + r.sx * hl, ez = r.z + r.cz * hl;   // its lip's middle
             const Fixed out = along_x ? ex * r.sx : ez * r.cz;         // how far out, the way it goes
-            const Fixed gap = Half() - F(1) - out;
-            if (gap < F(1, 50) || !(gap < F(4))) continue;
-            if (Solid(m, ex + r.sx * gap * Fixed::Half(), ez + r.cz * gap * Fixed::Half()) < r.base + r.height - F(35, 100))
+            if (!(out < Half()) || !(out > Half() - F(5))) continue;  // into the wall, or well back
+            const Fixed past = F(1, 20);
+            if (Solid(m, ex + r.sx * past, ez + r.cz * past) < r.base + r.height - F(35, 100))
                 say("ramp", r.x, r.z, "a trench between its lip and the wall");
         }
         for (const Deck& d : m.decks)
@@ -401,8 +536,21 @@ namespace KartArena
             Fixed top = F(-1000);
             for (int i = -10; i <= 10; ++i)
                 for (int j = -10; j <= 10; ++j)   // a hair in: a ramp along its edge is beside it, not under
-                    top = Fixed::Max(top, Solid(m, d.x + d.w * F(i * 49, 1000), d.z + d.d * F(j * 49, 1000)));
+                {
+                    Fixed x, z;
+                    DeckPoint(d, d.w * F(i * 49, 1000), d.d * F(j * 49, 1000), x, z);
+                    top = Fixed::Max(top, Solid(m, x, z));
+                }
             if (top > d.h - DeckThick() - Headroom()) say("deck", d.x, d.z, "no room to drive under it");
+        }
+        for (const Arc& c : m.arcs)
+        {
+            if (!(c.length() < Fixed::TwoPi() * c.radius)) say("arc", c.x, c.z, "round onto itself");
+            if (!(c.width < c.radius)) say("arc", c.x, c.z, "wider than its radius");
+            const Fixed rise = Fixed::Max(c.up.IsPositive() ? c.height / c.up : Fixed::Zero(),
+                                          c.down.IsPositive() ? c.height / c.down : Fixed::Zero());
+            const Fixed inside = c.radius - c.width * Fixed::Half();
+            if (inside.IsPositive() && rise * c.radius / inside > F(7, 10)) say("arc", c.x, c.z, "its inside edge too steep to climb");
         }
         for (const Pit& p : m.pits)
         {
@@ -432,10 +580,13 @@ namespace KartArena
             for (const Ramp& r : m.ramps)
             {
                 const Fixed hl = r.length() * Fixed::Half(), hw = r.width * Fixed::Half();
+                // Its corners, what of it is in a wall cut off: a bank run on
+                // into the wall a pit goes up to is in the pit.
+                auto cut = [](Fixed v) { return Fixed::Max(-Half(), Fixed::Min(Half(), v)); };
                 int in = 0;
                 for (int i = -1; i <= 1; i += 2)
                     for (int j = -1; j <= 1; j += 2)
-                        in += Over(r.x + r.sx * hl * F(i) + r.cz * hw * F(j), r.z + r.cz * hl * F(i) - r.sx * hw * F(j), p.x, p.z, p.w + hair, p.d + hair);
+                        in += Over(cut(r.x + r.sx * hl * F(i) + r.cz * hw * F(j)), cut(r.z + r.cz * hl * F(i) - r.sx * hw * F(j)), p.x, p.z, p.w + hair, p.d + hair);
                 const bool mine = Over(r.x, r.z, p.x, p.z, p.w, p.d);
                 bool touched = in != 0;
                 if (!mine && !touched)   // none of its corners in the pit: is any of the pit under it?
@@ -447,6 +598,22 @@ namespace KartArena
                 }
                 if (mine ? in != 4 : touched) say("pit", p.x, p.z, "a ramp across its edge");
                 out_by = out_by || (mine && in == 4 && !(r.height < p.depth));
+            }
+            for (const Arc& c : m.arcs)
+            {
+                // Its middle and both edges, every two units round: all in the pit, or none.
+                int in = 0, all = 0;
+                for (Fixed t = Fixed::Zero(); !(t > c.length()); t += F(2))
+                    for (int e = -1; e <= 1; ++e)
+                    {
+                        Fixed sn, cs;
+                        (c.a0 + F(c.turn) * t / c.radius).SinCos(sn, cs);
+                        const Fixed r = c.radius + c.width * F(e, 2);
+                        in += Over(c.x + r * sn, c.z + r * cs, p.x, p.z, p.w + hair, p.d + hair);
+                        ++all;
+                    }
+                if (in != 0 && in != all) say("pit", p.x, p.z, "an arc across its edge");
+                out_by = out_by || (in == all && !(c.height < p.depth));
             }
             if (!out_by) say("pit", p.x, p.z, "no way out");
         }
@@ -465,8 +632,9 @@ namespace KartArena
      *              the arena. Ramps along that line climb out of it, there
      *              are springs in it, and whatever lands in it stands on
      *              its floor
-     *   banks      on up to two walls (a ramp up to the wall, ridden up and
-     *              rolled back down from), nothing else within reach of one
+     *   banks      on up to two walls (a ramp up to the wall and on into
+     *              it, ridden up and rolled back down from), nothing else
+     *              within reach of one
      *   a storey   a deck over a seventh to a third of the arena, on the
      *              high ground, on pillars: a ramp up in each of up to two
      *              of its corners, from its edge in under it, the deck cut
@@ -519,7 +687,7 @@ namespace KartArena
         m.springs.clear(); m.decks.clear(); m.pits.clear();
         m.generated = true;
         const int stretch = static_cast<int>((Half() / F(32)).ToInt());   // positions and levels; things 2x
-        const Fixed lip = (Half() - F(1)) / F(stretch);   // the karts' bound, on the plan
+        const Fixed lip = (Half() + F(1)) / F(stretch);   // the walls' outside, on the plan: a bank's lip is in the wall
         uint64_t r = seed | 1;
         auto pick = [&r](int lo, int hi) { return lo + static_cast<int>(KartArms::Next(r) % static_cast<uint64_t>(hi - lo + 1)); };
         struct Room { Fixed x, z, rad; };
@@ -599,7 +767,7 @@ namespace KartArena
             const int side = (first + b * pick(1, 3)) % 4;
             Ramp a; a.yaw = sides[side][0]; a.width = F(pick(20, 34)); a.up = F(pick(5, 7)); a.level = true;
             a.flat = a.down = Fixed::Zero(); a.height = F(pick(20, 30), 10);
-            const Fixed at = lip - a.up * Fixed::Half();     // its lip on the karts' bound
+            const Fixed at = lip - a.up * Fixed::Half();     // its lip in the wall
             const Fixed along = F(pick(-4, 4));
             if (reach[side] < F(30)) continue;               // the same side twice: one bank
             if (sunk && (side < 2) != (toward < 2)) continue;

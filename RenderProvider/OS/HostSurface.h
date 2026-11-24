@@ -5,10 +5,12 @@
 #include "../RenderProvider/DeviceFrame.h"
 #include "../RenderProvider/SceneSink.h"
 #include "../RenderProvider/Mesh.h"
+#include "../RenderProvider/Baked.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -45,7 +47,8 @@ typedef VulkanPresenter PlatformPresenter;
  * drawing through that device, and losing it switches back. The effective
  * sink is derived per frame from the graph -- a ready Device under this
  * surface, the standing preference (UseDevice, yes by default), and a backend
- * that has not failed -- so it can never disagree with what the graph says.
+ * that has not failed lately (one that did is tried again after 5 s, then
+ * 10, ... up to 2 min) -- so it can never disagree with what the graph says.
  * The backend is VulkanPresenter natively and WebGpuPresenter in a browser
  * (DeviceFrame.h).
  *
@@ -330,11 +333,17 @@ public:
             {
                 std::lock_guard<std::mutex> lock(m_rasterMutex);
                 for (const DeviceUpload& up : frame.uploads) m_sent.insert(up.source);
+                m_retryS = kRetryFirstS;
                 return;
             }
-            // Finished (lost device, lost window): this key is not tried again
-            // until the graph changes, and this very frame goes out on the host.
+            // Finished (lost device, lost window, a frame that threw): this
+            // very frame goes out on the host, and this key is not tried again
+            // until the graph changes -- or kRetryFirstS later, twice that
+            // the time after, up to kRetryMostS: a passing failure is not the
+            // end of the device, and one that repeats costs a frame a while.
             m_failedKey = m_presenterKey;
+            m_retryAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int64_t>(m_retryS * 1000.0));
+            m_retryS = std::min(m_retryS * 2.0, kRetryMostS);
             leaveDevice("the device stopped presenting");
         }
         presentHost();
@@ -463,6 +472,7 @@ private:
         Device* d = m_wantDevice.load() ? readyDevice() : nullptr;
         const uint64_t key = d ? d->DeviceKey() : 0;
         if (key == 0) m_failedKey = 0;          // the graph changed: a later device is tried afresh
+        if (m_failedKey != 0 && std::chrono::steady_clock::now() >= m_retryAt) m_failedKey = 0;   // ...and a failed one again, in a while
 
         if (m_presenter && key != m_presenterKey)
             leaveDevice(key == 0 ? (m_wantDevice.load() ? "the Device is gone or not ready"
@@ -474,6 +484,8 @@ private:
         if (!p)
         {
             m_failedKey = key;
+            m_retryAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int64_t>(m_retryS * 1000.0));
+            m_retryS = std::min(m_retryS * 2.0, kRetryMostS);
             ETCS_LOG("HostSurface", "RID:" << getRID() << " could not bring up the device "
                      "backend -- staying on the host.");
             return;
@@ -591,8 +603,9 @@ private:
     /*
      * GEOMETRY THE DEVICE LACKS, sent beside the scenes that use it -- a mesh
      * the backend has never had, or one whose version moved since it was
-     * sent. Resolved by RID to this module's Mesh; the unit box (mesh 0) is
-     * the backend's own and never travels.
+     * sent. Resolved by RID to a still container's merged solids (Baked.h),
+     * else to this module's Mesh; the unit box (mesh 0) is the backend's own
+     * and never travels.
      */
     // Each distinct mesh is resolved once per frame -- fifty nodes sharing
     // a shape are one registry lookup, not fifty -- and sent only when the
@@ -604,11 +617,20 @@ private:
             for (const DeviceMeshOp& op : sc.meshes)
             {
                 if (op.mesh == 0 || !m_meshSeen.insert(op.mesh).second) continue;
+                auto sent = m_meshSent.find(op.mesh);
+                if (std::shared_ptr<const BakedMesh> baked = BakedMeshes::Get(op.mesh))   // a still container's merged solids
+                {
+                    if (sent != m_meshSent.end() && sent->second == baked->version && m_presenter && m_presenter->HasMesh(op.mesh)) continue;
+                    DeviceMeshUpload up;
+                    up.mesh = op.mesh; up.vertices = baked->vertices; up.indices = baked->indices;
+                    frame.meshes.push_back(std::move(up));
+                    m_meshSent[op.mesh] = baked->version;
+                    continue;
+                }
                 ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), op.mesh);
                 if (!e || e->getSourceTag() != ETCS::Buffer("Mesh")) continue;
                 const Mesh* mesh = static_cast<const Mesh*>(e->getTrueType());
-                auto it = m_meshSent.find(op.mesh);
-                if (it != m_meshSent.end() && it->second == mesh->Version() && m_presenter && m_presenter->HasMesh(op.mesh)) continue;
+                if (sent != m_meshSent.end() && sent->second == mesh->Version() && m_presenter && m_presenter->HasMesh(op.mesh)) continue;
                 DeviceMeshUpload up;
                 mesh->Fill(up);
                 frame.meshes.push_back(std::move(up));
@@ -978,6 +1000,9 @@ private:
     std::unique_ptr<PlatformPresenter> m_presenter;
     uint64_t                m_presenterKey = 0;
     uint64_t                m_failedKey    = 0;
+    std::chrono::steady_clock::time_point m_retryAt{};      // when a failed key is tried again
+    static constexpr double kRetryFirstS = 5.0, kRetryMostS = 120.0;
+    double                  m_retryS       = kRetryFirstS;
     std::atomic<bool>       m_wantDevice { true };
     std::atomic<bool>       m_onDevice   { false };
 

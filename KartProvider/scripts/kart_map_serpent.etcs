@@ -1,15 +1,17 @@
 #!/usr/bin/env etcs
 # SERPENT: five walls across the arena, each open at one end and the next at
 # the other, so the way from one end to the other winds back and forth --
-# pads down every lane to send it round, and a spring before the middle of
-# every wall: taken at speed it clears the wall, a short cut for the brave.
+# pads down every lane to send it round, a spring before the middle of every
+# wall (taken at speed it clears the wall, a short cut for the brave), and two
+# skyways crossing over the middle from lane 2 to lane 5.
 #   run kart_map_serpent.etcs battle=<KartBattle>
 # AddBlock <x> <z> <width> <depth> <height> <yaw>; AddRamp <x> <z> <yaw> <width>
 # <up> <flat> <down> <height>; AddHill <x> <z> <radius> <height>; AddPad <x> <z>
 # <yaw>; AddSpring <x> <z>; AddDeck <x> <z> <width> <depth> <height>; AddPit <x>
 # <z> <width> <depth> <deep>; AddPickupUp <x> <z>, a box on the deck over the
 # spot (KartArena.h). A ramp rises, and a pad pushes, toward its yaw (0 +z,
-# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor.
+# 90 +x, 180 -z, 270 -x); what is in a pit stands on its floor. AddDeckAt <x>
+# <z> <yaw> <width> <depth> <height>: a deck turned, `depth` along its yaw.
 requires battle [KartBattle]
 battle.AddMap(serpent)
 
@@ -35,6 +37,19 @@ battle.AddSpring(0.0, -40.0)
 battle.AddSpring(0.0, -8.0)
 battle.AddSpring(0.0, 24.0)
 battle.AddSpring(0.0, 56.0)
+
+# THE SKYWAYS, two short cuts over the middle: narrow decks on the diagonals,
+# corner to corner, crossing in the middle one over the other. Each climbs
+# out of lane 2 at one end, the way it runs, and comes down into lane 5 at
+# the other, the far side: west to east low (4.5, a ramp 30 long), east to
+# west high (7, 35 long) -- 1.75 between them where they cross, and both
+# well over the walls (3).
+battle.AddRamp(-72.13, -52.4, 54.0, 4.0, 30.0, 0.0, 0.0, 4.5)
+battle.AddDeckAt(0.0, 0.0, 54.0, 4.0, 148.6, 4.5)
+battle.AddRamp(72.13, 52.4, 234.0, 4.0, 30.0, 0.0, 0.0, 4.5)
+battle.AddRamp(65.05, -47.3, 306.0, 4.0, 35.0, 0.0, 0.0, 7.0)
+battle.AddDeckAt(0.0, 0.0, 306.0, 4.0, 126.1, 7.0)
+battle.AddRamp(-65.05, 47.3, 126.0, 4.0, 35.0, 0.0, 0.0, 7.0)
 
 battle.AddSpawn(-72.0, -80.0)
 battle.AddSpawn(72.0, -48.0)

@@ -1,0 +1,147 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# A MODEL'S PANE: a camera on a room, the model's world in it, the hand on it
+# (PaintModeler), and its bar -- whatever page it is in. The paint page puts it
+# in its own pane and its toolbar row (paint_model.etcs); a game's builder in
+# a pane of its own (KartProvider's kart_garage.etcs).
+#
+#     run PaintProvider/scripts/paint_model_pane.etcs model=<PaintModeler> pane=<Drawable2D> row=<Drawable2D>
+#         palette=<PaintPalette> brush=<PaintTool> layout=<Layout> input=<PaintInput>
+#
+# `pane` is what the camera fills, `row` what the bar is a 64-high box of; both
+# are the layout's (BindLayout), so the same solve sizes them.
+
+requires model   [PaintModeler]
+requires pane    [Drawable2D]
+requires row     [Drawable2D]
+requires palette [PaintPalette]
+requires brush   [PaintTool]
+requires layout  [Layout]
+requires input   [PaintInput]
+
+# ── the pane, filling `pane` ─────────────────────────────────────────────────
+#
+# A child of it, so it fills it at any size by being declared under it (a box
+# is placed relative to its layout parent, LayoutProvider/Clayout.h). Order 5
+# puts it over whatever else is there; it covers it whole.
+#
+# A compositor around the camera because hiding is a compositor's verb and not
+# a camera's (RenderProvider.cc's tag blocks), and because the tools need a
+# parent that is not the picture.
+pane.spawn(RenderProvider::CompositeDrawable2D pane3d)
+pane3d.Create(952, 632)
+pane3d.SetPosition(0, 0)
+pane3d.SetOrder(5)
+pane3d.SetBackground(0.10, 0.11, 0.14, 1.0)
+pane3d.SetHidden(1)
+
+pane3d.spawn(RenderProvider::Camera3D m3_eye)
+m3_eye.Create(952, 632)
+m3_eye.SetPosition(0, 0)
+m3_eye.SetOrder(1)
+m3_eye.SetBackground(0.16, 0.18, 0.22, 1.0)
+m3_eye.SetLens(50.0, 0.05, 600.0)
+
+# ── the room ─────────────────────────────────────────────────────────────────
+#
+# DRIVEN (Scene3D::SetDriven): a picture of this world steps nothing in it.
+# Nothing here moves but by a line, and a part left where a drag put it must
+# not be somewhere else the next frame.
+spawn RenderProvider::Scene3D m3_world
+m3_world.Create(1.0, 1.0, 1.0)
+m3_world.SetVisible(0)
+m3_world.SetDriven(1)
+m3_eye.SetScene(@m3_world)
+
+# The ground a new part stands on: y = 0 is its top (PaintModeler::addAtLocked).
+m3_world.spawn(RenderProvider::Scene3D m3_floor)
+m3_floor.Create(24.0, 0.04, 24.0)
+m3_floor.SetPosition(0.0, -0.02, 0.0)
+m3_floor.SetColor(0.30, 0.32, 0.36, 1.0)
+
+# ── the hand ─────────────────────────────────────────────────────────────────
+model.BindCamera(@m3_eye)
+model.BindTool(@brush)
+model.SetOrbit(11.0, 35.0, 28.0)
+model.LookAt(0.0, 0.5, 0.0)
+
+run paint_model_world.etcs world=m3_world model=model
+
+# The axes on the selected part: x red, y green, z blue, an arrow each way.
+# Siblings of the model, not parts of it -- the modeller sizes, aims and shows
+# them, and a drag that takes hold of one keeps to its axis.
+m3_world.spawn(RenderProvider::Mesh m3_axis_shape)
+m3_axis_shape.Create()
+m3_axis_shape.Arrow(0.35, 0.3)
+
+m3_world.spawn(RenderProvider::Scene3D m3_axis_x)
+m3_axis_x.Create(0.1, 1.0, 0.1)
+m3_axis_x.SetColor(0.90, 0.30, 0.28, 1.0)
+m3_axis_x.SetMesh(@m3_axis_shape)
+model.BindAxis(0, @m3_axis_x)
+
+m3_world.spawn(RenderProvider::Scene3D m3_axis_y)
+m3_axis_y.Create(0.1, 1.0, 0.1)
+m3_axis_y.SetColor(0.35, 0.80, 0.40, 1.0)
+m3_axis_y.SetMesh(@m3_axis_shape)
+model.BindAxis(1, @m3_axis_y)
+
+m3_world.spawn(RenderProvider::Scene3D m3_axis_z)
+m3_axis_z.Create(0.1, 1.0, 0.1)
+m3_axis_z.SetColor(0.35, 0.50, 0.95, 1.0)
+m3_axis_z.SetMesh(@m3_axis_shape)
+model.BindAxis(2, @m3_axis_z)
+
+m3_world.spawn(RenderProvider::Scene3D m3_axis_nx)
+m3_axis_nx.Create(0.1, 1.0, 0.1)
+m3_axis_nx.SetColor(0.90, 0.30, 0.28, 1.0)
+m3_axis_nx.SetMesh(@m3_axis_shape)
+model.BindAxis(3, @m3_axis_nx)
+
+m3_world.spawn(RenderProvider::Scene3D m3_axis_ny)
+m3_axis_ny.Create(0.1, 1.0, 0.1)
+m3_axis_ny.SetColor(0.35, 0.80, 0.40, 1.0)
+m3_axis_ny.SetMesh(@m3_axis_shape)
+model.BindAxis(4, @m3_axis_ny)
+
+m3_world.spawn(RenderProvider::Scene3D m3_axis_nz)
+m3_axis_nz.Create(0.1, 1.0, 0.1)
+m3_axis_nz.SetColor(0.35, 0.50, 0.95, 1.0)
+m3_axis_nz.SetMesh(@m3_axis_shape)
+model.BindAxis(5, @m3_axis_nz)
+
+# ── shown with the model: its pane and its bar ───────────────────────────────
+model.AddPane(3, @pane3d)
+model.BindLayout(@layout)
+
+# The 3D bar: the toolbar row while the model is open, hidden -- so taking no
+# room -- until then.
+row.spawn(RenderProvider::CompositeDrawable2D bar3d)
+bar3d.Create(960, 64)
+bar3d.SetOrder(20)
+bar3d.SetBackground(0.16, 0.16, 0.19, 1.0)
+bar3d.SetHidden(1)
+layout.AddBox(@bar3d, @row, 1, 0.0, 2, 64.0)
+layout.SetDirection(@bar3d, 0)
+run paint_model_bar.etcs bar=bar3d palette=palette model=model layout=layout
+model.AddPane(3, @bar3d)
+
+# A hit on the camera is the modeller's, as a hit on the canvas is the tool's;
+# the wheel, the keys, undo and redo follow while the model is open.
+input.BindModeler(@model, @m3_eye)
+
+layout.AddBox(@pane3d, @pane, 1, 0.0, 1, 0.0)
+layout.AddBox(@m3_eye, @pane3d, 1, 0.0, 1, 0.0)
+
+# What is in hand, in the camera's corner: the tool, the axis, the chosen part,
+# the parts used of the pool.
+pane3d.spawn(RenderProvider::TextLabel m3_readout)
+m3_readout.Create(8)
+m3_readout.SetPosition(8, 8)
+m3_readout.SetPadding(3)
+m3_readout.SetColor(0.80, 0.80, 0.84, 1.0)
+m3_readout.SetBackground(0.106, 0.110, 0.078, 0.80)
+m3_readout.SetText(select)
+m3_readout.SetOrder(10)
+model.BindReadout(@m3_readout)

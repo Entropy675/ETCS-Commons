@@ -368,6 +368,17 @@ public:
         Route(ev);
     }
 
+    // One event as a window sent it, from another type's own edge: a key's
+    // up or down goes the key's way, the rest the pointer's.
+    void ScriptEvent(uint8_t action, uint16_t key, uint8_t buttons, int32_t x, int32_t y)
+    {
+        if (action == INPUT_DOWN || action == INPUT_UP) { RouteKey(key, action == INPUT_DOWN); return; }
+        InputEvent ev{};
+        ev.action = action; ev.key = key; ev.buttons = buttons;
+        ev.x = static_cast<int16_t>(x); ev.y = static_cast<int16_t>(y);
+        Route(ev);
+    }
+
     size_t paneCount() const { return m_panes.size(); }
 
     // The panes in the order events will be offered to them, so a configuration

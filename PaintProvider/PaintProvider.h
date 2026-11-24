@@ -1187,6 +1187,17 @@ DEFINE_WORK_FUNC_TYPED(PaintPalette, AddHoverLabel, (ETCS::RID, entry), (ETCS::R
     self.AddHoverLabel(entry, label);
 }
 
+// BindHint <label> -- the page's one hint; AddHint <node>, <sentence> -- what a
+// control does, shown above it while it is hovered (PaintPalette::show_hint).
+DEFINE_WORK_FUNC_TYPED(PaintPalette, BindHint, (ETCS::RID, label)) { (void)ctx; self.BindHint(label); }
+DEFINE_WORK_FUNC(PaintPalette, AddHint)
+{
+    (void)ctx;
+    ETCS::RID node = 0;
+    data >> node;
+    self.AddHint(node, data.restAsString());
+}
+
 DEFINE_WORK_FUNC_TYPED(PaintPalette, AddRadiusDelta, (ETCS::RID, node), (float, delta))
 {
     (void)ctx;
@@ -2177,6 +2188,14 @@ DEFINE_WORK_FUNC_TYPED(PaintRouter, ReleaseButton, (uint32_t, button))
     self.ScriptReleaseButton(static_cast<uint16_t>(button));
 }
 
+// Event <action> <key> <buttons> <x> <y> -- an InputEvent's fields
+// (ontology/InputSource.h), for a type that has the window's edge itself.
+DEFINE_WORK_FUNC_TYPED(PaintRouter, Event, (uint32_t, action), (uint32_t, key), (uint32_t, buttons), (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    self.ScriptEvent(static_cast<uint8_t>(action), static_cast<uint16_t>(key), static_cast<uint8_t>(buttons), x, y);
+}
+
 DEFINE_WORK_FUNC(PaintRouter, Report)
 {
     (void)ctx; (void)data;
@@ -2923,6 +2942,7 @@ DEFINE_WORK_FUNC_TYPED(PaintModeler, BindShare,   (ETCS::RID, share))   { (void)
 DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCell,    (std::string, role), (ETCS::RID, node))  { (void)ctx; self.BindCell(role, node); }
 DEFINE_WORK_FUNC_TYPED(PaintModeler, BindCaption, (std::string, role), (ETCS::RID, label)) { (void)ctx; self.BindCaption(role, label); }
 DEFINE_WORK_FUNC(PaintModeler, CycleShape)  { (void)ctx; (void)data; self.CycleShape(); }
+DEFINE_WORK_FUNC(PaintModeler, CycleMaterial) { (void)ctx; (void)data; self.CycleMaterial(); }
 DEFINE_WORK_FUNC(PaintModeler, CycleAxis)   { (void)ctx; (void)data; self.CycleAxis(); }
 DEFINE_WORK_FUNC(PaintModeler, ToggleSnap)  { (void)ctx; (void)data; self.ToggleSnap(); }
 DEFINE_WORK_FUNC(PaintModeler, CycleFormat) { (void)ctx; (void)data; self.CycleFormat(); }
@@ -2951,6 +2971,9 @@ DEFINE_WORK_FUNC_TYPED(PaintModeler, SetTool,  (std::string, name)) { (void)ctx;
 // SetAxis <x|y|z|none> -- the same one again lets go of it.
 DEFINE_WORK_FUNC_TYPED(PaintModeler, SetAxis,  (std::string, name)) { (void)ctx; self.SetAxis(name); }
 DEFINE_WORK_FUNC_TYPED(PaintModeler, SetShape, (std::string, name)) { (void)ctx; self.SetShape(name); }
+// AddMaterial <name> -- a material a part may be made of; SetMaterial <name|-> -- add's, and the chosen part's.
+DEFINE_WORK_FUNC_TYPED(PaintModeler, AddMaterial, (std::string, name)) { (void)ctx; self.AddMaterial(name); }
+DEFINE_WORK_FUNC_TYPED(PaintModeler, SetMaterial, (std::string, name)) { (void)ctx; self.SetMaterial(name); }
 // SetSnap <units> <degrees> -- the grid moves, sizes and turns land on; 0 is free.
 DEFINE_WORK_FUNC_TYPED(PaintModeler, SetSnap, (float, step), (float, degrees)) { (void)ctx; self.SetSnap(step, degrees); }
 // SetOrbit <distance> <yaw> <pitch> -- the eye about what it looks at, degrees.
@@ -2996,6 +3019,7 @@ DEFINE_WORK_FUNC(PaintModeler, Export)
 }
 DEFINE_WORK_FUNC(PaintModeler, Hash)     { (void)ctx; const std::string v = self.Hash();   data.reset(); data.writeString(v.c_str()); }
 DEFINE_WORK_FUNC(PaintModeler, Status)   { (void)ctx; const std::string v = self.Status(); data.reset(); data.writeString(v.c_str()); }
+DEFINE_WORK_FUNC(PaintModeler, Handles)  { (void)ctx; const std::string v = self.Handles(); data.reset(); data.writeString(v.c_str()); }
 // Report <id> -- "<shape> <x y z> <w h d> <r g b a>", or "-".
 DEFINE_WORK_FUNC(PaintModeler, Report)
 {

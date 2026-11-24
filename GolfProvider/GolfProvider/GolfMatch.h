@@ -278,6 +278,7 @@ public:
         m_ready = true;
         courseLocked(0, firstLayout(0));
         holeLocked(0);
+        readyLocked();   // a guest's lines that came before the courses were made (Trace)
     }
 
     // ── sessions (the families'); a match adds its hall line and its note ──
@@ -351,8 +352,14 @@ public:
     // ── what the families ask of a match ──────────────────────────────────
 
     bool ApplyConcrete(const std::string& author, const std::string& line) override { return applyLocked(author, line); }
-    void RestartConcrete() override { resetLocked(); }
+    void RestartConcrete() override { resetLocked(replayingLocked()); }
     std::string HashConcrete() override { return hashLocked(); }
+    bool ReadyConcrete() override { return m_ready; }   // no line before the courses are made (KartBattle's reason)
+    void ResyncedConcrete(uint64_t at) override
+    {
+        ETCS_LOG("GolfMatch", "this match differed from the host's at tick " << at << " -- replayed, and the same again");
+        noteLocked("the match differed from the host's -- put right");
+    }
     void EndedConcrete() override { noteLocked("the match is over -- " + m_owner + " closed it"); }
     std::string OpeningConcrete() override { return "join"; }
     std::string LeavingConcrete() override { return "leave"; }
@@ -886,7 +893,8 @@ private:
 
     // Back to the start: every ball off the course, the lobby on the first
     // course's first hole, the dice as made -- what every session begins from.
-    void resetLocked()
+    // `replay`: the trace is replayed next (Trace): this runtime's aim and menu are kept.
+    void resetLocked(bool replay = false)
     {
         for (size_t i = 0; i < m_slots.size(); ++i)
         {
@@ -898,9 +906,12 @@ private:
         }
         m_phase = Lobby; m_end = 0; m_hole_secs = 120;
         m_rng = 0x9E3779B97F4A7C15ull;
-        m_armed = false; m_mode = Idle; m_right = false;
-        m_menu = 0; m_editing = false; m_menu_open = true;
-        hideArrowLocked(); hideGhostLocked();
+        if (!replay)
+        {
+            m_armed = false; m_mode = Idle; m_right = false;
+            m_menu = 0; m_editing = false; m_menu_open = true;
+            hideArrowLocked(); hideGhostLocked();
+        }
         if (!m_defs.empty() && m_ready) { courseLocked(0, firstLayout(0)); holeLocked(0); }
     }
     uint64_t firstLayout(int c) const { return c < static_cast<int>(m_defs.size()) && m_defs[c].generated ? 0x5EEDull + static_cast<uint64_t>(c) : 0; }
@@ -998,6 +1009,7 @@ private:
             r.id = id;
             r.PlaceAt(x, y, z);
         }
+        k->RowsWritten();
         s.fx = x; s.fy = y; s.fz = z;
         s.park_at = -1;
     }
@@ -1070,6 +1082,7 @@ private:
             const Fixed speed = m_max_speed * len / m_max_pull;
             k->RowsUnder().Impulse(px, py, pz, Fixed::Half() * k->MassUnder() * speed * speed);
         }
+        k->RowsWritten();
         if (m_phase == Playing) ++s.strokes;
         return true;
     }
@@ -1099,7 +1112,7 @@ private:
         {
             std::lock_guard<std::recursive_mutex> lk(w->TreeMutex());
             for (size_t i = 0; i < m_slots.size(); ++i)
-                if (!m_slots[i].out) forcesLocked(i);
+                if (!m_slots[i].out) { forcesLocked(i); if (Causal_* k = causal(m_slots[i].ball)) k->RowsWritten(); }
             w->Interact(dt());
             for (size_t i = 0; i < m_slots.size(); ++i)
                 if (!m_slots[i].out && !m_slots[i].player.empty()) afterLocked(i);
@@ -1253,6 +1266,7 @@ private:
             {
                 std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
                 c->RowsUnder().RotateBy(Fixed::Zero(), Fixed::One(), Fixed::Zero(), F(6, 100));
+                c->RowsWritten();
             }
         }
         if (m_phase == Playing)
@@ -1356,6 +1370,7 @@ private:
                     const Fixed speed = (F(98, 10) * far).Sqrt();
                     std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
                     k->RowsUnder().Impulse((x - bx) / far, Fixed::One(), (z - bz) / far, Fixed::Half() * k->MassUnder() * speed * speed);
+                    k->RowsWritten();
                     s.fx = bx; s.fy = by; s.fz = bz;   // lost from there, it goes back there
                 }
                 Effect e; e.kind = kind; e.owner = static_cast<int>(i);
@@ -1441,6 +1456,7 @@ private:
                 if (wallAt(x + dx * f, y + dy * f + F(1, 5), z + dz * f)) { share = share / F(4); break; }
             }
             r.Impulse(dx / d, dy / d + F(3, 10), dz / d, share);
+            k->RowsWritten();
         }
         Strike st; st.x = x; st.y = y; st.z = z; st.at = static_cast<int64_t>(m_tick);
         drawStrikeLocked(st);
@@ -1515,6 +1531,7 @@ private:
             OrderVector& r = c->RowsUnder();
             r.PlaceAt(b.x, b.y, b.z);
             GolfCourse::Turn(b, r);
+            c->RowsWritten();
         }
         verb(node, "SetVisible", "1");
     }
@@ -1751,6 +1768,7 @@ private:
             o.PlaceAt(x, y, z);
             GolfCourse::Slab b; b.ys = sx; b.yc = cz;
             GolfCourse::Turn(b, o);
+            c->RowsWritten();
         }
     }
 
@@ -2016,6 +2034,7 @@ private:
                 OrderVector& r = c->RowsUnder();
                 r.PlaceAt(x, top + F(35, 1000), z);
                 GolfCourse::Turn(*on, r);
+                c->RowsWritten();
             }
             if (!s.shadow_shown) { verb(s.shadow, "SetVisible", "1"); s.shadow_shown = true; }
         }
@@ -2359,8 +2378,10 @@ private:
         if (m_fps_ms < 1000.0 && m_fps_seen >= 0) return;
         const std::string said = answer(m_camera, "Renders");
         const int64_t now = said.empty() ? -1 : std::atoll(said.c_str());
+        // ...and where they were drawn: "gpu" through the device, "cpu" on the host.
         if (now >= 0 && m_fps_seen >= 0 && m_fps_ms > 0.0)
-            verb(m_fps, "SetText", std::to_string(static_cast<int>(static_cast<double>(now - m_fps_seen) * 1000.0 / m_fps_ms + 0.5)) + " fps");
+            verb(m_fps, "SetText", std::to_string(static_cast<int>(static_cast<double>(now - m_fps_seen) * 1000.0 / m_fps_ms + 0.5)) + " fps "
+                                   + (answer(m_camera, "OnDevice") == "1" ? "gpu" : "cpu"));
         m_fps_seen = now;
         m_fps_ms = 0.0;
     }
@@ -2400,8 +2421,8 @@ private:
     {
         Causal_* c = causal(node);
         if (!c) return;
-        std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
-        c->RowsUnder().PlaceAt(x, y, z);
+        { std::lock_guard<std::recursive_mutex> lk(c->TreeMutex()); c->RowsUnder().PlaceAt(x, y, z); }
+        c->RowsWritten();
     }
     // Placed and turned `yaw` degrees about +y; `flat` lays an arrow (its
     // length +y) along the ground first, a quarter turn about x.
@@ -2412,10 +2433,11 @@ private:
         GolfCourse::Slab b;
         GolfCourse::Degrees(F(yaw), b.ys, b.yc);
         if (flat) { b.ts = Fixed::One(); b.tc = Fixed::Zero(); }
-        std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
-        OrderVector& r = c->RowsUnder();
-        r.PlaceAt(x, y, z);
-        GolfCourse::Turn(b, r);
+        { std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+          OrderVector& r = c->RowsUnder();
+          r.PlaceAt(x, y, z);
+          GolfCourse::Turn(b, r); }
+        c->RowsWritten();
     }
     /*
      * A pooled node not in use: hidden, far below, IN A BERTH OF ITS OWN

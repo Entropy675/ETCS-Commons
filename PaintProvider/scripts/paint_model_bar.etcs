@@ -5,7 +5,7 @@
 #
 #     run paint_model_bar.etcs bar=<Drawable2D> palette=<PaintPalette> model=<PaintModeler> layout=<Layout>
 #
-# The 2D bar's shape (paint_toolbar.etcs) -- seventeen grow cells in a row the
+# The 2D bar's shape (paint_toolbar.etcs) -- grow cells in a row the
 # layout solves, each a compositor with its words as children -- and the same
 # row: the two bars take turns at it, since a hidden box takes no room in the
 # solve (Clayout::hidden). The swatches are the 2D bar's own six, declared to
@@ -221,6 +221,41 @@ palette.AddCall(@m3_arrow_shape, @model, PaintModeler.CycleShape)
 palette.StretchArrow(@m3_arrow_shape)
 model.BindCaption(shape, @m3_cap_shape)
 
+# The material add makes a part of, and outside the add tool the chosen
+# part's -- "-" none (PaintModeler::AddMaterial says which there are).
+bar.spawn(RenderProvider::CompositeDrawable2D m3_material)
+m3_material.Create(60, 64)
+m3_material.SetOrder(1)
+m3_material.SetBackground(0.16, 0.16, 0.2, 1.0)
+layout.AddBox(@m3_material, @bar, 1, 0.0, 1, 0.0)
+palette.AddCall(@m3_material, @model, PaintModeler.CycleMaterial)
+m3_material.spawn(RenderProvider::TextLabel m3_word_material)
+m3_word_material.Create()
+m3_word_material.SetPosition(8, 28)
+m3_word_material.SetSize(1)
+m3_word_material.SetColor(0.9, 0.9, 0.88, 1.0)
+m3_word_material.SetText(made)
+m3_word_material.SetOrder(2)
+palette.AddCall(@m3_word_material, @model, PaintModeler.CycleMaterial)
+m3_material.spawn(RenderProvider::TextLabel m3_cap_material)
+m3_cap_material.Create()
+m3_cap_material.SetPosition(8, 46)
+m3_cap_material.SetSize(1)
+m3_cap_material.SetColor(0.79, 0.71, 0.35, 1.0)
+m3_cap_material.SetText(-)
+m3_cap_material.SetOrder(2)
+palette.AddCall(@m3_cap_material, @model, PaintModeler.CycleMaterial)
+m3_material.spawn(RenderProvider::PolygonDrawable2D m3_arrow_material)
+m3_arrow_material.Create()
+m3_arrow_material.AddPoint(30, 0)
+m3_arrow_material.AddPoint(60, 12)
+m3_arrow_material.AddPoint(0, 12)
+m3_arrow_material.SetFill(0.92, 0.92, 0.90, 0.85)
+m3_arrow_material.SetOrder(2)
+palette.AddCall(@m3_arrow_material, @model, PaintModeler.CycleMaterial)
+palette.StretchArrow(@m3_arrow_material)
+model.BindCaption(material, @m3_cap_material)
+
 # The axis a move slides along, a turn turns about and a size stretches: x, y, z, free. Lit while one is set.
 bar.spawn(RenderProvider::CompositeDrawable2D m3_axis)
 m3_axis.Create(60, 64)
@@ -306,3 +341,23 @@ m3_arrow_export.SetOrder(2)
 palette.AddCall(@m3_arrow_export, @model, PaintModeler.CycleFormat)
 palette.StretchArrow(@m3_arrow_export)
 model.BindCaption(export, @m3_cap_export)
+
+# ── what each cell is, in a sentence shown while it is hovered ──────────────
+palette.AddHint(@m3_swatch_ink, The colour new parts get and the paint tool puts on, its arrow opens the colour wheel.)
+palette.AddHint(@m3_swatch_red, The colour new parts get and the paint tool puts on, its arrow opens the colour wheel.)
+palette.AddHint(@m3_swatch_amber, The colour new parts get and the paint tool puts on, its arrow opens the colour wheel.)
+palette.AddHint(@m3_swatch_green, The colour new parts get and the paint tool puts on, its arrow opens the colour wheel.)
+palette.AddHint(@m3_swatch_blue, The colour new parts get and the paint tool puts on, its arrow opens the colour wheel.)
+palette.AddHint(@m3_swatch_paper, The colour new parts get and the paint tool puts on, its arrow opens the colour wheel.)
+palette.AddHint(@m3_tool_select, Click a part to choose it, or drag one of its arrows to slide it along that axis.)
+palette.AddHint(@m3_tool_move, Drag a part across the view, or drag one of its arrows to slide it along that axis only.)
+palette.AddHint(@m3_tool_turn, Drag sideways to turn a part, about one of its arrows if you grab it.)
+palette.AddHint(@m3_tool_size, Drag up or down to grow or shrink a part, along one of its arrows if you grab it.)
+palette.AddHint(@m3_tool_add, Click the floor or a part to set a new part of the chosen shape there.)
+palette.AddHint(@m3_tool_paint, Click a part to give it the colour in hand.)
+palette.AddHint(@m3_tool_delete, Click a part to remove it.)
+palette.AddHint(@m3_shape, The shape the add tool makes, or the chosen part has, click to step through them.)
+palette.AddHint(@m3_material, What a part is made of, which a game can weigh it by, click to step through them.)
+palette.AddHint(@m3_axis, Holds move, turn and size to x, y or z, click to step through them.)
+palette.AddHint(@m3_snap, Rounds moves to a quarter unit and turns to fifteen degrees, click to switch it.)
+palette.AddHint(@m3_export, Writes the model out as a file in the format shown, its arrow changes the format.)

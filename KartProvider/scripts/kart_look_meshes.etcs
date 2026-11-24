@@ -1,0 +1,29 @@
+#!/usr/bin/env etcs
+# Eight meshes of the looks' pool (kart_looks.etcs).
+#   run kart_look_meshes.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Mesh m1)
+m1.Create()
+battle.AddLookMesh(@m1)
+world.spawn(RenderProvider::Mesh m2)
+m2.Create()
+battle.AddLookMesh(@m2)
+world.spawn(RenderProvider::Mesh m3)
+m3.Create()
+battle.AddLookMesh(@m3)
+world.spawn(RenderProvider::Mesh m4)
+m4.Create()
+battle.AddLookMesh(@m4)
+world.spawn(RenderProvider::Mesh m5)
+m5.Create()
+battle.AddLookMesh(@m5)
+world.spawn(RenderProvider::Mesh m6)
+m6.Create()
+battle.AddLookMesh(@m6)
+world.spawn(RenderProvider::Mesh m7)
+m7.Create()
+battle.AddLookMesh(@m7)
+world.spawn(RenderProvider::Mesh m8)
+m8.Create()
+battle.AddLookMesh(@m8)

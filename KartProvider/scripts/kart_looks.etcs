@@ -1,0 +1,45 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# WHAT A BUILT LOOK IS MADE OF (KartBattle::lookLocked): the shapes a part may
+# be drawn as, each in the unit box with the share of it it fills (a part
+# weighs its fill of its box); the materials, each a density as a share of
+# the kart's own; the team colour, which a part painted it is drawn in its
+# driver's colour instead; and the meshes the looks are drawn with, one a
+# colour of a vehicle, under the world (a node names its mesh by where it is).
+# The shapes are the modeller's (PaintProvider's paint_model_shapes.etcs), by
+# the same names, so a model drawn there is drawn the same here.
+#   run kart_looks.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+
+world.spawn(RenderProvider::Mesh part_sphere)
+part_sphere.Create()
+part_sphere.Sphere(16)
+battle.AddPartShape(sphere @part_sphere 0.5236)
+world.spawn(RenderProvider::Mesh part_cylinder)
+part_cylinder.Create()
+part_cylinder.Cylinder(24)
+battle.AddPartShape(cylinder @part_cylinder 0.7854)
+world.spawn(RenderProvider::Mesh part_pyramid)
+run ../../RenderProvider/scripts/mesh_pyramid.etcs shape=part_pyramid
+battle.AddPartShape(pyramid @part_pyramid 0.3333)
+world.spawn(RenderProvider::Mesh part_wedge)
+run ../../RenderProvider/scripts/mesh_wedge.etcs shape=part_wedge
+battle.AddPartShape(wedge @part_wedge 0.5)
+
+battle.AddMaterial(steel 3)
+battle.AddMaterial(alloy 1.5)
+battle.AddMaterial(plastic 0.8)
+battle.AddMaterial(wood 0.6)
+battle.AddMaterial(foam 0.2)
+
+# The modeller's red swatch (paint_model_bar.etcs).
+battle.LiveryKey(0.85, 0.18, 0.22)
+
+# Forty-eight meshes: a look takes one a colour, the team's and up to six more.
+run kart_look_meshes.etcs world=world battle=battle
+run kart_look_meshes.etcs world=world battle=battle
+run kart_look_meshes.etcs world=world battle=battle
+run kart_look_meshes.etcs world=world battle=battle
+run kart_look_meshes.etcs world=world battle=battle
+run kart_look_meshes.etcs world=world battle=battle

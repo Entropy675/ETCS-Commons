@@ -1,0 +1,30 @@
+#!/usr/bin/env etcs
+# A PYRAMID in the unit box: four sides and a base, a normal a face, wound so
+# (b - a) x (c - a) points out. Fills the Mesh it is handed; what names the
+# shape is the caller's (PaintProvider's modeller, KartProvider's vehicles).
+#   run RenderProvider/scripts/mesh_pyramid.etcs shape=<Mesh>
+requires shape [Mesh]
+shape.Create()
+shape.Clear()
+shape.AddVertex(-0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
+shape.AddVertex( 0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
+shape.AddVertex( 0.5, -0.5,  0.5,  0.0, -1.0, 0.0)
+shape.AddVertex(-0.5, -0.5,  0.5,  0.0, -1.0, 0.0)
+shape.AddTriangle(0, 1, 2)
+shape.AddTriangle(0, 2, 3)
+shape.AddVertex(-0.5, -0.5, -0.5,  0.0, 0.447, -0.894)
+shape.AddVertex( 0.5, -0.5, -0.5,  0.0, 0.447, -0.894)
+shape.AddVertex( 0.0,  0.5,  0.0,  0.0, 0.447, -0.894)
+shape.AddTriangle(4, 6, 5)
+shape.AddVertex( 0.5, -0.5, -0.5,  0.894, 0.447, 0.0)
+shape.AddVertex( 0.5, -0.5,  0.5,  0.894, 0.447, 0.0)
+shape.AddVertex( 0.0,  0.5,  0.0,  0.894, 0.447, 0.0)
+shape.AddTriangle(7, 9, 8)
+shape.AddVertex( 0.5, -0.5,  0.5,  0.0, 0.447, 0.894)
+shape.AddVertex(-0.5, -0.5,  0.5,  0.0, 0.447, 0.894)
+shape.AddVertex( 0.0,  0.5,  0.0,  0.0, 0.447, 0.894)
+shape.AddTriangle(10, 12, 11)
+shape.AddVertex(-0.5, -0.5,  0.5, -0.894, 0.447, 0.0)
+shape.AddVertex(-0.5, -0.5, -0.5, -0.894, 0.447, 0.0)
+shape.AddVertex( 0.0,  0.5,  0.0, -0.894, 0.447, 0.0)
+shape.AddTriangle(13, 15, 14)

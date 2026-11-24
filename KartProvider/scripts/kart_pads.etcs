@@ -1,9 +1,10 @@
 #!/usr/bin/env etcs
-# Four pads of the pool. `run kart_pads.etcs world=<Scene3D> battle=<KartBattle> dart=<Mesh>`
+# Four pads of the pool. `run kart_pads.etcs world=<Scene3D> ground=<Scene3D> battle=<KartBattle> dart=<Mesh>`
 requires world [Drawable3D]
+requires ground [Drawable3D]
 requires battle [KartBattle]
 requires dart [Mesh]
-run kart_pad.etcs world=world battle=battle dart=dart
-run kart_pad.etcs world=world battle=battle dart=dart
-run kart_pad.etcs world=world battle=battle dart=dart
-run kart_pad.etcs world=world battle=battle dart=dart
+run kart_pad.etcs world=world ground=ground battle=battle dart=dart
+run kart_pad.etcs world=world ground=ground battle=battle dart=dart
+run kart_pad.etcs world=world ground=ground battle=battle dart=dart
+run kart_pad.etcs world=world ground=ground battle=battle dart=dart

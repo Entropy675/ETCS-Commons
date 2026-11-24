@@ -175,9 +175,10 @@ The loader therefore links with a FIXED `-sINITIAL_MEMORY` by default: with grow
 off the function is never generated and the line cannot throw. Both knobs are
 Makefile variables, so comparing the two is one command and no regeneration --
 `ETCS_WEB_MEMORY` and `ETCS_WEB_POOL`; the ACE patch spells out the trade. Fixed
-means the heap is a budget: the default is 512 MB (it was 256, of which the
-runtime's arenas took ~240 after a paint page booted, so a 1216x960 two-layer
-canvas was the allocation that hit `Aborted(OOM)`), and anything that allocates by
+means the heap is a budget: the default is 2 GB less one page, the most that was
+booted and exercised (it was 256 MB, of which the runtime's arenas took ~240 after
+a paint page booted, so a 1216x960 two-layer canvas was the allocation that hit
+`Aborted(OOM)`; `loaders/Makefile` has the steps between), and anything that allocates by
 the picture asks first rather than letting `malloc` abort the tab
 (`paint_heap_can_take` in PaintProvider).
 

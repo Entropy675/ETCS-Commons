@@ -36,6 +36,9 @@
  *   field|<id>|<label>|<value>|<on>|<editing>
  *   button|<id>|<label>|<on>|<primary>
  *   head|<text>                          row|<rrggbb or ->|<text>
+ *   row|<rrggbb or ->|<text>|<z0>|<y0>|<z1>|<y1>   a row with a picture (62 x 28)
+ *   prect|<z>|<y>|<w>|<h>|<rrggbb>       ...its rects and discs, by centre,
+ *   pdisc|<z>|<y>|<r>|<rrggbb>           y up, after it
  *   hint|<text>
  *   preview|<x0>|<z0>|<x1>|<z1>          the picture's extent, then
  *   rect|<x>|<z>|<w>|<d>|<rrggbb>        rects and discs in it, by centre
@@ -179,6 +182,11 @@ private:
         std::vector<uint32_t> colours;
     };
     struct Shape { bool disc = false; float x = 0, z = 0, w = 0, d = 0; uint32_t rgb = 0; };
+    // A row of the table, and the picture beside it if it has one: an extent
+    // (z across, y up) and shapes in it.
+    struct Row { uint32_t rgb = 0xFFFFFFFFu; std::string text; bool pic = false; float z0 = 0, y0 = 0, z1 = 0, y1 = 0; std::vector<Shape> shapes; };
+    static constexpr int32_t kPicW = 62, kPicH = 28;
+    static int32_t rowH(const Row& r) { return r.pic ? kPicH + 4 : 18; }
     struct Hit { std::string what; int32_t x, y, w, h; };
 
     static constexpr int32_t kPad = 18, kRow = 38, kLabelW = 112;
@@ -231,7 +239,28 @@ private:
             else if (k == "sub") m_sub = at(1);
             else if (k == "hint") m_hint = at(1);
             else if (k == "head") m_head = at(1);
-            else if (k == "row") m_table.push_back({ at(1) == "-" ? 0xFFFFFFFFu : rgbOf(at(1)), at(2) });
+            else if (k == "row")
+            {
+                Row r;
+                r.rgb = at(1) == "-" ? 0xFFFFFFFFu : rgbOf(at(1));
+                r.text = at(2);
+                if (f.size() >= 7)
+                {
+                    r.z0 = std::strtof(at(3).c_str(), nullptr); r.y0 = std::strtof(at(4).c_str(), nullptr);
+                    r.z1 = std::strtof(at(5).c_str(), nullptr); r.y1 = std::strtof(at(6).c_str(), nullptr);
+                    r.pic = r.z1 > r.z0 && r.y1 > r.y0;
+                }
+                m_table.push_back(r);
+            }
+            else if ((k == "prect" || k == "pdisc") && !m_table.empty() && m_table.back().pic)
+            {
+                Shape s; s.disc = k == "pdisc";
+                s.x = std::strtof(at(1).c_str(), nullptr); s.z = std::strtof(at(2).c_str(), nullptr);
+                s.w = std::strtof(at(3).c_str(), nullptr);
+                s.d = s.disc ? s.w : std::strtof(at(4).c_str(), nullptr);
+                s.rgb = rgbOf(s.disc ? at(4) : at(5));
+                m_table.back().shapes.push_back(s);
+            }
             else if (k == "preview")
             {
                 m_has_preview = true;
@@ -455,7 +484,9 @@ private:
         int32_t ry = top;
         if (m_has_preview && right_w > 40)
         {
-            const int32_t side = std::min(right_w, static_cast<int32_t>(m_h) - top - kPad - 24 - static_cast<int32_t>(m_table.size() + 1) * 18);
+            int32_t table_h = 18;
+            for (const Row& r : m_table) table_h += rowH(r);
+            const int32_t side = std::min(right_w, static_cast<int32_t>(m_h) - top - kPad - 24 - table_h);
             const int32_t pw = std::max(60, side);
             const float sx = m_px1 > m_px0 ? static_cast<float>(pw - 8) / (m_px1 - m_px0) : 1.0f;
             const float sz = m_pz1 > m_pz0 ? static_cast<float>(pw - 8) / (m_pz1 - m_pz0) : 1.0f;
@@ -479,25 +510,55 @@ private:
             }
             ry += pw + 10;
         }
-        if (!m_head.empty()) { text(fit(m_head, right_w, 2), right_x, ry, 2, kDim); ry += 20; }
-        for (const auto& r : m_table)
+        // With pictures the text stands after them, the head over the text.
+        bool pics = false;
+        for (const Row& r : m_table) pics = pics || r.pic;
+        const int32_t text_x = right_x + (pics ? kPicW + 6 : 0);
+        if (!m_head.empty()) { text(fit(m_head, right_w - (text_x - right_x), 2), text_x, ry, 2, kDim); ry += 20; }
+        for (const Row& r : m_table)
         {
-            if (ry + 16 > static_cast<int32_t>(m_h) - kPad - 20) break;
+            const int32_t rh = rowH(r);
+            if (ry + rh - 2 > static_cast<int32_t>(m_h) - kPad - 20) break;
             int32_t tx = right_x;
-            if (r.first != 0xFFFFFFFFu)
+            if (r.pic)
             {
-                float c[4]; rgbf(r.first, c);
-                this->FillDisc(right_x + 6, ry + 6, 6, c[0], c[1], c[2], 1.0f);
+                // The picture fitted to its box at one scale, y up.
+                rrect(right_x, ry, kPicW, kPicH, 5, kWell, 1.0f);
+                const float s = std::min((kPicW - 6) / (r.z1 - r.z0), (kPicH - 6) / (r.y1 - r.y0));
+                const int32_t cx = right_x + kPicW / 2, cy = ry + kPicH / 2;
+                const float mz = (r.z0 + r.z1) * 0.5f, my = (r.y0 + r.y1) * 0.5f;
+                for (const Shape& sh : r.shapes)
+                {
+                    float c[4]; rgbf(sh.rgb, c);
+                    const int32_t px = cx + static_cast<int32_t>(std::lround((sh.x - mz) * s));
+                    const int32_t py = cy - static_cast<int32_t>(std::lround((sh.z - my) * s));
+                    if (sh.disc)
+                        this->FillDisc(px, py, static_cast<uint32_t>(std::max(1.0f, sh.w * s)), c[0], c[1], c[2], 1.0f);
+                    else
+                    {
+                        const int32_t w = std::max(1, static_cast<int32_t>(std::lround(sh.w * s)));
+                        const int32_t h = std::max(1, static_cast<int32_t>(std::lround(sh.d * s)));
+                        this->FillRect(px - w / 2, py - h / 2, static_cast<uint32_t>(w), static_cast<uint32_t>(h), c[0], c[1], c[2], 1.0f);
+                    }
+                }
+                tx = text_x;
+            }
+            else if (pics) tx = text_x;
+            const int32_t ty = ry + (rh - 18) / 2;
+            if (r.rgb != 0xFFFFFFFFu && !r.pic)
+            {
+                float c[4]; rgbf(r.rgb, c);
+                this->FillDisc(tx + 6, ty + 6, 6, c[0], c[1], c[2], 1.0f);
                 tx += 18;
             }
-            text(fit(r.second, right_w - (tx - right_x), 2), tx, ry, 2, kInk);
-            ry += 18;
+            text(fit(r.text, right_w - (tx - right_x), 2), tx, ty, 2, kInk);
+            ry += rh;
         }
         if (!m_hint.empty())
             text(fit(m_hint, static_cast<int32_t>(m_w) - 2 * kPad, 2), kPad, static_cast<int32_t>(m_h) - kPad - 12, 2, kDim);
     }
 
-    static constexpr uint32_t kMaxLines = 256;
+    static constexpr uint32_t kMaxLines = 1024;
 
     TextLabel*         m_label = nullptr;
     mutable std::mutex m_mu;           // the lines and the hits: written by the game, read by the frame edge
@@ -508,7 +569,7 @@ private:
     std::string        m_title, m_sub, m_hint, m_head;
     std::vector<Item>  m_items;
     std::vector<Shape> m_shapes;
-    std::vector<std::pair<uint32_t, std::string>> m_table;
+    std::vector<Row>   m_table;
     std::vector<Hit>   m_hits;
     bool               m_has_preview = false;
     float              m_px0 = 0, m_pz0 = 0, m_px1 = 1, m_pz1 = 1;

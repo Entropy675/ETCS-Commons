@@ -686,6 +686,7 @@ public:
  */
     void Hover(ETCS::RID node)
     {
+        show_hint(node);
         ETCS::RID target = 0;
         auto it = m_entries.find(node);
         if (it != m_entries.end()) { target = node; }
@@ -709,6 +710,23 @@ public:
         repaintPalette();
     }
 
+
+    /*
+     * A HINT: one sentence on what a control does, shown while the pointer is
+     * on it -- the control or anything inside it -- just above it (below, with
+     * no room above), kept inside the label's parent, and hidden when it
+     * leaves. One label a page (BindHint). Not "tip", which is the brush's nib.
+     */
+    void BindHint(ETCS::RID label)
+    {
+        m_hint_label = label;
+        m_hint_shown = 0;
+        if (label) paint_node_hidden(label, true);
+    }
+    void AddHint(ETCS::RID node, const std::string& text)
+    {
+        if (node != 0 && !text.empty()) m_hints[node] = text;
+    }
 
     void SetRadiusReadout(ETCS::RID label) { m_radius_readout = label; }
     void SetAlphaReadout(ETCS::RID label) { m_alpha_readout = label; }
@@ -1032,7 +1050,9 @@ private:
     void call_entry(ETCS::RID node, const Entry& e)
     {
         const std::string tag = e.action.substr(0, e.action.find('.'));
+        // This module's own by its tag; another module's (a game's) wherever it lives.
         ETCS::Entity* t = paint_resolve_tag(tag.c_str(), e.target);
+        if (!t) t = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), e.target);
         if (!t)
         {
             ETCS_LOG("PaintPalette", "RID:" << node << " calls " << e.action << " on RID:"
@@ -1095,6 +1115,48 @@ private:
 
     // The label for a hovered target: its own, or the one bound to any entry in
     // the same group (a group shares one caption). 0 hides whatever is showing.
+    void show_hint(ETCS::RID node)
+    {
+        if (m_hint_label == 0) return;
+        ETCS::RID at = 0;
+        std::string text;
+        {
+            ETCS::Held<Drawable2D_> h = ETCS::resolve_held<Drawable2D_>("Drawable2D", node);
+            for (ETCS::Entity* e = h ? static_cast<ETCS::Entity*>(h.get()) : nullptr; e; e = e->getParent())
+            {
+                auto it = m_hints.find(e->getRID());
+                if (it != m_hints.end()) { at = e->getRID(); text = it->second; break; }
+            }
+        }
+        if (at == m_hint_shown) return;
+        m_hint_shown = at;
+        if (at == 0) { paint_node_hidden(m_hint_label, true); return; }
+        // In the label's parent's space: the control's place there, and the
+        // room the parent has.
+        ETCS::RID parent = 0;
+        Rect2D room{ 0, 0, 0, 0 }, box{ 0, 0, 0, 0 };
+        {
+            ETCS::Held<Drawable2D_> l = ETCS::resolve_held<Drawable2D_>("Drawable2D", m_hint_label);
+            ETCS::Entity* p = l ? static_cast<ETCS::Entity*>(l.get())->getParent() : nullptr;
+            if (p) parent = p->getRID();
+        }
+        if (parent) paint_node_bounds(parent, room);
+        paint_node_bounds(at, box);
+        // The label measures itself once it has the sentence.
+        Rect2D own{ 0, 0, 0, 0 };
+        paint_node_text(m_hint_label, text);
+        paint_node_bounds(m_hint_label, own);
+        const Point2D o = paint_root_origin(at), po = parent ? paint_root_origin(parent) : Point2D{ 0, 0 };
+        const int32_t w = static_cast<int32_t>(own.w), h = static_cast<int32_t>(own.h);
+        int32_t x = o.x - po.x, y = o.y - po.y - h - kHintGap;
+        if (y < 0) y = o.y - po.y + static_cast<int32_t>(box.h) + kHintGap;
+        if (room.w > 0 && x + w > static_cast<int32_t>(room.w)) x = static_cast<int32_t>(room.w) - w;
+        if (x < 0) x = 0;
+        paint_node_moved(m_hint_label, x, y);
+        paint_node_hidden(m_hint_label, false);
+    }
+    static constexpr int32_t kHintGap = 2;   // between a hint and its control
+
     void show_hover_label(ETCS::RID target)
     {
         ETCS::RID want = 0;
@@ -1117,6 +1179,8 @@ private:
 
     std::unordered_map<ETCS::RID, Entry> m_entries;
     std::unordered_map<ETCS::RID, ETCS::RID> m_hover_labels;   // entry -> caption
+    std::unordered_map<ETCS::RID, std::string> m_hints;        // node -> its sentence (AddHint)
+    ETCS::RID m_hint_label = 0, m_hint_shown = 0;               // the page's hint, and whose it shows
     ETCS::RID m_hover_label_shown = 0;
     // The held stepper, if any -- see Hold/AdvanceConcrete. 600 accesses at one
     // per nominal frame is ten seconds: a hold whose release was lost to the

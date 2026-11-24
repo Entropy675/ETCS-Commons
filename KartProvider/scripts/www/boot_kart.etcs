@@ -1,4 +1,5 @@
 #!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
 
 # KART, IN A BROWSER: the arena, its maps, the pool of karts and the battle, on
 # the page served by ETCS (index.html beside this). The page names you, then
@@ -31,13 +32,20 @@ world.Create(1.0, 1.0, 1.0)
 world.SetVisible(0)
 eye.SetScene(@world)
 
-# The battle, named here so the page and the terminal reach it
-# (battle.Scores(), battle.Status()); the arena builds the walls, the maps and
-# the pool and hands them over.
-spawn KartProvider::KartBattle battle
+# The battle, named so the page and the terminal reach it (battle.Scores(),
+# battle.Status()); the arena builds the walls, the maps and the pool and hands
+# them over. ENSURE: the OS entry (ETCS scripts/kart.etcs) makes it first, so
+# the name is its global; run alone, as the page runs it, this makes it.
+ensure KartProvider::KartBattle battle
 battle.Create()
 run KartProvider/scripts/kart_arena.etcs anchor=world battle=battle
 run KartProvider/scripts/kart_play.etcs battle=battle world=world eye=eye
+
+# Where this tab keeps the vehicles it builds: connected when the builder is
+# turned on, and its file's being there loads the builder from then on
+# (modules.json's extras; kart_garage.etcs is the builder).
+spawn DatabaseProvider::LocalDatabase garage_store
+battle.BindBuilderStore(@garage_store, /persist/kart_builder.db)
 
 view.Clear(0.02, 0.02, 0.03, 1.0)
 view.Compose(@eye)

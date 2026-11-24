@@ -18,7 +18,8 @@ DEFINE_WORK_FUNC(KartBattle, Create)                                 { (void)ctx
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindWorld,  (ETCS::RID, rid))    { (void)ctx; self.BindWorld(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCamera, (ETCS::RID, rid))    { (void)ctx; self.BindCamera(rid); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindCard,   (ETCS::RID, rid))    { (void)ctx; self.BindCard(rid); }
-// BindFps <label> -- the frame counter: this runtime's pictures a second, said on the label.
+// BindFps <label> -- the frame counter: this runtime's pictures a second, said on the label with where
+// they were drawn ("60 fps gpu", "12 fps cpu").
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindFps,    (ETCS::RID, rid))    { (void)ctx; self.BindFps(rid); }
 // BindMenu <menu> -- the lobby, drawn: a RenderProvider::Menu over the eye.
 DEFINE_WORK_FUNC_TYPED(KartBattle, BindMenu,   (ETCS::RID, rid))    { (void)ctx; self.BindMenu(rid); }
@@ -31,11 +32,12 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddKart, (ETCS::RID, body), (ETCS::RID, fr), 
     (void)ctx;
     self.AddKart(body, fr, fl, rr, rl, bar_back, bar_fill);
 }
-// The arena: a wall of every map; a map by name (or one made from a seed each
+// The arena: a wall of every map, and a crag of the rim (the eye keeps out of it); a map by name (or one made from a seed each
 // time it is chosen), then what is on it -- blocks, ramps, hills, spawns and
 // power-up spots (KartArena.h); the pools the map in play is drawn with; the
 // rows of the menu and the board.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddWall, (ETCS::RID, part))           { (void)ctx; self.AddWall(part); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddRim, (ETCS::RID, part))            { (void)ctx; self.AddRim(part); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddMap, (std::string, name))          { (void)ctx; self.AddMap(name); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddRandomMap, (std::string, name))    { (void)ctx; self.AddRandomMap(name); }
 // The vehicles a driver picks from in the lobby, after the kart: AddVehicle
@@ -64,9 +66,103 @@ DEFINE_WORK_FUNC(KartBattle, VehicleLook)
     const bool ok = self.VehicleLook(mesh);
     data.reset(); data.writeString(ok ? "ok" : "refused");
 }
+// Part "<shape> <material> <x y z> <hx hy hz> <r g b a> <qw qx qy qz>" -- a part of
+// the latest vehicle's look, as the modeller states one (decimals; "-" no material).
+DEFINE_WORK_FUNC(KartBattle, Part)
+{
+    (void)ctx;
+    const bool ok = self.Part(data.toString());
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// What a look is made of (kart_looks.etcs): AddPartShape <name> <mesh> <fill>,
+// AddMaterial <name> <density>, LiveryKey <r> <g> <b>, AddLookMesh <mesh>,
+// AddTrim <body> <trim>.
+DEFINE_WORK_FUNC(KartBattle, AddPartShape)
+{
+    (void)ctx;
+    std::string name, fill;
+    ETCS::RID mesh = 0;
+    data >> name >> mesh >> fill;
+    const bool ok = self.AddPartShape(name, mesh, fill);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, AddMaterial)
+{
+    (void)ctx;
+    std::string name, density;
+    data >> name >> density;
+    const bool ok = self.AddMaterial(name, density);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC_TYPED(KartBattle, LiveryKey, (float, r), (float, g), (float, b)) { (void)ctx; self.LiveryKey(r, g, b); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddLookMesh, (ETCS::RID, mesh)) { (void)ctx; self.AddLookMesh(mesh); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddTrim, (ETCS::RID, body), (ETCS::RID, trim)) { (void)ctx; self.AddTrim(body, trim); }
+// Build <file> -- this runtime's build, its text in the file (a line's is
+// longer than an argument): a `build` line. "ok" or "refused".
+DEFINE_WORK_FUNC(KartBattle, Build)
+{
+    (void)ctx;
+    const bool ok = self.BuildFile(data.toString());
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// The host's: Accept <driver>, Reject <driver>, LockDriver <driver> <0|1>.
+DEFINE_WORK_FUNC(KartBattle, Reject)
+{
+    (void)ctx;
+    const bool ok = self.Reject(data.toString());
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, LockDriver)
+{
+    (void)ctx;
+    const bool ok = self.LockDriver(data.toString());
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+DEFINE_WORK_FUNC(KartBattle, Accept)
+{
+    (void)ctx;
+    const bool ok = self.Accept(data.toString());
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// LockIn <0|1> -- this runtime's seat locked in for the round: an `in` line. "ok" or "refused".
+DEFINE_WORK_FUNC(KartBattle, LockIn)
+{
+    (void)ctx;
+    const std::string on = data.toString();
+    const bool ok = (on == "0" || on == "1") && self.LockIn(on == "1" ? 1 : 0);
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// Standing <driver> -- "<locked in> <build accepted> <kept to the arena's>", or "-".
+DEFINE_WORK_FUNC(KartBattle, Standing) { (void)ctx; const std::string q = data.toString(); data.reset(); data.writeString(self.Standing(q).c_str()); }
+// LookOf <name> -- an arena vehicle's, a build's or a draft's: "<parts> <weight> <colours> <driver|-> <body>", or "-".
+DEFINE_WORK_FUNC(KartBattle, LookOf) { (void)ctx; std::string name; data >> name; data.reset(); data.writeString(self.LookOf(name).c_str()); }
 // The vehicles, one a line, the kart first.
 DEFINE_WORK_FUNC(KartBattle, Vehicles)  { (void)ctx; data.reset(); data.writeString(self.Vehicles().c_str()); }
 // Ride <vehicle> -- this runtime's, in the lobby: a `ride` line. "ok" or "refused".
+// The garage (kart_garage.etcs): BindGarage <page> <modeller> <router> <surface>
+// <back>, a row of its page GarageRow <label> <what> <index> <step> <least>
+// <most>, and the builder's Done.
+DEFINE_WORK_FUNC_TYPED(KartBattle, BindGarage, (ETCS::RID, garage), (ETCS::RID, model), (ETCS::RID, router), (ETCS::RID, view), (ETCS::RID, back))
+{ (void)ctx; self.BindGarage(garage, model, router, view, back); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, GarageRow, (std::string, label), (std::string, what), (uint32_t, index),
+                       (std::string, step), (std::string, least), (std::string, most))
+{ (void)ctx; self.GarageRow(label, what, index, step, least, most); }
+DEFINE_WORK_FUNC(KartBattle, GarageDone) { (void)ctx; (void)data; self.GarageDone(); }
+// BindBuilderStore <LocalDatabase> <path> -- where this runtime keeps what it builds.
+DEFINE_WORK_FUNC_TYPED(KartBattle, BindBuilderStore, (ETCS::RID, db), (std::string, path)) { (void)ctx; self.BindBuilderStore(db, path); }
+// Wants -- what the page should do: "builder" (reload with it), or "-".
+DEFINE_WORK_FUNC(KartBattle, Wants) { (void)ctx; data.reset(); data.writeString(self.Wants().c_str()); }
+// Garage -- "<in garage 0|1> <shaping 0|1> <vehicle|->".
+DEFINE_WORK_FUNC(KartBattle, Garage) { (void)ctx; data.reset(); data.writeString(self.Garage().c_str()); }
+// GaragePress <item> [prev|next] -- the garage's page, pressed by name. "ok" or "refused".
+DEFINE_WORK_FUNC(KartBattle, GaragePress)
+{
+    (void)ctx;
+    const bool ok = self.GaragePress(data.toString());
+    data.reset(); data.writeString(ok ? "ok" : "refused");
+}
+// TuneOf <vehicle> <what> -- its numbers for that `tune`, or "-".
+DEFINE_WORK_FUNC(KartBattle, TuneOf) { (void)ctx; const std::string q = data.toString(); data.reset(); data.writeString(self.TuneOf(q).c_str()); }
 DEFINE_WORK_FUNC(KartBattle, Ride)
 {
     (void)ctx;
@@ -99,12 +195,30 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddHill, (float, x), (float, z), (float, radi
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPad, (float, x), (float, z), (float, yaw)) { (void)ctx; self.AddPad(x, z, yaw); }
 // AddSpring <x> <z> -- a round pad that throws a kart up.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpring, (float, x), (float, z))     { (void)ctx; self.AddSpring(x, z); }
+// AddSpringOn <x> <z> <height> -- a spring on the deck whose top is that high over the spot.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSpringOn, (float, x), (float, z), (float, height)) { (void)ctx; self.AddSpringOn(x, z, height); }
 // AddDeck <x> <z> <width> <depth> <height> -- a level plane in the air: on
 // it from above, under it from below, through it going up.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddDeck, (float, x), (float, z), (float, width), (float, depth), (float, height))
 {
     (void)ctx;
     self.AddDeck(x, z, width, depth, height);
+}
+// AddDeckAt <x> <z> <yaw> <width> <depth> <height> -- a deck turned to yaw:
+// `width` across that way, `depth` along it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddDeckAt, (float, x), (float, z), (float, yaw), (float, width), (float, depth), (float, height))
+{
+    (void)ctx;
+    self.AddDeckAt(x, z, yaw, width, depth, height);
+}
+// AddArc <x> <z> <radius> <from> <turn> <width> <up> <flat> <down> <height> --
+// a ramp bent round (x, z), from bearing `from` along a circle of `radius`,
+// clockwise seen from above for `turn` 1, the other way for -1 (KartArena).
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddArc, (float, x), (float, z), (float, radius), (float, from), (float, turn), (float, width),
+                       (float, up), (float, flat), (float, down), (float, height))
+{
+    (void)ctx;
+    self.AddArc(x, z, radius, from, turn, width, up, flat, down, height);
 }
 // AddPit <x> <z> <width> <depth> <deep> -- a floor sunk `deep` below the
 // arena's; a ramp put in it rises from that floor.
@@ -129,6 +243,8 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlockNode, (ETCS::RID, node))      { (void
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSlabNode, (ETCS::RID, node))       { (void)ctx; self.AddSlabNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddWedgeNode, (ETCS::RID, node))      { (void)ctx; self.AddWedgeNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddDomeNode, (ETCS::RID, node))       { (void)ctx; self.AddDomeNode(node); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddArcNode, (ETCS::RID, node), (ETCS::RID, mesh))   { (void)ctx; self.AddArcNode(node, mesh); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSlickNode, (ETCS::RID, node), (ETCS::RID, mesh)) { (void)ctx; self.AddSlickNode(node, mesh); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickupNode, (ETCS::RID, node))     { (void)ctx; self.AddPickupNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddShotNode, (ETCS::RID, node))       { (void)ctx; self.AddShotNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlastNode, (ETCS::RID, node))      { (void)ctx; self.AddBlastNode(node); }
@@ -210,10 +326,16 @@ DEFINE_WORK_FUNC(KartBattle, Give)
 // SetInvert <on> -- this runtime's wheel keys swapped (A right, D left): the
 // page's own setting, no line of the trace.
 DEFINE_WORK_FUNC_TYPED(KartBattle, SetInvert, (int32_t, on)) { (void)ctx; self.SetInvert(on != 0); }
+// Pedal <level> -- this runtime's pedal by level, -8 (all the brake, then reverse) to 8 (all the go),
+// 0 let go: a touch pad's. W or S held is the whole pedal over it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Pedal, (int32_t, level)) { (void)ctx; self.Pedal(level); }
+// Wheel <level> -- this runtime's wheel by level, -8 (all the lock left) to 8 (right), 0 let go: a
+// touch stick's, its way as shown (invert swaps the keys, not this). A or D held is the whole wheel over it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Wheel, (int32_t, level)) { (void)ctx; self.Wheel(level); }
 // Key <code> <down> -- a GLFW key, for a test or a page.
 // Look <yaw> <pitch> -- this runtime's eye swung this far round its kart, to
-// the picture's right, and over it, in degrees: what a drag with the right
-// button, or Q and E, does. Let alone it comes back behind the kart.
+// the picture's right, and over it, in degrees: what a drag on the arena
+// (either button, or a finger), or Q and E, does. Let alone it comes back behind the kart.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Look, (float, yaw), (float, pitch)) { (void)ctx; self.Look(yaw, pitch); }
 // "<eye x> <y> <z> <at x> <y> <z> <look yaw> <pitch>": where the eye is headed.
 DEFINE_WORK_FUNC(KartBattle, Eye)       { (void)ctx; data.reset(); data.writeString(self.Eye().c_str()); }
@@ -232,7 +354,20 @@ DEFINE_WORK_FUNC(KartBattle, Setting)
 // "invert <0|1> marks <units> look <scale>": this runtime's settings.
 DEFINE_WORK_FUNC(KartBattle, Settings) { (void)ctx; data.reset(); data.writeString(self.Settings().c_str()); }
 // MenuUp -- "1" while the drawn menu (the lobby's, or the settings) is over the arena, else "0".
+// PointerEvent <action> <key> <buttons> <x> <y> -- an InputEvent as the window's
+// pointer edge hands one over (KartBattle::Pointer), for a page or a test.
+DEFINE_WORK_FUNC_TYPED(KartBattle, PointerEvent, (uint32_t, action), (uint32_t, key), (uint32_t, buttons), (int32_t, x), (int32_t, y))
+{
+    (void)ctx;
+    InputEvent ev{};
+    ev.action = static_cast<uint8_t>(action); ev.key = static_cast<uint16_t>(key); ev.buttons = static_cast<uint8_t>(buttons);
+    ev.x = static_cast<int16_t>(x); ev.y = static_cast<int16_t>(y);
+    self.Pointer(ev);
+}
 DEFINE_WORK_FUNC(KartBattle, MenuUp) { (void)ctx; data.reset(); data.writeString(self.MenuUp() ? "1" : "0"); }
+// Driving -- "1" while this runtime's keys drive a kart (a round under way, no menu over it), else "0":
+// when a page shows its pads.
+DEFINE_WORK_FUNC(KartBattle, Driving) { (void)ctx; data.reset(); data.writeString(self.Driving() ? "1" : "0"); }
 // ShowSettings <0|1> -- the settings open over the arena, or shut (O does the same).
 DEFINE_WORK_FUNC_TYPED(KartBattle, ShowSettings, (int32_t, on)) { (void)ctx; self.ShowSettings(on != 0); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, Key, (uint32_t, code), (int32_t, down))
@@ -257,7 +392,11 @@ DEFINE_WORK_FUNC(KartBattle, Hash)      { (void)ctx; data.reset(); data.writeStr
 // "<tick> <hash>": the last snapshot, what the trace's `hash` lines carry.
 DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeString(self.Snapshot().c_str()); }
 // Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
-// <slide> <spare> <spare ammo> <oil ticks> <dagger ticks> <vehicle> <lean>", or "-".
+// <slide> <spare> <spare ammo> <oil ticks> <dagger ticks> <vehicle> <lean> <oiled>", or "-": <oiled> a
+// digit a tyre (fr fl rr rl), 1 with oil on it.
+// Drawn <name> -- "<x> <y> <z>": where this runtime draws that driver's kart, between two ticks; "-" if it
+// draws the rows or nothing.
+DEFINE_WORK_FUNC(KartBattle, Drawn)     { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Drawn(who).c_str()); }
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
 // Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
 // rope laid behind it, the segments drawn and the darkest (0..1); or "-".

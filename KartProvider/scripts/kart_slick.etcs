@@ -1,0 +1,13 @@
+#!/usr/bin/env etcs
+# A slick of the pool: a node and its own mesh, the oil laid over the ground
+# it was spilled on (KartBattle::drapeLocked).
+#   run kart_slick.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Mesh shape)
+shape.Create()
+world.spawn(RenderProvider::Scene3D slick)
+slick.Create(1.0, 1.0, 1.0)
+slick.SetMesh(@shape)
+slick.SetAnchored(1)
+battle.AddSlickNode(@slick, @shape)

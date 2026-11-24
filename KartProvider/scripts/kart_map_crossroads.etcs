@@ -1,6 +1,6 @@
 #!/usr/bin/env etcs
 # CROSSROADS: a cross of roads and a ring road between buildings of
-# different heights, a jump on each side of the ring road -- and over the
+# different heights, a ramp up onto the roof of six of them -- and over the
 # whole north half, a roof: a deck above the buildings, a ramp up to it
 # from each end of the north ring road, springs up through it from the road
 # and the alleys, and every edge a way back down.
@@ -14,15 +14,27 @@
 requires battle [KartBattle]
 battle.AddMap(crossroads)
 
-# The buildings: two to a quarter, an alley seventeen wide between them.
+# The buildings: two to a quarter, an alley seventeen wide between them. Six
+# are ground (a ramp all level top): a wall to drive into, a roof to drive on,
+# and a ramp up to each from the street outside, its lip at the wall -- every
+# building in the south, and in the north the two low enough to drive on
+# under the big roof. The other two are blocks, what that roof stands on.
+# (A block's top is no road: a kart's sphere reaches below its wheels, and
+# meets the block at its edge.)
 battle.AddBlock(31.5, 45.0, 10.0, 28.0, 3.0, 0.0)
-battle.AddBlock(58.5, 45.0, 10.0, 28.0, 2.2, 0.0)
-battle.AddBlock(-45.0, 31.5, 28.0, 10.0, 2.5, 0.0)
 battle.AddBlock(-45.0, 58.5, 28.0, 10.0, 3.5, 0.0)
-battle.AddBlock(45.0, -31.5, 28.0, 10.0, 3.5, 0.0)
-battle.AddBlock(45.0, -58.5, 28.0, 10.0, 2.0, 0.0)
-battle.AddBlock(-31.5, -45.0, 10.0, 28.0, 2.0, 0.0)
-battle.AddBlock(-58.5, -45.0, 10.0, 28.0, 3.0, 0.0)
+battle.AddRamp(58.5, 45.0, 0.0, 10.0, 0.0, 28.0, 0.0, 2.2)
+battle.AddRamp(71.5, 45.0, 270.0, 8.0, 16.0, 0.0, 0.0, 2.2)
+battle.AddRamp(-45.0, 31.5, 0.0, 28.0, 0.0, 10.0, 0.0, 2.5)
+battle.AddRamp(-45.0, 18.5, 0.0, 8.0, 16.0, 0.0, 0.0, 2.5)
+battle.AddRamp(45.0, -31.5, 0.0, 28.0, 0.0, 10.0, 0.0, 3.5)
+battle.AddRamp(45.0, -16.5, 180.0, 8.0, 20.0, 0.0, 0.0, 3.5)
+battle.AddRamp(45.0, -58.5, 0.0, 28.0, 0.0, 10.0, 0.0, 2.0)
+battle.AddRamp(45.0, -71.5, 0.0, 8.0, 16.0, 0.0, 0.0, 2.0)
+battle.AddRamp(-31.5, -45.0, 0.0, 10.0, 0.0, 28.0, 0.0, 2.0)
+battle.AddRamp(-18.5, -45.0, 270.0, 8.0, 16.0, 0.0, 0.0, 2.0)
+battle.AddRamp(-58.5, -45.0, 0.0, 10.0, 0.0, 28.0, 0.0, 3.0)
+battle.AddRamp(-73.5, -45.0, 90.0, 8.0, 20.0, 0.0, 0.0, 3.0)
 # Planters on the junction's corners, clear of both roads' middles.
 battle.AddBlock(18.0, 18.0, 4.0, 4.0, 1.0, 0.0)
 battle.AddBlock(-18.0, 18.0, 4.0, 4.0, 1.0, 0.0)
@@ -41,11 +53,6 @@ battle.AddDeck(0.0, 72.0, 78.0, 12.0, 5.1)
 battle.AddSpring(0.0, 60.0)
 battle.AddSpring(45.0, 33.0)
 battle.AddSpring(-27.0, 45.0)
-# A jump on each side of the ring road, all the same way round.
-battle.AddRamp(81.0, -48.0, 0.0, 8.0, 10.0, 0.0, 0.0, 2.4)
-battle.AddRamp(-81.0, 48.0, 180.0, 8.0, 10.0, 0.0, 0.0, 2.4)
-battle.AddRamp(48.0, 85.5, 270.0, 8.0, 10.0, 0.0, 0.0, 2.4)
-battle.AddRamp(-48.0, -81.0, 90.0, 8.0, 10.0, 0.0, 0.0, 2.4)
 
 # On the roads, each facing the middle down its road: the corners face a
 # block, so none is a spawn.
@@ -87,3 +94,5 @@ battle.AddPad(-16.0, -88.0, 90.0)
 battle.AddDeck(72.0, -88.0, 8.0, 8.0, 2.5)
 battle.AddSpring(72.0, -95.0)
 battle.AddPickupUp(72.0, -88.0)
+battle.AddPad(86.0, -52.0, 0.0)
+battle.AddPickup(-48.0, -86.0)

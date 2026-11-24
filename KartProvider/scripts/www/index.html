@@ -16,7 +16,17 @@
       if (window !== window.top) return;
       const asked = parseFloat(new URLSearchParams(location.search).get('zoom'));
       const zoom = asked > 0 ? asked : (window.innerWidth >= 1000 ? 1.5 : 1);
-      if (zoom !== 1) document.documentElement.style.zoom = String(zoom);
+      if (zoom === 1) return;
+      // Off while something is fullscreen: the zoom scales the viewport's own
+      // units too, so a stage sized to the screen came out half as big again
+      // and ran off it.
+      const apply = function () {
+        const full = document.fullscreenElement || document.webkitFullscreenElement;
+        document.documentElement.style.zoom = full ? '' : String(zoom);
+      };
+      apply();
+      document.addEventListener('fullscreenchange', apply);
+      document.addEventListener('webkitfullscreenchange', apply);
     })();
   </script>
   <title>ETCS Kart</title>
@@ -60,27 +70,43 @@
              box-shadow: 0 0 0 1px var(--line); }
     /* The window sizes its canvas inline, in its own pixels: held to the stage
        all the same, or a narrow page has it lying over the panel beside it. */
-    canvas#canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated; }
+    canvas#canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated;
+                    touch-action: none; }   /* a finger's drag looks round, not scrolls the page */
     #bootthrob { position: absolute; left: calc(50% - 48px); top: calc(50% - 48px); pointer-events: none; }
-    /* The pads: see-through buttons over the arena's bottom corners -- fire
-       on the left, and on the right the arrows as keys are laid out, an
-       upside-down T of squares that touch (go over brake, the wheel either
-       side), low so they hide little of the road -- for a thumb on a tablet,
-       and a click on a PC. Each press is the key's, held while it is held.
-       Hidden while the drawn menu is up: it has the pointer then. */
+    /* The pads: see-through over the arena's bottom corners -- THE STICK on
+       the left, a ring with a knob a thumb pushes: over to the side is the
+       wheel, up the pedal, down the brake and then reverse, each harder the
+       further out; fire on the right -- low so they hide little of the road
+       -- for thumbs on a tablet, and a drag with a mouse on a PC. Shown only
+       while the keys drive a kart (Driving): not while the page loads, in
+       the lobby, or under the settings. */
     .pad { position: absolute; bottom: 16px; width: 104px; height: 104px; border-radius: 50%;
            background: rgba(255, 255, 255, 0.1); border: 2px solid rgba(255, 255, 255, 0.22);
            color: rgba(255, 255, 255, 0.3); font-size: 42px; line-height: 1; padding: 0;
            touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer; }
+    .pad:hover { border-color: rgba(255, 255, 255, 0.22); color: rgba(255, 255, 255, 0.3); }   /* a finger's hover sticks */
     .pad.held { background: rgba(255, 255, 255, 0.24); }
     .pad:focus { outline: none; }
-    .pad.under-menu { display: none; }
-    #pad-fire { left: 16px; }
-    .pad.key { width: 76px; height: 76px; border-radius: 8px; font-size: 30px; }
-    #pad-right { right: 16px; }
-    #pad-down  { right: 92px; }
-    #pad-left  { right: 168px; }
-    #pad-go    { right: 92px; bottom: 92px; }
+    #pad-fire { right: 16px; }
+    .pad.stick { left: 16px; width: 168px; height: 168px; cursor: move; }
+    .pad.stick .knob { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -34px 0 0 -34px;
+                       border-radius: 50%; background: rgba(255, 255, 255, 0.16); border: 2px solid rgba(255, 255, 255, 0.3);
+                       pointer-events: none; }
+    .pad.stick.held .knob { background: rgba(255, 255, 255, 0.32); }
+    .pad.off { display: none; }
+    /* What fire fires: over the fire pad the weapon in hand, beside it the
+       spare (KartArms: a power-up fills the hand, then the spare), each an
+       icon and its ammo. Shown with the pads; they take no finger, so a drag
+       over them still looks round. */
+    .arm { position: absolute; bottom: 128px; right: 42px; width: 52px; height: 52px; border-radius: 10px;
+           display: flex; align-items: center; justify-content: center; pointer-events: none;
+           background: rgba(0, 0, 0, 0.28); border: 2px solid rgba(255, 255, 255, 0.22); color: rgba(255, 255, 255, 0.8); }
+    .arm svg { width: 70%; height: 70%; }
+    .arm .ammo { position: absolute; right: 4px; bottom: 1px; font-size: 11px; color: rgba(255, 255, 255, 0.9); }
+    .arm.empty { color: rgba(255, 255, 255, 0.25); }
+    #arm-spare { right: 100px; bottom: 136px; width: 36px; height: 36px; opacity: 0.75; }
+    #arm-spare .ammo { font-size: 9px; right: 3px; }
+    .arm.off { display: none; }
     aside { display: flex; flex-direction: column; gap: 10px; }
     section { border: 1px solid var(--line); background: var(--panel); padding: 8px 10px; }
     h3 { margin: 0 0 6px; font-weight: normal; color: var(--dim); font-size: 11px;
@@ -113,8 +139,30 @@
             font-size: 12px; color: var(--sel); cursor: pointer; }
     #link.copied { color: var(--ok); }
     .hidden { display: none !important; }
-    iframe#shell { width: 100%; height: 180px; border: 0; border-top: 1px solid var(--line); background: var(--bg); }
+    /* THE TERMINAL, DOCKED: fixed to the bottom of the screen over the page,
+       so opening it moves nothing. Down, only its tab shows; hovering it (or
+       typing in it) slides it up, and the tab's arrow keeps it up or down --
+       remembered for this page. */
+    #layout { padding-bottom: 24px; }
+    #dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; transform: translateY(180px);
+            transition: transform .18s ease; }
+    #dock.open, #dock:hover, #dock:focus-within { transform: none; }
+    #dock-tab { display: block; margin: 0 16px 0 auto; height: 24px; padding: 0 12px; font-size: 12px;
+                color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-bottom: 0; }
+    #dock-tab:hover { color: var(--sel); }
+    iframe#shell { display: block; width: 100%; height: 180px; border: 0; border-top: 1px solid var(--line); background: var(--bg); }
     @media (max-width: 760px) { #main { grid-template-columns: 1fr; } }
+    /* FULLSCREEN THE STAGE (the header's button, as Paint's): the arena, and
+       what lies over it, has the whole screen. The picture is the window's
+       4:3 and stays it -- as big as the screen holds, bars either side -- for
+       the camera draws 4:3 whatever box it is shown in. Esc leaves. */
+    #stage:fullscreen, #stage:-webkit-full-screen {
+      width: 100%; height: 100%; aspect-ratio: auto; background: #000; box-shadow: none;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #stage:fullscreen canvas#canvas, #stage:-webkit-full-screen canvas#canvas {
+      width: min(100vw, 133.333vh) !important; height: min(75vw, 100vh) !important;
+    }
   </style>
 </head>
 <body>
@@ -124,6 +172,7 @@
     <label for="name" style="color:var(--dim);font-size:12px">you are</label>
     <input id="name" spellcheck="false" title="your name in a battle -- what the hall lists and your seat is called">
     <span class="spacer"></span>
+    <button id="fsbtn" type="button" title="the game fills the screen (Esc to leave)">fullscreen</button>
     <span id="status">loading…</span>
   </header>
 
@@ -131,11 +180,10 @@
     <div id="stage">
       <canvas id="canvas" width="1024" height="768" tabindex="0"></canvas>
       <canvas id="bootthrob" width="96" height="96" data-leave="/favicon/logo-mark-ace.svg"></canvas>
-      <button id="pad-fire" tabindex="-1" class="pad" title="fire (Space)">&#x26A1;</button>
-      <button id="pad-go" tabindex="-1" class="pad key" title="go (W)">&#x25B2;</button>
-      <button id="pad-left" tabindex="-1" class="pad key" title="steer left (A)">&#x25C0;</button>
-      <button id="pad-down" tabindex="-1" class="pad key" title="brake, reverse (S)">&#x25BC;</button>
-      <button id="pad-right" tabindex="-1" class="pad key" title="steer right (D)">&#x25B6;</button>
+      <button id="pad-fire" tabindex="-1" class="pad off" title="fire (Space)">&#x26A1;</button>
+      <div id="pad-stick" class="pad stick off" title="the stick: over is the wheel (A D), up the pedal (W), down the brake and reverse (S) -- harder the further out"><div class="knob"></div></div>
+      <div id="arm-hand" class="arm empty off"></div>
+      <div id="arm-spare" class="arm empty off"></div>
     </div>
 
     <aside>
@@ -193,8 +241,8 @@
       <section>
         <h3>Playing</h3>
         <div class="keys"><b>W</b> go &nbsp; <b>S</b> brake, reverse &nbsp; <b>A</b> <b>D</b> steer &nbsp; <b>Space</b> fire
-        &nbsp; <b>Q</b> <b>E</b> or a right-button drag look round &nbsp; <b>Tab</b> scores &nbsp; <b>O</b> settings. The round buttons on the
-        arena are fire and the arrows too, for a touch screen. Drive over a gold box
+        &nbsp; <b>Q</b> <b>E</b> or a drag on the arena look round &nbsp; <b>Tab</b> scores &nbsp; <b>O</b> settings. The pads on the
+        arena are a stick (over to steer, up to go, down to brake) and fire, for a touch screen; a finger dragged on the arena looks round. Drive over a gold box
         for a weapon; ramps throw you, hills slow you going up.
         In the lobby the host's arrows move the menu and <b>Enter</b> starts; in a round the host's <b>Esc</b>
         abandons it. Click the arena first so it has the keys.</div>
@@ -206,7 +254,24 @@
 
   <!-- The ShellProvider page as the terminal VIEW only: it detects being framed
        and boots no runtime of its own; lines cross by postMessage. -->
-  <iframe id="shell" src="shell?view=line" title="ETCS shell"></iframe>
+  <div id="dock">
+    <button id="dock-tab" type="button" title="the terminal: hover to see it, click to keep it up or down">terminal &#x25B2;</button>
+    <iframe id="shell" src="shell?view=line" title="ETCS shell"></iframe>
+  </div>
+  <script>
+    (function () {
+      const dock = document.getElementById('dock'), tab = document.getElementById('dock-tab');
+      function show(open) {
+        dock.classList.toggle('open', open);
+        tab.innerHTML = 'terminal ' + (open ? '&#x25BC;' : '&#x25B2;');
+        try { window.localStorage.setItem('etcs-dock-open:' + location.pathname, open ? '1' : '0'); } catch (e) {}
+      }
+      let kept = false;
+      try { kept = window.localStorage.getItem('etcs-dock-open:' + location.pathname) === '1'; } catch (e) {}
+      show(kept);
+      tab.addEventListener('click', function () { show(!dock.classList.contains('open')); });
+    })();
+  </script>
 </div>
 
 <!-- The session -- the terminal, the runtime, hosting, joining, the hall, the
@@ -291,53 +356,162 @@
     }).catch(function () {});
   }, 2000);
   /*
-   * THE PADS, under the drawn menu: hidden while it is up (the lobby's, or
-   * the settings), asked of the battle a few times a second.
+   * THE PADS, only while the keys drive a kart: hidden until the battle
+   * says so (Driving), asked a few times a second.
    */
-  const pads = ['pad-fire', 'pad-go', 'pad-down', 'pad-left', 'pad-right'].map(function (id) { return document.getElementById(id); });
+  const pads = ['pad-fire', 'pad-stick'].map(function (id) { return document.getElementById(id); });
+  const arms = [document.getElementById('arm-hand'), document.getElementById('arm-spare')];
   setInterval(function () {
     if (!page.runtimeUp() || !page.nameLive('battle')) return;
-    Promise.resolve(page.ask('MenuUp', '')).then(function (up) {
-      if (up !== '0' && up !== '1') return;
-      for (const el of pads) el.classList.toggle('under-menu', up === '1');
+    Promise.resolve(page.ask('Driving', '')).then(function (on) {
+      for (const el of pads.concat(arms)) el.classList.toggle('off', on !== '1');
+      if (on !== '1' && fingers.size) { fingers.clear(); padsSync(); }   // hidden under them: let go
+      if (on === '1') return Promise.resolve(page.ask('Kart', page.myName())).then(showArms);
     }).catch(function () {});
   }, 300);
   /*
-   * THE PADS: a pointer down on one is its key down, up (or lost) its key
-   * up -- the battle's own Key, so a pad and the keyboard are one set of
-   * keys held. Left is left whatever invert says: the wheel's keys are
-   * swapped by the battle, so a pad says the key that turns the way it shows.
+   * THE WEAPONS' ICONS, drawn here in the page's own lines, one per
+   * KartArms::Name. Kart <name> says "... <weapon> <ammo> ... <spare>
+   * <spare ammo> ..." (fields 7, 8, 13, 14), "-" for none.
    */
-  function pad(id, code) {
-    const el = document.getElementById(id);
-    let held = false;
-    const key = function () { return typeof code === 'function' ? code() : code; };
-    let sent = 0;
-    function down(ev) {
+  const ICONS = {
+    rocket: '<path d="M14 4c3-1 6 0 6 0s1 3 0 6l-7 7-6-6z"/><path d="M7 11l-3 1-1 3 4-1M13 17l-1 3-3 1 1-4"/><circle cx="15.5" cy="8.5" r="1.3"/>',
+    mine: '<circle cx="12" cy="13" r="5"/><path d="M12 4v3M12 19v2M4 13h3M17 13h3M6.3 7.3l2 2M17.7 7.3l-2 2M8.3 16.7l-1.6 1.6M15.7 16.7l1.6 1.6"/>',
+    shotgun: '<path d="M3 12h5"/><circle cx="13" cy="6" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="13" cy="18" r="1.5"/><circle cx="19.5" cy="8.5" r="1.2"/><circle cx="19.5" cy="15.5" r="1.2"/>',
+    boost: '<path d="M5 6l6 6-6 6M12 6l6 6-6 6"/>',
+    bomb: '<circle cx="10" cy="14" r="6"/><path d="M14.2 9.8l2.8-2.8M17 7c1-2 3-2.5 4-1.5"/>',
+    minigun: '<rect x="3" y="8" width="9" height="8" rx="2"/><path d="M12 9.5h9M12 12h9M12 14.5h9"/>',
+    fuse: '<circle cx="12" cy="13" r="7"/><path d="M12 13V9M10 3h4M12 3v3"/>',
+    sniper: '<circle cx="12" cy="12" r="7"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/>',
+    homing: '<circle cx="18" cy="6" r="3"/><path d="M3 21c1.5-8 5.5-13 11-14"/><path d="M11 4.5l3 2.5-2.5 3"/>',
+    oil: '<path d="M12 3c3 5 6 8 6 11a6 6 0 0 1-12 0c0-3 3-6 6-11z"/>',
+    shockwave: '<circle cx="12" cy="12" r="2"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/>',
+    smoke: '<path d="M7 18h10a4 4 0 0 0 0-8 5 5 0 0 0-9.6-1A4 4 0 0 0 7 18z"/>'
+  };
+  function showArm(el, weapon, ammo, which) {
+    const has = !!ICONS[weapon];
+    const shown = has ? weapon + ' ' + ammo : '';
+    if (el.dataset.shown === shown) return;
+    el.dataset.shown = shown;
+    el.classList.toggle('empty', !has);
+    el.title = which + ': ' + (has ? weapon + ' x' + ammo : 'nothing');
+    el.innerHTML = has ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"'
+                       + ' stroke-linejoin="round" aria-hidden="true">' + ICONS[weapon] + '</svg>'
+                       + (ammo > 1 ? '<span class="ammo">' + ammo + '</span>' : '') : '';
+  }
+  function showArms(text) {
+    const p = String(text || '').trim().split(/\s+/);
+    if (p.length < 15) return;
+    showArm(arms[0], p[7], parseInt(p[8], 10) || 0, 'in hand');
+    showArm(arms[1], p[13], parseInt(p[14], 10) || 0, 'spare');
+  }
+  /*
+   * THE PADS, BY FINGER. Every pointer down on a pad is kept until it is
+   * lifted, with where it is now, and after any of them moves what is held
+   * is worked out again from scratch.
+   *
+   * THE STICK keeps the finger that went down on it, wherever that finger
+   * goes, as a thumb on a stick does: its knob follows the finger out from
+   * the ring's middle, as far as the ring's edge. Over to the side is the
+   * battle's Wheel, up its Pedal, down the brake and then reverse, each by
+   * level -- nothing within STICK_DEAD of the middle, all of it at
+   * STICK_FULL of the way to the edge. Its way is the way it shows (Wheel
+   * is not swapped by invert; the keys are).
+   *
+   * FIRE is held while some other finger is over it, so a thumb slid off it
+   * lets it go: the battle's own Key. What is held is lit, and nothing else.
+   */
+  const fingers = new Map();   // pointer id -> { x, y, stick }
+  const fireEl = document.getElementById('pad-fire'), stickEl = document.getElementById('pad-stick');
+  const knobEl = stickEl.querySelector('.knob');
+  const LEVELS = 8, STICK_DEAD = 0.15, STICK_FULL = 0.85;
+  let fireSent = false, wheelSent = 0, pedalSent = 0;
+  function padUnder(x, y) {
+    const el = document.elementFromPoint(x, y);
+    const p = el && el.closest ? el.closest('.pad') : null;
+    return p && !p.classList.contains('off') ? p : null;
+  }
+  // A share of the way out, -1..1, as a level: none in the dead middle.
+  const level = function (u) {
+    const a = Math.abs(u);
+    if (a < STICK_DEAD) return 0;
+    const n = Math.max(1, Math.round(Math.min(1, (a - STICK_DEAD) / (STICK_FULL - STICK_DEAD)) * LEVELS));
+    return u > 0 ? n : -n;
+  };
+  function padsSync() {
+    const live = page.runtimeUp() && page.nameLive('battle');
+    let fire = false, wheel = 0, pedal = 0, kx = 0, ky = 0, stickHeld = false;
+    for (const f of fingers.values()) {
+      if (f.stick) {
+        stickHeld = true;
+        const r = stickEl.getBoundingClientRect(), rad = r.width / 2;
+        let dx = (f.x - (r.left + rad)) / rad, dy = (f.y - (r.top + rad)) / rad;
+        const d = Math.hypot(dx, dy);
+        if (d > 1) { dx /= d; dy /= d; }
+        const travel = stickEl.offsetWidth / 2 - 34;   // in the page's own pixels: a zoomed page's box is bigger
+        kx = dx * travel; ky = dy * travel;
+        wheel = level(dx); pedal = level(-dy);
+        continue;
+      }
+      if (padUnder(f.x, f.y) === fireEl) fire = true;
+    }
+    if (fire !== fireSent && (live || !fire)) { page.ask('Key', '32 ' + (fire ? 1 : 0)); fireSent = fire; }
+    if (wheel !== wheelSent && (live || wheel === 0)) { page.ask('Wheel', String(wheel)); wheelSent = wheel; }
+    if (pedal !== pedalSent && (live || pedal === 0)) { page.ask('Pedal', String(pedal)); pedalSent = pedal; }
+    fireEl.classList.toggle('held', fireSent);
+    stickEl.classList.toggle('held', stickHeld);
+    knobEl.style.transform = stickHeld ? 'translate(' + kx.toFixed(1) + 'px, ' + ky.toFixed(1) + 'px)' : '';
+    if (!fingers.size) page.canvas.focus();
+  }
+  for (const el of pads) {
+    el.addEventListener('pointerdown', function (ev) {
       ev.preventDefault();
-      if (held || !page.runtimeUp() || !page.nameLive('battle')) return;
-      held = true; sent = key(); el.classList.add('held');
+      fingers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, stick: el === stickEl });
       try { el.setPointerCapture(ev.pointerId); } catch (e) {}
-      page.ask('Key', sent + ' 1');
-    }
-    function up() {
-      if (!held) return;
-      held = false; el.classList.remove('held');
-      page.ask('Key', sent + ' 0');
-      page.canvas.focus();
-    }
-    el.addEventListener('pointerdown', down);
-    el.addEventListener('pointerup', up);
-    el.addEventListener('pointercancel', up);
-    el.addEventListener('lostpointercapture', up);
+      padsSync();
+    });
     el.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
   }
-  pad('pad-fire', 32);
-  pad('pad-go', 87);
-  pad('pad-down', 83);
-  pad('pad-left', function () { return invertEl.checked ? 68 : 65; });
-  pad('pad-right', function () { return invertEl.checked ? 65 : 68; });
+  window.addEventListener('pointermove', function (ev) {
+    const f = fingers.get(ev.pointerId);
+    if (!f) return;
+    f.x = ev.clientX; f.y = ev.clientY;
+    padsSync();
+  });
+  const lift = function (ev) { if (fingers.delete(ev.pointerId)) padsSync(); };
+  window.addEventListener('pointerup', lift);
+  window.addEventListener('pointercancel', lift);
+  window.addEventListener('lostpointercapture', lift, true);
 })();
+</script>
+<script>
+  /*
+   * FULLSCREEN THE STAGE, as Paint's page does: the button asks the browser
+   * for the stage; the same button, or Esc, gives it back.
+   */
+  (function () {
+    const stageEl = document.getElementById('stage'), fsBtn = document.getElementById('fsbtn');
+    if (!stageEl || !fsBtn) return;
+    const fsEl = function () { return document.fullscreenElement || document.webkitFullscreenElement || null; };
+    function syncFs() {
+      const on = fsEl() === stageEl;
+      fsBtn.textContent = on ? 'exit full' : 'fullscreen';
+      fsBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    fsBtn.addEventListener('click', function () {
+      if (fsEl() === stageEl) {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exit) exit.call(document);
+        return;
+      }
+      const req = stageEl.requestFullscreen || stageEl.webkitRequestFullscreen;
+      if (!req) { console.warn('[etcs] fullscreen is not available in this browser'); return; }
+      Promise.resolve(req.call(stageEl)).catch(function (e) { console.warn('[etcs] fullscreen: ' + e); });
+    });
+    document.addEventListener('fullscreenchange', syncFs);
+    document.addEventListener('webkitfullscreenchange', syncFs);
+    syncFs();
+  })();
 </script>
 </body>
 </html>

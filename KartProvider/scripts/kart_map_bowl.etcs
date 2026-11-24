@@ -1,6 +1,7 @@
 #!/usr/bin/env etcs
 # BOWL: a basin in a basin -- every wall banked, the banks meeting in the
-# corners with pads on them to send a kart round, a ring road round the top,
+# corners with pads on them to send a kart round and kicking up sharply at the
+# rim, a ring road round the top,
 # and the whole middle sunk: down there a mound with a box on it, bumpers to
 # dodge behind, a ramp up each side and springs up to a deck in the air over
 # the mound.
@@ -16,14 +17,22 @@ battle.AddMap(bowl)
 
 # The banks: up to the wall, each the whole wall long, so two meet in every
 # corner and the corner is ground like the rest -- a kart driven into one
-# rides up and rolls back, with nothing to wedge against. Their lips are on
-# the karts' bound (95: the wall's inside less a kart's reach), as a seeded
-# map's banks are (KartArena.h): one short of it leaves a trench under the lip
-# a kart drops into and hides in.
-battle.AddRamp(0.0, 84.5, 0.0, 192.0, 21.0, 0.0, 0.0, 3.0)
-battle.AddRamp(84.5, 0.0, 90.0, 192.0, 21.0, 0.0, 0.0, 3.0)
-battle.AddRamp(0.0, -84.5, 180.0, 192.0, 21.0, 0.0, 0.0, 3.0)
-battle.AddRamp(-84.5, 0.0, 270.0, 192.0, 21.0, 0.0, 0.0, 3.0)
+# rides up and rolls back, with nothing to wedge against. Each runs on INTO
+# the walls, to their outside (97), lip and ends alike: no strip of floor
+# between a bank and a wall, however slim the ride.
+battle.AddRamp(0.0, 85.5, 0.0, 194.0, 23.0, 0.0, 0.0, 2.4)
+battle.AddRamp(85.5, 0.0, 90.0, 194.0, 23.0, 0.0, 0.0, 2.4)
+battle.AddRamp(0.0, -85.5, 180.0, 194.0, 23.0, 0.0, 0.0, 2.4)
+battle.AddRamp(-85.5, 0.0, 270.0, 194.0, 23.0, 0.0, 0.0, 2.4)
+# The rim: on each bank, the last stretch kicks up at a half -- three and a
+# half times the bank's slope -- from 1.8 up, 3.6 at the karts' bound, under
+# the wall's top (4). Ridden fast it throws a kart up the wall; one thrown
+# past its top lands on the rim's scree, which slides it back in. Each runs on
+# into the wall as the bank does.
+battle.AddRamp(0.0, 92.4, 0.0, 194.0, 9.2, 0.0, 0.0, 4.6)
+battle.AddRamp(92.4, 0.0, 90.0, 194.0, 9.2, 0.0, 0.0, 4.6)
+battle.AddRamp(0.0, -92.4, 180.0, 194.0, 9.2, 0.0, 0.0, 4.6)
+battle.AddRamp(-92.4, 0.0, 270.0, 194.0, 9.2, 0.0, 0.0, 4.6)
 # On them, either side of every corner, a pad pointing away from it along its
 # bank: a kart that drifts up into a corner is sent round the bowl the way of
 # whichever it comes down on -- clockwise off one, the other way off the other.

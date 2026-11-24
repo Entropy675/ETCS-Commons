@@ -1,5 +1,5 @@
 #!/usr/bin/env etcs
-# The pointer edge: a drag with the right button looks round the kart.
+# The pointer edge: a drag on the arena (either button, or a finger) looks round the kart.
 # Detached: a stream edge blocks the thread that states it.
 #   detach KartProvider/scripts/kart_pointer.etcs window=main battle=battle
 requires window [Window]

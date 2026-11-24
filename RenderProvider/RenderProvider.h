@@ -298,6 +298,7 @@ DEFINE_WORK_FUNC(Surface, RunFrames)
  * waited out once by a parked thread.
  */
     uint64_t ticks = 0;
+    auto next = std::chrono::steady_clock::now();
     while (!ctx.isInterrupted() && !ctx.isTerminated())
     {
         if (self.Retired())
@@ -310,12 +311,24 @@ DEFINE_WORK_FUNC(Surface, RunFrames)
         etcs_advance_animated();
         Scene3D::StepLooked();   // outside every visit's hold: what this tick's pictures looked at
         ++ticks;
-        // A floor, not the pacing: the frame interval lives on the family now
-        // (PresentableBase). This only stops an unpaced surface from turning the
-        // driver into a spin -- and at zero it deliberately does not, which is
-        // what "unpaced" has always meant here.
+        /*
+         * TO THE NEXT TICK, NOT FOR A WHOLE INTERVAL. The visits come every
+         * interval_ms from the last one's START, so the work of a visit is
+         * inside the interval rather than added to it: sleeping a full
+         * interval after the work made a frame of 8 ms work 24 ms apart, 41
+         * a second where 60 were asked for. Behind (a visit longer than the
+         * interval), the next starts at once and the clock starts again from
+         * there -- no burst of visits to catch up. The family still paces
+         * presenting (PresentableBase); at zero this does not wait at all,
+         * which is what "unpaced" has always meant here.
+         */
         if (interval_ms != 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+        {
+            next += std::chrono::milliseconds(interval_ms);
+            const auto now = std::chrono::steady_clock::now();
+            if (next > now) std::this_thread::sleep_until(next);
+            else            next = now;
+        }
         else
             std::this_thread::yield();
     }
@@ -1272,6 +1285,8 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, Draw, (ETCS::RID, target))
     ETCS_LOG("Camera3D::Draw", "renders so far: " << self.Renders());
 }
 // How many projections this camera has driven: whether a draw re-rendered.
+// OnDevice -- "1" when the camera's last picture went through the device (the GPU), "0" on the host (the CPU).
+DEFINE_WORK_FUNC(Camera3D, OnDevice) { (void)ctx; data.reset(); data.writeString(self.OnDevice() ? "1" : "0"); }
 DEFINE_WORK_FUNC(Camera3D, Renders) { (void)ctx; data.reset(); data.writeString(std::to_string(self.Renders()).c_str()); }
 
 DEFINE_WORK_FUNC_TYPED(Camera3D, Clear,
@@ -1373,6 +1388,23 @@ DEFINE_WORK_FUNC_TYPED(Mesh, AddBox, (float, cx), (float, cy), (float, cz), (flo
 {
     (void)ctx;
     self.AddBox(cx, cy, cz, w, h, d);
+}
+// Unit <w> <h> <d> -- the box the AddParts after it are said in: the extent a node scales this mesh by.
+DEFINE_WORK_FUNC_TYPED(Mesh, Unit, (float, w), (float, h), (float, d)) { (void)ctx; self.Unit(w, h, d); }
+// AddPart <shape> <x> <y> <z> <hx> <hy> <hz> <qw> <qx> <qy> <qz> -- a shape (a Mesh; 0 the unit box)
+// sized, turned and moved as a modelled part stands, added in the Unit box (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, AddPart, (ETCS::RID, shape), (float, px), (float, py), (float, pz), (float, hx), (float, hy),
+                       (float, hz), (float, qw), (float, qx), (float, qy), (float, qz))
+{
+    (void)ctx;
+    const Mesh* m = nullptr;
+    if (shape)
+    {
+        ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), shape);
+        m = e && e->getSourceTag() == ETCS::Buffer("Mesh") ? dynamic_cast<Mesh*>(e) : nullptr;
+        if (!m) { ETCS_LOG("Mesh::AddPart", "RID:" << shape << " does not resolve as a Mesh."); return; }
+    }
+    self.AddPart(m, px, py, pz, hx, hy, hz, qw, qx, qy, qz);
 }
 
 DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_t, c))

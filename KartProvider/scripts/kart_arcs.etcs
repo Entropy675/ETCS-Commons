@@ -1,0 +1,8 @@
+#!/usr/bin/env etcs
+# Four arcs of the pool. `run kart_arcs.etcs world=<Scene3D> battle=<KartBattle>`
+requires world [Drawable3D]
+requires battle [KartBattle]
+run kart_arc.etcs world=world battle=battle
+run kart_arc.etcs world=world battle=battle
+run kart_arc.etcs world=world battle=battle
+run kart_arc.etcs world=world battle=battle

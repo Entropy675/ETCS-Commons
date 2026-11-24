@@ -57,6 +57,12 @@ public:
         auto face = std::make_unique<Face>();
         face->name = name;
         std::ifstream in(path, std::ios::binary);
+#ifdef ETCS_ACE_ROOT
+        // The page stages fonts under their module-relative names, which the OS
+        // runtime finds only from modules/; from anywhere else, the tree's copy.
+        if (!in && !path.empty() && path[0] != '/')
+            in.open(std::string(ETCS_ACE_ROOT) + "/modules/" + path, std::ios::binary);
+#endif
         if (!in)
             ETCS_LOG("PaintFonts", "Load " << name << ": cannot open '" << path
                      << "' -- font " << (m_faces.size() + 1) << " draws in the pixel font.");

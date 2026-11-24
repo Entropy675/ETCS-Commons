@@ -357,7 +357,9 @@ private:
      * working directory: the build compiles the GLSL in shaders/ into
      * bin/shaders/ beside this .so (the module's manifest, produces.assets),
      * dladdr gives this .so's own path, and the caller's argument stays a
-     * first-choice override. The source tree holds GLSL only.
+     * first-choice override. The source tree holds GLSL only. A module loaded
+     * from its sealed copy (core/Trust.h) has no directory -- dladdr names a
+     * descriptor, /proc/self/fd/ -- so the tree's own bin/shaders is last.
      * A total miss lists every path tried -- a window that never draws was the
      * symptom of the old cwd-relative lookup.
      */
@@ -400,7 +402,7 @@ private:
             return shader_dir_has_pipeline(dir) ? dir : std::string();
         };
         const std::string so_dir = own_module_dir();
-        for (const std::string& candidate : { requested, so_dir + "shaders" })
+        for (const std::string& candidate : { requested, so_dir + "shaders", std::string(ETCS_ACE_ROOT) + "/bin/shaders" })
         {
             const std::string hit = consider(candidate);
             if (!hit.empty()) { ETCS_LOG("VulkanPresenter", "shaders: " << hit); return hit; }
@@ -593,13 +595,14 @@ private:
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = m_meshVertShader; stages[0].pName = "main";
         stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = m_meshFragShader; stages[1].pName = "main";
-        VkVertexInputBindingDescription bind{ 0, 24, VK_VERTEX_INPUT_RATE_VERTEX };
-        VkVertexInputAttributeDescription attrs[2] = { { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 }, { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12 } };
+        VkVertexInputBindingDescription bind{ 0, static_cast<uint32_t>(kDeviceVertexFloats * sizeof(float)), VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attrs[3] = { { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 }, { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12 },
+                                                       { 2, 0, VK_FORMAT_R32_SFLOAT, 24 } };
         VkPipelineVertexInputStateCreateInfo vi{};
         vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
         vi.vertexBindingDescriptionCount   = 1;
         vi.pVertexBindingDescriptions      = &bind;
-        vi.vertexAttributeDescriptionCount = 2;
+        vi.vertexAttributeDescriptionCount = 3;
         vi.pVertexAttributeDescriptions    = attrs;
         VkPipelineInputAssemblyStateCreateInfo ia{};
         ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -780,8 +783,9 @@ private:
     // Mesh 0: the unit cube (DeviceFrame.h), kept here so a box never travels.
     void ensureUnitBox()
     {
-        std::vector<float> v; std::vector<uint32_t> idx;
-        device_unit_box(v, idx);
+        std::vector<float> six, v; std::vector<uint32_t> idx;
+        device_unit_box(six, idx);
+        device_widen(six, v);
         ensureMesh(0, v, idx, {});
     }
 
