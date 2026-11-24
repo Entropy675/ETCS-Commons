@@ -78,6 +78,18 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   of the trace (`config`, `look`, `round`), so a change made in one shows in the other, and on
   every tab. A guest sees the host's settings change and cannot change them; a colour or a
   name is its owner's, in the lobby only.
+- **Your own vehicles: the garage**, the lobby's second page, and your tab's alone. The first
+  time, its row turns the builder on and the page reloads with it (`?with=builder`, then
+  remembered: the tab keeps its drafts in `/persist/kart_builder.db`). A draft starts from
+  the vehicle you ride; each row steps one of its numbers; **shape it** opens the modeller over
+  the window -- parts of any shape, colour and material, the red ones drawn in your colour --
+  and **Enter** or **done** keeps the shape. A part weighs its size at its material's density.
+  Nothing leaves the tab until **use it**: the whole vehicle as one line, built by every tab,
+  ridden by you, and shown beside your name in the lobby.
+- **Lock in** before a round: on one of the arena's vehicles, or on a build the host has
+  accepted. The round starts only when everyone is locked in (`*` in the table; `?` is a build
+  waiting for the host). The host's **drivers** page accepts a build, sends a driver back to the
+  kart, or keeps them to the arena's vehicles until it lets them go.
 - **A round's settings are locked** until it is over: the clock runs out (the results stand for
   six seconds, then the lobby, which keeps them), or the host **abandons** it (**Esc**, or the
   page's button) -- back to the lobby, its scores discarded.

@@ -44,6 +44,11 @@ tree.MountFile(KartProvider/scripts/kart_map_skatepark.etcs ACE_ROOT/modules/Kar
 tree.MountFile(KartProvider/scripts/kart_map_lava.etcs ACE_ROOT/modules/KartProvider/scripts/kart_map_lava.etcs)
 tree.MountFile(KartProvider/scripts/kart_map_towers.etcs ACE_ROOT/modules/KartProvider/scripts/kart_map_towers.etcs)
 tree.MountFile(KartProvider/scripts/kart_map_serpent.etcs ACE_ROOT/modules/KartProvider/scripts/kart_map_serpent.etcs)
+tree.MountFile(KartProvider/scripts/kart_looks.etcs ACE_ROOT/modules/KartProvider/scripts/kart_looks.etcs)
+tree.MountFile(KartProvider/scripts/kart_look_meshes.etcs ACE_ROOT/modules/KartProvider/scripts/kart_look_meshes.etcs)
+tree.MountFile(KartProvider/scripts/kart_trim.etcs ACE_ROOT/modules/KartProvider/scripts/kart_trim.etcs)
+tree.MountFile(RenderProvider/scripts/mesh_pyramid.etcs ACE_ROOT/modules/RenderProvider/scripts/mesh_pyramid.etcs)
+tree.MountFile(RenderProvider/scripts/mesh_wedge.etcs ACE_ROOT/modules/RenderProvider/scripts/mesh_wedge.etcs)
 tree.MountFile(KartProvider/scripts/kart_vehicle_moto.etcs ACE_ROOT/modules/KartProvider/scripts/kart_vehicle_moto.etcs)
 tree.MountFile(KartProvider/scripts/kart_vehicle_bike.etcs ACE_ROOT/modules/KartProvider/scripts/kart_vehicle_bike.etcs)
 tree.MountFile(KartProvider/scripts/kart_vehicle_pickup.etcs ACE_ROOT/modules/KartProvider/scripts/kart_vehicle_pickup.etcs)
@@ -76,3 +81,13 @@ tree.MountFile(KartProvider/scripts/kart_pointer.etcs ACE_ROOT/modules/KartProvi
 run NetworkProvider/scripts/session_mounts.etcs tree=tree
 tree.MountFile(RenderProvider/scripts/render_frames.etcs ACE_ROOT/modules/RenderProvider/scripts/render_frames.etcs)
 tree.MountFile(shell ACE_ROOT/modules/ShellProvider/scripts/www/index.html)
+
+# The builder's (modules.json's extras): staged only on a page that has it.
+tree.MountFile(KartProvider/scripts/kart_garage.etcs ACE_ROOT/modules/KartProvider/scripts/kart_garage.etcs)
+tree.MountFile(PaintProvider/scripts/paint_model_pane.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_model_pane.etcs)
+tree.MountFile(PaintProvider/scripts/paint_model_world.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_model_world.etcs)
+tree.MountFile(PaintProvider/scripts/paint_model_shapes.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_model_shapes.etcs)
+tree.MountFile(PaintProvider/scripts/paint_model_parts.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_model_parts.etcs)
+tree.MountFile(PaintProvider/scripts/paint_model_part.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_model_part.etcs)
+tree.MountFile(PaintProvider/scripts/paint_model_bar.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_model_bar.etcs)
+tree.MountFile(PaintProvider/scripts/paint_cell_arrow.etcs ACE_ROOT/modules/PaintProvider/scripts/paint_cell_arrow.etcs)

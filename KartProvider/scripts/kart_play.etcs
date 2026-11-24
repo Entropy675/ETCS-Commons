@@ -45,7 +45,7 @@ run kart_board.etcs eye=eye battle=battle
 # length, your colour and name, and the host's start. The page's own panel
 # says the same lines, so either one moves the lobby.
 eye.spawn(RenderProvider::Menu menu)
-menu.Create(640, 430)
+menu.Create(640, 540)
 menu.SetOrder(20)
 
 battle.BindWorld(@world)

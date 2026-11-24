@@ -9,6 +9,7 @@
     "WindowProvider.wasm",
     "RenderProvider.wasm",
     "KartProvider.wasm",
+    "DatabaseProvider.wasm",
     "NetworkProvider.wasm",
     "ShellProvider.wasm"
   ],
@@ -38,6 +39,11 @@
     "KartProvider/scripts/kart_map_lava.etcs",
     "KartProvider/scripts/kart_map_towers.etcs",
     "KartProvider/scripts/kart_map_serpent.etcs",
+    "KartProvider/scripts/kart_looks.etcs",
+    "KartProvider/scripts/kart_look_meshes.etcs",
+    "KartProvider/scripts/kart_trim.etcs",
+    "RenderProvider/scripts/mesh_pyramid.etcs",
+    "RenderProvider/scripts/mesh_wedge.etcs",
     "KartProvider/scripts/kart_vehicle_moto.etcs",
     "KartProvider/scripts/kart_vehicle_bike.etcs",
     "KartProvider/scripts/kart_vehicle_pickup.etcs",
@@ -87,6 +93,31 @@
     "RenderProvider/scripts/render_frames.etcs"
   ],
   "boot": "boot_kart.etcs",
+  "_extras": [
+    "THE BUILDER, for a page that asks (?with=builder, or its store kept from last time): the",
+    "garage's modeller is PaintProvider's, laid out by LayoutProvider; its after script is run",
+    "with the boot's globals once the battle answers (NetworkProvider's session_page.js)."
+  ],
+  "extras": {
+    "builder": {
+      "modules": ["LayoutProvider.wasm", "PaintProvider.wasm"],
+      "before": "NetworkProvider.wasm",
+      "scripts": [
+        "KartProvider/scripts/kart_garage.etcs",
+        "PaintProvider/scripts/paint_model_pane.etcs",
+        "PaintProvider/scripts/paint_model_world.etcs",
+        "PaintProvider/scripts/paint_model_shapes.etcs",
+        "PaintProvider/scripts/paint_model_parts.etcs",
+        "PaintProvider/scripts/paint_model_part.etcs",
+        "PaintProvider/scripts/paint_model_bar.etcs",
+        "PaintProvider/scripts/paint_cell_arrow.etcs"
+      ],
+      "after": "KartProvider/scripts/kart_garage.etcs",
+      "names": "battle=battle view=view eye=eye",
+      "remember": "/persist/kart_builder.db",
+      "wants": true
+    }
+  },
   "_glue": [
     "The emscripten loader output, STAGED AS .js (ChessProvider's modules.json on why)."
   ],

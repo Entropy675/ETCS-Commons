@@ -5,6 +5,7 @@
 #include "../../../ontology.h"
 #include "../../../ontology/Noise.h"
 #include "../../../ontology/Epoch.h"
+#include "../../../ontology/Database.h"
 #include "KartArms.h"
 #include "KartArena.h"
 
@@ -15,6 +16,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <deque>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <random>
@@ -177,9 +179,12 @@ public:
                 s.tyre_pristine[t] = c->RowsUnder();
             }
         s.made_body = extentOf(body, s.made_volume);
+        if (!m_kart_volume.IsPositive()) m_kart_volume = s.made_volume;
         Fixed unused;
         s.made_tyre = extentOf(fr, unused);
         m_slots.push_back(s);
+        m_builds.emplace_back();
+        m_locked.push_back(0); m_accepted.push_back(0); m_in.push_back(0);
         pitLocked(m_slots.size() - 1);
         // Practice asked for before the arena had made the karts (a page is
         // quicker than its boot): the driver takes the first one made.
@@ -219,45 +224,65 @@ public:
     bool Tune(const std::string& line)
     {
         std::lock_guard<std::mutex> g(m_mu);
+        return m_tuning && tuneLocked(m_vehicles.back(), line);
+    }
+    // "<shape> <material> <x y z> <hx hy hz> <r g b a> <qw qx qy qz>" -- a part
+    // of the latest vehicle's look, as the modeller states one (in metres, y
+    // 0 the ground, +z ahead), its numbers decimals read exactly.
+    bool Part(const std::string& line)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
         if (!m_tuning) return false;
-        Vehicle& v = m_vehicles.back();
         std::istringstream in(line);
-        std::string what;
-        in >> what;
-        std::vector<Fixed> n;
-        std::vector<std::string> said;
-        for (std::string w; in >> w; ) { Fixed f; if (!decimal(w, f)) return false; n.push_back(f); said.push_back(w); }
-        auto need = [&](size_t k) { return n.size() == k; };
-        auto positive = [&](size_t k) { for (size_t i = 0; i < k; ++i) if (!n[i].IsPositive()) return false; return true; };
-        if (what == "top" && need(1) && positive(1)) { v.top = n[0]; return true; }
-        if (what == "boost" && need(2) && positive(2)) { v.boost_top = n[0]; v.boost_push = n[1]; return true; }
-        if (what == "push" && need(3) && positive(3)) { v.start = n[0]; v.launch = n[1]; v.pull = n[2]; return true; }
-        if (what == "brake" && need(1) && positive(1)) { v.brake = n[0]; return true; }
-        if (what == "reverse" && need(2) && positive(2)) { v.rev_acc = n[0]; v.rev_top = n[1]; return true; }
-        if (what == "coast" && need(1) && n[0].raw >= 0) { v.coast = n[0]; return true; }
-        if (what == "steer" && need(4) && positive(4)) { v.lock = n[0]; v.jump = n[1]; v.ease = n[2]; v.back = n[3]; return true; }
-        if (what == "wheelbase" && need(1) && positive(1)) { v.base = n[0]; return true; }
-        if (what == "grip" && need(2) && positive(2)) { v.grip = n[0]; v.brake_grip = n[1]; return true; }
-        if (what == "slide" && need(2) && positive(2) && n[0] < Fixed::One() && n[1] <= Fixed::One()) { v.slide_free = n[0]; v.slide_least = n[1]; return true; }
-        if (what == "tyres" && need(3) && (n[0] == F(2) || n[0] == F(4)) && n[1].raw >= 0 && n[2].IsPositive())
-        {
-            v.tyres = n[0] == F(2) ? 2 : 4; v.side = n[1]; v.ahead = n[2];
-            return true;
-        }
-        if (what == "body" && need(3) && positive(3))
-        {
-            v.body = said[0] + ", " + said[1] + ", " + said[2]; v.volume = n[0] * n[1] * n[2];
-            return true;
-        }
-        // A tyre stands on the ground: the body rides its radius and the drop over it.
-        if (what == "tyre" && need(3) && positive(2) && (n[0] / F(2) + n[2]).IsPositive())
-        {
-            v.tyre = said[0] + ", " + said[1] + ", " + said[0]; v.drop = n[2]; v.ride = n[0] / F(2) + n[2];
-            return true;
-        }
-        if (what == "reach" && need(1) && positive(1)) { v.reach = n[0]; return true; }
-        if (what == "lean" && need(1) && n[0].raw >= 0) { v.lean = n[0]; return true; }
-        if (what == "ram" && need(1) && n[0].raw >= 0) { v.ram = static_cast<int>(n[0].ToInt()); return true; }
+        VPart pt;
+        Fixed n[14];
+        in >> pt.shape >> pt.material;
+        for (Fixed& f : n) { std::string w; if (!(in >> w) || !decimal(w, f)) return false; }
+        if (!partFromLocked(pt, n)) return false;
+        m_vehicles.back().parts.push_back(pt);
+        lookLocked(m_vehicles.back());
+        return true;
+    }
+    // A shape a part can be drawn as: a Mesh in the unit box, and how much of
+    // that box it fills (a part weighs its fill of its box). "box" needs none.
+    bool AddPartShape(const std::string& name, ETCS::RID mesh, const std::string& fill)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        Fixed f;
+        if (name.empty() || name == "box" || !mesh || !decimal(fill, f) || !f.IsPositive()) return false;
+        for (PartShape& sh : m_part_shapes) if (sh.name == name) { sh.mesh = mesh; sh.fill = f; return true; }
+        m_part_shapes.push_back(PartShape{ name, mesh, f });
+        return true;
+    }
+    // A material: how heavy a part of it is, as a share of the kart's own
+    // density (its body's weight over its volume). A part of none is the kart's.
+    bool AddMaterial(const std::string& name, const std::string& density)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        Fixed d;
+        if (name.empty() || name == "-" || !decimal(density, d) || !d.IsPositive()) return false;
+        for (Material& m : m_materials) if (m.name == name) { m.density = d; return true; }
+        m_materials.push_back(Material{ name, d });
+        return true;
+    }
+    // The team colour: a part painted it is drawn in its driver's colour.
+    void LiveryKey(float r, float g, float b)
+    {
+        std::lock_guard<std::mutex> lk(m_mu);
+        m_key[0] = Fixed::From(r); m_key[1] = Fixed::From(g); m_key[2] = Fixed::From(b);
+    }
+    // The pools a look is drawn with: Meshes under the world, each one colour
+    // of one vehicle; and each kart's trims, one a colour that is not the team's.
+    void AddLookMesh(ETCS::RID mesh) { std::lock_guard<std::mutex> g(m_mu); if (mesh) { m_look_meshes.push_back(mesh); m_look_owner.push_back(-1); } }
+    bool AddTrim(ETCS::RID body, ETCS::RID trim)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        for (Slot& s : m_slots)
+            if (s.body == body && trim)
+            {
+                for (ETCS::RID& t : s.trims) if (!t) { t = trim; verb(t, "SetVisible", "0"); return true; }
+                return false;
+            }
         return false;
     }
     // The latest vehicle's body: a Mesh under the world (0: the body's own box).
@@ -270,12 +295,156 @@ public:
         for (const Vehicle& v : m_vehicles) out += v.name + "\n";
         return out;
     }
-    // This runtime's vehicle, in the lobby: a `ride` line.
+    // This runtime's build from a file holding its text (buildText's), as
+    // the garage's "use it" sends a draft: a `build` line.
+    bool BuildFile(const std::string& path)
+    {
+        std::ifstream f(path);
+        std::string text;
+        if (!f || !std::getline(f, text) || text.empty()) return false;
+        std::lock_guard<std::mutex> g(m_mu);
+        if (slotOf(m_me) < 0 || m_phase != Lobby) return false;
+        proposeLocked("build " + text);
+        return true;
+    }
+    // The host's, of a seat by its driver: Reject <driver> (its build gone, back
+    // in the kart) and LockDriver <driver> <0|1> (kept to the arena's vehicles).
+    bool Reject(const std::string& who)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (!m_authority || slotNamedLocked(who) < 0) return false;
+        proposeLocked("reject " + who);
+        return true;
+    }
+    bool LockDriver(const std::string& line)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        std::istringstream in(line);
+        std::string who;
+        int on = -1;
+        in >> who >> on;
+        if (!m_authority || slotNamedLocked(who) < 0 || (on != 0 && on != 1)) return false;
+        proposeLocked("lock " + who + " " + std::to_string(on));
+        return true;
+    }
+    // LookOf <name> -- an arena vehicle's, a seat's build's or this runtime's
+    // draft's: "<parts> <weight in karts> <colours> <driver|-> <body w, h, d>", or "-".
+    std::string LookOf(const std::string& name)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        std::string driver = "-";
+        const Vehicle* v = namedLocked(name, &driver);
+        if (!v) return "-";
+        const Fixed mass = v->mass.IsPositive() ? v->mass : v->volume.IsPositive() && m_kart_volume.IsPositive() ? v->volume / m_kart_volume : Fixed::One();
+        return std::to_string(v->parts.size()) + " " + fmt3(mass.ToFloat()) + " " + std::to_string(v->meshes.size()) + " "
+             + driver + " " + (v->body.empty() ? std::string("as-made") : v->body);
+    }
+    // TuneOf <name> <what> -- the numbers a `tune` <what> of it would say, or "-".
+    std::string TuneOf(const std::string& line)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        std::istringstream in(line);
+        std::string name, what;
+        in >> name >> what;
+        const Vehicle* v = namedLocked(name, nullptr);
+        const std::vector<Fixed> n = v ? tuneValuesOf(*v, what) : std::vector<Fixed>();
+        if (n.empty()) return "-";
+        std::string out;
+        for (Fixed f : n) out += (out.empty() ? "" : " ") + decimalText(f);
+        return out;
+    }
+    // Accept <driver> -- the host's: their build may be locked in on.
+    bool Accept(const std::string& who)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (!m_authority || slotNamedLocked(who) < 0) return false;
+        proposeLocked("accept " + who);
+        return true;
+    }
+    // LockIn <0|1> -- this runtime's seat locked in for the round, or not: an `in` line.
+    bool LockIn(int on)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (slotOf(m_me) < 0 || m_phase != Lobby || (on != 0 && on != 1)) return false;
+        proposeLocked("in " + std::to_string(on));
+        return true;
+    }
+    // Standing <driver> -- "<locked in> <build accepted> <kept to the arena's>", each 0 or 1; "-" no such seat.
+    std::string Standing(const std::string& who)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotNamedLocked(who);
+        if (i < 0) return "-";
+        const size_t k = static_cast<size_t>(i);
+        return std::string(m_in[k] ? "1" : "0") + " " + (m_accepted[k] ? "1" : "0") + " " + (m_locked[k] ? "1" : "0");
+    }
+    // This runtime's vehicle, in the lobby: a `ride` line -- an arena vehicle, or its build by name.
     bool Ride(const std::string& name)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        if (slotOf(m_me) < 0 || m_phase != Lobby || vehicleNamedLocked(name) < 0) return false;
+        const int i = slotOf(m_me);
+        if (i < 0 || m_phase != Lobby || (vehicleNamedLocked(name) < 0 && m_builds[static_cast<size_t>(i)].name != name)) return false;
         proposeLocked("ride " + name);
+        return true;
+    }
+
+    // ── the garage: this runtime's own vehicles, made in the lobby ───────
+
+    // The builder (kart_garage.etcs): its page, the modeller in it and the
+    // router its pointer goes through; and the window's surface, which shows
+    // the page while a shape is in hand and `back` (the arena's eye) after.
+    // The modeller learns the battle's materials, so a part it makes is one
+    // the battle weighs.
+    void BindGarage(ETCS::RID garage, ETCS::RID model, ETCS::RID router, ETCS::RID view, ETCS::RID back)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_garage = garage; m_garage_model = model; m_garage_router = router; m_garage_view = view; m_garage_back = back;
+        for (const Material& m : m_materials) verb(model, "AddMaterial", m.name);
+    }
+    // A row of the garage's page: a `tune` <what>'s <index>th number, stepped
+    // by <step> from <least> to <most> (decimals, read exactly).
+    bool GarageRow(const std::string& label, const std::string& what, uint32_t index,
+                   const std::string& step, const std::string& least, const std::string& most)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        TuneRow r;
+        r.label = label; r.what = what; r.index = index;
+        if (label.empty() || index >= tuneValuesOf(kart(), what).size() || !decimal(step, r.step) || !r.step.IsPositive()
+            || !decimal(least, r.least) || !decimal(most, r.most) || r.most < r.least) return false;
+        m_tune_rows.push_back(r);
+        return true;
+    }
+    // The builder's Done: the shape kept, the pane shut.
+    void GarageDone() { std::lock_guard<std::mutex> g(m_mu); shapeDoneLocked(); }
+    // Where this runtime keeps what it builds: a LocalDatabase, connected to
+    // <path> when the builder is turned on, or at once on a page that has it.
+    // The file's being there is the builder's being on (session_page.js).
+    void BindBuilderStore(ETCS::RID db, const std::string& path)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_builder_store = db; m_store_path = path; m_store_ready = false;
+    }
+    // What the page should do for this runtime: "builder" (keep the store,
+    // reload with the builder), or "-".
+    std::string Wants() { std::lock_guard<std::mutex> g(m_mu); return m_wants.empty() ? std::string("-") : m_wants; }
+    // "<in garage 0|1> <shaping 0|1> <draft|->", for a page and a test.
+    std::string Garage()
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const Vehicle* v = draftLocked();
+        return std::string(m_in_garage ? "1" : "0") + " " + (m_shaping ? "1" : "0") + " " + (v ? v->name : std::string("-"));
+    }
+    // The garage's page, or the host's drivers page, pressed by name as the
+    // keys and pointer press it: "<item> [prev|next]" (garage, g_pick, g_new,
+    // g_r<k>, g_shape, g_use, g_back; drivers, d_pick, d_reject, d_lock, d_back).
+    bool GaragePress(const std::string& line)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        std::istringstream in(line);
+        std::string id, part = "next";
+        in >> id >> part;
+        if (id.empty() || slotOf(m_me) < 0 || m_phase != Lobby) return false;
+        menuActLocked(id, part, 0);
         return true;
     }
 
@@ -575,6 +744,18 @@ public:
      */
     void Key(uint16_t key, bool down)
     {
+        // Shaping, the keys are the builder's but Enter, which keeps the shape;
+        // handed on outside the lock, as a cell of it may call back (GarageDone).
+        ETCS::RID router = 0;
+        {
+            std::lock_guard<std::mutex> g(m_mu);
+            if (m_shaping)
+            {
+                if (key == 257 || key == 335) { if (down) shapeDoneLocked(); return; }
+                router = m_garage_router;
+            }
+        }
+        if (router) { verb(router, "Event", std::to_string(down ? INPUT_DOWN : INPUT_UP) + " " + std::to_string(key) + " 0 0 0"); return; }
         std::lock_guard<std::mutex> g(m_mu);
         if (key == 258) { m_board_held = down; return; }
         if (key == 'Q' || key == 'E')
@@ -670,7 +851,7 @@ public:
     }
     void ShowSettings(bool on) { std::lock_guard<std::mutex> g(m_mu); m_settings = on && m_menu_rid; m_editing = false; }
     // Whether the drawn menu (the lobby's, or the settings) is over the arena: a page hides its pads under it.
-    bool MenuUp() { std::lock_guard<std::mutex> g(m_mu); return menuShownLocked(); }
+    bool MenuUp() { std::lock_guard<std::mutex> g(m_mu); return menuShownLocked() || m_shaping; }
     // Do this runtime's keys drive a kart now: seated in a round under way, no menu over it?
     bool Driving() { std::lock_guard<std::mutex> g(m_mu); return m_ready && !m_me.empty() && m_phase == Playing && !menuShownLocked(); }
 
@@ -686,6 +867,14 @@ public:
      */
     void Pointer(const InputEvent& ev)
     {
+        ETCS::RID router = 0;
+        { std::lock_guard<std::mutex> g(m_mu); if (m_shaping) router = m_garage_router; }
+        if (router)
+        {
+            verb(router, "Event", std::to_string(ev.action) + " " + std::to_string(ev.key) + " " + std::to_string(ev.buttons)
+                 + " " + std::to_string(ev.x) + " " + std::to_string(ev.y));
+            return;
+        }
         std::lock_guard<std::mutex> g(m_mu);
         const bool lobby = menuShownLocked();
         switch (ev.action)
@@ -931,6 +1120,7 @@ public:
         barsLocked();
         cardLocked(dt_ms);
         boardLocked();
+        garageLocked();
         menuLocked();
         fpsLocked(dt_ms);
     }
@@ -975,10 +1165,11 @@ private:
         std::string driver;
         int         colour = -1;                   // its `look`: a place in the palette, -1 its own
         std::string name;                          // its `look`: shown for it; empty, its label
-        int         ride = 0;                      // its vehicle: a place in m_vehicles
+        int         ride = 0;                      // its vehicle: a place in m_vehicles, or kOwnRide its build
         Fixed       lean;                          // its body's roll into the turn, rad (+ to the picture's right)
         Fixed       lean_hold;                     // 0..1: up while a wheel is held, down while none (leanBuild, leanSettle)
         std::string made_body, made_tyre;          // the pool's extents, "w, h, d": the kart's
+        ETCS::RID   trims[6] = { 0, 0, 0, 0, 0, 0 };   // the look's colours that are not the team's: children of the body
         Fixed       made_volume;                   // the pool's body's: a vehicle's mass is its volume over this
         int         thr = 0, steer = 0, fire = 0;   // the pedal's level (kPedalFull a key), the wheel's (kWheelFull), the trigger
         int         press = 0;                     // a press of the trigger the tick has not yet seen
@@ -1075,6 +1266,16 @@ private:
     static Fixed F(int64_t n, int64_t d = 1) { return Fixed::FromInt(n) / Fixed::FromInt(d); }
     static Fixed dt()        { return F(1, kHz); }
     struct Vehicle;   // below: what the numbers that follow are the kart's of
+    // A part of a vehicle's look, as the modeller states one: a shape, a
+    // material, where (metres, y 0 the ground, +z ahead), its half extents,
+    // its colour, its turn.
+    struct VPart
+    {
+        std::string shape = "box", material = "-";
+        Fixed x, y, z, hx, hy, hz, r, g, b, a, qw = Fixed::One(), qx, qy, qz;
+    };
+    struct PartShape { std::string name; ETCS::RID mesh = 0; Fixed fill; };   // AddPartShape
+    struct Material { std::string name; Fixed density; };                     // AddMaterial
     /*
      * THE PEDAL: slow off the line, then as it always was -- quick, and less
      * the nearer the top, the launch's push falling with speed, never below
@@ -1149,10 +1350,16 @@ private:
         int   tyres = 4;                       // 2: in line, the front pair and the rear pair one each
         Fixed side = tyreSide(), ahead = tyreAhead();
         std::string body, tyre;                // "w, h, d" Created on the body and each tyre; empty: as the pool made them
+        Fixed tyre_d = F(46, 100), tyre_w = F(24, 100);   // the tyre's diameter and width, as `tyre` said
         Fixed volume;                          // the body's; it weighs its share of the pool's (0: the pool's own)
         Fixed drop = F(3, 100);                // the tyres' centres below the body's
         Fixed ride = kartY();                  // the body's centre over the ground: on its tyres
         Fixed reach = kartR();                 // how far from its centre a shot meets it
+        Fixed mass;                            // what it weighs, from its parts; 0: its body's volume at the kart's density
+        std::string from;                      // a build's: the arena vehicle it is made from
+        std::vector<VPart> parts;              // its look as modelled (lookLocked)
+        std::vector<int> meshes;               // its look's meshes, of m_look_meshes: the team colour's, then one a colour
+        std::vector<std::array<Fixed, 4>> trims;   // the colour of each after the first
         Fixed lean;                            // of the turn's lean, 0 none: a rolled body (poseLocked)
         int   ram = 20;                        // a ram's damage, boosting at speed
         ETCS::RID look = 0;                    // the body's mesh; 0 its own box
@@ -1355,13 +1562,75 @@ private:
             const int i = slotOf(author);
             std::string name;
             if (i < 0 || m_phase != Lobby || !(in >> name)) return false;
-            const int v = vehicleNamedLocked(name);
-            if (v < 0) return false;
+            const Vehicle& own = m_builds[static_cast<size_t>(i)];
+            int v = vehicleNamedLocked(name);
+            if (v < 0 && !own.name.empty() && name == own.name) v = kOwnRide;
+            else if (v < 0) return false;
             m_slots[static_cast<size_t>(i)].ride = v;
+            m_in[static_cast<size_t>(i)] = 0;
             rideLookLocked(static_cast<size_t>(i));
             return true;
         }
+        // `build <name>;<base>;<what values>;...;parts <n> <parts>` -- a seat's
+        // own vehicle, made whole in its garage and sent once: the base's (an
+        // arena vehicle's) numbers and look, then each `tune`, then its parts.
+        // Every runtime builds it from the line, and its seat rides it. The
+        // lobby's only, and not a seat the host has kept to the arena's.
+        if (verb == "build")
+        {
+            const int i = slotOf(author);
+            std::string text;
+            std::getline(in, text);
+            if (i < 0 || m_phase != Lobby || m_locked[static_cast<size_t>(i)]) return false;
+            Vehicle v;
+            if (!buildFromTextLocked(text, v)) return false;
+            dropBuildLocked(static_cast<size_t>(i));
+            m_builds[static_cast<size_t>(i)] = std::move(v);
+            lookLocked(m_builds[static_cast<size_t>(i)]);
+            m_slots[static_cast<size_t>(i)].ride = kOwnRide;
+            m_accepted[static_cast<size_t>(i)] = host ? 1 : 0;   // the host's own needs no one's word
+            m_in[static_cast<size_t>(i)] = 0;
+            rideLookLocked(static_cast<size_t>(i));
+            if (author == m_me) m_rejected = false;
+            return true;
+        }
+        // `in <0|1>`: a seated driver locked in for the round, or not -- on an
+        // arena vehicle or a build the host has accepted, nothing else.
+        if (verb == "in")
+        {
+            const int i = slotOf(author);
+            int on = -1;
+            if (i < 0 || m_phase != Lobby || !(in >> on) || (on != 0 && on != 1)) return false;
+            if (on && m_slots[static_cast<size_t>(i)].ride == kOwnRide && !m_accepted[static_cast<size_t>(i)]) return false;
+            m_in[static_cast<size_t>(i)] = static_cast<uint8_t>(on);
+            return true;
+        }
         if (!host) return false;   // the rest are the host's
+        // `accept <seat>`: its build may be locked in on; `reject <seat>`: its
+        // build gone and the seat in the kart; `lock <seat> <0|1>`: kept to
+        // the arena's vehicles (its build gone too) or let go.
+        if (verb == "accept" || verb == "reject" || verb == "lock")
+        {
+            std::string who;
+            int on = 1;
+            in >> who;
+            if (verb == "lock" && !(in >> on)) return false;
+            const int i = slotNamedLocked(who);
+            if (i < 0 || m_phase != Lobby) return false;
+            if (verb == "accept")
+            {
+                if (m_builds[static_cast<size_t>(i)].name.empty()) return false;
+                m_accepted[static_cast<size_t>(i)] = 1;
+                return true;
+            }
+            if (verb == "lock") m_locked[static_cast<size_t>(i)] = on ? 1 : 0;
+            if (verb == "reject" || on)
+            {
+                if (m_slots[static_cast<size_t>(i)].driver == m_me && !m_builds[static_cast<size_t>(i)].name.empty()) m_rejected = true;
+                dropBuildLocked(static_cast<size_t>(i));
+            }
+            return true;
+        }
         if (verb == "config")
         {
             // The lobby's only: a round's settings are locked until it ends.
@@ -1379,11 +1648,13 @@ private:
         if (verb == "round")
         {
             uint64_t seed = 0;
-            if (m_phase != Lobby || !(in >> seed) || !seed) return false;
+            // Not until every seated driver is locked in (`in`).
+            if (m_phase != Lobby || !(in >> seed) || !seed || notInLocked()) return false;
             m_rng = seed;
             bakeFiresLocked(seed ^ ETCS::EpochSeed());   // fresh fire for the round
             mapLocked(m_map, m_layout);   // the boxes out afresh, the shots gone
             for (Slot& s : m_slots) s.elims = s.deaths = 0;
+            for (uint8_t& b : m_in) b = 0;   // each lobby is locked into afresh
             m_phase = Playing;
             m_end = static_cast<int64_t>(m_tick) + static_cast<int64_t>(m_round_secs) * kHz;
             respawnAllLocked();
@@ -1422,13 +1693,16 @@ private:
     // every runtime, so two of them start the same.
     void resetLocked()
     {
-        for (size_t i = 0; i < m_slots.size(); ++i) pitLocked(i);
+        for (size_t i = 0; i < m_slots.size(); ++i) pitLocked(i);   // the seats' builds and locks with them
         for (Shot& s : m_shots) dropShotLocked(s);
         m_shots.clear();
         clearWispsLocked();
         for (Burst& b : m_bursts) endBurstLocked(b);
         m_keys = 0; m_pedal = m_wheel = 0; m_sent_t = m_sent_s = m_sent_f = 0;
         m_eye_set = false; m_menu = 0; m_editing = false;
+        // The garage begins again too, and asks again for what the store kept.
+        if (m_shaping) { m_shaping = false; closeGarageLocked(); }
+        m_in_garage = false; m_in_drivers = false; m_rejected = false;
         m_phase = Lobby; m_end = 0; m_round_secs = 180;
         m_rng = 0x9E3779B97F4A7C15ull;
         bakeFiresLocked(ETCS::EpochSeed() ^ 0xF17E5EEDull);   // the lobby's: the epoch's own
@@ -1471,6 +1745,7 @@ private:
         m_slots[i].driver.clear();
         m_slots[i].colour = -1; m_slots[i].name.clear();
         m_slots[i].ride = 0; m_slots[i].lean = m_slots[i].lean_hold = Fixed::Zero();
+        if (i < m_builds.size()) { releaseLookLocked(m_builds[i]); m_builds[i] = Vehicle(); m_builds[i].name.clear(); m_locked[i] = m_accepted[i] = m_in[i] = 0; }
         verb(m_slots[i].body, "SetMesh", "0");
         verb(m_slots[i].body, "Create", m_slots[i].made_body);
         verb(m_slots[i].body, "SetMass", "1");
@@ -1489,6 +1764,7 @@ private:
         verb(s.body, "SetVisible", "0");
         verb(s.body, "SetAnchored", "1");
         for (ETCS::RID w : s.wheels) verb(w, "SetVisible", "0");
+        for (ETCS::RID t : s.trims) if (t) verb(t, "SetVisible", "0");
         tyresAfreshLocked(s);
         clearMarksLocked(i);
         placeLocked(i, F(200) + F(4) * F(static_cast<int64_t>(i)), Fixed::Zero(), Fixed::Zero(), Fixed::One());
@@ -1531,6 +1807,7 @@ private:
         verb(s.body, "SetAnchored", m_phase == Lobby ? "1" : "0");
         verb(s.body, "SetVisible", "1");
         for (int t = 0; t < 4; ++t) verb(s.wheels[t], "SetVisible", tyreShown(vehicleOf(s), t) ? "1" : "0");
+        for (int t = 0; t < kTrims; ++t) if (s.trims[t]) verb(s.trims[t], "SetVisible", trimUsed(vehicleOf(s), t) ? "1" : "0");
     }
     // Everyone afresh (a new map, a round, the lobby): out of play first,
     // then back in slot order, each at the spawn furthest from those already
@@ -3468,6 +3745,14 @@ private:
             q.qy = aw * by - ax * bz + ay * bw + az * bx;
             q.qz = aw * bz + ax * by - ay * bx + az * bw;
         }
+        // The trims: at the body's centre, turned as it is.
+        for (int t = 0; t < kTrims && trimUsed(c, t); ++t)
+            if (Causal_* w = causal(s.trims[t]))
+            {
+                OrderVector& q = w->RowsUnder();
+                q.PlaceAt(Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
+                q.qw = r.qw; q.qx = r.qx; q.qy = r.qy; q.qz = r.qz;
+            }
     }
 
     // ── the pads' arrows ────────────────────────────────────────────────
@@ -4084,18 +4369,21 @@ private:
     {
         std::vector<std::string> items;
         if (m_settings) return { "invert", "marks", "look", "close" };
+        if (m_in_garage) return garageItemsLocked();
+        if (m_in_drivers) return driversItemsLocked();
         const bool seated = slotOf(m_me) >= 0;
         if (m_authority) { items.push_back("map"); items.push_back("length"); }
-        if (seated) { items.push_back("vehicle"); items.push_back("colour"); items.push_back("name"); }
+        if (seated) { items.push_back("vehicle"); items.push_back("garage"); items.push_back("colour"); items.push_back("name"); items.push_back("lockin"); }
         if (m_authority)
         {
             items.push_back("start");
             if (!m_defs.empty() && m_defs[m_map].generated) items.push_back("reroll");
+            items.push_back("drivers");
         }
         items.push_back("settings");
         return items;
     }
-    bool menuShownLocked() const { return m_menu_rid && (m_settings || (m_phase == Lobby && !m_me.empty() && m_ready)); }
+    bool menuShownLocked() const { return m_menu_rid && !m_shaping && (m_settings || (m_phase == Lobby && !m_me.empty() && m_ready)); }
 
     // The settings' choices, in their order: the marks' road and the look's pace.
     static constexpr int kMarkChoices[5] = { 0, 20, 40, 80, 160 };
@@ -4177,6 +4465,7 @@ private:
             if (c && m_edit.size() < kNameMax) m_edit += c;
             return true;   // typing drives nothing
         }
+        if ((m_in_garage || m_in_drivers) && key == 256) { m_in_garage = m_in_drivers = false; m_menu = 0; return true; }
         const std::vector<std::string> items = menuItemsLocked();
         if (items.empty()) return false;
         const bool up = key == 265 || key == 'W', down = key == 264 || key == 'S';
@@ -4188,7 +4477,9 @@ private:
         if (down) { m_menu = (m_menu + 1) % n; return true; }
         if (!left && !right && !enter) return false;
         const std::string& at = items[static_cast<size_t>(m_menu)];
-        if (at == "start" || at == "reroll" || at == "name" || at == "settings") { if (enter) menuActLocked(at, "press", 0); return true; }
+        if (at == "start" || at == "reroll" || at == "name" || at == "settings" || at == "garage" || at == "g_new" || at == "g_shape" || at == "g_use" || at == "g_back"
+            || at == "drivers" || at == "d_accept" || at == "d_reject" || at == "d_back" || at == "lockin")
+        { if (enter) menuActLocked(at, "press", 0); return true; }
         if (at == "colour") { menuActLocked(at, left ? "prev" : "next", 0); return true; }
         // Enter on a map made from a seed: the same map, a new seed.
         if (at == "map" && enter && m_defs[m_map].generated) { menuActLocked("reroll", "press", 0); return true; }
@@ -4215,6 +4506,24 @@ private:
     void menuActLocked(const std::string& id, const std::string& part, int n)
     {
         const int dir = part == "prev" ? -1 : 1;
+        if (id == "garage")
+        {
+            const int i = slotOf(m_me);
+            if (i < 0) return;
+            if (!m_garage) { enableBuilderLocked(); return; }
+            m_in_garage = true; m_menu = 0;
+            if (m_draft < 0 && !m_drafts.empty()) m_draft = 0;
+            return;
+        }
+        if (m_in_garage) { garageActLocked(id, dir); return; }
+        if (id == "drivers") { if (m_authority) { m_in_drivers = true; m_menu = 0; } return; }
+        if (id == "lockin")
+        {
+            const int i = slotOf(m_me);
+            if (i >= 0) proposeLocked(std::string("in ") + (m_in[static_cast<size_t>(i)] ? "0" : "1"));
+            return;
+        }
+        if (m_in_drivers) { driversActLocked(id, dir); return; }
         if (id == "colour")
         {
             const int i = slotOf(m_me);
@@ -4230,9 +4539,13 @@ private:
         {
             const int i = slotOf(m_me);
             if (i < 0) return;
-            const int count = static_cast<int>(m_vehicles.size()) + 1;
-            const int v = ((m_slots[static_cast<size_t>(i)].ride + dir) % count + count) % count;
-            proposeLocked("ride " + (v == 0 ? kart().name : m_vehicles[static_cast<size_t>(v - 1)].name));
+            // The kart, the arena's, then the seat's build if it has one.
+            const Vehicle& own = m_builds[static_cast<size_t>(i)];
+            const int count = static_cast<int>(m_vehicles.size()) + 1 + (own.name.empty() ? 0 : 1);
+            const int ride = m_slots[static_cast<size_t>(i)].ride;
+            const int now = ride == kOwnRide ? count - 1 : ride;
+            const int v = ((now + dir) % count + count) % count;
+            proposeLocked("ride " + (v == 0 ? kart().name : v <= static_cast<int>(m_vehicles.size()) ? m_vehicles[static_cast<size_t>(v - 1)].name : own.name));
             return;
         }
         if (id == "settings") { m_settings = true; m_set_focus = 0; m_editing = false; return; }
@@ -4261,6 +4574,451 @@ private:
         proposeLocked("look " + (colour == -2 ? std::string("=") : std::to_string(colour)) + " " + (name.empty() ? std::string("=") : name));
     }
 
+    /*
+     * THE GARAGE, the lobby's second page, and this runtime's alone: its
+     * drafts -- a new one from the vehicle ridden, its numbers a row each
+     * (GarageRow), its shape in the builder -- kept in its store and in no
+     * line. "Use it" sends the draft whole, one `build` line; the host takes
+     * it, or sends the seat back to the kart (`reject`), or keeps it to the
+     * arena's vehicles (`lock`).
+     */
+    Vehicle* draftLocked() { return m_draft >= 0 && m_draft < static_cast<int>(m_drafts.size()) ? &m_drafts[static_cast<size_t>(m_draft)] : nullptr; }
+    const Vehicle* draftLocked() const { return m_draft >= 0 && m_draft < static_cast<int>(m_drafts.size()) ? &m_drafts[static_cast<size_t>(m_draft)] : nullptr; }
+    bool lockedLocked() const { const int i = slotOf(m_me); return i >= 0 && m_locked[static_cast<size_t>(i)]; }
+    std::vector<std::string> garageItemsLocked() const
+    {
+        std::vector<std::string> items;
+        if (!m_drafts.empty()) items.push_back("g_pick");
+        items.push_back("g_new");
+        if (draftLocked())
+        {
+            for (size_t k = 0; k < m_tune_rows.size(); ++k) items.push_back("g_r" + std::to_string(k));
+            if (m_garage_model) items.push_back("g_shape");
+            items.push_back("g_use");
+        }
+        items.push_back("g_back");
+        return items;
+    }
+    void garageLinesLocked(std::vector<std::string>& L)
+    {
+        const int me = slotOf(m_me);
+        const Vehicle* v = draftLocked();
+        L.push_back("title|GARAGE");
+        if (lockedLocked()) L.push_back("sub|the host keeps you to the arena's vehicles");
+        else if (m_rejected) L.push_back("sub|the host sent you back to the kart");
+        else if (v)
+        {
+            const Fixed mass = v->mass.IsPositive() ? v->mass : v->volume.IsPositive() && m_kart_volume.IsPositive() ? v->volume / m_kart_volume : Fixed::One();
+            L.push_back("sub|" + v->name + ": weighs " + fmt3(mass.ToFloat()) + " karts, " + std::to_string(v->parts.size()) + " parts");
+        }
+        else L.push_back("sub|yours alone until you use it");
+        if (!m_drafts.empty()) L.push_back("choice|g_pick|draft|" + (v ? v->name : std::string("-")) + "|1");
+        if (me >= 0) L.push_back("button|g_new|new, from the " + vehicleOf(m_slots[static_cast<size_t>(me)]).name + "|1|" + (m_drafts.empty() ? "1" : "0"));
+        if (v)
+        {
+            for (size_t k = 0; k < m_tune_rows.size(); ++k)
+            {
+                const TuneRow& r = m_tune_rows[k];
+                const std::vector<Fixed> n = tuneValuesOf(*v, r.what);
+                L.push_back("choice|g_r" + std::to_string(k) + "|" + r.label + "|" + decimalText(n[r.index]) + "|1");
+            }
+            if (m_garage_model) L.push_back("button|g_shape|shape it|1|0");
+            L.push_back(std::string("button|g_use|use it|") + (lockedLocked() ? "0" : "1") + "|1");
+        }
+        L.push_back("button|g_back|back to the lobby|1|0");
+        L.push_back("hint|arrows change it  Esc back to the lobby");
+    }
+    void garageActLocked(const std::string& id, int dir)
+    {
+        const int me = slotOf(m_me);
+        if (me < 0) return;
+        if (id == "g_back") { m_in_garage = false; m_menu = 0; return; }
+        if (id == "g_pick")
+        {
+            const int n = static_cast<int>(m_drafts.size());
+            if (n) m_draft = m_draft < 0 ? 0 : ((m_draft + dir) % n + n) % n;
+            return;
+        }
+        if (id == "g_new")
+        {
+            // The vehicle ridden as it is, under a name of its own: its root's
+            // (the arena vehicle it was made from) and a number no draft has.
+            Vehicle v = vehicleOf(m_slots[static_cast<size_t>(me)]);
+            const std::string root = v.from.empty() ? v.name : v.from;
+            v.from = root; v.meshes.clear(); v.trims.clear();
+            v.name.clear();
+            for (int k = 1; k < 1000 && v.name.empty(); ++k)
+            {
+                const std::string name = root + "-" + std::to_string(k);
+                if (!namedLocked(name, nullptr)) v.name = name;
+            }
+            if (v.name.empty()) return;
+            m_drafts.push_back(v);
+            m_draft = static_cast<int>(m_drafts.size()) - 1;
+            m_drafts_dirty = true;
+            return;
+        }
+        Vehicle* v = draftLocked();
+        if (!v) return;
+        if (id == "g_shape") { shapeOpenLocked(); return; }
+        if (id == "g_use") { if (!lockedLocked()) proposeLocked("build " + buildText(*v)); return; }
+        if (id.compare(0, 3, "g_r") != 0) return;
+        const size_t k = static_cast<size_t>(std::atoi(id.c_str() + 3));
+        if (k >= m_tune_rows.size()) return;
+        const TuneRow& r = m_tune_rows[k];
+        std::vector<Fixed> n = tuneValuesOf(*v, r.what);
+        n[r.index] = Fixed::Min(r.most, Fixed::Max(r.least, dir < 0 ? n[r.index] - r.step : n[r.index] + r.step));
+        std::string line = r.what;
+        for (Fixed f : n) line += " " + decimalText(f);
+        if (tuneLocked(*v, line)) { measureDraftLocked(*v); m_drafts_dirty = true; }
+    }
+    void measureDraftLocked(Vehicle& v) const
+    {
+        if (v.parts.empty()) return;
+        std::vector<std::array<Fixed, 4>> colours;
+        std::vector<size_t> group;
+        measureLocked(v, colours, group);
+    }
+    // A vehicle by name: the kart or an arena vehicle, a seat's build (its
+    // driver said), or one of this runtime's drafts.
+    const Vehicle* namedLocked(const std::string& name, std::string* driver) const
+    {
+        const int at = vehicleNamedLocked(name);
+        if (at == 0) return &kart();
+        if (at > 0) return &m_vehicles[static_cast<size_t>(at - 1)];
+        for (size_t i = 0; i < m_builds.size(); ++i)
+            if (!m_builds[i].name.empty() && m_builds[i].name == name) { if (driver) *driver = m_slots[i].driver; return &m_builds[i]; }
+        for (const Vehicle& d : m_drafts) if (d.name == name) return &d;
+        return nullptr;
+    }
+
+    /*
+     * A BUILD AS TEXT, as a `build` line and the store say it:
+     * "<name>;<base>;<what values>;...;parts <n> <parts>" -- the arena
+     * vehicle it is made from, then every `tune` (`tyre` only once tuned),
+     * then its parts (Fixed raws), if it has any.
+     */
+    std::string buildText(const Vehicle& v) const
+    {
+        std::string out = v.name + ";" + (v.from.empty() ? kart().name : v.from);
+        for (const std::string& what : tuneWhats())
+        {
+            if (what == "tyre" && v.tyre.empty()) continue;   // the pool's tyre, as made
+            out += ";" + what;
+            for (Fixed f : tuneValuesOf(v, what)) out += " " + decimalText(f);
+        }
+        if (!v.parts.empty()) out += ";parts " + partsText(v);
+        return out;
+    }
+    // ...and back: a vehicle from its text, every piece checked -- a name no
+    // arena vehicle has, a base that is one, each tune, each part.
+    bool buildFromTextLocked(const std::string& text, Vehicle& out)
+    {
+        std::vector<std::string> seg;
+        std::string cur;
+        for (char c : text) { if (c == ';') { seg.push_back(cur); cur.clear(); } else cur += c; }
+        seg.push_back(cur);
+        for (std::string& t : seg) { while (!t.empty() && t.front() == ' ') t.erase(0, 1); while (!t.empty() && t.back() == ' ') t.pop_back(); }
+        if (seg.size() < 2 || !validName(seg[0]) || vehicleNamedLocked(seg[0]) >= 0) return false;
+        const int base = vehicleNamedLocked(seg[1]);
+        if (base < 0) return false;
+        Vehicle v = base == 0 ? kart() : m_vehicles[static_cast<size_t>(base - 1)];
+        v.name = seg[0]; v.from = seg[1]; v.meshes.clear(); v.trims.clear();
+        for (size_t k = 2; k < seg.size(); ++k)
+        {
+            if (seg[k].compare(0, 6, "parts ") == 0)
+            {
+                std::istringstream in(seg[k].substr(6));
+                if (!partsFromLocked(in, v.parts)) return false;
+            }
+            else if (!tuneLocked(v, seg[k])) return false;
+        }
+        if (v.parts.empty()) v.mass = Fixed::Zero();
+        out = std::move(v);
+        return true;
+    }
+    // "<n> <shape> <material> <14 raws>..." -- at most kMaxParts, each checked.
+    bool partsFromLocked(std::istream& in, std::vector<VPart>& out) const
+    {
+        size_t n = 0;
+        if (!(in >> n) || n > kMaxParts) return false;
+        std::vector<VPart> parts(n);
+        for (VPart& pt : parts)
+        {
+            Fixed f[14];
+            in >> pt.shape >> pt.material;
+            for (Fixed& x : f) { int64_t raw; if (!(in >> raw)) return false; x = Fixed::FromRaw(raw); }
+            if (!partFromLocked(pt, f)) return false;
+        }
+        out = std::move(parts);
+        return true;
+    }
+    // A `tune` <what>'s numbers as a vehicle has them, in the line's order.
+    static std::vector<Fixed> tuneValuesOf(const Vehicle& v, const std::string& what)
+    {
+        if (what == "top") return { v.top };
+        if (what == "boost") return { v.boost_top, v.boost_push };
+        if (what == "push") return { v.start, v.launch, v.pull };
+        if (what == "brake") return { v.brake };
+        if (what == "reverse") return { v.rev_acc, v.rev_top };
+        if (what == "coast") return { v.coast };
+        if (what == "steer") return { v.lock, v.jump, v.ease, v.back };
+        if (what == "wheelbase") return { v.base };
+        if (what == "grip") return { v.grip, v.brake_grip };
+        if (what == "slide") return { v.slide_free, v.slide_least };
+        if (what == "tyres") return { F(v.tyres), v.side, v.ahead };
+        if (what == "tyre") return { v.tyre_d, v.tyre_w, v.drop };
+        if (what == "reach") return { v.reach };
+        if (what == "lean") return { v.lean };
+        if (what == "ram") return { F(v.ram) };
+        return {};
+    }
+    // Every `what` a vehicle is all of, but its body (its parts' or its base's).
+    static const std::vector<std::string>& tuneWhats()
+    {
+        static const std::vector<std::string> w = { "top", "boost", "push", "brake", "reverse", "coast", "steer", "wheelbase",
+                                                    "grip", "slide", "tyres", "tyre", "reach", "lean", "ram" };
+        return w;
+    }
+    // A number as a line says it: four places at most, no trailing zeros.
+    static std::string decimalText(Fixed f)
+    {
+        char b[32];
+        std::snprintf(b, sizeof b, "%.4f", static_cast<double>(f.ToFloat()));
+        std::string t = b;
+        while (t.back() == '0') t.pop_back();
+        if (t.back() == '.') t.pop_back();
+        return t == "-0" ? std::string("0") : t;
+    }
+    static std::string partsText(const Vehicle& v)
+    {
+        std::string out = std::to_string(v.parts.size());
+        for (const VPart& p : v.parts)
+        {
+            out += " " + p.shape + " " + p.material;
+            for (Fixed f : { p.x, p.y, p.z, p.hx, p.hy, p.hz, p.r, p.g, p.b, p.a, p.qw, p.qx, p.qy, p.qz }) out += " " + std::to_string(f.raw);
+        }
+        return out;
+    }
+    // The file the builder reads a shape from and saves it to: this battle's.
+    std::string garagePathLocked() const { return "/tmp/kart_garage_" + std::to_string(this->getRID()) + ".lines"; }
+
+    /*
+     * SHAPING: the draft's parts into the builder as its lines (or, with
+     * none yet, a box of its body at its ride height, in the team's colour),
+     * the builder over the arena with the pointer and the keys; Enter or its
+     * Done keeps the builder's lines as the draft's parts.
+     */
+    void shapeOpenLocked()
+    {
+        const Vehicle* v = draftLocked();
+        const int me = slotOf(m_me);
+        if (!v || me < 0 || !m_garage_model || m_shaping) return;
+        const std::string path = garagePathLocked();
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            if (!out) { noteLocked("the builder: cannot write " + path); return; }
+            auto raw = [](Fixed f) { return std::to_string(f.raw); };
+            if (v->parts.empty())
+            {
+                Fixed w, h, d;
+                if (!extentWords(v->body.empty() ? m_slots[static_cast<size_t>(me)].made_body : v->body, w, h, d)) { w = F(11, 10); h = F(4, 10); d = F(2); }
+                out << "add 0 box 0 " << raw(v->ride) << " 0 " << raw(w / F(2)) << " " << raw(h / F(2)) << " " << raw(d / F(2)) << " "
+                    << raw(m_key[0]) << " " << raw(m_key[1]) << " " << raw(m_key[2]) << " " << raw(Fixed::One()) << " " << raw(Fixed::One()) << " 0 0 0\n";
+            }
+            else
+                for (size_t i = 0; i < v->parts.size(); ++i)
+                {
+                    const VPart& p = v->parts[i];
+                    out << "add " << i << " " << p.shape;
+                    for (Fixed f : { p.x, p.y, p.z, p.hx, p.hy, p.hz, p.r, p.g, p.b, p.a, p.qw, p.qx, p.qy, p.qz }) out << " " << raw(f);
+                    if (p.material != "-") out << " " << p.material;
+                    out << "\n";
+                }
+        }
+        verb(m_garage_model, "Load", path);
+        verb(m_garage_model, "Open", "");
+        verb(m_garage_view, "Compose", std::to_string(m_garage));
+        m_shaping = true;
+        m_keys = 0; m_pedal = m_wheel = 0; m_look_keys = 0; m_look_drag = false;
+        sendKeysLocked();
+    }
+    void shapeDoneLocked()
+    {
+        if (!m_shaping) return;
+        m_shaping = false;
+        const std::string path = garagePathLocked();
+        Vehicle* v = draftLocked();
+        std::string look;
+        if (v && verb(m_garage_model, "Save", path) && lookLineLocked(path, look))
+        {
+            std::istringstream in(look);
+            std::vector<VPart> parts;
+            if (partsFromLocked(in, parts)) { v->parts = std::move(parts); measureDraftLocked(*v); m_drafts_dirty = true; }
+        }
+        closeGarageLocked();
+    }
+    void closeGarageLocked()
+    {
+        verb(m_garage_view, "Compose", std::to_string(m_garage_back));
+        verb(m_garage_model, "Close", "");
+    }
+    // "w, h, d" as three numbers.
+    static bool extentWords(const std::string& text, Fixed& w, Fixed& h, Fixed& d)
+    {
+        std::string t = text;
+        std::replace(t.begin(), t.end(), ',', ' ');
+        std::istringstream in(t);
+        std::string a, b, c;
+        return (in >> a >> b >> c) && decimal(a, w) && decimal(b, h) && decimal(c, d);
+    }
+
+    /*
+     * THE DRIVERS, the host's page of the lobby: each seated driver in turn,
+     * their build sent back (`reject`), and whether they may send one at all
+     * (`lock`) -- a lock holds until the host lifts it or the seat empties.
+     */
+    // How many seated drivers are not locked in: a `round` waits for none.
+    int notInLocked() const
+    {
+        int n = 0;
+        for (size_t i = 0; i < m_slots.size(); ++i) n += !m_slots[i].driver.empty() && !m_in[i];
+        return n;
+    }
+    std::vector<size_t> seatedLocked() const
+    {
+        std::vector<size_t> out;
+        for (size_t i = 0; i < m_slots.size(); ++i) if (!m_slots[i].driver.empty()) out.push_back(i);
+        return out;
+    }
+    std::vector<std::string> driversItemsLocked() const
+    {
+        if (seatedLocked().empty()) return { "d_back" };
+        return { "d_pick", "d_accept", "d_reject", "d_lock", "d_back" };
+    }
+    void driversLinesLocked(std::vector<std::string>& L)
+    {
+        const std::vector<size_t> seated = seatedLocked();
+        L.push_back("title|DRIVERS");
+        if (!seated.empty())
+        {
+            const size_t i = seated[static_cast<size_t>(std::min<int>(std::max(m_drivers_pick, 0), static_cast<int>(seated.size()) - 1))];
+            const bool built = !m_builds[i].name.empty();
+            L.push_back("sub|" + nameOfLocked(i) + (built ? " built " + m_builds[i].name + (m_accepted[i] ? ", accepted" : ", waiting for you")
+                                                           : " rides " + vehicleOf(m_slots[i]).name) + (m_in[i] ? ", locked in" : ""));
+            L.push_back("choice|d_pick|driver|" + nameOfLocked(i) + "|1");
+            L.push_back(std::string("button|d_accept|accept their build|") + (built && !m_accepted[i] ? "1" : "0") + "|1");
+            L.push_back(std::string("button|d_reject|send them back to the kart|") + (built ? "1" : "0") + "|0");
+            L.push_back(std::string("choice|d_lock|builds|") + (m_locked[i] ? "arena only" : "may send") + "|1");
+        }
+        else L.push_back("sub|nobody is seated");
+        L.push_back("button|d_back|back to the lobby|1|0");
+        L.push_back("hint|a lock holds until you lift it or they leave");
+        tableLinesLocked(L);
+    }
+    void driversActLocked(const std::string& id, int dir)
+    {
+        if (id == "d_back") { m_in_drivers = false; m_menu = 0; return; }
+        const std::vector<size_t> seated = seatedLocked();
+        if (seated.empty() || !m_authority) return;
+        const int n = static_cast<int>(seated.size());
+        m_drivers_pick = std::min(std::max(m_drivers_pick, 0), n - 1);
+        if (id == "d_pick") { m_drivers_pick = ((m_drivers_pick + dir) % n + n) % n; return; }
+        const size_t i = seated[static_cast<size_t>(m_drivers_pick)];
+        const std::string who = m_slots[i].driver;
+        if (id == "d_accept" && !m_builds[i].name.empty() && !m_accepted[i]) proposeLocked("accept " + who);
+        if (id == "d_reject" && !m_builds[i].name.empty()) proposeLocked("reject " + who);
+        if (id == "d_lock") proposeLocked("lock " + who + " " + (m_locked[i] ? "0" : "1"));
+    }
+
+    /*
+     * THE GARAGE ON THE FRAME EDGE: out of it, and the builder shut, when
+     * this runtime has no seat or the lobby is over; the host's page shut
+     * when it is not the host's to show; the drafts read from the store once
+     * and written back when they change.
+     */
+    void garageLocked()
+    {
+        const bool can = m_phase == Lobby && !m_me.empty() && slotOf(m_me) >= 0;
+        if (!can)
+        {
+            if (m_shaping) { m_shaping = false; closeGarageLocked(); noteLocked("the lobby closed: the shape was not kept"); }
+            m_in_garage = false;
+        }
+        if (!m_authority || m_phase != Lobby) m_in_drivers = false;
+        if (!m_garage || !m_builder_store) return;
+        if (!m_drafts_loaded) { m_drafts_loaded = true; loadDraftsLocked(); }
+        if (m_drafts_dirty) { m_drafts_dirty = false; saveDraftsLocked(); }
+    }
+    // The store, connected and its tables made: this runtime's alone.
+    ETCS::Held<Database_> storeLocked()
+    {
+        if (!m_builder_store || m_store_path.empty()) return ETCS::Held<Database_>();
+        if (!m_store_ready) verb(m_builder_store, "Connect", m_store_path);
+        ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", m_builder_store);
+        if (!db || m_store_ready) return db;
+        for (const char* sql : { "CREATE TABLE IF NOT EXISTS builder(name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                                 "CREATE TABLE IF NOT EXISTS drafts(name TEXT PRIMARY KEY, text TEXT NOT NULL)" })
+            if (!runLocked(*db, sql)) return ETCS::Held<Database_>();
+        m_store_ready = true;
+        return db;
+    }
+    static bool runLocked(Database_& db, const char* sql)
+    {
+        void* st = db.Prepare(sql);
+        const bool ok = st && db.Step(st) >= 0;
+        if (st) db.Finalize(st);
+        return ok;
+    }
+    // Turning the builder on: the store made, and the page asked to reload with it.
+    void enableBuilderLocked()
+    {
+        ETCS::Held<Database_> db = storeLocked();
+        if (!db) { noteLocked("the builder is not on this page"); return; }
+        if (!runLocked(*db, "INSERT OR REPLACE INTO builder(name, value) VALUES('builder', 'on')")) { noteLocked("the builder's store would not keep it"); return; }
+        m_wants = "builder";
+        noteLocked("the builder is on: the page reloads with it");
+    }
+    void saveDraftsLocked()
+    {
+        ETCS::Held<Database_> db = storeLocked();
+        if (!db) return;
+        auto guard = db->Transaction();
+        if (!runLocked(*db, "DELETE FROM drafts")) return;
+        for (const Vehicle& v : m_drafts)
+        {
+            const std::string text = buildText(v);
+            void* st = db->Prepare("INSERT INTO drafts(name, text) VALUES(?, ?)");
+            if (!st) return;
+            db->Bind(st, 1, DatabaseValue::text(v.name.data(), v.name.size()));
+            db->Bind(st, 2, DatabaseValue::text(text.data(), text.size()));
+            const bool ok = db->Step(st) >= 0;
+            db->Finalize(st);
+            if (!ok) return;
+        }
+        guard.commit();
+    }
+    void loadDraftsLocked()
+    {
+        ETCS::Held<Database_> db = storeLocked();
+        if (!db) return;
+        std::vector<std::string> texts;
+        void* st = db->Prepare("SELECT text FROM drafts ORDER BY rowid");
+        if (!st) return;
+        while (db->Step(st) == 1)
+        {
+            DatabaseValue v;
+            if (db->Column(st, 0, v) && v.kind == DatabaseValue::Text && v.p) texts.emplace_back(static_cast<const char*>(v.p), v.n);
+        }
+        db->Finalize(st);
+        for (const std::string& t : texts)
+        {
+            Vehicle v;
+            if (buildFromTextLocked(t, v) && !namedLocked(v.name, nullptr)) { measureDraftLocked(v); m_drafts.push_back(std::move(v)); }
+        }
+        if (m_draft < 0 && !m_drafts.empty()) m_draft = 0;
+    }
+
     void menuLocked()
     {
         if (!m_menu_rid) return;
@@ -4269,6 +5027,8 @@ private:
         if (!show) return;
         std::vector<std::string> L;
         if (m_settings) settingsLinesLocked(L);
+        else if (m_in_garage) garageLinesLocked(L);
+        else if (m_in_drivers) driversLinesLocked(L);
         else lobbyLinesLocked(L);
         // Only what changed goes over.
         if (m_menu_sent.size() > L.size()) m_menu_sent.resize(L.size());
@@ -4308,26 +5068,99 @@ private:
             std::string sw;
             for (int c = 0; c < kPaletteN; ++c) sw += (c ? "," : "") + hexOf(kPalette[c]);
             L.push_back("choice|vehicle|vehicle|" + vehicleOf(s).name + "|1");
+            L.push_back(m_garage ? std::string("button|garage|garage: build your own|1|0") : "button|garage|garage: turn on (reloads)|1|0");
             L.push_back("swatches|colour|colour|" + std::to_string(s.colour >= 0 ? s.colour : me % kMaxKarts) + "|" + sw + "|1");
             L.push_back("field|name|name|" + (m_editing ? m_edit : nameOfLocked(static_cast<size_t>(me))) + "|1|" + (m_editing ? "1" : "0"));
+            const bool waiting = s.ride == kOwnRide && !m_accepted[static_cast<size_t>(me)];
+            L.push_back(m_in[static_cast<size_t>(me)] ? std::string("button|lockin|locked in: press to change|1|0")
+                        : waiting ? std::string("button|lockin|your build waits for the host|0|0")
+                                  : std::string("button|lockin|lock in|1|1"));
         }
-        L.push_back(host ? std::string("button|start|start the round|1|1") : "button|start|" + labelLocked(m_owner) + " starts the round|0|0");
+        const int out = notInLocked();
+        L.push_back(!host ? "button|start|" + labelLocked(m_owner) + " starts the round|0|0"
+                    : out ? "button|start|" + std::to_string(out) + " still to lock in|0|1" : std::string("button|start|start the round|1|1"));
         if (host && !m_defs.empty() && m_defs[m_map].generated) L.push_back("button|reroll|new layout|1|0");
+        if (host) L.push_back("button|drivers|drivers: builds and locks|1|0");
         L.push_back("button|settings|settings (O)|1|0");
-        // The table is twenty letters wide beside the map: K for eliminations, D for deaths.
-        L.push_back("head|driver        K   D");
-        for (size_t i : rankLocked())
-        {
-            const Slot& s = m_slots[i];
-            char line[96];
-            std::snprintf(line, sizeof line, "%-11s %3d %3d", nameOfLocked(i).substr(0, 11).c_str(), s.last_elims, s.last_deaths);
-            L.push_back("row|" + hexOf(colourOfLocked(i)) + "|" + line);
-        }
+        tableLinesLocked(L);
         L.push_back(std::string("hint|") + (m_editing ? "type a name  Enter keeps it  Esc drops it"
                                             : host ? "arrows move it  Enter starts  or click"
                                                    : "arrows: your vehicle, colour and name  or click"));
         previewLocked(L);
     }
+    // The table beside the map, each driver after a picture of what they
+    // ride: fourteen letters, K for eliminations, D for deaths.
+    void tableLinesLocked(std::vector<std::string>& L) const
+    {
+        L.push_back("head|driver   K   D");
+        for (size_t i : rankLocked())
+        {
+            const Slot& s = m_slots[i];
+            char line[96];
+            // Before the name: * locked in, ? a build waiting for the host.
+            const char mark = m_in[i] ? '*' : s.ride == kOwnRide && !m_accepted[i] ? '?' : ' ';
+            std::snprintf(line, sizeof line, "%c%-5s %3d %3d", mark, nameOfLocked(i).substr(0, 5).c_str(), s.last_elims, s.last_deaths);
+            std::vector<std::string> pic;
+            const std::string extent = pictureLocked(i, pic);
+            L.push_back("row|" + hexOf(colourOfLocked(i)) + "|" + line + extent);
+            L.insert(L.end(), pic.begin(), pic.end());
+        }
+    }
+    /*
+     * A SEAT'S VEHICLE FROM ITS RIGHT, for the lobby's table: ahead to the
+     * right and y up, its parts (or its body) with the team's colour its
+     * driver's, the far tyres behind them and the near ones in front, at most
+     * kPicParts parts (the largest). "|<z0>|<y0>|<z1>|<y1>" for its row, and
+     * its shapes as lines after it.
+     */
+    std::string pictureLocked(size_t i, std::vector<std::string>& out) const
+    {
+        static constexpr size_t kPicParts = 24;
+        const Slot& s = m_slots[i];
+        const Vehicle& v = vehicleOf(s);
+        const std::string team = hexOf(colourOfLocked(i));
+        struct Box { float x, z, y, w, h; std::string hex; };
+        std::vector<Box> boxes;
+        for (const VPart& p : v.parts)
+        {
+            Fixed m[9];
+            turnOf(p, m);
+            const float ey = (m[3].Abs() * p.hx + m[4].Abs() * p.hy + m[5].Abs() * p.hz).ToFloat();
+            const float ez = (m[6].Abs() * p.hx + m[7].Abs() * p.hy + m[8].Abs() * p.hz).ToFloat();
+            const float c[3] = { p.r.ToFloat(), p.g.ToFloat(), p.b.ToFloat() };
+            boxes.push_back({ p.x.ToFloat(), p.z.ToFloat(), p.y.ToFloat(), 2 * ez, 2 * ey, teamColourLocked(p) ? team : hexOf(c) });
+        }
+        if (boxes.empty())
+        {
+            Fixed w = F(11, 10), h = F(4, 10), d = F(2);
+            extentWords(v.body.empty() ? s.made_body : v.body, w, h, d);
+            boxes.push_back({ 0.0f, 0.0f, v.ride.ToFloat(), d.ToFloat(), h.ToFloat(), team });
+        }
+        if (boxes.size() > kPicParts)
+        {
+            std::stable_sort(boxes.begin(), boxes.end(), [](const Box& a, const Box& b) { return a.w * a.h > b.w * b.h; });
+            boxes.resize(kPicParts);
+        }
+        std::stable_sort(boxes.begin(), boxes.end(), [](const Box& a, const Box& b) { return a.x < b.x; });
+        float z0 = 1e9f, z1 = -1e9f, y1 = 0.0f;
+        for (const Box& b : boxes) { z0 = std::min(z0, b.z - b.w / 2); z1 = std::max(z1, b.z + b.w / 2); y1 = std::max(y1, b.y + b.h / 2); }
+        const float r = v.tyre_d.ToFloat() / 2, ty = (v.ride - v.drop).ToFloat();
+        std::vector<std::string> far, near;
+        for (int t = 0; t < 4; ++t)
+        {
+            if (!tyreShown(v, t)) continue;
+            const float tz = (t < 2 ? v.ahead : -v.ahead).ToFloat();
+            z0 = std::min(z0, tz - r); z1 = std::max(z1, tz + r); y1 = std::max(y1, ty + r);
+            const bool behind = v.tyres == 4 && t % 2 == 1;   // the left pair, the far side
+            (behind ? far : near).push_back("pdisc|" + f2(tz) + "|" + f2(ty) + "|" + f2(r) + "|5a5e66");
+        }
+        out.insert(out.end(), far.begin(), far.end());
+        for (const Box& b : boxes) out.push_back("prect|" + f2(b.z) + "|" + f2(b.y) + "|" + f2(b.w) + "|" + f2(b.h) + "|" + b.hex);
+        out.insert(out.end(), near.begin(), near.end());
+        const float pad = std::max(z1 - z0, y1) * 0.06f;
+        return "|" + f2(z0 - pad) + "|" + f2(-pad) + "|" + f2(z1 + pad) + "|" + f2(y1 + pad);
+    }
+    static std::string f2(float v) { char b[24]; std::snprintf(b, sizeof b, "%.2f", v); return b; }
     // The map in play from above: its ground, what stands on it, its pads,
     // springs and boxes, and where karts start.
     void previewLocked(std::vector<std::string>& L) const
@@ -4447,8 +5280,14 @@ private:
     }
     // The kart, and the vehicles added after it: 0 is the kart.
     static const Vehicle& kart() { static const Vehicle k; return k; }
+    static constexpr int kOwnRide = -1;   // a slot's ride: its seat's build
     const Vehicle& vehicleOf(const Slot& s) const
     {
+        if (s.ride == kOwnRide)
+        {
+            const size_t i = static_cast<size_t>(&s - m_slots.data());
+            return i < m_builds.size() && !m_builds[i].name.empty() ? m_builds[i] : kart();
+        }
         return s.ride > 0 && s.ride <= static_cast<int>(m_vehicles.size()) ? m_vehicles[static_cast<size_t>(s.ride - 1)] : kart();
     }
     int vehicleNamedLocked(const std::string& name) const
@@ -4484,19 +5323,253 @@ private:
         const Vehicle& c = vehicleOf(s);
         verb(s.body, "Create", c.body.empty() ? s.made_body : c.body);
         // At the kart's density: what it weighs is its volume's share of the kart's.
-        const Fixed mass = c.volume.IsPositive() && s.made_volume.IsPositive() ? c.volume / s.made_volume : Fixed::One();
+        const Fixed mass = c.mass.IsPositive() ? c.mass
+                         : c.volume.IsPositive() && s.made_volume.IsPositive() ? c.volume / s.made_volume : Fixed::One();
         verb(s.body, "SetMass", exact(mass.ToFloat()));
         for (ETCS::RID w : s.wheels) verb(w, "Create", c.tyre.empty() ? s.made_tyre : c.tyre);
         verb(s.body, "SetMesh", std::to_string(c.look));
         const bool shown = alive(s);
         for (int t = 0; t < 4; ++t) verb(s.wheels[t], "SetVisible", shown && tyreShown(c, t) ? "1" : "0");
+        for (int t = 0; t < kTrims; ++t)
+        {
+            if (!s.trims[t]) continue;
+            if (trimUsed(c, t))
+            {
+                const std::array<Fixed, 4>& col = c.trims[static_cast<size_t>(t)];
+                verb(s.trims[t], "Create", c.body);
+                verb(s.trims[t], "SetMesh", std::to_string(m_look_meshes[static_cast<size_t>(c.meshes[static_cast<size_t>(t) + 1])]));
+                verb(s.trims[t], "SetColor", f4(col[0].ToFloat(), col[1].ToFloat(), col[2].ToFloat(), col[3].ToFloat()));
+            }
+            verb(s.trims[t], "SetVisible", shown && trimUsed(c, t) ? "1" : "0");
+        }
         s.lean = s.lean_hold = Fixed::Zero();
         Fixed x, y, z;
         if (shown && where(i, x, y, z)) placeLocked(i, x, z, s.hx, s.hz);   // at its own ride height
         wheelsLocked(s);
     }
+    // A trim is a colour of the look's past the team's that has a mesh.
+    static bool trimUsed(const Vehicle& c, int t)
+    {
+        return t < static_cast<int>(c.trims.size()) && static_cast<size_t>(t) + 1 < c.meshes.size();
+    }
     // Two in line: the right of each pair is drawn, the pair being one place.
     static bool tyreShown(const Vehicle& c, int t) { return c.tyres == 4 || t % 2 == 0; }
+    // A vehicle's numbers, one at a time (Tune, a `tune` line).
+    bool tuneLocked(Vehicle& v, const std::string& line)
+    {
+        std::istringstream in(line);
+        std::string what;
+        in >> what;
+        std::vector<Fixed> n;
+        std::vector<std::string> said;
+        for (std::string w; in >> w; ) { Fixed f; if (!decimal(w, f)) return false; n.push_back(f); said.push_back(w); }
+        auto need = [&](size_t k) { return n.size() == k; };
+        auto positive = [&](size_t k) { for (size_t i = 0; i < k; ++i) if (!n[i].IsPositive()) return false; return true; };
+        if (what == "top" && need(1) && positive(1)) { v.top = n[0]; return true; }
+        if (what == "boost" && need(2) && positive(2)) { v.boost_top = n[0]; v.boost_push = n[1]; return true; }
+        if (what == "push" && need(3) && positive(3)) { v.start = n[0]; v.launch = n[1]; v.pull = n[2]; return true; }
+        if (what == "brake" && need(1) && positive(1)) { v.brake = n[0]; return true; }
+        if (what == "reverse" && need(2) && positive(2)) { v.rev_acc = n[0]; v.rev_top = n[1]; return true; }
+        if (what == "coast" && need(1) && n[0].raw >= 0) { v.coast = n[0]; return true; }
+        if (what == "steer" && need(4) && positive(4)) { v.lock = n[0]; v.jump = n[1]; v.ease = n[2]; v.back = n[3]; return true; }
+        if (what == "wheelbase" && need(1) && positive(1)) { v.base = n[0]; return true; }
+        if (what == "grip" && need(2) && positive(2)) { v.grip = n[0]; v.brake_grip = n[1]; return true; }
+        if (what == "slide" && need(2) && positive(2) && n[0] < Fixed::One() && n[1] <= Fixed::One()) { v.slide_free = n[0]; v.slide_least = n[1]; return true; }
+        if (what == "tyres" && need(3) && (n[0] == F(2) || n[0] == F(4)) && n[1].raw >= 0 && n[2].IsPositive())
+        {
+            v.tyres = n[0] == F(2) ? 2 : 4; v.side = n[1]; v.ahead = n[2];
+            return true;
+        }
+        if (what == "body" && need(3) && positive(3))
+        {
+            v.body = said[0] + ", " + said[1] + ", " + said[2]; v.volume = n[0] * n[1] * n[2];
+            return true;
+        }
+        // A tyre stands on the ground: the body rides its radius and the drop over it.
+        if (what == "tyre" && need(3) && positive(2) && (n[0] / F(2) + n[2]).IsPositive())
+        {
+            v.tyre = said[0] + ", " + said[1] + ", " + said[0]; v.drop = n[2]; v.ride = n[0] / F(2) + n[2];
+            v.tyre_d = n[0]; v.tyre_w = n[1];
+            return true;
+        }
+        if (what == "reach" && need(1) && positive(1)) { v.reach = n[0]; return true; }
+        if (what == "lean" && need(1) && n[0].raw >= 0) { v.lean = n[0]; return true; }
+        if (what == "ram" && need(1) && n[0].raw >= 0) { v.ram = static_cast<int>(n[0].ToInt()); return true; }
+        return false;
+    }
+    static constexpr size_t kMaxVehicles = 40;   // the arena's and the seats' together
+    static constexpr size_t kMaxParts = 48;      // a look's, as the modeller's pool
+    static constexpr int    kTrims = 6;          // a look's colours besides the team's, as each kart's trims
+    // A part as stated, checked: a shape and a material this battle knows (or
+    // the box, and none), a size, a colour in 0..1 and a turn.
+    bool partFromLocked(VPart& pt, const Fixed* n) const
+    {
+        if (pt.shape != "box" && !partShapeLocked(pt.shape)) return false;
+        if (pt.material != "-" && densityOfLocked(pt.material).IsZero()) return false;
+        pt.x = n[0]; pt.y = n[1]; pt.z = n[2]; pt.hx = n[3]; pt.hy = n[4]; pt.hz = n[5];
+        pt.r = n[6]; pt.g = n[7]; pt.b = n[8]; pt.a = n[9]; pt.qw = n[10]; pt.qx = n[11]; pt.qy = n[12]; pt.qz = n[13];
+        if (!pt.hx.IsPositive() || !pt.hy.IsPositive() || !pt.hz.IsPositive()) return false;
+        for (Fixed c : { pt.r, pt.g, pt.b, pt.a }) if (c.raw < 0 || c > Fixed::One()) return false;
+        return !(pt.qw.IsZero() && pt.qx.IsZero() && pt.qy.IsZero() && pt.qz.IsZero());
+    }
+    const PartShape* partShapeLocked(const std::string& name) const
+    {
+        for (const PartShape& sh : m_part_shapes) if (sh.name == name) return &sh;
+        return nullptr;
+    }
+    Fixed densityOfLocked(const std::string& name) const
+    {
+        if (name == "-") return Fixed::One();
+        for (const Material& m : m_materials) if (m.name == name) return m.density;
+        return Fixed::Zero();
+    }
+    bool teamColourLocked(const VPart& p) const
+    {
+        const Fixed near = F(1, 64);
+        return (p.r - m_key[0]).Abs() < near && (p.g - m_key[1]).Abs() < near && (p.b - m_key[2]).Abs() < near;
+    }
+    // A part's turn as a matrix, row by row (its quaternion made whole).
+    static void turnOf(const VPart& p, Fixed* m)
+    {
+        const Fixed l = (p.qw * p.qw + p.qx * p.qx + p.qy * p.qy + p.qz * p.qz).Sqrt();
+        const Fixed w = p.qw / l, x = p.qx / l, y = p.qy / l, z = p.qz / l, two = F(2);
+        m[0] = Fixed::One() - two * (y * y + z * z); m[1] = two * (x * y - z * w); m[2] = two * (x * z + y * w);
+        m[3] = two * (x * y + z * w); m[4] = Fixed::One() - two * (x * x + z * z); m[5] = two * (y * z - x * w);
+        m[6] = two * (x * z - y * w); m[7] = two * (y * z + x * w); m[8] = Fixed::One() - two * (x * x + y * y);
+    }
+    /*
+     * A LOOK FROM ITS PARTS. Its body is the parts' bounds about the body's
+     * centre (which rides `ride` over the ground, the modeller's y 0), so its
+     * solid and its target are what is drawn; it weighs what its parts do,
+     * each its shape's fill of its box at its material's density, as a share
+     * of the kart's. Drawn as one mesh a colour, in the body's unit box: the
+     * team colour's on the body, in its driver's colour; each other's on a
+     * trim, in its own -- the last trim taking any colours past them.
+     */
+    // Its body, volume and weight from its parts, and the colour each part is
+    // drawn in (0 the team's): a draft's as a build's, with nothing drawn.
+    void measureLocked(Vehicle& v, std::vector<std::array<Fixed, 4>>& colours, std::vector<size_t>& group, Fixed* whd = nullptr) const
+    {
+        Fixed bx = F(1, 20), by = F(1, 20), bz = F(1, 20), weight;
+        colours.assign(1, std::array<Fixed, 4>{ m_key[0], m_key[1], m_key[2], Fixed::One() });
+        group.clear();
+        for (const VPart& p : v.parts)
+        {
+            Fixed m[9];
+            turnOf(p, m);
+            const Fixed ex = m[0].Abs() * p.hx + m[1].Abs() * p.hy + m[2].Abs() * p.hz;
+            const Fixed ey = m[3].Abs() * p.hx + m[4].Abs() * p.hy + m[5].Abs() * p.hz;
+            const Fixed ez = m[6].Abs() * p.hx + m[7].Abs() * p.hy + m[8].Abs() * p.hz;
+            bx = Fixed::Max(bx, p.x.Abs() + ex);
+            by = Fixed::Max(by, (p.y - v.ride).Abs() + ey);
+            bz = Fixed::Max(bz, p.z.Abs() + ez);
+            const PartShape* sh = partShapeLocked(p.shape);
+            weight += F(8) * p.hx * p.hy * p.hz * (sh ? sh->fill : Fixed::One()) * densityOfLocked(p.material);
+            size_t k = 0;
+            if (!teamColourLocked(p))
+            {
+                const std::array<Fixed, 4> c{ p.r, p.g, p.b, p.a };
+                k = 1;
+                while (k < colours.size() && colours[k] != c) ++k;
+                if (k == colours.size())
+                {
+                    if (colours.size() < 1 + kTrims) colours.push_back(c);
+                    else k = colours.size() - 1;
+                }
+            }
+            group.push_back(k);
+        }
+        const Fixed w = bx * F(2), h = by * F(2), d = bz * F(2);
+        v.body = exact(w.ToFloat()) + ", " + exact(h.ToFloat()) + ", " + exact(d.ToFloat());
+        v.volume = w * h * d;
+        v.mass = m_kart_volume.IsPositive() ? weight / m_kart_volume : Fixed::One();
+        if (whd) { whd[0] = w; whd[1] = h; whd[2] = d; }
+    }
+    void lookLocked(Vehicle& v)
+    {
+        if (v.parts.empty()) return;
+        std::vector<std::array<Fixed, 4>> colours;
+        std::vector<size_t> group;
+        Fixed whd[3];
+        measureLocked(v, colours, group, whd);
+        const Fixed w = whd[0], h = whd[1], d = whd[2];
+        releaseLookLocked(v);
+        for (size_t k = 0; k < colours.size(); ++k)
+        {
+            size_t free = 0;
+            while (free < m_look_owner.size() && m_look_owner[free] >= 0) ++free;
+            if (free == m_look_owner.size()) { noteLocked(v.name + ": no mesh left to draw its look with (kart_looks.etcs)"); break; }
+            m_look_owner[free] = 1;
+            v.meshes.push_back(static_cast<int>(free));
+            const ETCS::RID mesh = m_look_meshes[free];
+            verb(mesh, "Clear", "");
+            verb(mesh, "Unit", exact(w.ToFloat()) + " " + exact(h.ToFloat()) + " " + exact(d.ToFloat()));
+            for (size_t i = 0; i < v.parts.size(); ++i)
+            {
+                if (group[i] != k) continue;
+                const VPart& p = v.parts[i];
+                const PartShape* sh = partShapeLocked(p.shape);
+                verb(mesh, "AddPart", std::to_string(sh ? sh->mesh : 0) + " " + exact(p.x.ToFloat()) + " " + exact((p.y - v.ride).ToFloat())
+                     + " " + exact(p.z.ToFloat()) + " " + exact(p.hx.ToFloat()) + " " + exact(p.hy.ToFloat()) + " " + exact(p.hz.ToFloat())
+                     + " " + exact(p.qw.ToFloat()) + " " + exact(p.qx.ToFloat()) + " " + exact(p.qy.ToFloat()) + " " + exact(p.qz.ToFloat()));
+            }
+        }
+        v.look = v.meshes.empty() ? 0 : m_look_meshes[static_cast<size_t>(v.meshes[0])];
+        v.trims.assign(colours.begin() + 1, colours.end());
+    }
+    // A modeller's saved lines as a `parts` line's "<n> <parts>": each `add <id>
+    // <shape> <x y z> <hx hy hz> <r g b a> <qw qx qy qz> [<material>]` (Fixed
+    // raws) a part, in the order of its id, made of its material or a later
+    // `material <id> <name>`'s.
+    bool lookLineLocked(const std::string& path, std::string& out) const
+    {
+        std::ifstream f(path);
+        if (!f) return false;
+        std::map<int64_t, std::string> adds;
+        std::map<int64_t, std::string> made;
+        for (std::string line; std::getline(f, line); )
+        {
+            std::istringstream in(line);
+            std::string verb, rest;
+            int64_t id = -1;
+            if (!(in >> verb >> id) || id < 0) continue;
+            if (verb == "add")
+            {
+                std::string shape, raws, material = "-";
+                in >> shape;
+                for (int k = 0; k < 14; ++k) { std::string w; if (!(in >> w)) return false; raws += " " + w; }
+                in >> material;
+                adds[id] = shape + " " + raws;
+                made[id] = material;
+            }
+            else if (verb == "material") { std::string name; in >> name; made[id] = name; }
+        }
+        if (adds.size() > kMaxParts) return false;
+        out = std::to_string(adds.size());
+        for (auto& [id, part] : adds)
+        {
+            const size_t sp = part.find(' ');
+            out += " " + part.substr(0, sp) + " " + made[id] + part.substr(sp + 1);
+        }
+        return true;
+    }
+    // A look's meshes back in the pool.
+    void releaseLookLocked(Vehicle& v)
+    {
+        for (int m : v.meshes) m_look_owner[static_cast<size_t>(m)] = -1;
+        v.meshes.clear();
+    }
+    // A seat's build gone: its meshes back, the seat in the kart if it rode it.
+    void dropBuildLocked(size_t i)
+    {
+        if (m_builds[i].name.empty()) return;
+        releaseLookLocked(m_builds[i]);
+        m_builds[i] = Vehicle();
+        m_builds[i].name.clear();
+        m_accepted[i] = 0;
+        if (m_slots[i].ride == kOwnRide) { m_slots[i].ride = 0; m_in[i] = 0; rideLookLocked(i); }
+    }
+
     // A float as text that reads back as the same float.
     static std::string exact(float f) { char b[32]; std::snprintf(b, sizeof b, "%.9g", f); return b; }
     // A node's extent as it was Created, "w, h, d", and its volume. A half
@@ -4615,7 +5688,17 @@ private:
     std::vector<KartArena::Map> m_defs;
     KartArena::Map m_live;
     std::vector<Vehicle> m_vehicles;   // after the kart: what vehicle scripts added, in their order
+    std::vector<Vehicle> m_builds;     // a seat's build, by slot: its `build` line's (no name: none)
+    std::vector<uint8_t> m_locked;     // by slot: kept to the arena's vehicles (`lock`)
+    std::vector<uint8_t> m_accepted;   // by slot: its build accepted by the host (`accept`)
+    std::vector<uint8_t> m_in;         // by slot: locked in for the round (`in`)
     bool m_tuning = false;             // the latest AddVehicle took: Tune and VehicleLook are its
+    std::vector<PartShape> m_part_shapes;   // what a part may be drawn as, beside "box"
+    std::vector<Material>  m_materials;     // what a part may be made of
+    Fixed m_key[3] = { Fixed::From(0.85), Fixed::From(0.18), Fixed::From(0.22) };   // LiveryKey
+    std::vector<ETCS::RID> m_look_meshes;   // AddLookMesh
+    std::vector<int>       m_look_owner;    // ...each one's vehicle (its place in m_vehicles), -1 free
+    Fixed m_kart_volume;                    // the pool's body's, what a material's density is a share of
     std::vector<ETCS::RID> m_live_blocks;
     std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_wedge_nodes, m_dome_nodes;
     std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;
@@ -4668,6 +5751,23 @@ private:
     bool     m_editing = false;                 // the name field has the keys
     std::string m_edit;                         // what is typed into it, before Enter
     ETCS::RID m_menu_rid = 0;
+    // The garage (kart_garage.etcs, with PaintProvider): its page, the modeller
+    // in it, the router its pointer goes through, the surface that shows it and
+    // what that shows after; and the store this runtime keeps its vehicles in.
+    ETCS::RID m_garage = 0, m_garage_model = 0, m_garage_router = 0, m_garage_view = 0, m_garage_back = 0, m_builder_store = 0;
+    bool m_in_garage = false;   // the lobby's menu is the garage's page
+    bool m_shaping = false;     // ...and the pane is up, the pointer and keys the builder's
+    std::vector<Vehicle> m_drafts;      // the garage's, this runtime's alone: what it may send as a build
+    int  m_draft = -1;                  // the one the page is on
+    bool m_drafts_loaded = false, m_drafts_dirty = false;   // read from the store; changed since written
+    bool m_rejected = false;            // the host sent this runtime's build back
+    bool m_in_drivers = false;          // the lobby's menu is the host's drivers page
+    int  m_drivers_pick = 0;            // ...on that seated driver, in seat order
+    struct TuneRow { std::string label, what; size_t index = 0; Fixed step, least, most; };
+    std::vector<TuneRow> m_tune_rows;   // the page's rows (GarageRow)
+    std::string m_store_path;           // where the store keeps itself (BindBuilderStore)
+    bool m_store_ready = false;         // connected, its tables made
+    std::string m_wants;                // what the page should do: "builder", reload with it
     std::vector<std::string> m_menu_sent;       // the lines the menu has, as last sent
     size_t   m_menu_lines = 0;
     std::string m_menu_focus;

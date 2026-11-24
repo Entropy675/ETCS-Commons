@@ -78,6 +78,10 @@ battle.AddRandomMap(random)
 # ── the pools ──────────────────────────────────────────────────────────────
 run kart_pool.etcs world=anchor battle=battle
 
+# ── what a built look is made of: shapes, materials, the team colour, the
+# meshes (kart_looks.etcs) ──────────────────────────────────────────────────
+run kart_looks.etcs world=anchor battle=battle
+
 # ── the vehicles a driver picks in the lobby, after the kart: each a script
 # of its numbers and its look (kart_vehicle_*.etcs) ─────────────────────────
 run kart_vehicle_moto.etcs battle=battle world=anchor

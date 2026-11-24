@@ -36,3 +36,10 @@ fill.SetColor(0.25, 0.85, 0.3, 1.0)
 fill.SetAnchored(1)
 fill.SetVisible(0)
 battle.AddKart(@kart @fr @fl @rr @rl @bar @fill)
+# Six trims: a built look's colours besides the team's (kart_trim.etcs).
+run kart_trim.etcs kart=kart battle=battle
+run kart_trim.etcs kart=kart battle=battle
+run kart_trim.etcs kart=kart battle=battle
+run kart_trim.etcs kart=kart battle=battle
+run kart_trim.etcs kart=kart battle=battle
+run kart_trim.etcs kart=kart battle=battle

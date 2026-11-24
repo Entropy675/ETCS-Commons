@@ -41,6 +41,12 @@ battle.Create()
 run KartProvider/scripts/kart_arena.etcs anchor=world battle=battle
 run KartProvider/scripts/kart_play.etcs battle=battle world=world eye=eye
 
+# Where this tab keeps the vehicles it builds: connected when the builder is
+# turned on, and its file's being there loads the builder from then on
+# (modules.json's extras; kart_garage.etcs is the builder).
+spawn DatabaseProvider::LocalDatabase garage_store
+battle.BindBuilderStore(@garage_store, /persist/kart_builder.db)
+
 view.Clear(0.02, 0.02, 0.03, 1.0)
 view.Compose(@eye)
 detach RenderProvider/scripts/render_frames.etcs view=view

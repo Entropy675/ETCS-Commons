@@ -1,0 +1,137 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+# THE GARAGE'S BUILDER: PaintProvider's model pane (paint_model_pane.etcs) on a
+# page of its own, which the window shows instead of the arena while a driver
+# shapes one of their vehicles from the lobby's garage page. Only on a page
+# that has the builder (www/modules.json's extras run it once the battle is up).
+#   run KartProvider/scripts/kart_garage.etcs battle=battle view=view eye=eye
+# `view` is the window's surface and `eye` what it shows after; with no
+# window (a test) any Surface and Drawable will do.
+requires battle [KartBattle]
+requires view   [Surface]
+requires eye    [Drawable]
+
+# The team's colour in hand to begin (kart_looks.etcs's LiveryKey): a part
+# painted it takes its driver's colour.
+spawn PaintProvider::PaintTool brush
+brush.SetColor(0.85, 0.18, 0.22, 1.0)
+spawn PaintProvider::PaintPalette palette
+palette.BindTool(@brush)
+spawn LayoutProvider::Layout layout
+layout.Create(1024, 768)
+
+# The page: a strip of what ends it, the camera's box, and the model's bar
+# (paint_model_pane.etcs adds it last), top to bottom.
+spawn RenderProvider::CompositeDrawable2D garage
+garage.Create(1024, 768)
+garage.SetPosition(0, 0)
+garage.SetOrder(0)
+garage.SetBackground(0.10, 0.11, 0.14, 1.0)
+garage.SetHidden(1)
+layout.AddBox(@garage, 0, 1, 0.0, 1, 0.0)
+layout.SetDirection(@garage, 1)
+
+garage.spawn(RenderProvider::CompositeDrawable2D strip)
+strip.Create(1024, 40)
+strip.SetOrder(20)
+strip.SetBackground(0.16, 0.16, 0.19, 1.0)
+layout.AddBox(@strip, @garage, 1, 0.0, 2, 40.0)
+layout.SetDirection(@strip, 0)
+
+garage.spawn(RenderProvider::CompositeDrawable2D stage)
+stage.Create(1024, 664)
+stage.SetOrder(1)
+layout.AddBox(@stage, @garage, 1, 0.0, 1, 0.0)
+
+# One input for the page: a hit on the camera is the modeller's, on a cell
+# the palette's.
+spawn PaintProvider::PaintInput input
+input.Create(0, @brush, 0)
+input.BindRoot(@garage)
+input.BindPalette(@palette)
+
+spawn PaintProvider::PaintModeler model
+model.Create()
+run ../../PaintProvider/scripts/paint_model_pane.etcs model=model pane=stage row=garage palette=palette brush=brush layout=layout input=input
+model.AddPane(3, @garage)
+
+# ── the strip: done, undo, redo, and what the red means ─────────────────────
+strip.spawn(RenderProvider::CompositeDrawable2D done_cell)
+done_cell.Create(160, 40)
+done_cell.SetOrder(1)
+done_cell.SetBackground(0.79, 0.71, 0.35, 1.0)
+layout.AddBox(@done_cell, @strip, 2, 160.0, 1, 0.0)
+palette.AddCall(@done_cell, @battle, KartBattle.GarageDone)
+done_cell.spawn(RenderProvider::TextLabel done_word)
+done_word.Create()
+done_word.SetPosition(12, 16)
+done_word.SetSize(1)
+done_word.SetColor(0.106, 0.110, 0.078, 1.0)
+done_word.SetText(done (Enter))
+done_word.SetOrder(2)
+palette.AddCall(@done_word, @battle, KartBattle.GarageDone)
+
+strip.spawn(RenderProvider::CompositeDrawable2D undo_cell)
+undo_cell.Create(100, 40)
+undo_cell.SetOrder(1)
+undo_cell.SetBackground(0.16, 0.16, 0.2, 1.0)
+layout.AddBox(@undo_cell, @strip, 2, 100.0, 1, 0.0)
+palette.AddCall(@undo_cell, @input, PaintInput.Undo)
+undo_cell.spawn(RenderProvider::TextLabel undo_word)
+undo_word.Create()
+undo_word.SetPosition(12, 16)
+undo_word.SetSize(1)
+undo_word.SetColor(0.9, 0.9, 0.88, 1.0)
+undo_word.SetText(undo)
+undo_word.SetOrder(2)
+palette.AddCall(@undo_word, @input, PaintInput.Undo)
+
+strip.spawn(RenderProvider::CompositeDrawable2D redo_cell)
+redo_cell.Create(100, 40)
+redo_cell.SetOrder(1)
+redo_cell.SetBackground(0.16, 0.16, 0.2, 1.0)
+layout.AddBox(@redo_cell, @strip, 2, 100.0, 1, 0.0)
+palette.AddCall(@redo_cell, @input, PaintInput.Redo)
+redo_cell.spawn(RenderProvider::TextLabel redo_word)
+redo_word.Create()
+redo_word.SetPosition(12, 16)
+redo_word.SetSize(1)
+redo_word.SetColor(0.9, 0.9, 0.88, 1.0)
+redo_word.SetText(redo)
+redo_word.SetOrder(2)
+palette.AddCall(@redo_word, @input, PaintInput.Redo)
+
+strip.spawn(RenderProvider::CompositeDrawable2D note_cell)
+note_cell.Create(600, 40)
+note_cell.SetOrder(1)
+note_cell.SetBackground(0.16, 0.16, 0.19, 1.0)
+layout.AddBox(@note_cell, @strip, 1, 0.0, 1, 0.0)
+note_cell.spawn(RenderProvider::TextLabel note_word)
+note_word.Create()
+note_word.SetPosition(12, 16)
+note_word.SetSize(1)
+note_word.SetColor(0.85, 0.18, 0.22, 1.0)
+note_word.SetText(parts in the red take the driver colour)
+note_word.SetOrder(2)
+
+# ── the arbiter, which the battle hands the window's events while shaping ───
+spawn PaintProvider::PaintRouter router
+router.Create(1)
+router.AddPane(@garage, @input)
+
+layout.Solve()
+
+# ── the page's rows: a `tune`'s number each, its step and its bounds ────────
+battle.GarageRow(top, top, 0, 1, 8, 40)
+battle.GarageRow(launch, push, 1, 1, 2, 30)
+battle.GarageRow(boost, boost, 0, 1, 10, 50)
+battle.GarageRow(brake, brake, 0, 2, 4, 40)
+battle.GarageRow(grip, grip, 0, 1, 4, 40)
+battle.GarageRow(lock, steer, 0, 0.05, 0.1, 1)
+battle.GarageRow(wheelbase, wheelbase, 0, 0.1, 0.6, 4)
+battle.GarageRow(tyres, tyres, 0, 2, 2, 4)
+battle.GarageRow(tyre, tyre, 0, 0.04, 0.2, 1.4)
+battle.GarageRow(lean, lean, 0, 0.1, 0, 1)
+battle.GarageRow(ram, ram, 0, 5, 0, 60)
+
+battle.BindGarage(@garage, @model, @router, @view, @eye)
