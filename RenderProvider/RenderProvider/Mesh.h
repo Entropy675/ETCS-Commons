@@ -401,9 +401,37 @@ public:
     // says it lacks this RID (DeviceFrame.h).
     void Fill(DeviceMeshUpload& up) const
     {
-        up.mesh     = getRID();
-        up.vertices = m_vertices;
-        up.indices  = m_indices;
+        up.mesh = getRID();
+        device_widen(m_vertices, up.vertices);
+        up.indices = m_indices;
+    }
+
+    // The sphere about every vertex, in the unit space the node's extent
+    // scales: what a view is tested against before the mesh is drawn
+    // (Scene3D, culling). Kept against the version.
+    void Bounds(float c[3], float& r) const
+    {
+        if (m_bound_version != m_version || !m_bound_set)
+        {
+            float lo[3] = { 0, 0, 0 }, hi[3] = { 0, 0, 0 };
+            for (size_t i = 0; i + 5 < m_vertices.size(); i += 6)
+                for (int k = 0; k < 3; ++k)
+                {
+                    const float v = m_vertices[i + k];
+                    if (i == 0 || v < lo[k]) lo[k] = v;
+                    if (i == 0 || v > hi[k]) hi[k] = v;
+                }
+            float rr = 0.0f;
+            for (int k = 0; k < 3; ++k) m_bound_c[k] = (lo[k] + hi[k]) * 0.5f;
+            for (size_t i = 0; i + 5 < m_vertices.size(); i += 6)
+            {
+                const float dx = m_vertices[i] - m_bound_c[0], dy = m_vertices[i + 1] - m_bound_c[1], dz = m_vertices[i + 2] - m_bound_c[2];
+                rr = std::max(rr, dx * dx + dy * dy + dz * dz);
+            }
+            m_bound_r = std::sqrt(rr);
+            m_bound_version = m_version; m_bound_set = true;
+        }
+        c[0] = m_bound_c[0]; c[1] = m_bound_c[1]; c[2] = m_bound_c[2]; r = m_bound_r;
     }
 
 private:
@@ -432,6 +460,9 @@ private:
     float                 m_ends = 1.0f;
     std::array<float, 3>  m_unit = { 1.0f, 1.0f, 1.0f };   // Unit: the box AddPart says parts in
     uint64_t              m_version = 0;
+    mutable float         m_bound_c[3] = { 0, 0, 0 }, m_bound_r = 0.0f;   // Bounds, at m_bound_version
+    mutable uint64_t      m_bound_version = 0;
+    mutable bool          m_bound_set = false;
 };
 
 #endif // RENDERPROVIDER_MESH_H__

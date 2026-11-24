@@ -2,12 +2,13 @@
 # A spring of the pool: a round plate on the ground and four arrows that close
 # on its middle, drawn only -- the throw is the battle's (KartBattle.h), which
 # sizes and colours it all and moves the arrows.
-#   run kart_spring.etcs world=<Scene3D> battle=<KartBattle> disc=<Mesh> dart=<Mesh>
+#   run kart_spring.etcs world=<Scene3D> ground=<Scene3D> battle=<KartBattle> disc=<Mesh> dart=<Mesh>
 requires world [Drawable3D]
+requires ground [Drawable3D]
 requires battle [KartBattle]
 requires disc [Mesh]
 requires dart [Mesh]
-world.spawn(RenderProvider::Scene3D plate)
+ground.spawn(RenderProvider::Scene3D plate)
 plate.Create(1.0, 1.0, 1.0)
 plate.SetMesh(@disc)
 plate.SetAnchored(1)

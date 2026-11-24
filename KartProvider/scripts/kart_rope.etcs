@@ -4,7 +4,11 @@
 #   run kart_rope.etcs world=<Scene3D> battle=<KartBattle>
 requires world [Drawable3D]
 requires battle [KartBattle]
-run kart_marks.etcs world=world battle=battle
-run kart_marks.etcs world=world battle=battle
-run kart_marks.etcs world=world battle=battle
-run kart_marks.etcs world=world battle=battle
+# A tyre's mark in a holder of its own: still between the segments it lays,
+# and drawn as one mesh (kart_holder.etcs).
+world.spawn(RenderProvider::Scene3D rope)
+run kart_holder.etcs holder=rope
+run kart_marks.etcs world=rope battle=battle
+run kart_marks.etcs world=rope battle=battle
+run kart_marks.etcs world=rope battle=battle
+run kart_marks.etcs world=rope battle=battle

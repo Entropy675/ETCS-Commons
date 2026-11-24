@@ -157,9 +157,10 @@ var WGSL_MESH =
   '@group(0) @binding(0) var<storage, read> nodes: array<Node>;' +
   'struct MOut { @builtin(position) pos: vec4f, @location(0) n: vec3f, @location(1) col: vec4f,' +
   '  @location(2) @interpolate(flat) g: vec4f };' +
-  '@vertex fn vsMesh(@builtin(instance_index) ii: u32, @location(0) p: vec3f, @location(1) nrm: vec3f) -> MOut {' +
-  '  let nd = nodes[ii]; var o: MOut;' +
-  '  o.pos = nd.mvp * vec4f(p, 1.0); o.col = nd.col;' +
+  '@vertex fn vsMesh(@builtin(instance_index) ii: u32, @location(0) p: vec3f, @location(1) nrm: vec3f, @location(2) tint: f32) -> MOut {' +
+  '  let nd = nodes[ii]; var o: MOut; let t = u32(tint);' +
+  '  o.pos = nd.mvp * vec4f(p, 1.0);' +
+  '  o.col = vec4f(nd.col.rgb * vec3f(f32(t & 255u), f32((t >> 8u) & 255u), f32((t >> 16u) & 255u)) / 255.0, nd.col.a);' +
   '  let g = vec3f(nd.c0.w, nd.c1.w, nd.c2.w); let s = length(g);' +
   '  if (s > 0.0) {' +
   '    o.n = normalize(nd.c0.xyz * (nrm.x / dot(nd.c0.xyz, nd.c0.xyz)) + nd.c1.xyz * (nrm.y / dot(nd.c1.xyz, nd.c1.xyz))' +
@@ -206,9 +207,10 @@ function pipes() {
     var glow = soft !== 0;
     return d.createRenderPipeline({
       layout: mlay,
-      vertex: { module: mm, entryPoint: 'vsMesh', buffers: [ { arrayStride: 24, attributes: [
+      vertex: { module: mm, entryPoint: 'vsMesh', buffers: [ { arrayStride: 28, attributes: [
         { shaderLocation: 0, offset: 0, format: 'float32x3' },
-        { shaderLocation: 1, offset: 12, format: 'float32x3' } ] } ] },
+        { shaderLocation: 1, offset: 12, format: 'float32x3' },
+        { shaderLocation: 2, offset: 24, format: 'float32' } ] } ] },
       fragment: { module: mm, entryPoint: 'fsMesh', targets: [ glow
         ? { format: 'rgba8unorm', blend: { color: { srcFactor: 'src-alpha', dstFactor: soft === 2 ? 'one-minus-src-alpha' : 'one', operation: 'add' },
                                            alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' } } }

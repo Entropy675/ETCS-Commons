@@ -70,6 +70,7 @@
     "KartProvider/scripts/kart_fxs.etcs",
     "KartProvider/scripts/kart_ring.etcs",
     "KartProvider/scripts/kart_rim.etcs",
+    "KartProvider/scripts/kart_holder.etcs",
     "KartProvider/scripts/kart_fire_mesh.etcs",
     "KartProvider/scripts/kart_fire_meshes.etcs",
     "KartProvider/scripts/kart_burst_mesh.etcs",

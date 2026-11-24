@@ -107,14 +107,38 @@ struct DeviceScene
     std::vector<DeviceMeshOp> meshes;
 };
 
-// A mesh's geometry, sent once: interleaved position and normal, six floats
-// a vertex, and triangle indices.
+// A mesh's geometry, sent once: interleaved position, normal and tint, seven
+// floats a vertex, and triangle indices. The TINT multiplies the node's
+// colour: white for a Mesh (it has one colour, its node's), each source node's
+// colour where many nodes were merged into one mesh (Scene3D, a still
+// container's picture). It travels as one float holding r | g << 8 | b << 16,
+// an integer below 2^24 and so exact in a float, on every device and through
+// every copy (a packed bit pattern would be a NaN some copies rewrite).
+constexpr int   kDeviceVertexFloats = 7;
+constexpr float kDeviceTintWhite    = 16777215.0f;
+inline float device_tint(float r, float g, float b)
+{
+    auto byte = [](float v) { return static_cast<uint32_t>(v <= 0.0f ? 0.0f : v >= 1.0f ? 255.0f : v * 255.0f + 0.5f); };
+    return static_cast<float>(byte(r) | (byte(g) << 8) | (byte(b) << 16));
+}
 struct DeviceMeshUpload
 {
     ETCS::RID             mesh = 0;
-    std::vector<float>    vertices;   // x y z nx ny nz, per vertex
+    std::vector<float>    vertices;   // x y z nx ny nz tint, per vertex
     std::vector<uint32_t> indices;    // three per triangle
 };
+// Six floats a vertex (a Mesh's, the unit box's) widened to the device's
+// seven, white.
+inline void device_widen(const std::vector<float>& six, std::vector<float>& out)
+{
+    out.clear();
+    out.reserve(six.size() / 6 * kDeviceVertexFloats);
+    for (size_t i = 0; i + 5 < six.size(); i += 6)
+    {
+        out.insert(out.end(), six.begin() + static_cast<long>(i), six.begin() + static_cast<long>(i + 6));
+        out.push_back(kDeviceTintWhite);
+    }
+}
 
 // The unit cube, centred on the origin, six faces each with its own normal:
 // mesh 0, what a node with no mesh of its own is drawn as, scaled to its

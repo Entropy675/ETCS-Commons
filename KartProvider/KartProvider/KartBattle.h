@@ -623,18 +623,18 @@ public:
         parkNode(r);
     }
     void AddPickupNode(ETCS::RID r) { std::lock_guard<std::mutex> g(m_mu); m_pickup_nodes.push_back(r); parkNode(r); }
-    void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); parkNode(r); }
+    void AddShotNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_shot_nodes.push_back(r); m_shot_busy.push_back(false); parkNode(r); traceNode(r); }
     void AddBlastNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_blast_nodes.push_back(r); parkNode(r); }
-    void AddSparkNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_spark_nodes.push_back(r); parkNode(r); }
+    void AddSparkNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_spark_nodes.push_back(r); parkNode(r); traceNode(r); }
     // The next of the fire's meshes, empty: the trees are baked into it (meshFireLocked).
     void AddFireMesh(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_fire_meshes.push_back(r); meshFireLocked(m_fire_meshes.size() - 1); }
     // The next shell's own mesh, empty: a burst's tree, bent to its ground, is copied into it (bentCopyLocked).
     void AddBurstMesh(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_burst_meshes.push_back(r); }
     // "<tree> <turn degrees> <bends> <steps> <cut> <cut unbent>": the latest burst's tree, for a test.
     std::string LastBurst()         { std::lock_guard<std::mutex> g(m_mu); return m_last_burst.empty() ? std::string("-") : m_last_burst; }
-    void AddSmokeNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_smoke_nodes.push_back(r); parkNode(r); }
+    void AddSmokeNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_smoke_nodes.push_back(r); parkNode(r); traceNode(r); }
     // The weapons' effects (fxLocked's comment): a ball each, and a ring with the mesh this battle bakes for it.
-    void AddFxNode(ETCS::RID r)     { std::lock_guard<std::mutex> g(m_mu); m_fx_nodes.push_back(r); m_fx_busy.push_back(false); parkNode(r); }
+    void AddFxNode(ETCS::RID r)     { std::lock_guard<std::mutex> g(m_mu); m_fx_nodes.push_back(r); m_fx_busy.push_back(false); parkNode(r); traceNode(r); }
     void AddRingNode(ETCS::RID r, ETCS::RID mesh)
     {
         std::lock_guard<std::mutex> g(m_mu);
@@ -1223,6 +1223,9 @@ private:
     static constexpr double kSlackWant = 1.25;     // ...the least lead it keeps on the newest tick
     static constexpr double kSlackRise = 0.0005;   // ...and how fast that lead creeps back up, ticks a millisecond
     struct Seen { uint64_t tick = 0; float body[7] = {}, wheel[4][7] = {}; float hx = 0.0f, hz = 1.0f; };
+    // A shot's, a spark's, an effect's or a puff's node, drawn between ticks
+    // as a kart is (showLocked): the poses its last ticks left it in.
+    struct Traced { ETCS::RID node = 0; uint64_t tick[kSeen] = {}; float pose[kSeen][7] = {}; bool shown = false; };
     struct Slot
     {
         ETCS::RID   body = 0;
@@ -1819,6 +1822,7 @@ private:
         r.id = id; r.radius = reach;
         r.PlaceAt(x, y, z);
         poseLocked(s, r);
+        k->RowsWritten();
     }
     // The pit: hidden, held, out of everyone's way.
     void pitLocked(size_t i)
@@ -2065,7 +2069,7 @@ private:
         for (; ns < m_slab_nodes.size(); ++ns) parkNode(m_slab_nodes[ns]);
         for (; nd < m_dome_nodes.size(); ++nd) parkNode(m_dome_nodes[nd]);
         // The pads: each plate on its ground -- tilted to a bank's slope --
-        // under any tyre's mark; the arrows are put on it every tick
+        // under any tyre's mark; the arrows run on it in the picture
         // (arrowsLocked).
         for (size_t n = 0; n < m_pad_nodes.size(); ++n)
         {
@@ -2091,7 +2095,7 @@ private:
             }
             else { parkNode(sn.plate); for (ETCS::RID a : sn.arrow) parkNode(a); }
         }
-        arrowsLocked();
+        arrowsLocked(Fixed::Zero(), false);
     }
 
     // ── one tick ────────────────────────────────────────────────────────
@@ -2107,11 +2111,12 @@ private:
                     if (Causal_* k = causal(s.body))
                     {
                         s.px = k->Order4().x; s.pz = k->Order4().z;
-                        if (m_phase != Lobby) driveLocked(s, k);
+                        if (m_phase != Lobby) { driveLocked(s, k); k->RowsWritten(); }
                         heatsLocked(s);
                     }
             w->Interact(dt());
-            for (Slot& s : m_slots) if (alive(s)) groundLocked(s);
+            for (Slot& s : m_slots)
+                if (alive(s)) { groundLocked(s); if (Causal_* k = causal(s.body)) k->RowsWritten(); }
             if (m_phase != Lobby)
             {
                 for (size_t i = 0; i < m_slots.size(); ++i) if (alive(m_slots[i])) touchLocked(i);
@@ -2128,7 +2133,6 @@ private:
             }
             if (m_phase != Lobby) pickupsLocked();
             burstsLocked();
-            arrowsLocked();
             seenLocked();
         }
         if (m_phase == Playing && static_cast<int64_t>(m_tick) >= m_end)
@@ -2855,6 +2859,7 @@ private:
                 Fixed w, yy;
                 halfTurn(s.hx, s.hz, w, yy);
                 r.qw = w; r.qx = r.qz = Fixed::Zero(); r.qy = yy;
+                c->RowsWritten();
             }
         }
     }
@@ -2930,6 +2935,7 @@ private:
             std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
             OrderVector& r = c->RowsUnder();
             r.qw = Fixed::One(); r.qx = r.qy = r.qz = Fixed::Zero();
+            c->RowsWritten();
         }
     }
     void freeSlick(int n)
@@ -3720,6 +3726,7 @@ private:
         Fixed w, y;
         halfTurn(b.ts, b.tc, w, y);
         r.qw = w; r.qx = r.qz = Fixed::Zero(); r.qy = y;
+        c->RowsWritten();
     }
     /*
      * THE TREES' MESHES, baked into the empty ones the script made, kShells
@@ -3855,6 +3862,7 @@ private:
             {
                 std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
                 c->RowsUnder().RotateBy(Fixed::Zero(), Fixed::One(), Fixed::Zero(), F(6, 100));
+                c->RowsWritten();
             }
         }
     }
@@ -3941,6 +3949,7 @@ private:
             q.qx = aw * bx + ax * bw + ay * bz - az * by;
             q.qy = aw * by - ax * bz + ay * bw + az * bx;
             q.qz = aw * bz + ax * by - ay * bx + az * bw;
+            w->RowsWritten();
         }
         // The trims: at the body's centre, turned as it is.
         for (int t = 0; t < kTrims && trimUsed(c, t); ++t)
@@ -3949,24 +3958,34 @@ private:
                 OrderVector& q = w->RowsUnder();
                 q.PlaceAt(Fixed::Zero(), Fixed::Zero(), Fixed::Zero());
                 q.qw = r.qw; q.qx = r.qx; q.qy = r.qy; q.qz = r.qz;
+                w->RowsWritten();
             }
     }
 
     // ── the pads' arrows ────────────────────────────────────────────────
 
     // Three arrows a pad, running its length one behind the other, like a
-    // belt; four a spring, closing on its middle. Where each is follows from
-    // the tick, so the same everywhere and no state. Flat on the plate, above
-    // any tyre's mark. The rows are written under the picture, which a still
-    // scene does not take again: the world is told it moved (by nothing), so
-    // they run in the lobby and with every kart at rest.
-    void arrowsLocked()
+    // belt; four a spring, closing on its middle; flat on the plate, above
+    // any tyre's mark. `beat` is how far through its run (0..1) each is. The
+    // rows are put at the run's start once a map (drawMapLocked); the run is
+    // the picture's, shown at the frame's moment (showLocked, ShowAt) and
+    // never written, so the arrows are still and wake nothing.
+    void arrowsLocked(Fixed beat, bool shown)
     {
         const size_t pads = std::min(m_pad_nodes.size(), m_live.pads.size());
         const size_t springs = std::min(m_spring_nodes.size(), m_live.springs.size());
-        if (pads + springs) verb(m_world, "Move", "0, 0, 0");
+        auto put = [&](ETCS::RID node, Fixed x, Fixed y, Fixed z, int yaw, Fixed gx, Fixed gz) {
+            if (!shown) { poseNode(node, x, y, z, yaw, Fixed::One(), Fixed::Zero(), gx, gz); return; }
+            OrderVector r;
+            Fixed ys, yc;
+            (Fixed::TwoPi() * F(yaw, 720)).SinCos(ys, yc);
+            const Fixed half = Fixed::Half().Sqrt();   // pitched a quarter turn: sin and cos of its half are both this
+            poseRows(r, x, y, z, yc, ys, half, half, gx, gz);
+            float p[7];
+            poseOf(r, p);
+            showPose(node, p);
+        };
         const Fixed run = KartArena::PadLength() - padArrow();   // an arrow's middle goes this far
-        const Fixed beat = F(static_cast<int64_t>(m_tick % static_cast<uint64_t>(padBeat())), padBeat());
         for (size_t n = 0; n < pads; ++n)
         {
             const KartArena::Pad& p = m_live.pads[n];
@@ -3974,8 +3993,8 @@ private:
             {
                 Fixed at = (F(k) + beat) / F(3);
                 at = (at - Fixed::Half()) * run;
-                poseNode(m_pad_nodes[n].arrow[k], p.x + p.sx * at, p.y + (p.gx * p.sx + p.gz * p.cz) * at + F(6, 100), p.z + p.cz * at,
-                         p.yaw, Fixed::One(), Fixed::Zero(), p.gx, p.gz);
+                put(m_pad_nodes[n].arrow[k], p.x + p.sx * at, p.y + (p.gx * p.sx + p.gz * p.cz) * at + F(6, 100), p.z + p.cz * at,
+                    p.yaw, p.gx, p.gz);
             }
         }
         // From the rim in: each on its own side (+x, +z, -x, -z), pointing at the middle.
@@ -3985,8 +4004,8 @@ private:
         {
             const KartArena::Spring& p = m_live.springs[n];
             for (int k = 0; k < 4; ++k)
-                poseNode(m_spring_nodes[n].arrow[k], p.x + out * F(side[k][0]), p.y + F(6, 100), p.z + out * F(side[k][1]),
-                         side[k][2], Fixed::One(), Fixed::Zero());
+                put(m_spring_nodes[n].arrow[k], p.x + out * F(side[k][0]), p.y + F(6, 100), p.z + out * F(side[k][1]),
+                    side[k][2], Fixed::Zero(), Fixed::Zero());
         }
     }
 
@@ -4164,6 +4183,7 @@ private:
                 const Fixed reach = q.radius;   // its extent's, which a ride may have changed
                 q = s.tyre_pristine[t];
                 q.id = id; q.radius = reach;
+                c->RowsWritten();
                 s.tyre_heat[t] = Fixed::Zero();
             }
     }
@@ -4174,8 +4194,8 @@ private:
     {
         Causal_* c = causal(node);
         if (!c) return;
-        std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
-        c->RowsUnder().PlaceAt(x, y, z);
+        { std::lock_guard<std::recursive_mutex> lk(c->TreeMutex()); c->RowsUnder().PlaceAt(x, y, z); }
+        c->RowsWritten();
     }
     // A pooled node placed and turned: `yaw` degrees about +y, then pitched
     // about its own across by the angle whose sine and cosine are given --
@@ -4191,8 +4211,13 @@ private:
         const Fixed pc = ((Fixed::One() + pcos) * Fixed::Half()).Sqrt();
         Fixed ps = ((Fixed::One() - pcos) * Fixed::Half()).Sqrt();
         if (psin.raw < 0) ps = -ps;
-        std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
-        OrderVector& r = c->RowsUnder();
+        { std::lock_guard<std::recursive_mutex> lk(c->TreeMutex()); poseRows(c->RowsUnder(), x, y, z, yc, ys, pc, ps, gx, gz); }
+        c->RowsWritten();
+    }
+    // The same pose into any rows: yaw (half-angle cosine, sine) times
+    // pitch (likewise), tilted onto (gx, gz) when it slopes.
+    static void poseRows(OrderVector& r, Fixed x, Fixed y, Fixed z, Fixed yc, Fixed ys, Fixed pc, Fixed ps, Fixed gx, Fixed gz)
+    {
         r.PlaceAt(x, y, z);
         // yaw x pitch: (yc, 0, ys, 0) x (pc, ps, 0, 0)
         const Fixed w = yc * pc, qx = yc * ps, qy = ys * pc, qz = -(ys * ps);
@@ -4223,10 +4248,11 @@ private:
             ps = ((Fixed::One() - cs) * Fixed::Half()).Sqrt();
             if (dy.IsPositive()) ps = -ps;
         }
-        std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
-        OrderVector& r = c->RowsUnder();
-        r.PlaceAt(x, y, z);
-        r.qw = yw * pc; r.qx = yw * ps; r.qy = yy * pc; r.qz = -(yy * ps);
+        { std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+          OrderVector& r = c->RowsUnder();
+          r.PlaceAt(x, y, z);
+          r.qw = yw * pc; r.qx = yw * ps; r.qy = yy * pc; r.qz = -(yy * ps); }
+        c->RowsWritten();
     }
     /*
      * A pooled node not in use: hidden, far below, IN A BERTH OF ITS OWN. The
@@ -4269,6 +4295,7 @@ private:
             halfTurn(s.vx, s.vz, w, y);
             r.qw = w; r.qx = r.qz = Fixed::Zero(); r.qy = y;
         }
+        c->RowsWritten();
     }
     int takeNode()
     {
@@ -4634,7 +4661,9 @@ private:
      *              Never past the newest; kSeen behind, it starts again
      *
      * A blend over a jump (a respawn, the pit) is no motion: the newer pose
-     * is drawn. The eye and the HP bars follow the drawn kart.
+     * is drawn. The eye and the HP bars follow the drawn kart. Shots, sparks,
+     * effects and smoke are drawn between ticks the same way (traceNode), and
+     * the pads' arrows at the frame's moment.
      */
     // Is the drawn pose this frame's? Frames stopped (a script stepping by
     // ticks, Run) leave it behind the rows; then the rows are followed.
@@ -4671,7 +4700,8 @@ private:
     {
         if (Drawable3D_* d = rid ? ETCS::resolve_in_family<Drawable3D_>("Drawable3D", rid) : nullptr) d->ShowAt(ShownPose{});
     }
-    // At the end of a tick, under the world's lock: each kart's pose, kept.
+    // At the end of a tick, under the world's lock: each kart's pose, and each
+    // traced node's, kept.
     void seenLocked()
     {
         for (Slot& s : m_slots)
@@ -4686,7 +4716,16 @@ private:
                 if (Causal_* w = causal(s.wheels[t])) poseOf(w->Order4(), e.wheel[t]);
             e.hx = s.hx.ToFloat(); e.hz = s.hz.ToFloat();
         }
+        for (Traced& t : m_traced)
+            if (Causal_* c = causal(t.node))
+            {
+                const size_t k = m_tick % kSeen;
+                t.tick[k] = m_tick;
+                std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
+                poseOf(c->Order4(), t.pose[k]);
+            }
     }
+    void traceNode(ETCS::RID r) { Traced t; t.node = r; m_traced.push_back(t); }
     void showLocked(double dt_ms)
     {
         const double tick_ms = 1000.0 / kHz;
@@ -4744,6 +4783,27 @@ private:
             if (hl > 1e-5f) { hx /= hl; hz /= hl; } else { hx = b.hx; hz = b.hz; }
             s.drawn_hx = hx; s.drawn_hz = hz;
         }
+        for (Traced& t : m_traced)
+        {
+            const float* pa = a > 0 && t.tick[a % kSeen] == a ? t.pose[a % kSeen] : nullptr;
+            const float* pb = t.tick[(a + 1) % kSeen] == a + 1 ? t.pose[(a + 1) % kSeen] : nullptr;
+            if (!pa && !pb)
+            {
+                if (t.shown) { showRows(t.node); t.shown = false; }
+                continue;
+            }
+            if (pa && pb)
+            {
+                const float dx = pb[0] - pa[0], dy = pb[1] - pa[1], dz = pb[2] - pa[2];
+                if (dx * dx + dy * dy + dz * dz > 16.0f) pa = nullptr;   // put somewhere new, not moved there
+            }
+            const float* b = pb ? pb : pa;
+            float p[7];
+            blendPose(pa ? pa : b, b, pa && pb ? f : 1.0f, p);
+            showPose(t.node, p);
+            t.shown = true;
+        }
+        arrowsLocked(Fixed::From(std::fmod(at, static_cast<double>(padBeat())) / padBeat()), true);
     }
     void cameraLocked(double dt_ms)
     {
@@ -4858,6 +4918,7 @@ private:
                 f.PlaceAt(Fixed::From(px + rx * shift), Fixed::From(py + 1.35f), Fixed::From(pz + rz * shift));
                 f.Orient(Fixed::Zero(), Fixed::One(), Fixed::Zero(), Fixed::From(yaw));
             }
+            back->RowsWritten(); fill->RowsWritten();
         }
     }
     // The frame counter: the camera's own count of the pictures it made
@@ -6285,6 +6346,7 @@ private:
     std::vector<MeshNode> m_arc_nodes, m_slick_nodes;
     std::vector<bool> m_slick_busy;
     std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;
+    std::vector<Traced>    m_traced;   // drawn between ticks (traceNode)
     std::map<ETCS::RID, uint32_t> m_berths;   // a pooled node's parking place (parkNode)
     std::vector<PadNodes> m_pad_nodes;
     std::vector<SpringNodes> m_spring_nodes;

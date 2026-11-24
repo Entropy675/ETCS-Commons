@@ -2,11 +2,12 @@
 # A pad of the pool: a plate on the ground and three arrows that run along it
 # like a belt, drawn only -- the push is the battle's (KartBattle.h), which
 # sizes and colours the plate and moves the arrows.
-#   run kart_pad.etcs world=<Scene3D> battle=<KartBattle> dart=<Mesh>
+#   run kart_pad.etcs world=<Scene3D> ground=<Scene3D> battle=<KartBattle> dart=<Mesh>
 requires world [Drawable3D]
+requires ground [Drawable3D]
 requires battle [KartBattle]
 requires dart [Mesh]
-world.spawn(RenderProvider::Scene3D plate)
+ground.spawn(RenderProvider::Scene3D plate)
 plate.Create(1.0, 1.0, 1.0)
 plate.SetAnchored(1)
 world.spawn(RenderProvider::Scene3D a1)

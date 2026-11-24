@@ -97,7 +97,7 @@ public:
         if (!m_meshSlots.count(0))
         {
             m_box.vertices.clear(); m_box.indices.clear();
-            device_unit_box(m_box.vertices, m_box.indices);
+            { std::vector<float> six; device_unit_box(six, m_box.indices); device_widen(six, m_box.vertices); }
             packMesh(0, m_box, usedMeshes);
         }
         for (const DeviceMeshUpload& up : frame.meshes) packMesh(up.mesh, up, usedMeshes);

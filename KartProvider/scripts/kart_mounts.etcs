@@ -66,6 +66,7 @@ tree.MountFile(KartProvider/scripts/kart_fx.etcs ACE_ROOT/modules/KartProvider/s
 tree.MountFile(KartProvider/scripts/kart_fxs.etcs ACE_ROOT/modules/KartProvider/scripts/kart_fxs.etcs)
 tree.MountFile(KartProvider/scripts/kart_ring.etcs ACE_ROOT/modules/KartProvider/scripts/kart_ring.etcs)
 tree.MountFile(KartProvider/scripts/kart_rim.etcs ACE_ROOT/modules/KartProvider/scripts/kart_rim.etcs)
+tree.MountFile(KartProvider/scripts/kart_holder.etcs ACE_ROOT/modules/KartProvider/scripts/kart_holder.etcs)
 tree.MountFile(KartProvider/scripts/kart_fire_mesh.etcs ACE_ROOT/modules/KartProvider/scripts/kart_fire_mesh.etcs)
 tree.MountFile(KartProvider/scripts/kart_fire_meshes.etcs ACE_ROOT/modules/KartProvider/scripts/kart_fire_meshes.etcs)
 tree.MountFile(KartProvider/scripts/kart_burst_mesh.etcs ACE_ROOT/modules/KartProvider/scripts/kart_burst_mesh.etcs)

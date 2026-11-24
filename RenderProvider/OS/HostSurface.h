@@ -5,6 +5,7 @@
 #include "../RenderProvider/DeviceFrame.h"
 #include "../RenderProvider/SceneSink.h"
 #include "../RenderProvider/Mesh.h"
+#include "../RenderProvider/Baked.h"
 
 #include <algorithm>
 #include <array>
@@ -602,8 +603,9 @@ private:
     /*
      * GEOMETRY THE DEVICE LACKS, sent beside the scenes that use it -- a mesh
      * the backend has never had, or one whose version moved since it was
-     * sent. Resolved by RID to this module's Mesh; the unit box (mesh 0) is
-     * the backend's own and never travels.
+     * sent. Resolved by RID to a still container's merged solids (Baked.h),
+     * else to this module's Mesh; the unit box (mesh 0) is the backend's own
+     * and never travels.
      */
     // Each distinct mesh is resolved once per frame -- fifty nodes sharing
     // a shape are one registry lookup, not fifty -- and sent only when the
@@ -615,11 +617,20 @@ private:
             for (const DeviceMeshOp& op : sc.meshes)
             {
                 if (op.mesh == 0 || !m_meshSeen.insert(op.mesh).second) continue;
+                auto sent = m_meshSent.find(op.mesh);
+                if (std::shared_ptr<const BakedMesh> baked = BakedMeshes::Get(op.mesh))   // a still container's merged solids
+                {
+                    if (sent != m_meshSent.end() && sent->second == baked->version && m_presenter && m_presenter->HasMesh(op.mesh)) continue;
+                    DeviceMeshUpload up;
+                    up.mesh = op.mesh; up.vertices = baked->vertices; up.indices = baked->indices;
+                    frame.meshes.push_back(std::move(up));
+                    m_meshSent[op.mesh] = baked->version;
+                    continue;
+                }
                 ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), op.mesh);
                 if (!e || e->getSourceTag() != ETCS::Buffer("Mesh")) continue;
                 const Mesh* mesh = static_cast<const Mesh*>(e->getTrueType());
-                auto it = m_meshSent.find(op.mesh);
-                if (it != m_meshSent.end() && it->second == mesh->Version() && m_presenter && m_presenter->HasMesh(op.mesh)) continue;
+                if (sent != m_meshSent.end() && sent->second == mesh->Version() && m_presenter && m_presenter->HasMesh(op.mesh)) continue;
                 DeviceMeshUpload up;
                 mesh->Fill(up);
                 frame.meshes.push_back(std::move(up));

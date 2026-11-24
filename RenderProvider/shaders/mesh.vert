@@ -1,7 +1,7 @@
 #version 450
 
-// One scene node. The vertex buffer is a Mesh's interleaved position and
-// normal (RenderProvider/Mesh.h, DeviceMeshUpload); everything about the
+// One scene node. The vertex buffer is a Mesh's interleaved position,
+// normal and tint (RenderProvider/Mesh.h, DeviceMeshUpload); everything about the
 // node arrives as push constants, so a scene is one bind per mesh and one
 // push+draw per node, no descriptor sets -- the rect and blit pipelines'
 // shape, carried into 3D. The projection hands over y up and depth in
@@ -24,6 +24,7 @@ layout(push_constant) uniform Push {
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;
+layout(location = 2) in float inTint;   // r | g << 8 | b << 16, times the node's colour (DeviceFrame.h)
 
 layout(location = 0) out vec3 outNormal;
 layout(location = 1) out vec4 outColor;
@@ -50,5 +51,6 @@ void main()
         outNormal = normalize(mat3(pc.col0.xyz, pc.col1.xyz, pc.col2.xyz) * inNormal);
         outGlow   = vec4(0.0);
     }
-    outColor = pc.color;
+    const uint t = uint(inTint);
+    outColor = vec4(pc.color.rgb * vec3(float(t & 255u), float((t >> 8) & 255u), float((t >> 16) & 255u)) / 255.0, pc.color.a);
 }
