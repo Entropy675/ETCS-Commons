@@ -1389,6 +1389,23 @@ DEFINE_WORK_FUNC_TYPED(Mesh, AddBox, (float, cx), (float, cy), (float, cz), (flo
     (void)ctx;
     self.AddBox(cx, cy, cz, w, h, d);
 }
+// Unit <w> <h> <d> -- the box the AddParts after it are said in: the extent a node scales this mesh by.
+DEFINE_WORK_FUNC_TYPED(Mesh, Unit, (float, w), (float, h), (float, d)) { (void)ctx; self.Unit(w, h, d); }
+// AddPart <shape> <x> <y> <z> <hx> <hy> <hz> <qw> <qx> <qy> <qz> -- a shape (a Mesh; 0 the unit box)
+// sized, turned and moved as a modelled part stands, added in the Unit box (Mesh.h).
+DEFINE_WORK_FUNC_TYPED(Mesh, AddPart, (ETCS::RID, shape), (float, px), (float, py), (float, pz), (float, hx), (float, hy),
+                       (float, hz), (float, qw), (float, qx), (float, qy), (float, qz))
+{
+    (void)ctx;
+    const Mesh* m = nullptr;
+    if (shape)
+    {
+        ETCS::Entity* e = ETCS::etcs_resolve_rid_anywhere(&ETCS::getLoader(), shape);
+        m = e && e->getSourceTag() == ETCS::Buffer("Mesh") ? dynamic_cast<Mesh*>(e) : nullptr;
+        if (!m) { ETCS_LOG("Mesh::AddPart", "RID:" << shape << " does not resolve as a Mesh."); return; }
+    }
+    self.AddPart(m, px, py, pz, hx, hy, hz, qw, qx, qy, qz);
+}
 
 DEFINE_WORK_FUNC_TYPED(Mesh, AddTriangle, (uint32_t, a), (uint32_t, b), (uint32_t, c))
 {

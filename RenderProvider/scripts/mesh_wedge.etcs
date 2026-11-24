@@ -1,0 +1,33 @@
+#!/usr/bin/env etcs
+# A WEDGE in the unit box: the box with its top front edge taken off -- a
+# ramp. Fills the Mesh it is handed (mesh_pyramid.etcs says why).
+#   run RenderProvider/scripts/mesh_wedge.etcs shape=<Mesh>
+requires shape [Mesh]
+shape.Create()
+shape.Clear()
+shape.AddVertex(-0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
+shape.AddVertex( 0.5, -0.5, -0.5,  0.0, -1.0, 0.0)
+shape.AddVertex( 0.5, -0.5,  0.5,  0.0, -1.0, 0.0)
+shape.AddVertex(-0.5, -0.5,  0.5,  0.0, -1.0, 0.0)
+shape.AddTriangle(0, 1, 2)
+shape.AddTriangle(0, 2, 3)
+shape.AddVertex(-0.5, -0.5,  0.5,  0.0, 0.0, 1.0)
+shape.AddVertex( 0.5, -0.5,  0.5,  0.0, 0.0, 1.0)
+shape.AddVertex( 0.5,  0.5,  0.5,  0.0, 0.0, 1.0)
+shape.AddVertex(-0.5,  0.5,  0.5,  0.0, 0.0, 1.0)
+shape.AddTriangle(4, 5, 6)
+shape.AddTriangle(4, 6, 7)
+shape.AddVertex(-0.5, -0.5, -0.5,  0.0, 0.707, -0.707)
+shape.AddVertex( 0.5, -0.5, -0.5,  0.0, 0.707, -0.707)
+shape.AddVertex( 0.5,  0.5,  0.5,  0.0, 0.707, -0.707)
+shape.AddVertex(-0.5,  0.5,  0.5,  0.0, 0.707, -0.707)
+shape.AddTriangle(8, 10, 9)
+shape.AddTriangle(8, 11, 10)
+shape.AddVertex(-0.5, -0.5, -0.5, -1.0, 0.0, 0.0)
+shape.AddVertex(-0.5, -0.5,  0.5, -1.0, 0.0, 0.0)
+shape.AddVertex(-0.5,  0.5,  0.5, -1.0, 0.0, 0.0)
+shape.AddTriangle(12, 13, 14)
+shape.AddVertex( 0.5, -0.5, -0.5,  1.0, 0.0, 0.0)
+shape.AddVertex( 0.5, -0.5,  0.5,  1.0, 0.0, 0.0)
+shape.AddVertex( 0.5,  0.5,  0.5,  1.0, 0.0, 0.0)
+shape.AddTriangle(15, 17, 16)

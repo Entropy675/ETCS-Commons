@@ -42,7 +42,7 @@ public:
 
     bool Create() { this->addTag("active"); return true; }
 
-    void Clear() { m_vertices.clear(); m_indices.clear(); m_part = 0; ++m_version; }
+    void Clear() { m_vertices.clear(); m_indices.clear(); m_part = 0; m_unit = { 1.0f, 1.0f, 1.0f }; ++m_version; }
 
     // A vertex: where, and which way its face looks. Returns its index.
     uint32_t AddVertex(float x, float y, float z, float nx, float ny, float nz)
@@ -72,6 +72,45 @@ public:
         const uint32_t base = VertexCount();
         for (size_t i = 0; i < v.size(); i += 6)
             m_vertices.insert(m_vertices.end(), { cx + v[i] * w, cy + v[i + 1] * h, cz + v[i + 2] * d, v[i + 3], v[i + 4], v[i + 5] });
+        for (uint32_t k : ix) m_indices.push_back(base + k);
+        ++m_version;
+    }
+
+    // The box the parts after it are said in: the extent a node will scale
+    // this mesh by. As made, the unit box.
+    void Unit(float w, float h, float d) { if (w > 0.0f && h > 0.0f && d > 0.0f) m_unit = { w, h, d }; }
+    /*
+     * A PART added to what is here: `src`'s triangles (the unit box when
+     * null) sized to twice (hx, hy, hz), turned by the quaternion and moved
+     * to (px, py, pz) -- a modelled part as it stands -- then said in the
+     * Unit box. Its normals stay as the part faces: a node's extent turns no
+     * normal (Scene3D::rasterMesh), so scaled back it faces as modelled.
+     */
+    void AddPart(const Mesh* src, float px, float py, float pz, float hx, float hy, float hz,
+                 float qw, float qx, float qy, float qz)
+    {
+        if (hx <= 0.0f || hy <= 0.0f || hz <= 0.0f) return;
+        const float ql = std::sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
+        if (ql <= 0.0f) return;
+        qw /= ql; qx /= ql; qy /= ql; qz /= ql;
+        auto turn = [&](float& x, float& y, float& z) {   // q v q*: v + 2w(q x v) + 2 q x (q x v)
+            const float cx = qy * z - qz * y, cy = qz * x - qx * z, cz = qx * y - qy * x;
+            const float dx = qy * cz - qz * cy, dy = qz * cx - qx * cz, dz = qx * cy - qy * cx;
+            x += 2.0f * (qw * cx + dx); y += 2.0f * (qw * cy + dy); z += 2.0f * (qw * cz + dz);
+        };
+        std::vector<float> box;
+        std::vector<uint32_t> boxIx;
+        if (!src) device_unit_box(box, boxIx);
+        const std::vector<float>&    v  = src ? src->m_vertices : box;
+        const std::vector<uint32_t>& ix = src ? src->m_indices  : boxIx;
+        const uint32_t base = VertexCount();
+        for (size_t i = 0; i + 5 < v.size(); i += 6)
+        {
+            float x = v[i] * 2.0f * hx, y = v[i + 1] * 2.0f * hy, z = v[i + 2] * 2.0f * hz;
+            float nx = v[i + 3], ny = v[i + 4], nz = v[i + 5];
+            turn(x, y, z); turn(nx, ny, nz);
+            m_vertices.insert(m_vertices.end(), { (px + x) / m_unit[0], (py + y) / m_unit[1], (pz + z) / m_unit[2], nx, ny, nz });
+        }
         for (uint32_t k : ix) m_indices.push_back(base + k);
         ++m_version;
     }
@@ -391,6 +430,7 @@ private:
     WarpBy                m_warp;       // ...and the warp, likewise
     size_t                m_part = 0;   // vertices a part (Parts), 0: none
     float                 m_ends = 1.0f;
+    std::array<float, 3>  m_unit = { 1.0f, 1.0f, 1.0f };   // Unit: the box AddPart says parts in
     uint64_t              m_version = 0;
 };
 
