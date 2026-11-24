@@ -114,6 +114,20 @@ note_word.SetColor(0.85, 0.18, 0.22, 1.0)
 note_word.SetText(parts in the red take the driver colour)
 note_word.SetOrder(2)
 
+# The hint: one sentence on the control under the pointer, above the rest.
+garage.spawn(RenderProvider::TextLabel garage_hint)
+garage_hint.Create()
+garage_hint.SetSize(1)
+garage_hint.SetColor(0.94, 0.94, 0.92, 1.0)
+garage_hint.SetBackground(0.06, 0.06, 0.08, 0.92)
+garage_hint.SetPadding(4)
+garage_hint.SetOrder(40)
+palette.BindHint(@garage_hint)
+palette.AddHint(@done_cell, Keep this shape and go back to the garage.)
+palette.AddHint(@undo_cell, Takes back the last change.)
+palette.AddHint(@redo_cell, Puts back the last change undone.)
+palette.AddHint(@note_cell, A part painted in the red takes its driver colour in the race.)
+
 # ── the arbiter, which the battle hands the window's events while shaping ───
 spawn PaintProvider::PaintRouter router
 router.Create(1)
