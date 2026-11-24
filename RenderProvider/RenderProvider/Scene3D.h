@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -915,6 +916,25 @@ public:
             && std::fabs(p.z) <= m_half.z;
     }
 
+    /*
+     * WHERE THIS NODE IS DRAWN, when a stepper has blended it between two
+     * steps (Drawable3D.h, ShowAt): the projection walk draws it, and its
+     * children about it, there; the rows -- and everything that reads them,
+     * contacts, depth, the hash -- are untouched. A change is a change of
+     * picture, so the viewers are told.
+     */
+    void ShowAtConcrete(ShownPose pose) override
+    {
+        {
+            std::lock_guard<std::mutex> g(m_shown_mu);
+            if (!pose.on && !m_shown.on) return;
+            if (pose.on == m_shown.on && pose.x == m_shown.x && pose.y == m_shown.y && pose.z == m_shown.z
+                && pose.qw == m_shown.qw && pose.qx == m_shown.qx && pose.qy == m_shown.qy && pose.qz == m_shown.qz) return;
+            m_shown = pose;
+        }
+        markViewersDirty();
+    }
+
     // The whole-node span, over the eight corners of the WHOLE SUBTREE --
     // not just this box. A container's depth is the depth of what is in it,
     // which is what makes this usable as the ordering key the family's
@@ -1365,7 +1385,9 @@ private:
     // translation at the root relocates everything below it.
     void collectSubtree(Point3D origin, std::vector<Node>& out, bool root = true)
     {
-        const Point3D p = Pos();
+        ShownPose shown;
+        { std::lock_guard<std::mutex> g(m_shown_mu); shown = m_shown; }
+        const Point3D p = shown.on ? Point3D{ shown.x, shown.y, shown.z } : Pos();
         const Point3D abs{ origin.x + p.x, origin.y + p.y, origin.z + p.z };
         if (!Hidden())
         {
@@ -1381,7 +1403,15 @@ private:
             // that one is the viewer's, not the box's. The root by being the
             // root, not by being drawn first: under a hidden root the first
             // node drawn is a child, and its facing is its own.
-            n.rot  = root ? Matrix4::Identity() : Order4().ToMatrix4();
+            if (root) n.rot = Matrix4::Identity();
+            else if (shown.on)
+            {
+                OrderVector facing;
+                facing.qw = Fixed::From(shown.qw); facing.qx = Fixed::From(shown.qx);
+                facing.qy = Fixed::From(shown.qy); facing.qz = Fixed::From(shown.qz);
+                n.rot = facing.ToMatrix4();
+            }
+            else n.rot = Order4().ToMatrix4();
             n.rot.at(0,3) = n.rot.at(1,3) = n.rot.at(2,3) = 0.0f;
             n.mesh = meshRid();
             out.push_back(n);
@@ -2396,6 +2426,9 @@ private:
     // a sub-pixel disagreement in a value that is about to be turned into an
     // angle, which is not a hazard worth a fence.
     std::atomic<int32_t> m_ptr_x{0};
+    // ShowAt's: where the projection draws this node, when not its rows.
+    std::mutex m_shown_mu;
+    ShownPose  m_shown;
     std::atomic<int32_t> m_ptr_y{0};
     // Until the pointer has been seen once, the look holds whatever LookAt
     // set -- so a scene renders as authored rather than snapping to whatever

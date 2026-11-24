@@ -15,6 +15,6 @@ ETCS_TAG_BLOCK_HYBRID(KartBattle,
      AddPad, AddSpring, AddSpringOn, AddDeck, AddDeckAt, AddArc, AddPit, AddLava, AddSpawn, AddPickup, AddPickupUp, AddBlockNode, AddSlabNode, AddWedgeNode,
      AddDomeNode, AddArcNode, AddSlickNode, AddPickupNode, AddShotNode, AddBlastNode, AddSparkNode, AddFireMesh, AddBurstMesh, AddSmokeNode, AddFxNode, AddRingNode, AddBoardRow, AddGroundNode, AddMarkNode, AddPadNode,
      AddSpringNode, Ready, Practice, Host, Join, Leave, Tick, Configure, Reroll, StartRound, Abandon, Give, Key,
-     SetInvert, Look, Frame, Run, Status, Scores, Maps, Layout, Faults, Kart, Tyres, Eye, Hash, Snapshot, Note, Here, LastBurst, Delete,
+     SetInvert, Look, Frame, Run, Status, Scores, Maps, Layout, Faults, Kart, Drawn, Tyres, Eye, Hash, Snapshot, Note, Here, LastBurst, Delete,
      BindMenu, MenuPress, Rename, Recolour, Livery, Setting, Settings, ShowSettings, MenuUp, Driving, Pedal, Wheel, PointerEvent),
     (Trace, Follow, Emit, Take, ConsumeKeys, ConsumePointer))

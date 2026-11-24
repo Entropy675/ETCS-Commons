@@ -1102,6 +1102,16 @@ public:
     }
     std::string Hash()     { std::lock_guard<std::mutex> g(m_mu); return std::to_string(m_tick) + " " + hashLocked(); }
     std::string Note()     { std::lock_guard<std::mutex> g(m_mu); return m_note; }
+    // "<x> <y> <z>": where this runtime draws a driver's kart -- between two
+    // ticks (showLocked) -- or "-" while it draws the rows or nothing.
+    std::string Drawn(const std::string& who)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        const int i = slotOf(who);
+        if (i < 0 || !m_slots[i].shown) return "-";
+        const Slot& s = m_slots[i];
+        return fmt3(s.drawn[0]) + " " + fmt3(s.drawn[1]) + " " + fmt3(s.drawn[2]);
+    }
     // "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel> <slide>",
     // or "-"; the wheel and the slide (the way across the heading) are + to
     // the picture's right.
@@ -1163,6 +1173,7 @@ public:
         std::lock_guard<std::mutex> g(m_mu);
         // The host's clock is the battle's (Lockstep): on a guest, nothing.
         clockLocked(dt_ms);
+        showLocked(dt_ms);
         cameraLocked(dt_ms);
         barsLocked();
         cardLocked(dt_ms);
@@ -1203,6 +1214,11 @@ private:
         uint32_t seq = 0;                          // segments laid: which lift a new one takes
         uint64_t used = 0;                         // the tyre's drawn segments' nodes in use, a bit each (kMarkNodes < 64)
     };
+    // A kart's pose as one tick left it -- the body's (x y z, qw qx qy qz),
+    // each wheel's (in the body's frame), the heading -- for drawing between
+    // ticks (showLocked). Floats: a picture's numbers.
+    static constexpr int kSeen = 6;
+    struct Seen { uint64_t tick = 0; float body[7] = {}, wheel[4][7] = {}; float hx = 0.0f, hz = 1.0f; };
     struct Slot
     {
         ETCS::RID   body = 0;
@@ -1250,6 +1266,12 @@ private:
         OrderVector tyre_pristine[4];
         Fixed       tyre_heat[4];                  // each tyre's heat as the drive left it: the tick emits from it
         Trail       trail[4];                      // each tyre's mark: drawn, not state
+        // The poses its last few ticks left, to draw it between two of them
+        // (showLocked): drawn, not state.
+        Seen        seen[kSeen];
+        bool        shown = false;                 // drawn at a blend (ShowAt), not its rows
+        float       drawn[3] = { 0.0f, 0.0f, 0.0f }, drawn_hx = 0.0f, drawn_hz = 1.0f;   // ...where, and facing
+        uint64_t    drawn_at = 0;                  // ...as of this tick (a stale one is not followed: drawnFresh)
     };
     struct Pickup { Fixed x, y, z; int64_t back = 0; ETCS::RID node = 0; };
     static constexpr int kSmokePuffs = 10;         // a smoke bomb's ring
@@ -1288,7 +1310,8 @@ private:
     static constexpr float    kPi         = 3.14159265f;
     static constexpr float    kBoom       = 8.32f;     // its length: 7.5 behind and 3.6 over
     static constexpr float    kBoomRise   = 0.4475f;   // and that angle over the ground
-    static constexpr int      kBoomSteps  = 16;        // the points along it tried against the ground
+    static constexpr int      kBoomSteps  = 32;        // the points along it tried against the ground: a quarter unit apart
+    static constexpr double   kEyeInMs = 30.0, kEyeOutMs = 120.0;   // the eye eased in to a shorter boom, and back out
     static constexpr float    kBoomGap    = 0.25f;     // the least it keeps over the ground, or off a deck
     static constexpr float    kBoomLeast  = 0.2f;      // of its length, however little is clear
     static constexpr uint16_t kLookButton = 1;         // the right button
@@ -2096,6 +2119,7 @@ private:
             if (m_phase != Lobby) pickupsLocked();
             burstsLocked();
             arrowsLocked();
+            seenLocked();
         }
         if (m_phase == Playing && static_cast<int64_t>(m_tick) >= m_end)
         {
@@ -4389,12 +4413,33 @@ private:
      * boom behind this runtime's kart and over it, swung by the look, looking
      * past the kart the way the boom points. The boom is shortened to what
      * it can see along: where the ground comes up through it (a pit's wall,
-     * a ramp, a hill), a deck lies between the kart and the eye, or it would
-     * pass out through the arena's wall below the wall's top, the eye comes
-     * in to this side of it -- into the pit with the kart, under the deck
-     * with it, inside the wall with it -- instead of looking at the kart
-     * through the ground, or at the back of a wall.
+     * a ramp, a hill), a block stands in it (any block, a map's walls among
+     * them, turned or not), a deck lies between the kart and the eye, or it
+     * would pass out through the arena's wall below the wall's top or into
+     * the rim's slope past it, the eye comes in to this side of it -- into
+     * the pit with the kart, under the deck with it, in front of the block,
+     * inside the wall with it -- instead of looking at the kart through the
+     * ground, a block, or the back of a wall. Coming in is quick (the frame
+     * edge eases it in over kEyeInMs, out over kEyeOutMs), so the eye is not
+     * seen inside what it came in from.
      */
+    // The top of the highest block standing at (x, z), kBoomGap round it
+    // (the eye's own room), or far below the ground where there is none.
+    float blockOverLocked(float x, float z) const
+    {
+        float top = -1000.0f;
+        for (const KartArena::Block& b : m_live.blocks)
+        {
+            const float dx = x - b.x.ToFloat(), dz = z - b.z.ToFloat();
+            float sn = 0.0f, cs = 1.0f;
+            if (b.yaw % 360 != 0) { const float a = static_cast<float>(b.yaw) * kPi / 180.0f; sn = std::sin(a); cs = std::cos(a); }
+            // Into the block's own frame (Faults turns the same way).
+            const float u = dx * cs - dz * sn, v = dx * sn + dz * cs;
+            if (std::fabs(u) < b.w.ToFloat() * 0.5f + kBoomGap && std::fabs(v) < b.d.ToFloat() * 0.5f + kBoomGap)
+                top = std::max(top, b.base.ToFloat() + b.h.ToFloat());
+        }
+        return top;
+    }
     void viewLocked(float eye[3], float at[3])
     {
         // The lobby's: over the whole arena, from the south.
@@ -4405,13 +4450,19 @@ private:
         if (m_phase == Lobby || i < 0 || !alive(m_slots[i])) return;
         Causal_* k = causal(m_slots[i].body);
         if (!k) return;
-        float px, py, pz;
+        float px, py, pz, fx, fz;
+        if (drawnFresh(m_slots[i]))   // where it is drawn (showLocked), so the eye does not judder against it
+        {
+            px = m_slots[i].drawn[0]; py = m_slots[i].drawn[1]; pz = m_slots[i].drawn[2];
+            fx = m_slots[i].drawn_hx; fz = m_slots[i].drawn_hz;
+        }
+        else
         {
             std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
             const OrderVector& r = k->Order4();
             px = r.x.ToFloat(); py = r.y.ToFloat(); pz = r.z.ToFloat();
+            fx = m_slots[i].hx.ToFloat(); fz = m_slots[i].hz.ToFloat();
         }
-        const float fx = m_slots[i].hx.ToFloat(), fz = m_slots[i].hz.ToFloat();
         const float cy = std::cos(m_look_yaw), sy = std::sin(m_look_yaw);
         const float dx = fx * cy + fz * sy, dz = fz * cy - fx * sy;   // the heading, turned to the picture's right
         const float rise = kBoomRise + m_look_pitch;
@@ -4426,6 +4477,7 @@ private:
                 std::lock_guard<std::recursive_mutex> lk(c->TreeMutex());
                 wall_top = std::max(wall_top, c->Order4().y.ToFloat() + c->Solid().hy.ToFloat());
             }
+        const float rim_slope = (rimRise() / rimDeep()).ToFloat();   // the rim's rise a unit out
         // From the kart's top out along the boom, as far as it is clear.
         const float top = py + 0.9f;
         const float ex = px - dx * back, ey = py + up, ez = pz - dz * back;
@@ -4435,8 +4487,11 @@ private:
             const float t = static_cast<float>(n) / kBoomSteps;
             const float qx = px + (ex - px) * t, qy = top + (ey - top) * t, qz = pz + (ez - pz) * t;
             const Fixed x = Fixed::From(qx), z = Fixed::From(qz);
+            // Past the wall's inside: the wall to its top, then the rim's slope.
+            const float out = std::max(std::fabs(qx), std::fabs(qz)) - inside;
             bool blocked = KartArena::Solid(m_live, x, z).ToFloat() > qy - kBoomGap
-                        || ((std::fabs(qx) > inside || std::fabs(qz) > inside) && qy < wall_top + kBoomGap);
+                        || (out > 0.0f && qy < wall_top + rim_slope * out + kBoomGap)
+                        || blockOverLocked(qx, qz) > qy - kBoomGap;
             for (const KartArena::Deck& d : m_live.decks)
             {
                 if (blocked || !KartArena::DeckOver(d, x, z)) continue;
@@ -4447,6 +4502,129 @@ private:
         }
         eye[0] = px + (ex - px) * clear; eye[1] = top + (ey - top) * clear; eye[2] = pz + (ez - pz) * clear;
     }
+    /*
+     * DRAWN BETWEEN TICKS. The battle steps at kHz and the picture is made
+     * at whatever the frame edge runs at; drawn straight from the rows, a
+     * frame shows the last tick's pose, so some poses show twice and the
+     * next jumps -- fast motion judders, and a guest, whose ticks come
+     * kBatch at a time, saw them in pairs. So each kart is drawn a little
+     * behind, between the two ticks either side of the moment the frame is
+     * for (Drawable3D's ShowAt): its rows -- the record, the hash -- are
+     * left exactly as the step made them.
+     *
+     *   the host   draws at its own clock less a tick: the tick before the
+     *              last, plus the share of the next tick already owed (the
+     *              wall time not yet a tick), so it moves at the clock's rate
+     *              exactly, one tick behind
+     *   a guest    has no clock of its own: its drawn tick runs at kHz on the
+     *              frame edge, eased toward kBatch behind the last tick that
+     *              came in, never past it
+     *
+     * A blend over a jump (a respawn, the pit) is no motion: the newer pose
+     * is drawn. The eye and the HP bars follow the drawn kart.
+     */
+    // Is the drawn pose this frame's? Frames stopped (a script stepping by
+    // ticks, Run) leave it behind the rows; then the rows are followed.
+    bool drawnFresh(const Slot& s) const { return s.shown && m_tick <= s.drawn_at + 2 * kBatch + 1; }
+    static void poseOf(const OrderVector& r, float p[7])
+    {
+        p[0] = r.x.ToFloat(); p[1] = r.y.ToFloat(); p[2] = r.z.ToFloat();
+        p[3] = r.qw.ToFloat(); p[4] = r.qx.ToFloat(); p[5] = r.qy.ToFloat(); p[6] = r.qz.ToFloat();
+    }
+    // a to b by f: the position along the line, the facing the short way round.
+    static void blendPose(const float a[7], const float b[7], float f, float out[7])
+    {
+        for (int i = 0; i < 3; ++i) out[i] = a[i] + (b[i] - a[i]) * f;
+        const float dot = a[3] * b[3] + a[4] * b[4] + a[5] * b[5] + a[6] * b[6];
+        const float sign = dot < 0.0f ? -1.0f : 1.0f;
+        float n = 0.0f;
+        for (int i = 3; i < 7; ++i) { out[i] = a[i] + (b[i] * sign - a[i]) * f; n += out[i] * out[i]; }
+        n = std::sqrt(n);
+        if (n > 1e-6f) for (int i = 3; i < 7; ++i) out[i] /= n;
+        else for (int i = 3; i < 7; ++i) out[i] = b[i];
+    }
+    static void showPose(ETCS::RID rid, const float p[7])
+    {
+        Drawable3D_* d = rid ? ETCS::resolve_in_family<Drawable3D_>("Drawable3D", rid) : nullptr;
+        if (!d) return;
+        ShownPose pose;
+        pose.on = true;
+        pose.x = p[0]; pose.y = p[1]; pose.z = p[2];
+        pose.qw = p[3]; pose.qx = p[4]; pose.qy = p[5]; pose.qz = p[6];
+        d->ShowAt(pose);
+    }
+    static void showRows(ETCS::RID rid)
+    {
+        if (Drawable3D_* d = rid ? ETCS::resolve_in_family<Drawable3D_>("Drawable3D", rid) : nullptr) d->ShowAt(ShownPose{});
+    }
+    // At the end of a tick, under the world's lock: each kart's pose, kept.
+    void seenLocked()
+    {
+        for (Slot& s : m_slots)
+        {
+            if (!alive(s)) continue;
+            Causal_* k = causal(s.body);
+            if (!k) continue;
+            Seen& e = s.seen[m_tick % kSeen];
+            e.tick = m_tick;
+            poseOf(k->Order4(), e.body);
+            for (int t = 0; t < 4; ++t)
+                if (Causal_* w = causal(s.wheels[t])) poseOf(w->Order4(), e.wheel[t]);
+            e.hx = s.hx.ToFloat(); e.hz = s.hz.ToFloat();
+        }
+    }
+    void showLocked(double dt_ms)
+    {
+        const double tick_ms = 1000.0 / kHz;
+        double at;
+        if (m_authority) at = static_cast<double>(m_tick) - 1.0 + m_wall_ms / tick_ms;
+        else
+        {
+            const double last = static_cast<double>(m_tick), aim = last - static_cast<double>(kBatch);
+            if (m_show < 0.0) m_show = aim;
+            m_show += dt_ms / tick_ms;
+            m_show += (aim - m_show) * std::min(1.0, dt_ms / 300.0);
+            m_show = std::max(last - 2.0 * kBatch - 1.0, std::min(last, m_show));
+            at = m_show;
+        }
+        if (at < 0.0) at = 0.0;
+        const uint64_t a = static_cast<uint64_t>(at);
+        const float f = static_cast<float>(at - static_cast<double>(a));
+        for (Slot& s : m_slots)
+        {
+            const Seen* ea = a > 0 && s.seen[a % kSeen].tick == a ? &s.seen[a % kSeen] : nullptr;
+            const Seen* eb = s.seen[(a + 1) % kSeen].tick == a + 1 ? &s.seen[(a + 1) % kSeen] : nullptr;
+            if (!alive(s) || (!ea && !eb))
+            {
+                if (s.shown) { showRows(s.body); for (ETCS::RID w : s.wheels) showRows(w); s.shown = false; }
+                continue;
+            }
+            if (ea && eb)
+            {
+                const float dx = eb->body[0] - ea->body[0], dy = eb->body[1] - ea->body[1], dz = eb->body[2] - ea->body[2];
+                if (dx * dx + dy * dy + dz * dz > 16.0f) ea = nullptr;   // a jump, not motion
+            }
+            const Seen& b = eb ? *eb : *ea;
+            const Seen& o = ea ? *ea : b;
+            const float g = ea && eb ? f : 1.0f;
+            float body[7];
+            blendPose(o.body, b.body, g, body);
+            showPose(s.body, body);
+            for (int t = 0; t < 4; ++t)
+            {
+                float wheel[7];
+                blendPose(o.wheel[t], b.wheel[t], g, wheel);
+                showPose(s.wheels[t], wheel);
+            }
+            s.shown = true;
+            s.drawn_at = m_tick;
+            s.drawn[0] = body[0]; s.drawn[1] = body[1]; s.drawn[2] = body[2];
+            float hx = o.hx + (b.hx - o.hx) * g, hz = o.hz + (b.hz - o.hz) * g;
+            const float hl = std::sqrt(hx * hx + hz * hz);
+            if (hl > 1e-5f) { hx /= hl; hz /= hl; } else { hx = b.hx; hz = b.hz; }
+            s.drawn_hx = hx; s.drawn_hz = hz;
+        }
+    }
     void cameraLocked(double dt_ms)
     {
         lookLocked(dt_ms);
@@ -4455,11 +4633,17 @@ private:
         if (!cam) return;
         float eye[3], at[3];
         viewLocked(eye, at);
+        // In to a shorter boom quickly, back out slowly: the eye a step
+        // nearer what it looks at than it was is coming in from a wall.
+        const float want = std::hypot(eye[0] - at[0], eye[1] - at[1], eye[2] - at[2]);
+        const float have = std::hypot(m_eye[0] - at[0], m_eye[1] - at[1], m_eye[2] - at[2]);
+        const double ease = want < have - 0.05f ? kEyeInMs : kEyeOutMs;
         const float a = m_eye_set ? static_cast<float>(1.0 - std::exp(-dt_ms / 120.0)) : 1.0f;
+        const float ae = m_eye_set ? static_cast<float>(1.0 - std::exp(-dt_ms / ease)) : 1.0f;
         float moved = 0.0f;
         for (int c = 0; c < 3; ++c)
         {
-            const float de = (eye[c] - m_eye[c]) * a, da = (at[c] - m_at[c]) * a;
+            const float de = (eye[c] - m_eye[c]) * ae, da = (at[c] - m_at[c]) * a;
             m_eye[c] += de; m_at[c] += da;
             moved += std::fabs(de) + std::fabs(da);
         }
@@ -4507,6 +4691,8 @@ private:
                 s.shown_hp = s.hp;
             }
             float px, py, pz;
+            if (drawnFresh(s)) { px = s.drawn[0]; py = s.drawn[1]; pz = s.drawn[2]; }   // over where it is drawn
+            else
             {
                 std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
                 px = k->Order4().x.ToFloat(); py = k->Order4().y.ToFloat(); pz = k->Order4().z.ToFloat();
@@ -6034,6 +6220,7 @@ private:
     double   m_look_idle_ms = 0.0;
     unsigned m_look_keys = 0;      // Q is bit 0, E bit 1
     bool     m_look_drag = false;
+    double   m_show = -1.0;                  // a guest's drawn tick (showLocked); -1 not yet
     uint16_t m_look_button = kLookButton;   // the button the drag is on
     double   m_card_ms = 0.0;
     std::string m_card_text;

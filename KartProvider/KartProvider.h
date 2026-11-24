@@ -393,6 +393,9 @@ DEFINE_WORK_FUNC(KartBattle, Snapshot)  { (void)ctx; data.reset(); data.writeStr
 // Kart <name> -- "<slot> <x> <z> <heading x> <heading z> <speed> <hp> <weapon> <ammo> <y> <air|ground> <wheel>
 // <slide> <spare> <spare ammo> <oil ticks> <dagger ticks> <vehicle> <lean> <oiled>", or "-": <oiled> a
 // digit a tyre (fr fl rr rl), 1 with oil on it.
+// Drawn <name> -- "<x> <y> <z>": where this runtime draws that driver's kart, between two ticks; "-" if it
+// draws the rows or nothing.
+DEFINE_WORK_FUNC(KartBattle, Drawn)     { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Drawn(who).c_str()); }
 DEFINE_WORK_FUNC(KartBattle, Kart)      { (void)ctx; std::string who; data >> who; data.reset(); data.writeString(self.Kart(who).c_str()); }
 // Tyres <name> -- per tyre (fr fl rr rl) "<heat> <rope> <shown> <darkest>": its heat, its mark's
 // rope laid behind it, the segments drawn and the darkest (0..1); or "-".
