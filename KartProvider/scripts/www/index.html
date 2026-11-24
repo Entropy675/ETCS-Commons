@@ -139,7 +139,18 @@
             font-size: 12px; color: var(--sel); cursor: pointer; }
     #link.copied { color: var(--ok); }
     .hidden { display: none !important; }
-    iframe#shell { width: 100%; height: 180px; border: 0; border-top: 1px solid var(--line); background: var(--bg); }
+    /* THE TERMINAL, DOCKED: fixed to the bottom of the screen over the page,
+       so opening it moves nothing. Down, only its tab shows; hovering it (or
+       typing in it) slides it up, and the tab's arrow keeps it up or down --
+       remembered for this page. */
+    #layout { padding-bottom: 24px; }
+    #dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; transform: translateY(180px);
+            transition: transform .18s ease; }
+    #dock.open, #dock:hover, #dock:focus-within { transform: none; }
+    #dock-tab { display: block; margin: 0 16px 0 auto; height: 24px; padding: 0 12px; font-size: 12px;
+                color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-bottom: 0; }
+    #dock-tab:hover { color: var(--sel); }
+    iframe#shell { display: block; width: 100%; height: 180px; border: 0; border-top: 1px solid var(--line); background: var(--bg); }
     @media (max-width: 760px) { #main { grid-template-columns: 1fr; } }
     /* FULLSCREEN THE STAGE (the header's button, as Paint's): the arena, and
        what lies over it, has the whole screen. The picture is the window's
@@ -243,7 +254,24 @@
 
   <!-- The ShellProvider page as the terminal VIEW only: it detects being framed
        and boots no runtime of its own; lines cross by postMessage. -->
-  <iframe id="shell" src="shell?view=line" title="ETCS shell"></iframe>
+  <div id="dock">
+    <button id="dock-tab" type="button" title="the terminal: hover to see it, click to keep it up or down">terminal &#x25B2;</button>
+    <iframe id="shell" src="shell?view=line" title="ETCS shell"></iframe>
+  </div>
+  <script>
+    (function () {
+      const dock = document.getElementById('dock'), tab = document.getElementById('dock-tab');
+      function show(open) {
+        dock.classList.toggle('open', open);
+        tab.innerHTML = 'terminal ' + (open ? '&#x25BC;' : '&#x25B2;');
+        try { window.localStorage.setItem('etcs-dock-open:' + location.pathname, open ? '1' : '0'); } catch (e) {}
+      }
+      let kept = false;
+      try { kept = window.localStorage.getItem('etcs-dock-open:' + location.pathname) === '1'; } catch (e) {}
+      show(kept);
+      tab.addEventListener('click', function () { show(!dock.classList.contains('open')); });
+    })();
+  </script>
 </div>
 
 <!-- The session -- the terminal, the runtime, hosting, joining, the hall, the

@@ -508,11 +508,27 @@ public:
         if (!m_defs.empty() && height > 0)
             m_defs.back().springs.push_back({ Fixed::From(x), Fixed::From(z), Fixed::Zero(), Fixed::From(height) });
     }
-    void AddDeck(float x, float z, float width, float depth, float height)
+    void AddDeck(float x, float z, float width, float depth, float height) { AddDeckAt(x, z, 0.0f, width, depth, height); }
+    // A deck turned to `yaw`: `width` across that way, `depth` along it.
+    void AddDeckAt(float x, float z, float yaw, float width, float depth, float height)
     {
         std::lock_guard<std::mutex> g(m_mu);
         if (m_defs.empty() || width <= 0 || depth <= 0 || height <= 0) return;
-        m_defs.back().decks.push_back({ Fixed::From(x), Fixed::From(z), Fixed::From(width), Fixed::From(depth), Fixed::From(height) });
+        KartArena::Deck d{ Fixed::From(x), Fixed::From(z), Fixed::From(width), Fixed::From(depth), Fixed::From(height) };
+        d.yaw = static_cast<int>(std::lround(yaw));
+        m_defs.back().decks.push_back(d);
+    }
+    // A ramp bent round (x, z): see KartArena's arc.
+    void AddArc(float x, float z, float radius, float from, float turn, float width, float up, float flat, float down, float height)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        if (m_defs.empty() || radius <= 0 || width <= 0 || height <= 0 || up < 0 || flat < 0 || down < 0 || up + flat + down <= 0) return;
+        KartArena::Arc c;
+        c.x = Fixed::From(x); c.z = Fixed::From(z); c.radius = Fixed::From(radius);
+        c.from = static_cast<int>(std::lround(from)); c.turn = turn < 0 ? -1 : 1;
+        c.width = Fixed::From(width); c.up = Fixed::From(up); c.flat = Fixed::From(flat); c.down = Fixed::From(down);
+        c.height = Fixed::From(height);
+        m_defs.back().arcs.push_back(c);
     }
     void AddPit(float x, float z, float width, float depth, float deep)
     {
@@ -541,6 +557,25 @@ public:
     // rises toward its own +z: kart_wedge_shape.etcs).
     void AddWedgeNode(ETCS::RID r)  { std::lock_guard<std::mutex> g(m_mu); m_wedge_nodes.push_back(r); groundColour(r, KartArena::OnRamp); parkNode(r); }
     void AddDomeNode(ETCS::RID r)   { std::lock_guard<std::mutex> g(m_mu); m_dome_nodes.push_back(r); groundColour(r, KartArena::OnHill); parkNode(r); }
+    // An arc of the pool: a node and the mesh it alone draws, filled with the
+    // arc it is given when the map is drawn (arcMeshLocked).
+    void AddArcNode(ETCS::RID node, ETCS::RID mesh)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_arc_nodes.push_back({ node, mesh });
+        groundColour(node, KartArena::OnRamp);
+        parkNode(node);
+    }
+    // A slick of the pool: as an arc's, a node and its own mesh -- the oil
+    // laid over the ground it was spilled on (drapeLocked).
+    void AddSlickNode(ETCS::RID node, ETCS::RID mesh)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_slick_nodes.push_back({ node, mesh });
+        m_slick_busy.push_back(false);
+        verb(node, "SetColor", kOilColour);
+        parkNode(node);
+    }
     // The arena's whole floor: coloured here, as the slabs and domes are, so a
     // mark fades into the ground it is on; put away when the map has a pit,
     // for a floor of slabs laid round it.
@@ -1015,7 +1050,12 @@ public:
         for (const auto& k : m_live.hills)  { put(k.x); put(k.z); put(k.radius); put(k.height); st += "|"; }
         for (const auto& p : m_live.pads)   { put(p.x); put(p.z); st += std::to_string(p.yaw) + "|"; }
         for (const auto& p : m_live.springs) { put(p.x); put(p.z); put(p.on); st += "|"; }
-        for (const auto& d : m_live.decks)  { put(d.x); put(d.z); put(d.w); put(d.d); put(d.h); st += "|"; }
+        for (const auto& d : m_live.decks)  { put(d.x); put(d.z); put(d.w); put(d.d); put(d.h); st += std::to_string(d.yaw) + "|"; }
+        for (const auto& c : m_live.arcs)
+        {
+            put(c.x); put(c.z); put(c.radius); put(c.width); put(c.up); put(c.flat); put(c.down); put(c.height);
+            st += std::to_string(c.from) + " " + std::to_string(c.turn) + "|";
+        }
         for (const auto& p : m_live.pits)   { put(p.x); put(p.z); put(p.w); put(p.d); put(p.depth); st += "|"; }
         for (const auto& p : m_live.spawns) { put(p.x); put(p.z); }
         for (const auto& p : m_live.pickups) { put(p.x); put(p.z); if (p.up) st += "u"; }
@@ -1218,8 +1258,9 @@ private:
         uint8_t kind = 0; int owner = -1;
         Fixed x, y, z, vx, vy, vz;
         int life = 0, armed = 0, node = -1;
-        int fx = -1, ring = -1;                    // a slick's node, a shockwave's: drawn, not state
+        int fx = -1, ring = -1, slick = -1;        // a slick's node (flat, or draped), a shockwave's: drawn, not state
         Fixed reach;                               // a slick's: how far out it is oil
+        Fixed bed;                                 // a slick's: the ground at its middle
         int cloud[kSmokePuffs];                    // a smoke's ring of puffs: drawn, not state
         Shot() { for (int& c : cloud) c = -1; }
     };
@@ -1895,6 +1936,7 @@ private:
         need("wedges", wedges, m_wedge_nodes.size());
         need("slabs", slabs, m_slab_nodes.size());
         need("domes", m.hills.size(), m_dome_nodes.size());
+        need("arcs", m.arcs.size(), m_arc_nodes.size());
         need("pads", m.pads.size(), m_pad_nodes.size());
         need("springs", m.springs.size(), m_spring_nodes.size());
         need("boxes", m.pickups.size(), m_pickup_nodes.size());
@@ -1938,17 +1980,17 @@ private:
         // The levels, of slabs: a deck a plate in the air; a pit its floor and
         // four walls down to it -- and the arena's floor then laid round the
         // pits in pieces, the whole one put away.
-        auto slab = [&](Fixed x, Fixed y, Fixed z, Fixed w, Fixed h, Fixed d, const float* c) {
+        auto slab = [&](Fixed x, Fixed y, Fixed z, Fixed w, Fixed h, Fixed d, const float* c, int yaw = 0) {
             if (ns >= m_slab_nodes.size() || !w.IsPositive() || !d.IsPositive()) return;
             const ETCS::RID node = m_slab_nodes[ns++];
             verb(node, "Create", fmt3(w.ToFloat()) + ", " + fmt3(h.ToFloat()) + ", " + fmt3(d.ToFloat()));
-            poseNode(node, x, y, z, 0, Fixed::Zero(), Fixed::One());
+            poseNode(node, x, y, z, yaw, Fixed::Zero(), Fixed::One());
             verb(node, "SetColor", f4(c[0], c[1], c[2], 1.0f));
             verb(node, "SetVisible", "1");
         };
         const Fixed half = Fixed::Half(), thick = KartArena::DeckThick();
         for (const KartArena::Deck& d : m_live.decks)
-            slab(d.x, d.h - thick * half, d.z, d.w, thick, d.d, kGround[KartArena::OnDeck]);
+            slab(d.x, d.h - thick * half, d.z, d.w, thick, d.d, kGround[KartArena::OnDeck], d.yaw);
         for (const KartArena::Pit& p : m_live.pits)
         {
             const Fixed x0 = p.x - p.w * half, x1 = p.x + p.w * half, z0 = p.z - p.d * half, z1 = p.z + p.d * half;
@@ -1976,6 +2018,16 @@ private:
             poseNode(node, k.x, k.base + k.y0, k.z, 0, Fixed::Zero(), Fixed::One());
             verb(node, "SetVisible", "1");
         }
+        size_t na = 0;
+        for (const KartArena::Arc& c : m_live.arcs)
+        {
+            if (na >= m_arc_nodes.size()) break;
+            const MeshNode& an = m_arc_nodes[na++];
+            arcMeshLocked(an.mesh, c);
+            poseNode(an.node, c.x, c.base, c.z, 0, Fixed::Zero(), Fixed::One());
+            verb(an.node, "SetVisible", "1");
+        }
+        for (; na < m_arc_nodes.size(); ++na) parkNode(m_arc_nodes[na].node);
         for (; nb < m_block_nodes.size(); ++nb) parkNode(m_block_nodes[nb]);
         for (; ns < m_slab_nodes.size(); ++ns) parkNode(m_slab_nodes[ns]);
         for (; nd < m_dome_nodes.size(); ++nd) parkNode(m_dome_nodes[nd]);
@@ -2482,10 +2534,26 @@ private:
         // Shots leave at the kart's own height, level: a kart on the same
         // ground is met at its middle.
         const Fixed fx = x + hx * F(15, 10), fz = z + hz * F(15, 10), fy = y;
+        // WHAT FLIES LEAVES WITH THE KART'S OWN MOTION, and its own speed and
+        // arc on top: a bomb lobbed at speed goes further, a rocket fired
+        // backing away is slower. Its life is the crossing at the speed it has.
+        Fixed kvx = Fixed::Zero(), kvz = Fixed::Zero();
+        if (Causal_* k = causal(s.body))
+        {
+            std::lock_guard<std::recursive_mutex> lk(k->TreeMutex());
+            Fixed unused;
+            k->Order4().Velocity(k->MassUnder(), kvx, unused, kvz);
+        }
+        const Fixed kvy = s.vy;
+        auto fly = [&](uint8_t kind, Fixed px, Fixed py, Fixed pz, Fixed vx, Fixed vy, Fixed vz, int life) {
+            vx += kvx; vy += kvy; vz += kvz;
+            if (life < 0) life = crossLife(Fixed::Max(F(5), Fixed::Length(vx, Fixed::Zero(), vz)));
+            shootLocked(kind, i, px, py, pz, vx, vy, vz, life);
+        };
         using namespace KartArms;
         switch (s.weapon)
         {
-            case Rocket:  shootLocked(RocketShot, i, fx, fy, fz, hx * F(30), Fixed::Zero(), hz * F(30), crossLife(F(30))); break;
+            case Rocket:  fly(RocketShot, fx, fy, fz, hx * F(30), Fixed::Zero(), hz * F(30), -1); break;
             case Mine:
             {
                 const Fixed mx = x - hx * F(2), mz = z - hz * F(2);
@@ -2499,15 +2567,15 @@ private:
                     Fixed sn, cs;
                     (F(12, 100) * F(p)).SinCos(sn, cs);
                     const Fixed dx = hx * cs + hz * sn, dz = hz * cs - hx * sn;
-                    shootLocked(Pellet, i, fx, fy, fz, dx * F(40), Fixed::Zero(), dz * F(40), 15);
+                    fly(Pellet, fx, fy, fz, dx * F(40), Fixed::Zero(), dz * F(40), 15);
                 }
                 break;
             case Boost:   s.boost = 2 * kHz; break;
-            case Bomb:    shootLocked(BombShot, i, x + hx * F(12, 10), y + F(55, 100), z + hz * F(12, 10), hx * F(14), F(9), hz * F(14), 3 * kHz); break;
-            case Minigun: shootLocked(Bullet, i, fx, fy, fz, hx * F(45), Fixed::Zero(), hz * F(45), crossLife(F(45))); s.cooldown = 5; break;
+            case Bomb:    fly(BombShot, x + hx * F(12, 10), y + F(55, 100), z + hz * F(12, 10), hx * F(14), F(9), hz * F(14), 3 * kHz); break;
+            case Minigun: fly(Bullet, fx, fy, fz, hx * F(45), Fixed::Zero(), hz * F(45), -1); s.cooldown = 5; break;
             case Fuse:    shootLocked(FuseShot, i, x, y + F(12, 10), z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), 125); break;
             case Sniper:  sniperLocked(i, x, fy, z, hx, hz); break;
-            case Homing:  shootLocked(HomingShot, i, fx, fy, fz, hx * homingSpeed(), Fixed::Zero(), hz * homingSpeed(), crossLife(homingSpeed())); break;
+            case Homing:  fly(HomingShot, fx, fy, fz, hx * homingSpeed(), Fixed::Zero(), hz * homingSpeed(), -1); break;
             case Oil:
                 // The big slick behind it now; the drops follow as it goes on (dripLocked).
                 slickLocked(i, x - hx * F(4), y, z - hz * F(4), oilReach());
@@ -2645,7 +2713,10 @@ private:
                         {
                             Fixed tx, ty, tz;
                             if (!tyreAt(o, t, tx, ty, tz)) continue;
-                            hit[t] = Fixed::Length(tx - s.x, Fixed::Zero(), tz - s.z) <= s.reach && (ty - s.y).Abs() < F(1);
+                            // On the oil where it lies (slickOver), not on a deck over it.
+                            Fixed at;
+                            hit[t] = Fixed::Length(tx - s.x, Fixed::Zero(), tz - s.z) <= s.reach && slickOver(s, tx, tz, at)
+                                  && (ty - (at + s.y - s.bed)).Abs() < F(1);
                             on = on || hit[t];
                         }
                         if (static_cast<int>(j) == s.owner && s.armed) { if (!on) s.armed = 0; continue; }
@@ -2654,6 +2725,11 @@ private:
                     if (s.life <= 0) gone = true;
                     else if ((s.life == 20 || s.life == 10) && s.fx >= 0)   // drying up
                         dressLocked(m_fx_nodes[s.fx], slickSize(s.reach.ToFloat() * s.life / 30.0f), kOilColour, 0.0f, 0.0f);
+                    else if ((s.life == 20 || s.life == 10) && s.slick >= 0)
+                    {
+                        const std::string f = fmt3(s.life / 30.0f);
+                        verb(m_slick_nodes[s.slick].node, "Create", f + ", 1, " + f);
+                    }
                     break;
                 case SmokeShot:
                     if (s.life <= 0) gone = true;
@@ -2700,7 +2776,7 @@ private:
     }
     void dropShotLocked(Shot& s)
     {
-        freeNode(s.node); freeFx(s.fx); freeRing(s.ring); s.node = s.fx = s.ring = -1;
+        freeNode(s.node); freeFx(s.fx); freeRing(s.ring); freeSlick(s.slick); s.node = s.fx = s.ring = s.slick = -1;
         for (int& c : s.cloud) { freeFx(c); c = -1; }
     }
     // Is (x, z) in a cloud of smoke?
@@ -2769,7 +2845,8 @@ private:
         Fixed nx = ux + (bx / best - ux) / F(8), nz = uz + (bz / best - uz) / F(8);
         const Fixed l = Fixed::Length(nx, Fixed::Zero(), nz);
         if (!l.IsPositive()) return;
-        s.vx = nx / l * homingSpeed(); s.vz = nz / l * homingSpeed();
+        // It turns, and keeps the speed it left with (the kart's motion on its own).
+        s.vx = nx / l * speed; s.vz = nz / l * speed;
         s.vy = Fixed::Max(F(-6), Fixed::Min(F(6), by * F(2)));
     }
 
@@ -2821,6 +2898,12 @@ private:
             r.qw = Fixed::One(); r.qx = r.qy = r.qz = Fixed::Zero();
         }
     }
+    void freeSlick(int n)
+    {
+        if (n < 0 || n >= static_cast<int>(m_slick_busy.size())) return;
+        m_slick_busy[n] = false;
+        parkNode(m_slick_nodes[n].node);
+    }
     void freeRing(int n) { if (n >= 0 && n < static_cast<int>(m_ring_busy.size())) { m_ring_busy[n] = false; undressLocked(m_ring_nodes[n]); } }
     static std::string slickSize(float reach) { const std::string d = fmt1(2.0f * reach); return d + ", 0.08, " + d; }
     static constexpr const char* kOilColour = "0.05, 0.05, 0.08, 1.0";
@@ -2833,12 +2916,86 @@ private:
         const Fixed h = KartArena::Height(m_live, x, z, y - vehicleOf(m_slots[i]).ride + climb(), Fixed::Zero(), &gx, &gz);
         Shot& o = shootLocked(KartArms::OilShot, i, x, h + F(4, 100) + lift, z, Fixed::Zero(), Fixed::Zero(), Fixed::Zero(), kOilTicks);
         o.reach = reach;
+        o.bed = h;
         o.armed = 1;   // its kart is on it: not oiled by it until it has left it
+        // The big slick is laid over the ground (a ramp's curve, a hill, a
+        // lip); the drops are small enough to lie flat on their slope.
+        if (reach > F(3) && (o.slick = takeOf(m_slick_busy)) >= 0)
+        {
+            const MeshNode& sn = m_slick_nodes[o.slick];
+            drapeLocked(sn.mesh, o);
+            poseNode(sn.node, o.x, o.y, o.z, 0, Fixed::Zero(), Fixed::One());
+            verb(sn.node, "Create", "1, 1, 1");
+            verb(sn.node, "SetVisible", "1");
+            return;
+        }
         o.fx = takeFx();
         if (o.fx >= 0)
         {
             poseNode(m_fx_nodes[o.fx], o.x, o.y, o.z, 0, Fixed::Zero(), Fixed::One(), gx, gz);
             dressLocked(m_fx_nodes[o.fx], slickSize(reach.ToFloat()), kOilColour, 0.0f, 0.0f);
+        }
+    }
+    // A slick's oil at (x, z): the ground there, if it is within a step
+    // (slickStep) of the ground the slick lies on -- so where it is drawn
+    // (drapeLocked) is where it oils.
+    static Fixed slickStep() { return F(1); }
+    bool slickOver(const Shot& o, Fixed x, Fixed z, Fixed& at)
+    {
+        at = KartArena::Height(m_live, x, z, o.bed + slickStep(), climb());
+        return (at - o.bed).Abs() < slickStep();
+    }
+    /*
+     * THE OIL OVER THE GROUND: a disc of kSlickRings rings by kSlickSpokes
+     * spokes about its middle, each point at the ground under it, so a slick
+     * curves along an arc, over a hill and round a lip. A spoke stops where
+     * the ground steps by more than slickStep() -- the rest of it stays on
+     * the last point that was on the slick's own ground, and none of it
+     * hangs down a wall.
+     */
+    static constexpr int kSlickRings = 4, kSlickSpokes = 16;
+    void drapeLocked(ETCS::RID mesh, const Shot& o)
+    {
+        verb(mesh, "Clear", "");
+        auto add = [&](float dx, float y, float dz, Fixed gx, Fixed gz) {
+            const float nx = -gx.ToFloat(), nz = -gz.ToFloat(), l = std::sqrt(nx * nx + 1.0f + nz * nz);
+            verb(mesh, "AddVertex", fmt3(dx) + ", " + fmt3(y) + ", " + fmt3(dz) + ", " + fmt3(nx / l) + ", " + fmt3(1.0f / l) + ", " + fmt3(nz / l));
+        };
+        auto tri = [&](int a, int b, int c) {
+            verb(mesh, "AddTriangle", std::to_string(a) + ", " + std::to_string(b) + ", " + std::to_string(c));
+        };
+        Fixed gx = Fixed::Zero(), gz = Fixed::Zero();
+        KartArena::Height(m_live, o.x, o.z, o.bed + slickStep(), climb(), &gx, &gz);
+        add(0.0f, 0.0f, 0.0f, gx, gz);
+        for (int k = 0; k < kSlickSpokes; ++k)
+        {
+            Fixed sn, cs;
+            (Fixed::TwoPi() * F(k, kSlickSpokes)).SinCos(sn, cs);
+            Fixed lx = Fixed::Zero(), lz = Fixed::Zero(), ly = Fixed::Zero(), lgx = gx, lgz = gz;
+            bool held = true;
+            for (int r = 1; r <= kSlickRings; ++r)
+            {
+                const Fixed out = o.reach * F(r, kSlickRings);
+                Fixed at, px = gx, pz = gz;
+                if (held && slickOver(o, o.x + out * sn, o.z + out * cs, at))
+                {
+                    KartArena::Height(m_live, o.x + out * sn, o.z + out * cs, o.bed + slickStep(), climb(), &px, &pz);
+                    lx = out * sn; lz = out * cs; ly = at - o.bed; lgx = px; lgz = pz;
+                }
+                else held = false;
+                add(lx.ToFloat(), ly.ToFloat(), lz.ToFloat(), lgx, lgz);
+            }
+        }
+        // Vertex 0 the middle; spoke k's ring r at 1 + k * kSlickRings + (r - 1).
+        auto at = [](int k, int r) { return 1 + (k % kSlickSpokes) * kSlickRings + (r - 1); };
+        for (int k = 0; k < kSlickSpokes; ++k)
+        {
+            tri(0, at(k, 1), at(k + 1, 1));
+            for (int r = 1; r < kSlickRings; ++r)
+            {
+                tri(at(k, r), at(k, r + 1), at(k + 1, r + 1));
+                tri(at(k, r), at(k + 1, r + 1), at(k + 1, r));
+            }
         }
     }
     // The oil after the big slick: a drop behind the kart every kDripTicks
@@ -3030,7 +3187,7 @@ private:
         if (solidAt(x, y, z, F(1, 10))) return F(12);                 // a wall, a block
         if (KartArena::Solid(m_live, x, z) > y) return F(8);          // the ground
         for (const KartArena::Deck& d : m_live.decks)                 // a deck's slab
-            if (!(y > d.h) && !(y < d.h - KartArena::DeckThick()) && KartArena::Over(x, z, d.x, d.z, d.w, d.d)) return F(8);
+            if (!(y > d.h) && !(y < d.h - KartArena::DeckThick()) && KartArena::DeckOver(d, x, z)) return F(8);
         return F(1);
     }
     static void unitize(Fixed& x, Fixed& y, Fixed& z)
@@ -4091,6 +4248,72 @@ private:
         parkNode(m_shot_nodes[n]);
     }
     static void hide(ETCS::RID r) { verb(r, "SetVisible", "0"); }
+    /*
+     * AN ARC'S MESH, about its centre and on what it stands: its top in
+     * segments a few degrees long, the circles of its two sides, and an end
+     * face wherever it meets the ground at a height (a lip, or a step up).
+     * Normals per vertex -- a side's points straight out from the centre --
+     * so the sides shade as the circles they are. Drawn only: the ground is
+     * KartArena::ArcAt's.
+     */
+    void arcMeshLocked(ETCS::RID mesh, const KartArena::Arc& c)
+    {
+        const float R = c.radius.ToFloat(), hw = c.width.ToFloat() * 0.5f, len = c.length().ToFloat();
+        const float ri = R - hw, ro = R + hw, a0 = c.a0.ToFloat(), turn = static_cast<float>(c.turn);
+        const float sweep = len / R;
+        const int segs = std::max(6, std::min(120, static_cast<int>(std::ceil(sweep * 180.0f / 3.14159265f / 3.0f))));
+        auto height = [&](float s) {
+            Fixed rise;
+            return KartArena::Profile(Fixed::From(s), c.up, c.flat, c.down, c.height, rise).ToFloat();
+        };
+        auto riseAt = [&](float s) {
+            Fixed rise;
+            KartArena::Profile(Fixed::From(s), c.up, c.flat, c.down, c.height, rise);
+            return rise.ToFloat();
+        };
+        verb(mesh, "Clear", "");
+        int n = 0;
+        auto vert = [&](float r, float th, float y, float nx, float ny, float nz) {
+            verb(mesh, "AddVertex", fmt3(r * std::sin(th)) + ", " + fmt3(y) + ", " + fmt3(r * std::cos(th)) + ", "
+                                  + fmt3(nx) + ", " + fmt3(ny) + ", " + fmt3(nz));
+            return n++;
+        };
+        auto quad = [&](int a, int b, int cc, int d) {
+            verb(mesh, "AddTriangle", std::to_string(a) + ", " + std::to_string(b) + ", " + std::to_string(cc));
+            verb(mesh, "AddTriangle", std::to_string(a) + ", " + std::to_string(cc) + ", " + std::to_string(d));
+        };
+        // The top's normal at radius r, angle th: up, leant back against the
+        // way it rises there.
+        auto top = [&](float r, float th, float s, float y) {
+            const float slope = riseAt(s) * R / r;
+            const float tx = turn * std::cos(th), tz = -turn * std::sin(th);
+            float nx = -slope * tx, ny = 1.0f, nz = -slope * tz;
+            const float l = std::sqrt(nx * nx + ny * ny + nz * nz);
+            return vert(r, th, y, nx / l, ny / l, nz / l);
+        };
+        for (int i = 0; i < segs; ++i)
+        {
+            const float s0 = len * i / segs, s1 = len * (i + 1) / segs;
+            const float t0 = a0 + turn * s0 / R, t1 = a0 + turn * s1 / R;
+            // The last a hair inside, so a lip's top is its top and not the drop past it.
+            const float h0 = height(s0), h1 = height(s1 - (i + 1 == segs ? 0.001f : 0.0f));
+            const float m = (s0 + s1) * 0.5f;
+            quad(top(ri, t0, m, h0), top(ro, t0, m, h0), top(ro, t1, m, h1), top(ri, t1, m, h1));
+            quad(vert(ro, t0, 0.0f, std::sin(t0), 0.0f, std::cos(t0)), vert(ro, t0, h0, std::sin(t0), 0.0f, std::cos(t0)),
+                 vert(ro, t1, h1, std::sin(t1), 0.0f, std::cos(t1)), vert(ro, t1, 0.0f, std::sin(t1), 0.0f, std::cos(t1)));
+            quad(vert(ri, t0, 0.0f, -std::sin(t0), 0.0f, -std::cos(t0)), vert(ri, t0, h0, -std::sin(t0), 0.0f, -std::cos(t0)),
+                 vert(ri, t1, h1, -std::sin(t1), 0.0f, -std::cos(t1)), vert(ri, t1, 0.0f, -std::sin(t1), 0.0f, -std::cos(t1)));
+        }
+        // The ends: the way back at its start, the way on at its end.
+        for (int e = 0; e < 2; ++e)
+        {
+            const float s = e ? len - 0.001f : 0.0f, h = height(s);
+            if (h <= 0.001f) continue;
+            const float th = a0 + turn * (e ? len : 0.0f) / R, w = e ? 1.0f : -1.0f;
+            const float nx = w * turn * std::cos(th), nz = -w * turn * std::sin(th);
+            quad(vert(ri, th, 0.0f, nx, 0.0f, nz), vert(ri, th, h, nx, 0.0f, nz), vert(ro, th, h, nx, 0.0f, nz), vert(ro, th, 0.0f, nx, 0.0f, nz));
+        }
+    }
     static void groundColour(ETCS::RID r, KartArena::Surface on)
     {
         verb(r, "SetColor", f4(kGround[on][0], kGround[on][1], kGround[on][2], 1.0f));
@@ -4216,7 +4439,7 @@ private:
                         || ((std::fabs(qx) > inside || std::fabs(qz) > inside) && qy < wall_top + kBoomGap);
             for (const KartArena::Deck& d : m_live.decks)
             {
-                if (blocked || !KartArena::Over(x, z, d.x, d.z, d.w, d.d)) continue;
+                if (blocked || !KartArena::DeckOver(d, x, z)) continue;
                 const float plate = d.h.ToFloat(), under = plate - KartArena::DeckThick().ToFloat();
                 blocked = top < under ? qy > under - kBoomGap : (top > plate && qy < plate + kBoomGap);
             }
@@ -5186,7 +5409,27 @@ private:
             const float len = r.length().ToFloat(), wid = r.width.ToFloat();
             rect(r.x.ToFloat(), r.z.ToFloat(), across ? len : wid, across ? wid : len, "8a8f6a");
         }
-        for (const auto& d : m.decks) rect(d.x.ToFloat(), d.z.ToFloat(), d.w.ToFloat(), d.d.ToFloat(), "6e7f99");
+        for (const auto& c : m.arcs)
+            for (Fixed t = Fixed::Zero(); !(t > c.length()); t += F(2))
+            {
+                Fixed x, z;
+                KartArena::ArcPoint(c, t, x, z);
+                disc(x.ToFloat(), z.ToFloat(), c.width.ToFloat() * 0.5f, "8a8f6a");
+            }
+        for (const auto& d : m.decks)
+        {
+            const int q = ((d.yaw % 180) + 180) % 180;
+            if (q == 0 || q == 90) { rect(d.x.ToFloat(), d.z.ToFloat(), (q ? d.d : d.w).ToFloat(), (q ? d.w : d.d).ToFloat(), "6e7f99"); continue; }
+            // Turned: discs along its length.
+            const bool along = d.d >= d.w;
+            const Fixed r = Fixed::Min(d.w, d.d) * Fixed::Half(), run = Fixed::Max(d.w, d.d) * Fixed::Half() - r;
+            for (Fixed t = -run; !(t > run); t += F(2))
+            {
+                Fixed x, z;
+                KartArena::DeckPoint(d, along ? Fixed::Zero() : t, along ? t : Fixed::Zero(), x, z);
+                disc(x.ToFloat(), z.ToFloat(), r.ToFloat(), "6e7f99");
+            }
+        }
         for (const auto& b : m.blocks)
         {
             const bool across = (((b.yaw % 180) + 180) % 180) == 90;
@@ -5707,6 +5950,9 @@ private:
     Fixed m_kart_volume;                    // the pool's body's, what a material's density is a share of
     std::vector<ETCS::RID> m_live_blocks;
     std::vector<ETCS::RID> m_block_nodes, m_slab_nodes, m_wedge_nodes, m_dome_nodes;
+    struct MeshNode { ETCS::RID node = 0, mesh = 0; };
+    std::vector<MeshNode> m_arc_nodes, m_slick_nodes;
+    std::vector<bool> m_slick_busy;
     std::vector<ETCS::RID> m_pickup_nodes, m_shot_nodes, m_blast_nodes, m_mark_nodes;
     std::map<ETCS::RID, uint32_t> m_berths;   // a pooled node's parking place (parkNode)
     std::vector<PadNodes> m_pad_nodes;

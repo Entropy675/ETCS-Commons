@@ -203,6 +203,22 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddDeck, (float, x), (float, z), (float, widt
     (void)ctx;
     self.AddDeck(x, z, width, depth, height);
 }
+// AddDeckAt <x> <z> <yaw> <width> <depth> <height> -- a deck turned to yaw:
+// `width` across that way, `depth` along it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddDeckAt, (float, x), (float, z), (float, yaw), (float, width), (float, depth), (float, height))
+{
+    (void)ctx;
+    self.AddDeckAt(x, z, yaw, width, depth, height);
+}
+// AddArc <x> <z> <radius> <from> <turn> <width> <up> <flat> <down> <height> --
+// a ramp bent round (x, z), from bearing `from` along a circle of `radius`,
+// clockwise seen from above for `turn` 1, the other way for -1 (KartArena).
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddArc, (float, x), (float, z), (float, radius), (float, from), (float, turn), (float, width),
+                       (float, up), (float, flat), (float, down), (float, height))
+{
+    (void)ctx;
+    self.AddArc(x, z, radius, from, turn, width, up, flat, down, height);
+}
 // AddPit <x> <z> <width> <depth> <deep> -- a floor sunk `deep` below the
 // arena's; a ramp put in it rises from that floor.
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPit, (float, x), (float, z), (float, width), (float, depth), (float, deep))
@@ -226,6 +242,8 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlockNode, (ETCS::RID, node))      { (void
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddSlabNode, (ETCS::RID, node))       { (void)ctx; self.AddSlabNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddWedgeNode, (ETCS::RID, node))      { (void)ctx; self.AddWedgeNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddDomeNode, (ETCS::RID, node))       { (void)ctx; self.AddDomeNode(node); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddArcNode, (ETCS::RID, node), (ETCS::RID, mesh))   { (void)ctx; self.AddArcNode(node, mesh); }
+DEFINE_WORK_FUNC_TYPED(KartBattle, AddSlickNode, (ETCS::RID, node), (ETCS::RID, mesh)) { (void)ctx; self.AddSlickNode(node, mesh); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddPickupNode, (ETCS::RID, node))     { (void)ctx; self.AddPickupNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddShotNode, (ETCS::RID, node))       { (void)ctx; self.AddShotNode(node); }
 DEFINE_WORK_FUNC_TYPED(KartBattle, AddBlastNode, (ETCS::RID, node))      { (void)ctx; self.AddBlastNode(node); }

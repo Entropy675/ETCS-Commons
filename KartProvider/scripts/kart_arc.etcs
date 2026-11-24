@@ -1,0 +1,14 @@
+#!/usr/bin/env etcs
+# An arc of the pool: a node and the mesh it alone draws -- the battle fills
+# the mesh with the arc in play (KartBattle::arcMeshLocked), so its ground's
+# circles are drawn as circles.
+#   run kart_arc.etcs world=<Scene3D> battle=<KartBattle>
+requires world [Drawable3D]
+requires battle [KartBattle]
+world.spawn(RenderProvider::Mesh shape)
+shape.Create()
+world.spawn(RenderProvider::Scene3D arc)
+arc.Create(1.0, 1.0, 1.0)
+arc.SetMesh(@shape)
+arc.SetAnchored(1)
+battle.AddArcNode(@arc, @shape)

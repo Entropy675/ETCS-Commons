@@ -61,6 +61,14 @@ run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
 run kart_dome.etcs world=world battle=battle ball=ball
+run kart_arcs.etcs world=world battle=battle
+run kart_arcs.etcs world=world battle=battle
+run kart_slick.etcs world=world battle=battle
+run kart_slick.etcs world=world battle=battle
+run kart_slick.etcs world=world battle=battle
+run kart_slick.etcs world=world battle=battle
+run kart_slick.etcs world=world battle=battle
+run kart_slick.etcs world=world battle=battle
 
 # Sixteen pads, as many as the busiest map has.
 run kart_pads.etcs world=world battle=battle dart=dart
