@@ -112,7 +112,15 @@ function lost(d, info) {
 }
 function open(addr) {
   if (!navigator.gpu) {
-    note('drawing on the CPU: this browser has no WebGPU (navigator.gpu) -- or not on this page: it needs https or localhost', false);
+    // WebGPU is only on a secure page: https, or http to localhost itself.
+    // Over plain http to any other address the browser hides it, whatever
+    // the browser -- the one cause that looks the same everywhere.
+    if (!window.isSecureContext)
+      note('drawing on the CPU: this page is not a secure context (' + location.protocol + '//' + location.host +
+           '), and browsers only give WebGPU to https pages (or http://localhost) -- serve it over https', false);
+    else
+      note('drawing on the CPU: this browser does not offer WebGPU (no navigator.gpu) -- see chrome://gpu, or ' +
+           'about:support in Firefox; it may be off for this OS or GPU, or turned off by a flag or policy', false);
     return 0;
   }
   if (G.flags.indexOf(addr) < 0) G.flags.push(addr);
