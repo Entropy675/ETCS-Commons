@@ -214,6 +214,9 @@ DEFINE_WORK_FUNC_TYPED(KartBattle, SetInvert, (int32_t, on)) { (void)ctx; self.S
 // Pedal <level> -- this runtime's pedal by level, -8 (all the brake, then reverse) to 8 (all the go),
 // 0 let go: a touch pad's. W or S held is the whole pedal over it.
 DEFINE_WORK_FUNC_TYPED(KartBattle, Pedal, (int32_t, level)) { (void)ctx; self.Pedal(level); }
+// Wheel <level> -- this runtime's wheel by level, -8 (all the lock left) to 8 (right), 0 let go: a
+// touch stick's, its way as shown (invert swaps the keys, not this). A or D held is the whole wheel over it.
+DEFINE_WORK_FUNC_TYPED(KartBattle, Wheel, (int32_t, level)) { (void)ctx; self.Wheel(level); }
 // Key <code> <down> -- a GLFW key, for a test or a page.
 // Look <yaw> <pitch> -- this runtime's eye swung this far round its kart, to
 // the picture's right, and over it, in degrees: what a drag on the arena

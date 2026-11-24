@@ -28,12 +28,11 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   not: which way A and D turn, how much road the skid marks keep (off to 160 units), how fast
   the look turns. They are this tab's own, kept with your name, and nothing in them is the
   battle's: no other tab sees them, and none is in what the tabs check they agree on.
-- **Pads** on the arena, for a touch screen or a mouse: bottom left a row of three -- the wheel
-  either side and between them **the pedal**, go on its top half and brake (then reverse) on its
-  bottom, harder the further your finger is from its middle -- and fire bottom right. Every
-  finger counts and holds whatever it is over now: hold the wheel and the pedal at once, or slide
-  from one pad to another. Lit while held, and only then; shown only while a round is being
-  driven: not while the page loads, in the lobby, or under the settings.
+- **Pads** on the arena, for a touch screen or a mouse: bottom left **a stick** -- push its knob
+  over to steer, up to go, down to brake and then reverse, each harder the further out (the
+  middle is dead) -- and fire bottom right. The stick keeps the thumb that took it wherever it
+  goes; fire is held while a finger is on it. Both at once work. Shown only while a round is
+  being driven: not while the page loads, in the lobby, or under the settings.
 - **Fullscreen**, the header's button: the arena and its pads fill the screen (at its 4:3, bars
   either side). The button again, or Esc, gives it back.
 - **Drive over a gold box** for a weapon off the dice; **Space** fires it. The box is back eight

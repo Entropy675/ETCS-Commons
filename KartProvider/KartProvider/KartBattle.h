@@ -36,8 +36,9 @@
  *   leave                    the author's kart back in the pit (its seat's
  *                            stream ended, however it did)
  *   drive <t> <s> <f>        the author's pedal, wheel and trigger: the pedal a level
- *                            -8..8 (go up, brake/reverse down; a key is 8, a touch pad's
- *                            pedal any), the wheel -1 0 1, the trigger 0 1
+ *                            -8..8 (go up, brake/reverse down), the wheel a level -8..8
+ *                            (+ right) -- a key is 8 of either, a touch stick any --
+ *                            the trigger 0 1
  *   tick <n>                 every kart driven, every shot flown, the world
  *                            stepped, up to tick n
  *   config <map> <secs> [<layout>]   (the host's, in the lobby only) the next
@@ -600,13 +601,15 @@ public:
         sendKeysLocked();
     }
     // The keys held, said as a `drive` line when what they ask has changed:
-    // W or S is the whole pedal; with neither, the page's (Pedal).
+    // W or S is the whole pedal, A or D the whole wheel (swapped by invert);
+    // with neither, the page's (Pedal, Wheel -- a stick's, its way as shown).
     void sendKeysLocked()
     {
         int t = ((m_keys & 1) ? kPedalFull : 0) - ((m_keys & 2) ? kPedalFull : 0);
         if (t == 0) t = m_pedal;
-        const int right = ((m_keys & 8) ? 1 : 0) - ((m_keys & 4) ? 1 : 0);
-        const int s = m_invert ? -right : right;
+        const int right = ((m_keys & 8) ? kWheelFull : 0) - ((m_keys & 4) ? kWheelFull : 0);
+        int s = m_invert ? -right : right;
+        if (s == 0) s = m_wheel;
         const int f = (m_keys & 16) ? 1 : 0;
         if (t == m_sent_t && s == m_sent_s && f == m_sent_f) return;
         m_sent_t = t; m_sent_s = s; m_sent_f = f;
@@ -633,6 +636,15 @@ public:
     {
         std::lock_guard<std::mutex> g(m_mu);
         m_pedal = std::max(-kPedalFull, std::min(kPedalFull, level));
+        sendKeysLocked();
+    }
+    // THE WHEEL BY LEVEL, the same: -kWheelFull (all the lock left) to
+    // kWheelFull (right), 0 let go -- a touch stick's, how far over it is.
+    // Its way is the way it shows: invert swaps the keys, not this.
+    void Wheel(int level)
+    {
+        std::lock_guard<std::mutex> g(m_mu);
+        m_wheel = std::max(-kWheelFull, std::min(kWheelFull, level));
         sendKeysLocked();
     }
 
@@ -968,7 +980,7 @@ private:
         Fixed       lean_hold;                     // 0..1: up while a wheel is held, down while none (leanBuild, leanSettle)
         std::string made_body, made_tyre;          // the pool's extents, "w, h, d": the kart's
         Fixed       made_volume;                   // the pool's body's: a vehicle's mass is its volume over this
-        int         thr = 0, steer = 0, fire = 0;   // the pedal's level (kPedalFull a key), the wheel's way, the trigger
+        int         thr = 0, steer = 0, fire = 0;   // the pedal's level (kPedalFull a key), the wheel's (kWheelFull), the trigger
         int         press = 0;                     // a press of the trigger the tick has not yet seen
         Fixed       wheel;                         // radians, + turns toward (hz, -hx): the picture's right
         Fixed       wheel_ease;                    // how far a held wheel has eased: 0 at the press, 1 at twice the lock
@@ -1150,6 +1162,7 @@ private:
     // long a wheel is held -- none to all of it over leanBuild() s, eased --
     // and with none held falls back over leanSettle().
     static Fixed leanMost() { return F(85, 100); }
+    static constexpr int kWheelFull = 8;   // the wheel's levels each way: a key is all of them
     static constexpr int kPedalFull = 8;   // the pedal's levels each way: a key is all of them
     // How much of a kart is on oil, 0..1: its tyres with oil on them over
     // the tyres it has (a bike's two: the pair each stands for), all of
@@ -1284,7 +1297,7 @@ private:
             if (i < 0 || !(in >> t >> s)) return false;
             in >> f;
             m_slots[i].thr   = std::max(-kPedalFull, std::min(kPedalFull, t));
-            m_slots[i].steer = s < 0 ? -1 : (s > 0 ? 1 : 0);
+            m_slots[i].steer = std::max(-kWheelFull, std::min(kWheelFull, s));
             // A press is kept until a tick sees it: a tap whose down and up
             // both land between two ticks (a busy host's frame) still fires.
             if (f > 0 && !m_slots[i].fire) m_slots[i].press = 1;
@@ -1414,7 +1427,7 @@ private:
         m_shots.clear();
         clearWispsLocked();
         for (Burst& b : m_bursts) endBurstLocked(b);
-        m_keys = 0; m_pedal = 0; m_sent_t = m_sent_s = m_sent_f = 0;
+        m_keys = 0; m_pedal = m_wheel = 0; m_sent_t = m_sent_s = m_sent_f = 0;
         m_eye_set = false; m_menu = 0; m_editing = false;
         m_phase = Lobby; m_end = 0; m_round_secs = 180;
         m_rng = 0x9E3779B97F4A7C15ull;
@@ -1965,17 +1978,21 @@ private:
      * it should be (the kart speeding up with the wheel turned, so the lock
      * shrinking) it comes back at that pace too.
      */
+    // `steer` is a level, -kWheelFull..kWheelFull: its way turns the wheel,
+    // and its size is the share of the lock (a key all of it). The ease runs
+    // while the way is held, however the level moves within it.
     static void wheelTurnLocked(const Vehicle& c, Slot& s, int steer, Fixed speed, Fixed step)
     {
-        if (steer != s.steer_held) s.wheel_ease = Fixed::Zero();
-        s.steer_held = steer;
+        const int way = (steer > 0) - (steer < 0);
+        if (way != s.steer_held) s.wheel_ease = Fixed::Zero();
+        s.steer_held = way;
         Fixed target = Fixed::Zero();
-        if (steer != 0)
+        if (way != 0)
         {
             s.wheel_ease = Fixed::Min(s.wheel_ease + step / c.ease, Fixed::One());
-            target = lockAt(c, speed) * (c.jump + (F(2) - c.jump) * s.wheel_ease) * F(steer);
+            target = lockAt(c, speed) * (c.jump + (F(2) - c.jump) * s.wheel_ease) * F(steer, kWheelFull);
             // Short of it: there at once (the press's jump, and the ease after it).
-            if (((target - s.wheel) * F(steer)).IsPositive()) { s.wheel = target; return; }
+            if (((target - s.wheel) * F(way)).IsPositive()) { s.wheel = target; return; }
         }
         const Fixed turn = c.back * step;
         Fixed d = target - s.wheel;
@@ -3797,7 +3814,7 @@ private:
                        + " " + std::to_string(m_rng);
         for (const Slot& s : m_slots)
         {
-            st += "|" + s.driver + " " + std::to_string(s.thr) + " " + std::to_string(s.steer) + std::to_string(s.fire)
+            st += "|" + s.driver + " " + std::to_string(s.thr) + " " + std::to_string(s.steer) + " " + std::to_string(s.fire)
                 + std::to_string(s.press) + " " + std::to_string(s.wheel.raw) + " " + std::to_string(s.wheel_ease.raw) + " "
                 + std::to_string(s.steer_held) + " " + std::to_string(s.hx.raw) + " "
                 + std::to_string(s.hz.raw) + " " + std::to_string(s.vy.raw) + " " + (s.air ? "a" : "g") + " "
@@ -4646,6 +4663,7 @@ private:
     float    m_look_speed = 1.0f;
     int      m_sent_t = 0, m_sent_s = 0, m_sent_f = 0;
     int      m_pedal = 0;                   // the page's pedal by level (Pedal), under the keys
+    int      m_wheel = 0;                   // ...and its wheel (Wheel)
     int      m_menu = 0;                        // the menu's focus: a place in menuItemsLocked()
     bool     m_editing = false;                 // the name field has the keys
     std::string m_edit;                         // what is typed into it, before Enter
