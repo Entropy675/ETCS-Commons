@@ -129,6 +129,7 @@ window.EtcsSessionPage = function (cfg) {
     if (ev.origin !== ORIGIN || ev.source !== shellFrame.contentWindow) return;
     const m = ev.data;
     if (!m || typeof m !== 'object') return;
+    if (m.etcs === 'term-expand') { const d = $('dock'); if (d) d.classList.toggle('expanded', !!m.expanded); return; }
     if (m.etcs === 'view-ready') {
       shellReady = true;
       if (pending.length) toShell({ etcs: 'out', text: pending.join('') });

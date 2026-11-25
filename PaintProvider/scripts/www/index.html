@@ -250,17 +250,14 @@
       #layout { grid-template-rows: auto minmax(0, 1fr) 4rem; }
       #shell { min-height: 4rem; }
     }
-    /* Host-side of ShellProvider's output collapse: always STACK the shell under
-       the canvas (even on wide desktops) so the stage actually gains the freed
-       height. Side-by-side would leave a short terminal column and no extra
-       canvas space. */
-    #layout.shell-collapsed {
-      grid-template-columns: 1fr;
-      grid-template-rows: auto minmax(0, 1fr) 4.5rem;
-      grid-template-areas: "head" "stage" "term";
+    /* The terminal's own expand (ShellProvider's button): more of the page --
+       half its width beside the stage, or 60% of its height under it. */
+    @media (min-width: 62rem) {
+      #layout.shell-expanded { grid-template-columns: minmax(0, 1fr) minmax(22rem, 50%); }
     }
-    #layout.shell-collapsed #shell {
-      min-height: 4.5rem; height: 4.5rem; max-height: 4.5rem;
+    @media (max-width: 61.99rem) {
+      #layout.shell-expanded { grid-template-rows: auto minmax(0, 1fr) 60%; }
+      #layout.shell-expanded #shell { min-height: 0; }
     }
 
     /*
@@ -1438,8 +1435,8 @@
     if (ev.source !== shellFrame.contentWindow) return;
     const m = ev.data;
     if (!m || typeof m !== 'object') return;
-    if (m.etcs === 'term-collapse') {
-      document.getElementById('layout').classList.toggle('shell-collapsed', !!m.collapsed);
+    if (m.etcs === 'term-expand') {
+      document.getElementById('layout').classList.toggle('shell-expanded', !!m.expanded);
       try { if (typeof stageResize === 'function') stageResize(); } catch (e) {}
       return;
     }

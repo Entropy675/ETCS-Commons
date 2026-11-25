@@ -93,35 +93,15 @@
     #term .ok { color: var(--ok); }
     #term .blk { content-visibility: auto; }
     /*
-     * OUTPUT PANE COLLAPSE -- especially for the embedded (iframe) role on a
-     * host page that only has a short strip for this view. The transcript
-     * keeps one line of height; the input row stays fully usable. Parent pages
-     * may listen for { etcs: 'term-collapse', collapsed } to resize the frame.
+     * EXPAND, embedded only: the frame always fills what its host gives it,
+     * and the button asks the host for more ({ etcs: 'term-expand', expanded }).
      */
-    header .term-collapse {
+    header .term-size {
       font: inherit; font-size: 11px; color: var(--muted); background: transparent;
       border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px;
       cursor: pointer; letter-spacing: 0.04em;
     }
-    header .term-collapse:hover { color: var(--accent); border-color: var(--accent); }
-    body.term-collapsed #term {
-      flex: 0 0 auto;
-      max-height: calc(1.45em + 0.4rem);
-      padding: 0.2rem 0.5rem;
-      overflow: hidden;
-    }
-    body.term-collapsed #menu { display: none !important; }
-    body.term-collapsed #layout { gap: 0.35rem; padding: 0.35rem; }
-    /*
-     * Collapsed, the one line comes first and the header becomes its footer:
-     * embedded under a canvas, the output sits right against it. The input row
-     * stays after the header, below what the host's short strip shows.
-     */
-    body.term-collapsed #term { order: -1; }
-    body.term-collapsed header {
-      padding: 4px 10px; margin: 0 -0.35rem;
-      border-bottom: 0; border-top: 1px solid var(--line);
-    }
+    header .term-size:hover { color: var(--accent); border-color: var(--accent); }
     #input-row {
       display: flex; gap: 0.5rem; align-items: center;
       border: 1px solid var(--border);
@@ -189,9 +169,9 @@
     <header>
       <a class="brand" href="/" target="_top">ETCS Shell</a>
       <span class="head-right">
-        <button type="button" class="term-collapse" id="termcollapse"
-                title="collapse or expand the output pane" aria-expanded="true"
-                aria-controls="term">collapse</button>
+        <button type="button" class="term-size" id="termsize" hidden
+                title="give the terminal more of the page, or its own space back"
+                aria-expanded="false">expand</button>
         <span id="status">loading…</span>
       </span>
     </header>
@@ -284,7 +264,7 @@
    * it, and reading scrollHeight right after forced that layout on the spot --
    * a busy log spent the page's main thread here. So the transcript is blocks
    * of at most BLOCK_LINES lines, each a contained layout that is skipped while
-   * offscreen (collapsed, that is all but the last), an unfinished line keeps
+   * offscreen (on a short strip, all but the last), an unfinished line keeps
    * filling the last block, and the tail is followed in the next frame.
    */
   const BLOCK_LINES     = 64;
@@ -454,8 +434,8 @@
    * that entry ticks to completion, green through yellow to red as it nears it
    * -- the terminal's own shades -- so it reads as about to choose. Anything
    * pressed or typed first stops it, and so does the next menu. It ticks only
-   * while the buttons are on screen -- a collapsed strip or the command-line
-   * view holds it -- since a choice nobody could see is not one they let pass.
+   * while the buttons are on screen -- the command-line view holds it --
+   * since a choice nobody could see is not one they let pass.
    * A terminal waits.
    */
   let autoTimer = null;
@@ -605,32 +585,29 @@
     try { window.parent.postMessage(msg, window.location.origin); } catch (_) {}
   }
 
-  /*
-   * Collapse the scrollback to a single line. Useful standalone; essential when
-   * this page is the host's terminal strip and the canvas needs the rest.
-   * sessionStorage keeps the choice for the frame path (standalone vs embed).
-   */
-  const collapseBtn = document.getElementById('termcollapse');
-  const COLLAPSE_KEY = 'etcs-shell-term-collapsed:' + (EMBEDDED ? 'embed' : 'solo');
-  function setTermCollapsed(on, announce) {
-    document.body.classList.toggle('term-collapsed', !!on);
-    if (collapseBtn) {
-      collapseBtn.textContent = on ? 'expand' : 'collapse';
-      collapseBtn.setAttribute('aria-expanded', on ? 'false' : 'true');
-    }
-    try { sessionStorage.setItem(COLLAPSE_KEY, on ? '1' : '0'); } catch (_) {}
-    if (announce !== false) parentPost({ etcs: 'term-collapse', collapsed: !!on });
-    if (!on) followTail();
+  // Expanded or not is the host's to draw; the frame keeps the choice for the
+  // tab and says it whenever it announces itself.
+  const sizeBtn = document.getElementById('termsize');
+  const EXPAND_KEY = 'etcs-shell-term-expanded';
+  let expanded = false;
+  try { expanded = sessionStorage.getItem(EXPAND_KEY) === '1'; } catch (_) {}
+  function setExpanded(on) {
+    expanded = !!on;
+    sizeBtn.textContent = expanded ? 'shrink' : 'expand';
+    sizeBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    try { sessionStorage.setItem(EXPAND_KEY, expanded ? '1' : '0'); } catch (_) {}
+    parentPost({ etcs: 'term-expand', expanded: expanded });
+    followTail();
   }
-  if (collapseBtn) {
-    let start = false;
-    try { start = sessionStorage.getItem(COLLAPSE_KEY) === '1'; } catch (_) {}
-    // Embedded hosts often want the strip short on first paint; user can expand.
-    if (EMBEDDED && sessionStorage.getItem(COLLAPSE_KEY) == null) start = true;
-    setTermCollapsed(start, false);
-    collapseBtn.addEventListener('click', function () {
-      setTermCollapsed(!document.body.classList.contains('term-collapsed'));
-    });
+  function announce() {
+    parentPost({ etcs: 'view-ready' });
+    parentPost({ etcs: 'term-expand', expanded: expanded });
+  }
+  if (EMBEDDED) {
+    sizeBtn.hidden = false;
+    sizeBtn.textContent = expanded ? 'shrink' : 'expand';
+    sizeBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    sizeBtn.addEventListener('click', function () { setExpanded(!expanded); });
   }
 
   if (EMBEDDED) {
@@ -643,7 +620,7 @@
       const m = ev.data;
       if (!m || typeof m !== 'object') return;
       if (m.etcs === 'out') { append(String(m.text == null ? '' : m.text), null); return; }
-      if (m.etcs === 'hello') { parentPost({ etcs: 'view-ready' }); return; }
+      if (m.etcs === 'hello') { announce(); return; }
       if (m.etcs === 'menu') { takeMenu(m.json); return; }
       if (m.etcs === 'enable') {
         menuEnabled = !!m.enabled;
@@ -981,9 +958,7 @@
     // readiness is the whole of this side's boot -- the parent replays whatever
     // the runtime printed before this frame finished loading.
     append('[etcs] terminal attached to the host page runtime\n', 'sys');
-    parentPost({ etcs: 'view-ready' });
-    parentPost({ etcs: 'term-collapse',
-                 collapsed: document.body.classList.contains('term-collapsed') });
+    announce();
   } else {
     boot().catch(function (e) {
       setStatus('boot failed');

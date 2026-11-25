@@ -86,7 +86,12 @@ lines, trimmed to 8000.
 
 Framed, this page posts `{ etcs: 'view-ready' }` when it loads and again
 whenever its parent posts `{ etcs: 'hello' }`, so a parent whose script runs
-after the frame has loaded still hears it.
+after the frame has loaded still hears it. With it goes
+`{ etcs: 'term-expand', expanded }`: the frame always fills what its host gives
+it, and its **expand** button asks the host for more -- the docked pages (kart,
+golf, chess) raise the dock from 180px to 60% of the screen, the paint, render
+and window pages give it half the width beside the stage or 60% of the height
+under it. The choice is kept for the tab.
 
 `etcs -q` (a session page's `?quiet`) turns `ETCS_LOG` off in the loader and in
 every module, which take the loader's setting as they load.

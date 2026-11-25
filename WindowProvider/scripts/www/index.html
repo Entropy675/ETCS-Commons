@@ -121,6 +121,15 @@
       border: 1px solid var(--border); border-radius: 6px;
       background: var(--panel);
     }
+    /* The terminal's own expand (ShellProvider's button): more of the page --
+       half its width beside the stage, or 60% of its height under it. */
+    @media (min-width: 62rem) {
+      #layout.shell-expanded { grid-template-columns: minmax(0, 1fr) minmax(24rem, 50%); }
+    }
+    @media (max-width: 61.99rem) {
+      #layout.shell-expanded { grid-template-rows: auto minmax(0, 1fr) 60%; }
+      #layout.shell-expanded #shell { min-height: 0; }
+    }
   </style>
 </head>
 <body>
@@ -257,6 +266,7 @@
     if (ev.source !== shellFrame.contentWindow) return;
     const m = ev.data;
     if (!m || typeof m !== 'object') return;
+    if (m.etcs === 'term-expand') { document.getElementById('layout').classList.toggle('shell-expanded', !!m.expanded); return; }
     if (m.etcs === 'view-ready') {
       shellReady = true;
       // Replay what the runtime said while the view was still loading, so a
