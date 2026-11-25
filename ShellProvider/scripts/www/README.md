@@ -57,19 +57,36 @@ So the loader redirects `std::cout` into a mutex-guarded buffer
     setInterval(() => Module.ccall('etcs_web_shell_drain', 'string', [], []), 250)
 
 A write costs a string append -- no FS, no proxy, no DOM -- and a tick hands the
-terminal everything at once, which becomes one `postMessage`, one
-`DocumentFragment` and one reflow however many lines arrived. A quarter second
+terminal everything at once, which becomes one `postMessage` and one layout
+however many lines arrived. A quarter second
 rather than a frame: the tick costs the same whether it carries one line or
 three hundred, so a longer window is strictly less work for the same text, and
 nobody is timing a log line to the frame. Same boot: **60s
 to 12.7s**. What is logged does not change, and the per-line flush stays exactly
 as atomic as it was.
 
-A write that finds no recent drain falls back to the old proxied push, so a page
-that does not pull -- an older copy of this one, or one whose timer has died --
-still shows output rather than silently buffering it. `stderr` is deliberately
-left on the direct path: it is what an abort has time to say, and a buffered
-channel is the wrong place for the last words of a dying process.
+Nothing pushes per write, so the drain is the only way out and order holds. A
+writer that finds no recent drain (a page that does not pull, a timer starved by
+a busy main thread) queues one drain on the main thread and goes on -- it never
+waits for that thread. A writer on the main thread queues nothing: `main()`
+writes the whole module handshake there before it returns, and the page's
+timer drains it as soon as it does. Pushing those lines one message each cost
+the kart page 14s to its arena on a fast machine and 75s at a 4x CPU slowdown;
+drained, about 4s and 7s. `stderr` is deliberately left on the direct path: it is
+what an abort has time to say, and a buffered channel is the wrong place for
+the last words of a dying process.
 
-The scrollback is capped (12000 spans, trimmed to 8000). A transcript nobody
-will scroll back to is still laid out on every reflow.
+The transcript is blocks of up to 64 lines, each laid out on its own and
+skipped while offscreen (`content-visibility`), and the tail is followed in the
+next animation frame rather than by reading `scrollHeight` after each append.
+One run of text for the whole transcript meant every append re-laid all of it,
+on the spot: a quarter of the kart page's main thread while its arena was
+being built, half of it at a 4x slowdown. The scrollback is capped at 12000
+lines, trimmed to 8000.
+
+Framed, this page posts `{ etcs: 'view-ready' }` when it loads and again
+whenever its parent posts `{ etcs: 'hello' }`, so a parent whose script runs
+after the frame has loaded still hears it.
+
+`etcs -q` (a session page's `?quiet`) turns `ETCS_LOG` off in the loader and in
+every module, which take the loader's setting as they load.

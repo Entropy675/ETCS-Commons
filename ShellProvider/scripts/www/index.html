@@ -91,6 +91,7 @@
     #term .err { color: var(--err); }
     #term .sys { color: var(--muted); }
     #term .ok { color: var(--ok); }
+    #term .blk { content-visibility: auto; }
     /*
      * OUTPUT PANE COLLAPSE -- especially for the embedded (iframe) role on a
      * host page that only has a short strip for this view. The transcript
@@ -277,57 +278,96 @@
   }
 
   /*
-   * ONE FRAGMENT AND ONE SCROLL PER CALL, however much text the call carries.
+   * BLOCKS OF LINES, AND THE TAIL FOLLOWED ONCE A FRAME.
    *
-   * The runtime now hands over everything it has written since the last drain
-   * rather than one line at a time (etcs_web_shell_drain), so a call is a
-   * hundred lines as often as it is one. Appending each span to the LIVE
-   * document and then reading scrollHeight is a forced synchronous layout, and
-   * doing that per span is what made a busy boot crawl. The spans go into a
-   * fragment first, the document is touched once, and the tail is followed
-   * once.
+   * One inline run for the whole transcript meant every append re-laid all of
+   * it, and reading scrollHeight right after forced that layout on the spot --
+   * a busy log spent the page's main thread here. So the transcript is blocks
+   * of at most BLOCK_LINES lines, each a contained layout that is skipped while
+   * offscreen (collapsed, that is all but the last), an unfinished line keeps
+   * filling the last block, and the tail is followed in the next frame.
    */
-  const SCROLLBACK_MAX  = 12000;   // spans kept before the oldest are dropped
+  const BLOCK_LINES     = 64;
+  const SCROLLBACK_MAX  = 12000;   // lines kept before the oldest blocks go
   const SCROLLBACK_KEEP = 8000;    // how many survive a trim
+  let held = 0;                    // complete lines in the transcript
+  let tail = null;                 // the last block, while it has room
+  let followFrame = 0, followLeft = 0;
+
+  function newBlock() {
+    const b = document.createElement('div');
+    b.className = 'blk';
+    b.lines = 0;
+    term.appendChild(b);
+    return b;
+  }
+
+  // One run of text (no escapes), split across blocks; paint makes its spans.
+  function place(text, paint) {
+    let i = 0;
+    while (i < text.length) {
+      if (!tail) tail = newBlock();
+      let j = i, n = tail.lines;
+      while (j < text.length && n < BLOCK_LINES) {
+        const k = text.indexOf('\n', j);
+        if (k < 0) { j = text.length; break; }
+        j = k + 1; n++;
+      }
+      tail.appendChild(paint(text.slice(i, j)));
+      held += n - tail.lines;
+      tail.lines = n;
+      // Its offscreen height until it is first drawn (then 'auto' keeps the real one).
+      tail.style.containIntrinsicSize = 'auto ' + (Math.max(1, n) * 1.45) + 'em';
+      if (n >= BLOCK_LINES) tail = null;
+      i = j;
+    }
+  }
 
   function trimScrollback() {
-    // A transcript nobody will scroll back to is still laid out on every
-    // reflow. Trimming in one batch rather than one node per append keeps the
-    // cost off the hot path.
-    let extra = term.childNodes.length - SCROLLBACK_MAX;
-    if (extra <= 0) return;
-    extra = term.childNodes.length - SCROLLBACK_KEEP;
-    const range = document.createRange();
-    range.setStart(term, 0);
-    range.setEnd(term, extra);
-    range.deleteContents();
+    if (held <= SCROLLBACK_MAX) return;
+    while (held > SCROLLBACK_KEEP && term.firstChild && term.firstChild !== tail) {
+      held -= term.firstChild.lines || 0;
+      term.firstChild.remove();
+    }
+  }
+
+  // Two frames: a block drawn for the first time can come out taller than its
+  // estimate, and the second frame lands on the real bottom.
+  function followTail() {
+    followLeft = 2;
+    if (followFrame) return;
+    followFrame = requestAnimationFrame(function step() {
+      term.scrollTop = term.scrollHeight;
+      followFrame = --followLeft > 0 ? requestAnimationFrame(step) : 0;
+    });
+  }
+
+  function classSpan(cls) {
+    return function (t) {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = t;
+      return span;
+    };
   }
 
   function append(text, cls) {
     // The page's own lines (sys/err/ok) keep their class and are never scanned:
     // they are written here, contain no escapes, and a class is a stronger
     // statement about them than any colour the runtime could ask for.
-    if (cls) {
-      const span = document.createElement('span');
-      span.className = cls;
-      span.textContent = text;
-      term.appendChild(span);
-      trimScrollback();
-      term.scrollTop = term.scrollHeight;
-      return;
+    if (cls) place(text, classSpan(cls));
+    else {
+      ANSI_RE.lastIndex = 0;
+      let last = 0, m;
+      while ((m = ANSI_RE.exec(text)) !== null) {
+        if (m.index > last) place(text.slice(last, m.index), sgrSpan);
+        if (m[2] === 'm') sgrApply(m[1]);
+        last = ANSI_RE.lastIndex;
+      }
+      if (last < text.length) place(text.slice(last), sgrSpan);
     }
-    const frag = document.createDocumentFragment();
-    ANSI_RE.lastIndex = 0;
-    let last = 0, m;
-    while ((m = ANSI_RE.exec(text)) !== null) {
-      if (m.index > last) frag.appendChild(sgrSpan(text.slice(last, m.index)));
-      if (m[2] === 'm') sgrApply(m[1]);
-      last = ANSI_RE.lastIndex;
-    }
-    if (last < text.length) frag.appendChild(sgrSpan(text.slice(last)));
-    term.appendChild(frag);
     trimScrollback();
-    term.scrollTop = term.scrollHeight;
+    followTail();
   }
 
   /*
@@ -580,9 +620,7 @@
     }
     try { sessionStorage.setItem(COLLAPSE_KEY, on ? '1' : '0'); } catch (_) {}
     if (announce !== false) parentPost({ etcs: 'term-collapse', collapsed: !!on });
-    if (!on) {
-      try { term.scrollTop = term.scrollHeight; } catch (_) {}
-    }
+    if (!on) followTail();
   }
   if (collapseBtn) {
     let start = false;
@@ -605,6 +643,7 @@
       const m = ev.data;
       if (!m || typeof m !== 'object') return;
       if (m.etcs === 'out') { append(String(m.text == null ? '' : m.text), null); return; }
+      if (m.etcs === 'hello') { parentPost({ etcs: 'view-ready' }); return; }
       if (m.etcs === 'menu') { takeMenu(m.json); return; }
       if (m.etcs === 'enable') {
         menuEnabled = !!m.enabled;
@@ -835,13 +874,7 @@
       print: function (t) {
         window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n'));
       },
-      printErr: function (t) {
-        const span = document.createElement('span');
-        span.className = 'err';
-        span.textContent = t + (String(t).endsWith('\n') ? '' : '\n');
-        term.appendChild(span);
-        term.scrollTop = term.scrollHeight;
-      },
+      printErr: function (t) { append(t + (String(t).endsWith('\n') ? '' : '\n'), 'err'); },
       dynamicLibraries: [],
       locateFile: function (path) { return joinBase(wasm_base, path); },
       preRun: [function () {

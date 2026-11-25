@@ -56,9 +56,14 @@ window.EtcsSessionPage = function (cfg) {
   let shellReady = false;
   const pending = [];
   function toShell(msg) { if (shellFrame.contentWindow) shellFrame.contentWindow.postMessage(msg, ORIGIN); }
+  // One message per turn of the event loop, however many writes it saw: the
+  // frame lays out once per message.
+  let outBuf = '', outTimer = 0;
+  function flushOut() { outTimer = 0; const t = outBuf; outBuf = ''; if (t) toShell({ etcs: 'out', text: t }); }
   function termWrite(text) {
     if (!shellReady) { pending.push(text); if (pending.length > 2000) pending.shift(); return; }
-    toShell({ etcs: 'out', text: text });
+    outBuf += text;
+    if (!outTimer) outTimer = setTimeout(flushOut, 0);
   }
   window.etcsTermWrite = function (t) { if (t != null) termWrite(String(t)); };
   // Where the pictures are drawn, and why when it is the CPU (RenderProvider's
@@ -126,7 +131,7 @@ window.EtcsSessionPage = function (cfg) {
     if (!m || typeof m !== 'object') return;
     if (m.etcs === 'view-ready') {
       shellReady = true;
-      for (const t of pending) toShell({ etcs: 'out', text: t });
+      if (pending.length) toShell({ etcs: 'out', text: pending.join('') });
       pending.length = 0;
       toShell({ etcs: 'enable', enabled: !!(window.Module && window.Module.calledRun) });
       if (lastMenuJson) toShell({ etcs: 'menu', json: lastMenuJson });
@@ -134,6 +139,9 @@ window.EtcsSessionPage = function (cfg) {
     }
     if (m.etcs === 'line') { pushLine(String(m.line == null ? '' : m.line)); return; }
   });
+  // The frame announces itself once, at its own load, and that can land before
+  // this script is listening (it is the frame's, loaded first): ask again.
+  toShell({ etcs: 'hello' });
 
   // ── the runtime ─────────────────────────────────────────────────────────
   function etcsFS() { return (typeof FS !== 'undefined') ? FS : (window.Module && window.Module.FS); }
@@ -669,7 +677,8 @@ window.EtcsSessionPage = function (cfg) {
       canvas: canvas,
       // argv[1] is the boot script: main() runs it and falls through to the
       // navigator, so the window and its pumps are up before the first prompt.
-      arguments: man.boot ? [man.boot] : [],
+      // ?quiet: etcs -q, no ETCS_LOG lines at all.
+      arguments: man.boot ? (QS.has('quiet') ? ['-q', man.boot] : [man.boot]) : [],
       print: function (t) { window.etcsTermWrite(t + (String(t).endsWith('\n') ? '' : '\n')); },
       printErr: function (t) { log(t + (String(t).endsWith('\n') ? '' : '\n'), 'err'); explainWorkerDeath(String(t)); },
       dynamicLibraries: [],
