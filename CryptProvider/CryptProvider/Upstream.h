@@ -20,16 +20,19 @@
  *   Retire <key>    as a member, retire a key of this account
  *   Portal <code>   as a member, let in the account page showing <code>
  *   Check           the site's list against what is here; the report is List's
- *   Update          Check, then fetch what the site has moved past, and put it in place
+ *   Update          Check, then fetch what the site has moved past, stage it, and swap
+ *   Heal            Update, if the loader refused a module of this identity for another epoch
  *   Paths <p> <d>   where the registrar and the binaries are; /pki and /dist unless said
  *
- * What Register and Update put in place is the next session's: this one keeps
- * what it mapped. When Update puts a successor loader in place, this loader
- * registers its key for the successor's epoch on its own word, so the swap
- * starts registered. Except a RE-SYNC (core/Trust.h): when the list is a sibling
- * marketplace's -- this loader's marketplace key retired -- Check, whenever it
- * sees one, fetches the successor, has the loader put it in place, and asks
- * the loader to restart on it where this session left off.
+ * A HOT SWAP: Update stages what it fetches (core/Trust.h, staged_dir) and,
+ * once the set is whole, asks the loader to restart on it where this session
+ * left off -- the scene saved and replayed, the staged set in place before the
+ * successor starts. A registration Register installs is the next session's.
+ * When Update stages a successor loader, this loader registers its key for the
+ * successor's epoch on its own word first, so the swap starts registered. A
+ * RE-SYNC is the same restart when the list is a sibling marketplace's -- this
+ * loader's marketplace key retired: Check, whenever it sees one, fetches the
+ * successor and has the loader put it in place.
  */
 class Upstream : public DirectoryBase<Upstream>, public DeletableBase<Upstream>
 {
@@ -155,9 +158,22 @@ public:
             else       { ++failed; ETCS_LOG("Upstream", "Update: " << name << " refused: " << put.out); }
         }
         if (successor && !Register(true)) ETCS_LOG("Upstream", "Update: the successor starts unregistered, and registers itself");
-        ETCS_LOG("Upstream", "Update: " << placed << " put in place, " << failed << " not"
-                 << (placed ? "; the next session reads them" : ""));
-        return failed == 0;
+        const bool staged = placed > 0 || report.find(" staged\n") != std::string::npos;
+        ETCS_LOG("Upstream", "Update: " << placed << " staged, " << failed << " not");
+        if (failed || !staged) return failed == 0;
+        ETCS::TrustEvent go(ETCS::TrustEvent::Op::Resync);
+        const bool ok = go();
+        ETCS_LOG("Upstream", "Update: " << go.out);
+        return ok;
+    }
+
+    bool Heal()
+    {
+        ETCS::TrustEvent ask(ETCS::TrustEvent::Op::Heal);
+        if (!ask()) { ETCS_LOG("Upstream", "Heal: " << ask.out); return false; }
+        if (ask.out.empty()) { ETCS_LOG("Upstream", "Heal: nothing was refused for another epoch"); return true; }
+        ETCS_LOG("Upstream", "Heal: refused for another epoch: " << ask.out << "; updating");
+        return Update();
     }
 
     // The report's "resync etcs <file>": fetch it, have the loader put it in
