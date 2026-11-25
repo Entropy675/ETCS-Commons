@@ -6,5 +6,5 @@
 ETCS_MODULE_EXPORT_MAIN(LayoutProvider, "Layout")
 
 ETCS_TAG_BLOCK_BASIC(Layout,
-    Create, AddBox, SetDirection, SetPadding, SetGap,
+    Create, AddBox, SetDirection, SetPadding, SetGap, Anchor,
     Solve, FollowResize, Report, Delete)

@@ -2,12 +2,14 @@
   "_comment": [
     "THE INCLUDE LIST for the golf page: what it loads, in order, and nothing else.",
     "GolfProvider after RenderProvider (the match drives RenderProvider's nodes by their verbs);",
+    "LayoutProvider so the eye fills the window whatever its size, its labels on their corners;",
     "NetworkProvider for the match between runtimes (the room, the link, a surface of the host's match, the hall);",
     "ShellProvider last so the navigator comes up in the embedded terminal."
   ],
   "modules": [
     "WindowProvider.wasm",
     "RenderProvider.wasm",
+    "LayoutProvider.wasm",
     "GolfProvider.wasm",
     "NetworkProvider.wasm",
     "ShellProvider.wasm"

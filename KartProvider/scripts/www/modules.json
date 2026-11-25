@@ -2,12 +2,14 @@
   "_comment": [
     "THE INCLUDE LIST for the kart page: what it loads, in order, and nothing else.",
     "KartProvider after RenderProvider (the battle drives RenderProvider's nodes by their verbs);",
+    "LayoutProvider so the eye fills the window whatever its size, its labels on their corners;",
     "NetworkProvider for the battle between runtimes (the room, the link, a surface of the host's battle, the hall);",
     "ShellProvider last so the navigator comes up in the embedded terminal."
   ],
   "modules": [
     "WindowProvider.wasm",
     "RenderProvider.wasm",
+    "LayoutProvider.wasm",
     "KartProvider.wasm",
     "DatabaseProvider.wasm",
     "NetworkProvider.wasm",
@@ -117,7 +119,7 @@
         "PaintProvider/scripts/paint_cell_arrow.etcs"
       ],
       "after": "KartProvider/scripts/kart_garage.etcs",
-      "names": "battle=battle view=view eye=eye",
+      "names": "battle=battle view=view eye=eye layout=garage_hud",
       "remember": "/persist/kart_builder.db",
       "wants": true
     }

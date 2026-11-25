@@ -84,7 +84,8 @@
  *
  *     fixed <n>     exactly n pixels
  *     grow          share what is left over with the other growers
- *     fit           as small as the contents allow
+ *     fit           as small as the contents allow; with no boxes inside,
+ *                   the node's own size (a label's text)
  *     percent <f>   a fraction of the parent
  */
 class Clayout : public DeletableBase<Clayout>, public ResizableBase<Clayout>
@@ -155,8 +156,19 @@ public:
         if (node == 0) return;
         for (Box& b : m_boxes)
             if (b.node == node)   // re-declaring a box replaces it
-            { b = Box{ node, parent, w_kind, w_value, h_kind, h_value, b.dir, b.padding, b.gap }; return; }
-        m_boxes.push_back(Box{ node, parent, w_kind, w_value, h_kind, h_value, 1, 0, 0 });
+            { b = Box{ node, parent, w_kind, w_value, h_kind, h_value, b.dir, b.padding, b.gap, b.at, b.by, b.dx, b.dy }; return; }
+        m_boxes.push_back(Box{ node, parent, w_kind, w_value, h_kind, h_value, 1, 0, 0, -1, 0, 0, 0 });
+    }
+
+    // Out of its parent's flow, point `by` of the box on point `at` of the
+    // parent, plus (dx, dy); points are Clay's nine, 0-8. at < 0: in the flow.
+    void Anchor(ETCS::RID node, int at, int by, float dx, float dy)
+    {
+        Box* b = find(node);
+        if (!b) return;
+        b->at = (at >= 0 && at <= 8) ? at : -1;
+        b->by = (by >= 0 && by <= 8) ? by : 0;
+        b->dx = dx; b->dy = dy;
     }
 
     // 0 = left to right, 1 = top to bottom. Only meaningful for a box with
@@ -268,6 +280,9 @@ private:
         int       dir;
         float     padding;
         float     gap;
+        int       at;       // Anchor: the parent's point, -1 for none
+        int       by;       // ...and the box's own
+        float     dx, dy;
     };
 
     Box* find(ETCS::RID node)
@@ -333,6 +348,26 @@ private:
         Clay_ElementDeclaration decl{};
         decl.layout.sizing.width   = axis(b.w_kind, b.w_value);
         decl.layout.sizing.height  = axis(b.h_kind, b.h_value);
+        if (b.w_kind == Sizing::Fit || b.h_kind == Sizing::Fit)
+        {
+            bool inside = false;
+            for (const Box& c : m_boxes) if (c.parent == b.node) { inside = true; break; }
+            ETCS::Held<Drawable2D_> d = inside ? ETCS::Held<Drawable2D_>{} : ETCS::resolve_held<Drawable2D_>("Drawable2D", b.node);
+            if (d)
+            {
+                const Rect2D own = d->Bounds();
+                if (b.w_kind == Sizing::Fit) decl.layout.sizing.width  = axis(Sizing::Fixed, static_cast<float>(own.w));
+                if (b.h_kind == Sizing::Fit) decl.layout.sizing.height = axis(Sizing::Fixed, static_cast<float>(own.h));
+            }
+        }
+        if (b.at >= 0)
+        {
+            decl.floating.attachTo     = CLAY_ATTACH_TO_PARENT;
+            decl.floating.attachPoints = Clay_FloatingAttachPoints{ static_cast<Clay_FloatingAttachPointType>(b.by),
+                                                                    static_cast<Clay_FloatingAttachPointType>(b.at) };
+            decl.floating.offset       = Clay_Vector2{ b.dx, b.dy };
+            decl.floating.pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH;
+        }
         decl.layout.layoutDirection = b.dir ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT;
         decl.layout.childGap        = static_cast<uint16_t>(b.gap);
         const uint16_t p = static_cast<uint16_t>(b.padding);

@@ -9,8 +9,11 @@ modules/GolfProvider/scripts/golf.etcs`.
 
 ## Playing
 
-- **Fullscreen**, the header's button: the course fills the screen (at its 4:3, bars either
-  side). The button again, or Esc, gives it back.
+- **The course fills its room**: the column beside the panel, as tall as the page, at whatever
+  shape that is. A shape wider than 4:3 shows more to the sides, a taller one more above and
+  below (`eye.SetFit`); the labels and the board keep their corners (the boot's layout).
+- **Fullscreen**, the header's button: the course fills the screen, the same way -- a bigger
+  view. The button again, or Esc, gives it back.
 - **Host a match** and it is listed in the hall; anyone who opens the page sees it and **joins**,
   taking the next free ball of eight. The link under the button joins it directly. Out of a
   match the course is yours alone: practice, with the lobby yours.

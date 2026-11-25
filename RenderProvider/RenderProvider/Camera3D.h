@@ -195,6 +195,13 @@ public:
         v.far_plane     = far_plane;
         SetViewConcrete(v);
     }
+    // The frame shape the lens is cut for (ViewFrustum::fit_aspect).
+    void SetFit(float aspect)
+    {
+        ViewFrustum v = m_view;
+        v.fit_aspect = aspect > 0.0f ? aspect : 0.0f;
+        SetViewConcrete(v);
+    }
 
     // ── Camera_ dispatch ─────────────────────────────────────────────────
 

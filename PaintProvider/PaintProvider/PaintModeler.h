@@ -879,7 +879,7 @@ private:
                 if (rl <= 0.0f || fl <= 0.0f) break;
                 r = mul(r, 1.0f / rl);
                 const V3 u = mul(cross(f, r), 1.0f / fl);
-                const float per_px = 2.0f * m_dist * std::tan(v.fov_y_radians * 0.5f) / h;
+                const float per_px = 2.0f * m_dist * LensTanHalf(v, w / h) / h;
                 m_target = add(m_target, add(mul(r, -(x - m_last_x) * per_px), mul(u, (y - m_last_y) * per_px)));
                 placeCameraLocked();
                 break;

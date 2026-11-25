@@ -78,6 +78,19 @@ DEFINE_WORK_FUNC_TYPED(Layout, SetGap, (ETCS::RID, node), (float, px))
     self.SetGap(node, px);
 }
 
+/*
+ * Anchor <node> <at> <by> <dx> <dy> -- the box takes no room in its parent
+ * and sits with its own point `by` on its parent's point `at`, moved by
+ * (dx, dy). Points 0-8: left top, left centre, left bottom, centre top,
+ * centre, centre bottom, right top, right centre, right bottom.
+ */
+DEFINE_WORK_FUNC_TYPED(Layout, Anchor, (ETCS::RID, node), (int32_t, at), (int32_t, by),
+                       (float, dx), (float, dy))
+{
+    (void)ctx;
+    self.Anchor(node, at, by, dx, dy);
+}
+
 // Solve once, now -- for the first pass, and for a script that has just
 // changed the declaration. FollowResize does this on every size change.
 DEFINE_WORK_FUNC(Layout, Solve)

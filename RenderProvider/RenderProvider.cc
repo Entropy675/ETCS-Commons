@@ -72,7 +72,7 @@ ETCS_TAG_BLOCK_HYBRID(Scene3D,
 // into a window with no case anywhere for "this one is 3D".
 ETCS_TAG_BLOCK_BASIC(Camera3D,
     Create, SetPosition, SetOrder, SetBackground, MoveTo, ResizeTo,
-    LookAt, SetLens, SetScene, SetDeviceProjection,
+    LookAt, SetLens, SetFit, SetScene, SetDeviceProjection,
     Render, Draw, Clear, DrawRect, Blit, Delete, Renders, OnDevice)
 
 // Geometry: a shape a Scene3D node names by RID (Scene3D.SetMesh). Spawned

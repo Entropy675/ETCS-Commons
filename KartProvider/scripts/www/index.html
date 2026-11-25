@@ -3,33 +3,6 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <!--
-    THE PAGE STARTS AT 150%. Zoomed in, the canvas is put on fewer of the
-    screen's pixels, which is cheaper, and at 100% a wide window gives it more
-    than it needs. This is the browser's own zoom stated by the page: the
-    browser's still works on top of it, and `?zoom=1` (or any number) says
-    otherwise. Not in a frame -- the shell inside another page is zoomed with
-    that page -- and not on a narrow screen, where it would crowd the page.
-  -->
-  <script>
-    (function () {
-      if (window !== window.top) return;
-      const asked = parseFloat(new URLSearchParams(location.search).get('zoom'));
-      const zoom = asked > 0 ? asked : (window.innerWidth >= 1000 ? 1.5 : 1);
-      if (zoom === 1) return;
-      // Off while something is fullscreen: the zoom scales the viewport's own
-      // units too, so a stage sized to the screen came out half as big again
-      // and ran off it.
-      const apply = function () {
-        const full = document.fullscreenElement || document.webkitFullscreenElement;
-        document.documentElement.style.zoom = full ? '' : String(zoom);
-        document.documentElement.style.setProperty('--page-zoom', full ? '1' : String(zoom));
-      };
-      apply();
-      document.addEventListener('fullscreenchange', apply);
-      document.addEventListener('webkitfullscreenchange', apply);
-    })();
-  </script>
   <title>ETCS Kart</title>
   <link rel="icon" type="image/svg+xml" href="/favicon/favicon.svg">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
@@ -152,20 +125,25 @@
                 color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-bottom: 0; }
     #dock-tab:hover { color: var(--sel); }
     iframe#shell { display: block; width: 100%; height: var(--shell-h); border: 0; border-top: 1px solid var(--line); background: var(--bg); }
-    /* The terminal's own expand: more of the screen, up from the bottom -- 60%
-       of it, whatever the page's zoom (which scales vh with everything else). */
-    #dock.expanded { --shell-h: calc(60vh / var(--page-zoom, 1)); }
+    /* The terminal's own expand: more of the screen, up from the bottom. */
+    #dock.expanded { --shell-h: 60vh; }
     @media (max-width: 760px) { #main { grid-template-columns: 1fr; } }
+    /* THE ARENA FILLS ITS ROOM: the column beside the panel, as tall as the
+       page leaves, whatever shape that makes. The window follows the box
+       (session_page.js) and the eye the window (the boot's layout), so another
+       shape shows more of the arena, never a stretched one. Stacked, on a narrow
+       page, it keeps 4:3 and the page scrolls. */
+    @media (min-width: 761px) {
+      #layout { height: 100%; }
+      #main { min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+      #stage { aspect-ratio: auto; min-height: 0; }
+      #main > aside { min-height: 0; overflow-y: auto; }
+    }
     /* FULLSCREEN THE STAGE (the header's button, as Paint's): the arena, and
-       what lies over it, has the whole screen. The picture is the window's
-       4:3 and stays it -- as big as the screen holds, bars either side -- for
-       the camera draws 4:3 whatever box it is shown in. Esc leaves. */
+       what lies over it, has the whole screen -- a bigger view, by the same
+       rule as above. Esc leaves. */
     #stage:fullscreen, #stage:-webkit-full-screen {
       width: 100%; height: 100%; aspect-ratio: auto; background: #000; box-shadow: none;
-      display: flex; align-items: center; justify-content: center;
-    }
-    #stage:fullscreen canvas#canvas, #stage:-webkit-full-screen canvas#canvas {
-      width: min(100vw, 133.333vh) !important; height: min(75vw, 100vh) !important;
     }
   </style>
 </head>
@@ -452,7 +430,7 @@
         let dx = (f.x - (r.left + rad)) / rad, dy = (f.y - (r.top + rad)) / rad;
         const d = Math.hypot(dx, dy);
         if (d > 1) { dx /= d; dy /= d; }
-        const travel = stickEl.offsetWidth / 2 - 34;   // in the page's own pixels: a zoomed page's box is bigger
+        const travel = stickEl.offsetWidth / 2 - 34;   // in the page's own pixels
         kx = dx * travel; ky = dy * travel;
         wheel = level(dx); pedal = level(-dy);
         continue;

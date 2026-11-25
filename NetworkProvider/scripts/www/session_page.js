@@ -173,6 +173,57 @@ window.EtcsSessionPage = function (cfg) {
   }
   canvas.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
 
+  /*
+   * ── the window follows the stage ───────────────────────────────────────
+   *
+   * The page owns the box, so the page states it: `main` (the boot's window)
+   * at the stage's size in the screen's pixels, once a drag or a fullscreen
+   * settles. The eye and its labels follow the window
+   * (the boot's layout). Synchronous, so the canvas it set is the receipt;
+   * until `main` is live and the canvas says so, it asks again.
+   *
+   * NEVER UNDER STAGE_MIN_W x STAGE_MIN_H: the canvas's menu is drawn in the
+   * window's pixels, so a smaller stage gets the window at that size, its
+   * shape kept, and the browser scales it down into the box.
+   */
+  const STAGE_RESIZE_MS = 120;
+  const STAGE_MIN_W = 800, STAGE_MIN_H = 600;
+  const stageEl = $('stage');
+  let stageObserver = null, stageTimer = 0, stageW = 0, stageH = 0;
+  function stageResize() {
+    if (!stageEl || !runtimeUp() || !nameLive('main')) return false;
+    const box = stageEl.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return false;
+    const k = Math.max(1, STAGE_MIN_W / box.width, STAGE_MIN_H / box.height);
+    const w = Math.round(box.width * k), h = Math.round(box.height * k);
+    if (w === stageW && h === stageH) return true;
+    try { window.Module.ccall('etcs_web_call', 'number', ['string', 'string', 'string'], ['main', 'ResizeTo', w + ', ' + h]); }
+    catch (e) { return false; }
+    if (canvas.width !== w || canvas.height !== h) return false;
+    stageW = w; stageH = h;
+    return true;
+  }
+  function stageResizeWhenReady(tries) {
+    if (stageResize() || tries <= 0) return;
+    setTimeout(function () { stageResizeWhenReady(tries - 1); }, 150);
+  }
+  function startStageResize() {
+    if (typeof ResizeObserver === 'function' && !stageObserver && stageEl) {
+      stageObserver = new ResizeObserver(function () {
+        clearTimeout(stageTimer);
+        stageTimer = setTimeout(function () { stageResizeWhenReady(100); }, STAGE_RESIZE_MS);
+      });
+      stageObserver.observe(stageEl);
+    }
+    // Fullscreen and the window's own resize, too: the observer alone has
+    // missed a fullscreen settling.
+    const again = function () { clearTimeout(stageTimer); stageTimer = setTimeout(function () { stageResizeWhenReady(100); }, STAGE_RESIZE_MS); };
+    document.addEventListener('fullscreenchange', again);
+    document.addEventListener('webkitfullscreenchange', again);
+    window.addEventListener('resize', again);
+    stageResizeWhenReady(400);
+  }
+
   // ── who you are, where the hub is ───────────────────────────────────────
   function hubUrl() {
     const given = QS.get('hub');
@@ -700,6 +751,7 @@ window.EtcsSessionPage = function (cfg) {
         setStatus('runtime ready', 'ok');
         runtimeIsUp = true;
         startShellDrain();
+        startStageResize();
         startPolling();
         log('[etcs] runtime initialized; boot script: ' + (man.boot || '(none)') + '\n', 'ok');
         if (shellReady) toShell({ etcs: 'enable', enabled: true });

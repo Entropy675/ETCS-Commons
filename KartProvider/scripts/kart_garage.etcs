@@ -4,12 +4,14 @@
 # page of its own, which the window shows instead of the arena while a driver
 # shapes one of their vehicles from the lobby's garage page. Only on a page
 # that has the builder (www/modules.json's extras run it once the battle is up).
-#   run KartProvider/scripts/kart_garage.etcs battle=battle view=view eye=eye
+#   run KartProvider/scripts/kart_garage.etcs battle=battle view=view eye=eye layout=garage_hud
 # `view` is the window's surface and `eye` what it shows after; with no
-# window (a test) any Surface and Drawable will do.
+# window (a test) any Surface and Drawable will do. `layout` is the page's,
+# made by whoever owns the window so that it can follow it (boot_kart.etcs).
 requires battle [KartBattle]
 requires view   [Surface]
 requires eye    [Drawable]
+requires layout [Layout]
 
 # The team's colour in hand to begin (kart_looks.etcs's LiveryKey): a part
 # painted it takes its driver's colour.
@@ -17,8 +19,6 @@ spawn PaintProvider::PaintTool brush
 brush.SetColor(0.85, 0.18, 0.22, 1.0)
 spawn PaintProvider::PaintPalette palette
 palette.BindTool(@brush)
-spawn LayoutProvider::Layout layout
-layout.Create(1024, 768)
 
 # The page: a strip of what ends it, the camera's box, and the model's bar
 # (paint_model_pane.etcs adds it last), top to bottom.

@@ -80,6 +80,8 @@ public:
 
     void SetPosition(int32_t x, int32_t y)
     { m_x = x; m_y = y; markDirtyPath(); MarkObservedBelow(); }
+    // The family's placement verb, so a layout can place a label.
+    bool MoveTo(Point2D p) override { SetPosition(p.x, p.y); return true; }
     void SetOrder(int32_t z)               { m_order = z; Reorder(); markDirtyPath(); }
     void SetColor(float r, float g, float b, float a)
     {

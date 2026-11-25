@@ -145,7 +145,8 @@ public:
     void AddBoardRow(ETCS::RID r)
     {
         std::lock_guard<std::mutex> g(m_mu);
-        verb(r, "SetPosition", std::to_string(724) + ", " + std::to_string(84 + 22 * static_cast<int>(m_board.size())));
+        // In the board's own frame (golf_play.etcs anchors the board).
+        verb(r, "SetPosition", std::to_string(0) + ", " + std::to_string(84 + 22 * static_cast<int>(m_board.size())));
         verb(r, "SetHidden", "1");
         m_board.push_back({ r, std::string(), false });
     }

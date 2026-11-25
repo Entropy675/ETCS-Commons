@@ -1387,8 +1387,8 @@ private:
         out.fwd      = f;
         out.right    = r;
         out.up       = u;
-        out.tan_half = std::tan(v.fov_y_radians * 0.5f);
         out.aspect   = static_cast<float>(frame.w) / static_cast<float>(frame.h);
+        out.tan_half = LensTanHalf(v, out.aspect);
         out.near_p   = v.near_plane;
         out.far_p    = v.far_plane;
         out.w        = frame.w;

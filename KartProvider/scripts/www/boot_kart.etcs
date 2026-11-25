@@ -24,8 +24,16 @@ eye.SetPosition(0, 0)
 eye.SetOrder(1)
 eye.SetBackground(0.50, 0.68, 0.88, 1.0)
 eye.SetLens(60.0, 0.1, 400.0)
+# Cut for 4:3: wider sees more to the sides, taller more above and below.
+eye.SetFit(1.3333)
 eye.spawn(RenderProvider::Device dev)
 dev.Create(@gpu)
+
+# THE EYE FILLS THE WINDOW, whatever size it is given (the page's stage, or a
+# native window dragged), and its labels keep their corners (kart_play.etcs).
+spawn LayoutProvider::Layout hud
+hud.Create(1024, 768)
+hud.AddBox(@eye, 0, 1, 0.0, 1, 0.0)
 
 spawn RenderProvider::Scene3D world
 world.Create(1.0, 1.0, 1.0)
@@ -39,7 +47,14 @@ eye.SetScene(@world)
 ensure KartProvider::KartBattle battle
 battle.Create()
 run KartProvider/scripts/kart_arena.etcs anchor=world battle=battle
-run KartProvider/scripts/kart_play.etcs battle=battle world=world eye=eye
+run KartProvider/scripts/kart_play.etcs battle=battle world=world eye=eye layout=hud
+hud.Solve()
+hud.FollowResize(@main)
+# The garage's page has a layout of its own, following the window the same way
+# (kart_garage.etcs, when the builder is on).
+spawn LayoutProvider::Layout garage_hud
+garage_hud.Create(1024, 768)
+garage_hud.FollowResize(@main)
 
 # Where this tab keeps the vehicles it builds: connected when the builder is
 # turned on, and its file's being there loads the builder from then on

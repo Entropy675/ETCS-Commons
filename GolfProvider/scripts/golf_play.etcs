@@ -5,7 +5,10 @@
 # little board, and the match bound to the eye it steers (on this runtime's
 # own ball) -- the same for a window and a page.
 #
-#   run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye
+#   run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye layout=hud
+#
+# The labels and the board hold the eye's corners on `layout`, whose box the
+# eye is.
 #
 # Then: drag your ball back to aim (the arrow is the shot, opposite the drag)
 # and let go to putt -- along the ground it is on, wherever the camera is;
@@ -19,11 +22,11 @@
 requires game [GolfMatch]
 requires world [Drawable3D]
 requires eye [Camera]
+requires layout [Layout]
 
 eye.spawn(RenderProvider::TextLabel card)
 card.Create(20)
 card.SetText(golf)
-card.SetPosition(16, 16)
 card.SetColor(1.0, 1.0, 0.85, 1.0)
 card.SetBackground(0.0, 0.0, 0.0, 0.45)
 card.SetPadding(6)
@@ -33,7 +36,6 @@ card.SetOrder(11)
 eye.spawn(RenderProvider::TextLabel fps)
 fps.Create(16)
 fps.SetText(-- fps)
-fps.SetPosition(886, 50)
 fps.SetColor(0.75, 0.9, 0.8, 1.0)
 fps.SetBackground(0.0, 0.0, 0.0, 0.35)
 fps.SetPadding(4)
@@ -41,14 +43,28 @@ fps.SetOrder(11)
 eye.spawn(RenderProvider::TextLabel howto)
 howto.Create(16)
 howto.SetText(drag your ball: putt / right-drag: look, and while pulling: loft / E then click: power / let go of right: cancel / wheel: zoom / M: menu)
-howto.SetPosition(16, 724)
 howto.SetColor(0.75, 0.9, 0.8, 1.0)
 howto.SetBackground(0.0, 0.0, 0.0, 0.35)
 howto.SetPadding(4)
 howto.SetOrder(11)
-# The little board, top right under the frame counter: eight rows.
-run golf_board.etcs eye=eye game=game
-run golf_board.etcs eye=eye game=game
+# The little board, top right under the frame counter: eight rows, placed in
+# it by the match.
+eye.spawn(RenderProvider::CompositeDrawable2D board)
+board.Create(300, 260)
+board.SetOrder(12)
+run golf_board.etcs board=board game=game
+run golf_board.etcs board=board game=game
+# Corners (Layout.Anchor: 0 left top, 2 left bottom, 6 right top). The frame
+# counter's box is a fixed width, wide enough for its longest text, so its
+# changing text never runs off the edge.
+layout.AddBox(@card, @eye, 0, 0.0, 0, 0.0)
+layout.Anchor(@card, 0, 0, 16.0, 16.0)
+layout.AddBox(@fps, @eye, 2, 122.0, 0, 0.0)
+layout.Anchor(@fps, 6, 6, -16.0, 50.0)
+layout.AddBox(@howto, @eye, 0, 0.0, 0, 0.0)
+layout.Anchor(@howto, 2, 2, 16.0, -16.0)
+layout.AddBox(@board, @eye, 2, 300.0, 2, 260.0)
+layout.Anchor(@board, 6, 6, 0.0, 0.0)
 
 game.BindWorld(@world)
 game.BindCamera(@eye)

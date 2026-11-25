@@ -33,8 +33,11 @@ from `bin/wasm/`, mounted at `/wasm/`. On the site (`scripts/site_apps.etcs`) th
   middle is dead) -- and fire bottom right. The stick keeps the thumb that took it wherever it
   goes; fire is held while a finger is on it. Both at once work. Shown only while a round is
   being driven: not while the page loads, in the lobby, or under the settings.
-- **Fullscreen**, the header's button: the arena and its pads fill the screen (at its 4:3, bars
-  either side). The button again, or Esc, gives it back.
+- **The arena fills its room**: the column beside the panel, as tall as the page, at whatever
+  shape that is. A shape wider than 4:3 shows more to the sides, a taller one more above and
+  below (`eye.SetFit`); the labels keep their corners (the boot's layout).
+- **Fullscreen**, the header's button: the arena and its pads fill the screen, the same way -- a
+  bigger view. The button again, or Esc, gives it back.
 - **Drive over a gold box** for a weapon off the dice; **Space** fires it. The box is back eight
   seconds later. **You carry two**: the one in hand and a spare. A box with a weapon in hand
   goes to the spare, in place of what was there, and the spare comes to hand when the one in

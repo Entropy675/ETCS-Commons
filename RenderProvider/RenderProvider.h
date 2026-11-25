@@ -1230,6 +1230,15 @@ DEFINE_WORK_FUNC_TYPED(Camera3D, SetLens, (float, fov_degrees),
     self.SetLens(fov_degrees, near_plane, far_plane);
 }
 
+// SetFit <w/h> -- the frame shape the lens is cut for: narrower frames see
+// more above and below instead of less to the sides. 0 (the default): the
+// vertical angle holds at every shape.
+DEFINE_WORK_FUNC_TYPED(Camera3D, SetFit, (float, aspect))
+{
+    (void)ctx;
+    self.SetFit(aspect);
+}
+
 // Bind what this camera looks at. By RID, and resolved per render, so the
 // scene may be deleted, replaced, or live in another module entirely.
 DEFINE_WORK_FUNC_TYPED(Camera3D, SetScene, (ETCS::RID, scene))

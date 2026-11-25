@@ -27,8 +27,16 @@ eye.SetPosition(0, 0)
 eye.SetOrder(1)
 eye.SetBackground(0.45, 0.62, 0.85, 1.0)
 eye.SetLens(55.0, 0.05, 300.0)
+# Cut for 4:3: wider sees more to the sides, taller more above and below.
+eye.SetFit(1.3333)
 eye.spawn(RenderProvider::Device dev)
 dev.Create(@gpu)
+
+# THE EYE FILLS THE WINDOW, whatever size it is given, and its labels and board
+# keep their corners (golf_play.etcs).
+spawn LayoutProvider::Layout hud
+hud.Create(1024, 768)
+hud.AddBox(@eye, 0, 1, 0.0, 1, 0.0)
 
 spawn RenderProvider::Scene3D world
 world.Create(1.0, 1.0, 1.0)
@@ -42,7 +50,9 @@ eye.SetScene(@world)
 ensure GolfProvider::GolfMatch game
 game.Create()
 run GolfProvider/scripts/golf_world.etcs anchor=world game=game
-run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye
+run GolfProvider/scripts/golf_play.etcs game=game world=world eye=eye layout=hud
+hud.Solve()
+hud.FollowResize(@main)
 
 view.Clear(0.02, 0.02, 0.03, 1.0)
 view.Compose(@eye)
