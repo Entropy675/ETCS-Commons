@@ -9,7 +9,8 @@
 # chain, then reads the site's list of what it serves and fetches what the
 # site has moved past -- every binary, when the site is in a newer epoch. What
 # this loader's own key signed is the developer's, and is left alone. All of
-# it is the next session's; this one keeps what it mapped.
+# it is the next session's; this one keeps what it mapped. A successor loader
+# fetched is registered for its epoch before the swap, on this key's word.
 #
 # Another site: replace the Origin. A site whose certificate the system's
 # bundle does not hold: to_site.SetCaFile(<pem>) before Activate.

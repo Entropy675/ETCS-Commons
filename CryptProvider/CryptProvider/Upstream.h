@@ -14,12 +14,18 @@
  * ordering thread (core/Trust.h, answer) -- nothing here holds either.
  *
  *   Register        ACE's half for this loader's key, from the site's registrar
+ *   Join <member>   this key's word that it joins <member>'s account: "<key> <signature>",
+ *                   carried to that member by hand
+ *   Admit <key> <signature>   as a member, admit the key whose Join that is
+ *   Retire <key>    as a member, retire a key of this account
  *   Check           the site's list against what is here; the report is List's
  *   Update          Check, then fetch what the site has moved past, and put it in place
  *   Paths <p> <d>   where the registrar and the binaries are; /pki and /dist unless said
  *
  * What Register and Update put in place is the next session's: this one keeps
- * what it mapped. Except a RE-SYNC (core/Trust.h): when the list is a sibling
+ * what it mapped. When Update puts a successor loader in place, this loader
+ * registers its key for the successor's epoch on its own word, so the swap
+ * starts registered. Except a RE-SYNC (core/Trust.h): when the list is a sibling
  * marketplace's -- this loader's marketplace key retired -- Check, whenever it
  * sees one, fetches the successor, has the loader put it in place, and asks
  * the loader to restart on it where this session left off.
@@ -47,22 +53,54 @@ public:
     }
 
     // --- verbs ---------------------------------------------------------------------------
-    bool Register()
+    bool Register(bool next = false)
     {
         std::string registrar, chain, pki;
-        { std::lock_guard<std::mutex> l(mu_); pki = pki_; }
-        if (!get(pki + "/registrar", registrar)) return false;
-        trim(registrar);
+        if (!registrar_key(registrar, pki)) return false;
         ETCS::TrustEvent ask(ETCS::TrustEvent::Op::Request);
         ask.a = registrar;
+        if (next) ask.b = "next";
         if (!ask()) { ETCS_LOG("Upstream", "Register: " << ask.out); return false; }
-        const size_t sp = ask.out.find(' ');
-        if (!get(pki + "/register/" + ask.out.substr(0, sp) + "/" + ask.out.substr(sp + 1), chain)) return false;
+        if (!post(pki + "/register", ask.out, chain)) return false;
         ETCS::TrustEvent install(ETCS::TrustEvent::Op::Install);
         install.a = chain;
         const bool ok = install();
         ETCS_LOG("Upstream", "Register: " << install.out);
         return ok;
+    }
+
+    std::string Join(const std::string& member)
+    {
+        std::string registrar, pki;
+        if (!registrar_key(registrar, pki)) return std::string();
+        ETCS::TrustEvent w(ETCS::TrustEvent::Op::Join);
+        w.a = registrar; w.b = member;
+        if (!w()) { ETCS_LOG("Upstream", "Join: " << w.out); return std::string(); }
+        return w.out;
+    }
+
+    bool Admit(const std::string& key, const std::string& signature)
+    {
+        std::string registrar, pki, said;
+        if (!registrar_key(registrar, pki)) return false;
+        ETCS::TrustEvent w(ETCS::TrustEvent::Op::Admit);
+        w.a = registrar; w.b = key;
+        if (!w()) { ETCS_LOG("Upstream", "Admit: " << w.out); return false; }
+        if (!post(pki + "/admit", key + " " + signature + " " + w.out, said)) return false;
+        ETCS_LOG("Upstream", "Admit: " << said);
+        return said == "admitted\n";
+    }
+
+    bool Retire(const std::string& key)
+    {
+        std::string registrar, pki, said;
+        if (!registrar_key(registrar, pki)) return false;
+        ETCS::TrustEvent w(ETCS::TrustEvent::Op::Retire);
+        w.a = registrar; w.b = key;
+        if (!w()) { ETCS_LOG("Upstream", "Retire: " << w.out); return false; }
+        if (!post(pki + "/retire", key + " " + w.out, said)) return false;
+        ETCS_LOG("Upstream", "Retire: " << said);
+        return said == "retired\n";
     }
 
     bool Check()
@@ -90,6 +128,7 @@ public:
         std::string list, report, dist;
         { std::lock_guard<std::mutex> l(mu_); list = list_; report = report_; dist = dist_; }
         int failed = 0, placed = 0;
+        bool successor = false;
         std::istringstream lines(report);
         for (std::string line; std::getline(lines, line); )
         {
@@ -99,9 +138,10 @@ public:
             if (!get(dist + "/" + file, bytes)) { ++failed; continue; }
             ETCS::TrustEvent put(ETCS::TrustEvent::Op::Replace);
             put.a = list; put.b = std::move(bytes); put.name = name;
-            if (put()) { ++placed; ETCS_LOG("Upstream", "Update: " << name << " -> " << put.out); }
+            if (put()) { ++placed; successor = successor || name == "etcs"; ETCS_LOG("Upstream", "Update: " << name << " -> " << put.out); }
             else       { ++failed; ETCS_LOG("Upstream", "Update: " << name << " refused: " << put.out); }
         }
+        if (successor && !Register(true)) ETCS_LOG("Upstream", "Update: the successor starts unregistered, and registers itself");
         ETCS_LOG("Upstream", "Update: " << placed << " put in place, " << failed << " not"
                  << (placed ? "; the next session reads them" : ""));
         return failed == 0;
@@ -122,6 +162,7 @@ public:
             ETCS::TrustEvent put(ETCS::TrustEvent::Op::Replace);
             put.a = list; put.b = std::move(bytes); put.name = name;
             if (!put()) { ETCS_LOG("Upstream", "re-sync: the successor was refused: " << put.out); return false; }
+            if (!Register(true)) ETCS_LOG("Upstream", "re-sync: the successor starts unregistered, and registers itself");
             ETCS::TrustEvent go(ETCS::TrustEvent::Op::Resync);
             const bool ok = go();
             ETCS_LOG("Upstream", "re-sync: " << go.out);
@@ -149,25 +190,39 @@ public:
     void SetRunContext(const ETCS::SignalContext& ctx) { std::lock_guard<std::mutex> l(mu_); run_ctx_ = ctx; }
 
 private:
+    // The site registrar's key, hex, and where it is.
+    bool registrar_key(std::string& key, std::string& pki) const
+    {
+        { std::lock_guard<std::mutex> l(mu_); pki = pki_; }
+        if (!get(pki + "/registrar", key)) return false;
+        trim(key);
+        return key.size() == 64;
+    }
+
     static void trim(std::string& s)
     {
         while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
     }
 
-    // GET <path>: the body of a 200, or false.
-    bool get(const std::string& path, std::string& body) const
+    // GET <path>, or POST <path> with words: the body of a 200, or false.
+    bool get(const std::string& path, std::string& body) const { return fetch("GET " + path, path, body); }
+    bool post(const std::string& path, const std::string& words, std::string& body) const
+    {
+        return fetch("POST " + path + "\n" + words, path, body);
+    }
+    bool fetch(const std::string& question, const std::string& path, std::string& body) const
     {
         std::string answer;
         body.clear();
-        if (!exchange("GET " + path, answer)) return false;
+        if (!exchange(question, answer)) return false;
         const size_t sp = answer.find(' ');
         const std::string status = answer.substr(0, sp);
         if (status != "200" || sp == std::string::npos)
-        { ETCS_LOG("Upstream", "GET " << path << ": " << answer.substr(0, 80)); return false; }
+        { ETCS_LOG("Upstream", path << ": " << answer.substr(0, 80)); return false; }
         body = answer.substr(sp + 1);
         if (body.compare(0, 9, "refused: ") == 0 || body == "no such path\n"
             || body.compare(0, 26, "this registrar is not set ") == 0)
-        { ETCS_LOG("Upstream", "GET " << path << ": " << body.substr(0, 120)); return false; }
+        { ETCS_LOG("Upstream", path << ": " << body.substr(0, 120)); return false; }
         return true;
     }
 

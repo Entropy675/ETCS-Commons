@@ -215,8 +215,49 @@ DEFINE_WORK_FUNC(Registrar, Mount)
     const bool ok = self.Mount(segment);
     data.reset(); data << ok;
 }
+DEFINE_WORK_FUNC(Registrar, Derive)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Derive(rid);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Registrar, Accounts)
+{
+    (void)ctx;
+    ETCS::RID rid = 0;
+    data >> rid;
+    const bool ok = self.Accounts(rid);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Registrar, Head)
+{
+    (void)ctx;
+    std::string hex;
+    data >> hex;
+    const bool ok = self.Head(hex);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Registrar, Epoch)
+{
+    (void)ctx;
+    std::string hex;
+    data >> hex;
+    const bool ok = self.Epoch(hex);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Registrar, Window)
+{
+    (void)ctx;
+    int64_t n = 0;
+    data >> n;
+    const bool ok = self.Window(n);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Registrar, Current) { (void)ctx; const bool ok = self.Current(); data.reset(); data << ok; }
 DEFINE_WORK_FUNC(Registrar, Key)     { (void)ctx; const std::string k = self.Key(); data.reset(); data.write(k.c_str()); }
-// The route's two halves (HttpServer.AddRoute <rid> Request <rid> Filter): a path in, an answer out.
+// The route's two halves (HttpServer.AddRequestRoute <rid> Request <rid> Filter): a request in, an answer out.
 DEFINE_WORK_FUNC(Registrar, Filter)  { (void)ctx; self.Accepts(data); }
 DEFINE_WORK_FUNC(Registrar, Request) { (void)ctx; self.Request(data); }
 DEFINE_WORK_FUNC(Registrar, Delete)  { (void)ctx; (void)data; self.Delete(); }
@@ -250,6 +291,32 @@ DEFINE_WORK_FUNC(Upstream, Paths)
 DEFINE_WORK_FUNC(Upstream, Register) { self.SetRunContext(ctx); const bool ok = self.Register(); data.reset(); data << ok; }
 DEFINE_WORK_FUNC(Upstream, Check)    { self.SetRunContext(ctx); const bool ok = self.Check();    data.reset(); data << ok; }
 DEFINE_WORK_FUNC(Upstream, Update)   { self.SetRunContext(ctx); const bool ok = self.Update();   data.reset(); data << ok; }
+// Join <member key> -- "<key> <signature>", for the member to Admit with.
+DEFINE_WORK_FUNC(Upstream, Join)
+{
+    self.SetRunContext(ctx);
+    std::string member;
+    data >> member;
+    const std::string word = self.Join(member);
+    data.reset(); data.write(word.c_str());
+}
+// Admit <key> <signature> -- what that key's Join said.
+DEFINE_WORK_FUNC(Upstream, Admit)
+{
+    self.SetRunContext(ctx);
+    std::string key, signature;
+    data >> key >> signature;
+    const bool ok = self.Admit(key, signature);
+    data.reset(); data << ok;
+}
+DEFINE_WORK_FUNC(Upstream, Retire)
+{
+    self.SetRunContext(ctx);
+    std::string key;
+    data >> key;
+    const bool ok = self.Retire(key);
+    data.reset(); data << ok;
+}
 DEFINE_WORK_FUNC(Upstream, List)     { (void)ctx; const std::string r = self.Listing(""); data.reset(); data.write(r.substr(0, 250).c_str()); }
 DEFINE_WORK_FUNC(Upstream, Delete)   { (void)ctx; (void)data; self.Delete(); }
 

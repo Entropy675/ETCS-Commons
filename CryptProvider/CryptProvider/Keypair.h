@@ -103,7 +103,7 @@ public:
         return ok;
     }
 
-    // --- this module's own reach (Shamir, Certificate) ------------------------
+    // --- this module's own reach (Shamir, Certificate, Registrar) -------------
     // From a seed; refused while held. The caller still owns (and wipes) seed.
     bool FromSeed(const uint8_t seed[32])
     {
@@ -121,6 +121,15 @@ public:
         std::lock_guard<std::mutex> l(mu_);
         if (!held_) return false;
         std::memcpy(out, seed_, sizeof seed_);
+        return true;
+    }
+    // A secret of this key's for one purpose: BLAKE2b of `msg` keyed by the
+    // seed. The seed never leaves; what is derived names its purpose in `msg`.
+    bool Derive(const uint8_t* msg, size_t n, uint8_t out[32]) const
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        if (!held_) return false;
+        etcs_crypt::mc::crypto_blake2b_keyed(out, 32, seed_, sizeof seed_, msg, n);
         return true;
     }
     bool PublicBytes(uint8_t out[32]) const
