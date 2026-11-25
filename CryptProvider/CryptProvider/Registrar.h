@@ -5,6 +5,7 @@
 #include "../../NetworkProvider/NetworkProvider/RouteRequest.h"
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <set>
@@ -25,6 +26,23 @@
  *                              registration if it holds one now
  *   POST <mount>/retire        "<key> <member> <sig>": a member's word retiring a key of its account
  *
+ * THE PORTAL, for a browser, which holds no key: a member's loader lends it
+ * the member's authority for a while (sig::portal_statement), and the page
+ * holds a token no one else has seen.
+ *
+ *   POST <mount>/portal/open      "" -> "<code> <token>": the code is shown, the token kept
+ *   POST <mount>/portal/signin    "<code> <member> <sig>": the member's portal word on that code
+ *   POST <mount>/portal/state     "<token>" -> "pending", or "signed in <member>"
+ *   POST <mount>/portal/members   "<token>" -> a line per key of the account:
+ *                                 "<key> current|retired <epoch|-> [you] [moving]"
+ *   POST <mount>/portal/admit     "<token> <key> <sig>": the key's Join word, naming the member;
+ *                                 the session stands for the member's Admit word
+ *   POST <mount>/portal/retire    "<token> <key>": the session stands for the member's word
+ *   POST <mount>/portal/close     "<token>"
+ *
+ * A session ends when it closes, when its member is retired, or after
+ * SessionLife seconds. A code is good once.
+ *
  * A word is the loader's answer to its TrustEvent (core/Trust.h), sent as it
  * came: two keys and two signatures are past what a path carries (256 bytes).
  *
@@ -38,6 +56,7 @@
  *   Current             this loader's own identity and epoch, as a Head and an Epoch
  *   Window <n>          how many epochs it serves, the newest it has been given; 2 unless said,
  *                       so the loaders of the last epoch keep registering while they heal
+ *   SessionLife <s>     how long a portal session lasts; 900 unless said
  *
  * A registration is a function of its words alone while the key is a current
  * member.
@@ -46,7 +65,8 @@
  * secret's BLAKE2b of L, one for one, the same every time it is asked. What is
  * kept is a row per member, named by another BLAKE2b of L under the same
  * secret, so without the secret the rows say nothing of which public keys
- * share an account. The epoch on K's certificate is the registration's
+ * share an account. Each row's key is kept sealed under the same secret,
+ * for the portal to list. The epoch on K's certificate is the registration's
  * lifetime: a retired key's certificate holds to the end of its epoch, and the
  * registrar issues it no other.
  *
@@ -141,6 +161,7 @@ public:
             "CREATE TABLE IF NOT EXISTS ace_members(member BLOB PRIMARY KEY, account BLOB NOT NULL,"
             " retired INTEGER NOT NULL DEFAULT 0, epoch BLOB, next BLOB)",
             "CREATE TABLE IF NOT EXISTS ace_epochs(epoch BLOB PRIMARY KEY, seen INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS ace_sealed(member BLOB PRIMARY KEY, sealed BLOB NOT NULL)",
         };
         for (const char* sql : schema)
         {
@@ -185,6 +206,18 @@ public:
             bytes(st.col(4), row.next);
             rows[mb] = row;
         }
+        std::map<Bytes, Sealed> sealed;
+        Stmt se(*db, "SELECT member, sealed FROM ace_sealed");
+        for (int r; se && (r = se.step()) == 1; )
+        {
+            const DatabaseValue m = se.col(0), v = se.col(1);
+            Bytes mb{};
+            Sealed sv{};
+            if (!bytes(m, mb) || v.kind != DatabaseValue::Blob || v.n != sv.size()) continue;
+            std::memcpy(sv.data(), v.p, sv.size());
+            sealed[mb] = sv;
+        }
+        sealed_ = std::move(sealed);
         std::vector<Bytes> given;
         Stmt ep(*db, "SELECT epoch FROM ace_epochs ORDER BY seen");
         for (int r; ep && (r = ep.step()) == 1; )
@@ -234,6 +267,14 @@ public:
         return true;
     }
 
+    bool SessionLife(int64_t seconds)
+    {
+        if (seconds < 1) return false;
+        std::lock_guard<std::mutex> l(mu_);
+        life_ = std::chrono::seconds(seconds);
+        return true;
+    }
+
     bool Current()
     {
         ETCS::TrustEvent who(ETCS::TrustEvent::Op::Identify);
@@ -277,15 +318,21 @@ public:
             return inline_answer(io, "this registrar is not set up: Use a key, then Above up to the root\n");
         if (seg.size() == 2 && seg[1] == "registrar") return inline_answer(io, key_hex_);
         if (seg.size() == 2 && seg[1] == "chain") return by_reference(io, chain_hex_);
-        if (seg.size() < 2 || (seg[1] != "register" && seg[1] != "admit" && seg[1] != "retire"))
+        const bool portal = seg.size() == 3 && seg[1] == "portal";
+        if (!portal && (seg.size() < 2 || (seg[1] != "register" && seg[1] != "admit" && seg[1] != "retire")))
             return inline_answer(io, "no such path\n");
-        if (!req.posted() || seg.size() != 2)
+        if (!req.posted() || (!portal && seg.size() != 2))
             return inline_answer(io, "refused: a word is POSTed to " + mount_ + "/" + seg[1] + ", as the loader said it\n");
         if (!db_ || heads_.empty() || epochs_.empty())
             return inline_answer(io, "this registrar is not set up for accounts: Derive, Accounts, then Current or Head and Epoch\n");
         std::istringstream body(req.bodyString());
         std::vector<std::string> w;
         for (std::string t; body >> t && w.size() < 5; ) w.push_back(t);
+        if (portal)
+        {
+            req.reply = portal_answer(seg[2], w);
+            return by_reference(io, req.reply);
+        }
         if (seg[1] == "register" && w.size() == 4) return by_reference(io, registered(w[0], w[1], w[2], w[3]));
         if (seg[1] == "admit" && w.size() == 4) return inline_answer(io, admitted(w[2], w[0], w[3], w[1]));
         if (seg[1] == "retire" && w.size() == 3) return inline_answer(io, retired(w[1], w[0], w[2]));
@@ -296,6 +343,9 @@ private:
     using Bytes = std::array<uint8_t, 32>;
     // `epoch` is the last it was registered in; `next`, an account it moves to at its next.
     struct Row { Bytes account{}; bool retired = false; Bytes epoch{}; Bytes next{}; };
+    using Sealed = std::array<uint8_t, 16 + 32>;           // a key under the secret's seal: mac, then the key
+    using Clock = std::chrono::steady_clock;
+    struct Session { Bytes code{}; ETCS::sig::Key member{}; bool signed_in = false; Clock::time_point until{}; };
 
     // The ACE identity's certificate for this epoch, its word on the loader's
     // key, and the chain above. A key no account holds begins one.
@@ -346,7 +396,7 @@ private:
             r.next = Bytes{};
         }
         r.epoch = epoch;
-        if (!keep(idx, r)) return unkept;
+        if (!keep(idx, r, key)) return unkept;
         std::vector<ETCS::sig::Certificate> chain{ leaf, ident };
         chain.insert(chain.end(), above_.begin(), above_.end());
         const std::string bytes = ETCS::sig::encode_chain(chain);
@@ -394,19 +444,19 @@ private:
         {
             r = k->second;
             if (r.retired) return "refused: that key was retired, and comes back to no account\n";
-            if (r.account == account) { r.next = Bytes{}; return keep(ki, r) ? "admitted\n" : "refused: the account could not be kept\n"; }
+            if (r.account == account) { r.next = Bytes{}; return keep(ki, r, key) ? "admitted\n" : "refused: the account could not be kept\n"; }
             if (current_[r.account] > 1) return "refused: that key shares another account; a member there retires it first\n";
             if (epochs_.count(r.epoch))
             {
                 r.next = account;
-                if (!keep(ki, r)) return "refused: the account could not be kept\n";
+                if (!keep(ki, r, key)) return "refused: the account could not be kept\n";
                 ETCS_LOG("Registrar", "a key moves to an account at its next registration");
                 return "admitted at its next registration\n";
             }
             r.account = account;
             r.next = Bytes{};
         }
-        if (!keep(ki, r)) return "refused: the account could not be kept\n";
+        if (!keep(ki, r, key)) return "refused: the account could not be kept\n";
         ETCS_LOG("Registrar", "admitted a key to an account of " << current_[account]);
         return "admitted\n";
     }
@@ -419,6 +469,11 @@ private:
             || !etcs_crypt::unhex(sig_hex, s, sizeof s))
             return "refused: not a retirement\n";
         if (!verify(ETCS::sig::retire_statement(member, key, pub_), member, s)) return "refused: the member's word does not verify\n";
+        return retire(member, key);
+    }
+
+    std::string retire(const ETCS::sig::Key& member, const ETCS::sig::Key& key)
+    {
         Bytes mi{}, ki{};
         if (!derive("ETCSMEM1", member, mi.data()) || !derive("ETCSMEM1", key, ki.data())) return "refused: the registrar's secret is gone\n";
         const auto m = members_.find(mi), k = members_.find(ki);
@@ -429,7 +484,7 @@ private:
         Row r = k->second;
         r.retired = true;
         r.next = Bytes{};
-        if (!keep(ki, r)) return "refused: the account could not be kept\n";
+        if (!keep(ki, r, key)) return "refused: the account could not be kept\n";
         ETCS_LOG("Registrar", "retired a key; its account has " << current_[k->second.account] << " left");
         return "retired\n";
     }
@@ -449,11 +504,22 @@ private:
         return etcs_crypt::mc::crypto_ed25519_check(s, by.data(), reinterpret_cast<const uint8_t*>(m.data()), m.size()) == 0;
     }
 
-    // A member row, written through before it is held.
-    bool keep(const Bytes& idx, const Row& row)
+    // A member row, written through before it is held, and its key sealed
+    // beside it the first time.
+    bool keep(const Bytes& idx, const Row& row, const ETCS::sig::Key& key)
     {
         ETCS::Held<Database_> db = ETCS::resolve_held<Database_>("Database", db_);
         if (!db) { ETCS_LOG("Registrar", "the accounts' database is gone."); return false; }
+        if (!sealed_.count(idx))
+        {
+            Sealed sv{};
+            if (!seal(idx, key, sv)) return false;
+            Stmt put(*db, "INSERT OR REPLACE INTO ace_sealed(member, sealed) VALUES (?1, ?2)");
+            if (!put || !put.bind(1, DatabaseValue::blob(idx.data(), 32)) || !put.bind(2, DatabaseValue::blob(sv.data(), sv.size()))
+                || put.step() < 0)
+                return false;
+            sealed_[idx] = sv;
+        }
         Stmt st(*db, "INSERT OR REPLACE INTO ace_members(member, account, retired, epoch, next) VALUES (?1, ?2, ?3, ?4, ?5)");
         auto blob = [](const Bytes& b) { return b == Bytes{} ? DatabaseValue{} : DatabaseValue::blob(b.data(), 32); };
         if (!st || !st.bind(1, DatabaseValue::blob(idx.data(), 32)) || !st.bind(2, DatabaseValue::blob(row.account.data(), 32))
@@ -465,6 +531,127 @@ private:
         if (!row.retired) ++current_[row.account];
         members_[idx] = row;
         return true;
+    }
+
+    // A row's key, sealed under the secret (XChaCha20-Poly1305), its nonce the
+    // row's name: one key per name, so a nonce never seals two things.
+    bool seal(const Bytes& idx, const ETCS::sig::Key& key, Sealed& out) const
+    {
+        uint8_t k[32];
+        if (!sealing_key(k)) return false;
+        etcs_crypt::mc::crypto_aead_lock(out.data() + 16, out.data(), k, idx.data(), nullptr, 0, key.data(), 32);
+        etcs_crypt::wipe(k, sizeof k);
+        return true;
+    }
+    bool unseal(const Bytes& idx, ETCS::sig::Key& key) const
+    {
+        const auto it = sealed_.find(idx);
+        uint8_t k[32];
+        if (it == sealed_.end() || !sealing_key(k)) return false;
+        const bool ok = etcs_crypt::mc::crypto_aead_unlock(key.data(), it->second.data(), k, idx.data(), nullptr, 0,
+                                                           it->second.data() + 16, 32) == 0;
+        etcs_crypt::wipe(k, sizeof k);
+        return ok;
+    }
+    bool sealing_key(uint8_t out[32]) const
+    {
+        Keypair* d = etcs_crypt::as<Keypair>(derive_);
+        static const uint8_t tag[8] = { 'E', 'T', 'C', 'S', 'S', 'E', 'A', 'L' };
+        return d && d->Derive(tag, sizeof tag, out);
+    }
+
+    // --- the portal ----------------------------------------------------------------
+    std::string portal_answer(const std::string& verb, const std::vector<std::string>& w)
+    {
+        const Clock::time_point now = Clock::now();
+        for (auto it = sessions_.begin(); it != sessions_.end(); )
+            it = it->second.until < now ? sessions_.erase(it) : std::next(it);
+        if (verb == "open" && w.empty())
+        {
+            if (sessions_.size() >= kSessions) return "refused: too many portal sessions open; try again shortly\n";
+            Bytes code{}, token{};
+            if (!etcs_crypt::random_bytes(code.data(), 32) || !etcs_crypt::random_bytes(token.data(), 32))
+                return "refused: no randomness\n";
+            Session& x = sessions_[etcs_crypt::hex(token.data(), 32)];
+            x.code = code;
+            x.until = now + life_;
+            return etcs_crypt::hex(code.data(), 32) + " " + etcs_crypt::hex(token.data(), 32) + "\n";
+        }
+        if (verb == "signin" && w.size() == 3)
+        {
+            ETCS::sig::Key code{}, member{};
+            uint8_t s[ETCS::sig::kSigBytes];
+            if (!etcs_crypt::unhex(w[0], code.data(), 32) || !etcs_crypt::unhex(w[1], member.data(), 32)
+                || !etcs_crypt::unhex(w[2], s, sizeof s))
+                return "refused: not a portal word\n";
+            Session* x = nullptr;
+            for (auto& [t, v] : sessions_) if (!v.signed_in && v.code == code) x = &v;
+            if (!x) return "refused: no portal is waiting on that code\n";
+            if (!verify(ETCS::sig::portal_statement(member, pub_, code), member, s)) return "refused: the word does not verify\n";
+            if (!current_member(member)) return "refused: that key is not a current member of any account\n";
+            x->member = member;
+            x->signed_in = true;
+            x->until = now + life_;
+            ETCS_LOG("Registrar", "a portal session opened for a member");
+            return "signed in\n";
+        }
+        if (w.empty()) return "refused: not the words portal/" + verb + " takes\n";
+        const auto it = sessions_.find(w[0]);
+        if (it == sessions_.end()) return "refused: no such session\n";
+        Session& x = it->second;
+        if (verb == "close" && w.size() == 1) { sessions_.erase(it); return "closed\n"; }
+        if (verb == "state" && w.size() == 1)
+            return x.signed_in ? "signed in " + etcs_crypt::hex(x.member.data(), 32) + "\n" : std::string("pending\n");
+        if (!x.signed_in) return "refused: the session is not signed in\n";
+        if (!current_member(x.member)) { sessions_.erase(it); return "refused: the session's member was retired\n"; }
+        if (verb == "members" && w.size() == 1) return members_of(x.member);
+        if (verb == "admit" && w.size() == 3)
+        {
+            ETCS::sig::Key key{};
+            uint8_t s[ETCS::sig::kSigBytes];
+            if (!etcs_crypt::unhex(w[1], key.data(), 32) || !etcs_crypt::unhex(w[2], s, sizeof s) || key == x.member)
+                return "refused: not a key's word to join\n";
+            bool agreed = false;
+            for (const Bytes& e : epochs_) agreed = agreed || verify(ETCS::sig::join_statement(key, x.member, pub_, e), key, s);
+            if (!agreed) return "refused: that key's word does not name this member, in an epoch this registrar serves\n";
+            return admit(x.member, key);
+        }
+        if (verb == "retire" && w.size() == 2)
+        {
+            ETCS::sig::Key key{};
+            if (!etcs_crypt::unhex(w[1], key.data(), 32)) return "refused: not a key\n";
+            const ETCS::sig::Key member = x.member;
+            const std::string said = retire(member, key);
+            if (key == member && said == "retired\n") sessions_.erase(w[0]);
+            return said;
+        }
+        return "refused: not the words portal/" + verb + " takes\n";
+    }
+
+    bool current_member(const ETCS::sig::Key& key) const
+    {
+        Bytes idx{};
+        if (!derive("ETCSMEM1", key, idx.data())) return false;
+        const auto it = members_.find(idx);
+        return it != members_.end() && !it->second.retired;
+    }
+
+    // The account's keys, as only a member's session sees them.
+    std::string members_of(const ETCS::sig::Key& member) const
+    {
+        Bytes mi{};
+        if (!derive("ETCSMEM1", member, mi.data())) return "refused: the registrar's secret is gone\n";
+        const Bytes account = members_.at(mi).account;
+        std::string out;
+        for (const auto& [idx, r] : members_)
+        {
+            if (r.account != account && r.next != account) continue;
+            ETCS::sig::Key key{};
+            out += (unseal(idx, key) ? etcs_crypt::hex(key.data(), 32) : std::string("-")) + (r.retired ? " retired " : " current ")
+                 + (r.epoch == Bytes{} ? std::string("-") : etcs_crypt::hex(r.epoch.data(), 32))
+                 + (idx == mi ? " you" : "") + (r.next == account ? " moving" : "") + "\n";
+        }
+        return out;
     }
 
     // The newest `window_` epochs given, kept with the accounts so a restart
@@ -518,6 +705,10 @@ private:
     std::set<Bytes>                     heads_, epochs_;
     std::vector<Bytes>                  given_;        // epochs given, oldest first
     size_t                              window_ = 2;
+    std::map<Bytes, Sealed>             sealed_;       // by row name
+    std::map<std::string, Session>      sessions_;     // by token, hex
+    std::chrono::seconds                life_{ 900 };
+    static constexpr size_t             kSessions = 1024;
     std::map<Bytes, Row>                members_;   // by the secret's BLAKE2b of the key
     std::map<Bytes, size_t>             current_;   // per account, its members not retired
     std::map<std::string, std::string>  issued_;    // never erased: a reference answer points into it

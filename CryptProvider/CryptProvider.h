@@ -255,6 +255,14 @@ DEFINE_WORK_FUNC(Registrar, Window)
     const bool ok = self.Window(n);
     data.reset(); data << ok;
 }
+DEFINE_WORK_FUNC(Registrar, SessionLife)
+{
+    (void)ctx;
+    int64_t seconds = 0;
+    data >> seconds;
+    const bool ok = self.SessionLife(seconds);
+    data.reset(); data << ok;
+}
 DEFINE_WORK_FUNC(Registrar, Current) { (void)ctx; const bool ok = self.Current(); data.reset(); data << ok; }
 DEFINE_WORK_FUNC(Registrar, Key)     { (void)ctx; const std::string k = self.Key(); data.reset(); data.write(k.c_str()); }
 // The route's two halves (HttpServer.AddRequestRoute <rid> Request <rid> Filter): a request in, an answer out.
@@ -315,6 +323,15 @@ DEFINE_WORK_FUNC(Upstream, Retire)
     std::string key;
     data >> key;
     const bool ok = self.Retire(key);
+    data.reset(); data << ok;
+}
+// Portal <code> -- the code the account page shows: this loader's member word lets that page in.
+DEFINE_WORK_FUNC(Upstream, Portal)
+{
+    self.SetRunContext(ctx);
+    std::string code;
+    data >> code;
+    const bool ok = self.Portal(code);
     data.reset(); data << ok;
 }
 DEFINE_WORK_FUNC(Upstream, List)     { (void)ctx; const std::string r = self.Listing(""); data.reset(); data.write(r.substr(0, 250).c_str()); }

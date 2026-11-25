@@ -18,6 +18,7 @@
  *                   carried to that member by hand
  *   Admit <key> <signature>   as a member, admit the key whose Join that is
  *   Retire <key>    as a member, retire a key of this account
+ *   Portal <code>   as a member, let in the account page showing <code>
  *   Check           the site's list against what is here; the report is List's
  *   Update          Check, then fetch what the site has moved past, and put it in place
  *   Paths <p> <d>   where the registrar and the binaries are; /pki and /dist unless said
@@ -101,6 +102,18 @@ public:
         if (!post(pki + "/retire", key + " " + w.out, said)) return false;
         ETCS_LOG("Upstream", "Retire: " << said);
         return said == "retired\n";
+    }
+
+    bool Portal(const std::string& code)
+    {
+        std::string registrar, pki, said;
+        if (!registrar_key(registrar, pki)) return false;
+        ETCS::TrustEvent w(ETCS::TrustEvent::Op::Portal);
+        w.a = registrar; w.b = code;
+        if (!w()) { ETCS_LOG("Upstream", "Portal: " << w.out); return false; }
+        if (!post(pki + "/portal/signin", code + " " + w.out, said)) return false;
+        ETCS_LOG("Upstream", "Portal: " << said);
+        return said == "signed in\n";
     }
 
     bool Check()

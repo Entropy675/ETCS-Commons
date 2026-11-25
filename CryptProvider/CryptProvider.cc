@@ -35,9 +35,9 @@ ETCS_TAG_BLOCK_BASIC(Envelope,
 )
 
 ETCS_TAG_BLOCK_BASIC(Registrar,
-    Use, Above, Mount, Derive, Accounts, Head, Epoch, Window, Current, Key, Filter, Request, Delete
+    Use, Above, Mount, Derive, Accounts, Head, Epoch, Window, SessionLife, Current, Key, Filter, Request, Delete
 )
 
 ETCS_TAG_BLOCK_BASIC(Upstream,
-    SetEmbassy, SetRelation, Paths, Register, Join, Admit, Retire, Check, Update, List, Delete
+    SetEmbassy, SetRelation, Paths, Register, Join, Admit, Retire, Portal, Check, Update, List, Delete
 )
