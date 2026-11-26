@@ -377,9 +377,14 @@ private:
 //   dialler   'P' <its word>
 //   accepter  'K'                                        or 'N' <reason>
 //
-// A word is "<key> <chain|-> <signature>" over the transcript -- both names
-// and both exchange keys -- as its loader gave it (TrustEvent Vouch), and is
-// checked by the other's loader (Recognize). The dialler waits for its welcome
+// A word is "<key> <chain|-> <epoch> <signature>" over the transcript -- both
+// names and both exchange keys -- and the epoch its loader runs in, as that
+// loader gave it (TrustEvent Vouch), and is checked by the other's loader
+// (Recognize). A LINK IS BETWEEN RUNTIMES OF ONE EPOCH: a word said in another
+// is refused on both sides -- the dialler, who sees it first, says its own
+// word all the same, so the accepter's loader learns what the dialler's did
+// and each can ask its remotes whether it is the one behind (core/Trust.h,
+// recognize). The dialler waits for its welcome
 // as long as the socket lives: a host reached through a hub comes for a guest
 // when it gets to it (LinkHub), and answers then. The accepting side keeps its
 // deadline -- the guest's hello is sent on connecting, so only a guest that
@@ -412,14 +417,19 @@ inline bool vouch(char side, const uint8_t t[32], std::string& word, std::string
     return ok;
 }
 // The far side's word, checked by this loader: what it proved, or why not.
+// `parted` says the far side runs in another epoch.
 inline bool recognize(char side, const uint8_t t[32], const std::string& word, const std::string& name,
-                      ETCS::Peer& far, std::string& why)
+                      ETCS::Peer& far, std::string& why, bool* parted = nullptr)
 {
     ETCS::TrustEvent q(ETCS::TrustEvent::Op::Recognize);
     q.name = std::string(1, side);
     q.a = word;
     q.b = hex(t, 32);
-    if (!q()) { why = "'" + name + "' did not prove itself: " + q.out; return false; }
+    const bool ok = q();
+    const bool other = !ok && q.out.compare(0, 13, "another epoch") == 0;
+    if (parted) *parted = other;
+    if (other) { why = "'" + name + "' runs in " + q.out; return false; }
+    if (!ok) { why = "'" + name + "' did not prove itself: " + q.out; return false; }
     std::istringstream in(q.out);
     std::string ident;
     int registered = 0, guild = 0;
@@ -500,7 +510,13 @@ inline bool hello_dial(int fd, const std::string& my_name, Link& link, std::stri
     const std::string far_word = r.str();
     if (!r.ok) return fail("the welcome is unreadable");
     hello::transcript(my_name, x.pub, link.far_name, far_x, t);
-    if (!hello::recognize('a', t, far_word, link.far_name, link.far, err)) return fail(err);
+    bool parted = false;
+    if (!hello::recognize('a', t, far_word, link.far_name, link.far, err, &parted))
+    {
+        std::string unsaid;
+        if (parted && hello::vouch('d', t, word, unsaid)) etcs_ws::send_frame(fd, Writer().u8('P').str(word).s);
+        return fail(err);
+    }
     if (!hello::vouch('d', t, word, err)) return fail("this loader would not vouch for the link: " + err);
     if (!etcs_ws::send_frame(fd, Writer().u8('P').str(word).s) || !etcs_ws::recv_frame(fd, w, 10000) || w.empty())
         return fail("'" + link.far_name + "' did not answer this side's word");
@@ -517,7 +533,12 @@ inline bool hello_accept(int fd, const std::string& my_name, Link& link,
     std::string h, word, err;
     uint8_t far_x[32], t[32];
     hello::Exchange x;
-    const auto no = [&](const std::string& why) { etcs_ws::send_frame(fd, Writer().u8('N').str(why).s); return false; };
+    const auto no = [&](const std::string& why)
+    {
+        ETCS_LOG("Edge", "'" << my_name << "' refused a link: " << why);
+        etcs_ws::send_frame(fd, Writer().u8('N').str(why).s);
+        return false;
+    };
     if (!etcs_ws::recv_frame(fd, h, 10000) || h.size() < 2 || h[0] != 'H' || h[1] != 3) return false;
     Reader r(h, 2);
     link.far_name = r.str();
