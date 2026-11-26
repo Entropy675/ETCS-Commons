@@ -296,44 +296,17 @@ DEFINE_WORK_FUNC(Upstream, Paths)
     const bool ok = self.Paths(pki, dist);
     data.reset(); data << ok;
 }
+DEFINE_WORK_FUNC(Upstream, Grant)
+{
+    (void)ctx;
+    std::string hex;
+    data >> hex;
+    const bool ok = self.Grant(hex);
+    data.reset(); data << ok;
+}
 DEFINE_WORK_FUNC(Upstream, Register) { self.SetRunContext(ctx); const bool ok = self.Register(); data.reset(); data << ok; }
 DEFINE_WORK_FUNC(Upstream, Check)    { self.SetRunContext(ctx); const bool ok = self.Check();    data.reset(); data << ok; }
 DEFINE_WORK_FUNC(Upstream, Update)   { self.SetRunContext(ctx); const bool ok = self.Update();   data.reset(); data << ok; }
-// Join <member key> -- "<key> <signature>", for the member to Admit with.
-DEFINE_WORK_FUNC(Upstream, Join)
-{
-    self.SetRunContext(ctx);
-    std::string member;
-    data >> member;
-    const std::string word = self.Join(member);
-    data.reset(); data.write(word.c_str());
-}
-// Admit <key> <signature> -- what that key's Join said.
-DEFINE_WORK_FUNC(Upstream, Admit)
-{
-    self.SetRunContext(ctx);
-    std::string key, signature;
-    data >> key >> signature;
-    const bool ok = self.Admit(key, signature);
-    data.reset(); data << ok;
-}
-DEFINE_WORK_FUNC(Upstream, Retire)
-{
-    self.SetRunContext(ctx);
-    std::string key;
-    data >> key;
-    const bool ok = self.Retire(key);
-    data.reset(); data << ok;
-}
-// Portal <code> -- the code the account page shows: this loader's member word lets that page in.
-DEFINE_WORK_FUNC(Upstream, Portal)
-{
-    self.SetRunContext(ctx);
-    std::string code;
-    data >> code;
-    const bool ok = self.Portal(code);
-    data.reset(); data << ok;
-}
 DEFINE_WORK_FUNC(Upstream, List)     { (void)ctx; const std::string r = self.Listing(""); data.reset(); data.write(r.substr(0, 250).c_str()); }
 DEFINE_WORK_FUNC(Upstream, Delete)   { (void)ctx; (void)data; self.Delete(); }
 

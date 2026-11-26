@@ -7,18 +7,20 @@
 #include <sstream>
 
 /*
- * Upstream -- the site, as this loader reads it: the stand-in an HttpsRelation
+ * Upstream -- a remote, as this loader reads it: the stand-in an HttpsRelation
  * (NetworkProvider) to the site lands on, found in an Embassy by name as
  * Custody finds its own. Every question is one Foreign_::Exchange. What touches
  * this loader's key or store is the loader's, asked through TrustEvent on its
  * ordering thread (core/Trust.h, answer) -- nothing here holds either.
  *
+ * THE LOADER'S INSTRUMENT. Registering and updating are the loader's acts, in
+ * its own heal against a remote built into it (core/CommandExecutor.h,
+ * heal_at_quiet_point): it spawns one of these and lends it a grant, and the
+ * loader answers what this asks only under that grant. One a script spawns
+ * has none, and is refused whatever site it points at.
+ *
+ *   Grant <hex>     the loader's grant, for the length of its heal
  *   Register        ACE's half for this loader's key, from the site's registrar
- *   Join <member>   this key's word that it joins <member>'s account: "<key> <signature>",
- *                   carried to that member by hand
- *   Admit <key> <signature>   as a member, admit the key whose Join that is
- *   Retire <key>    as a member, retire a key of this account
- *   Portal <code>   as a member, let in the account page showing <code>
  *   Check           the site's list against what is here; the report is List's
  *   Update          Check, then fetch what the site has moved past, stage it, and swap
  *   Paths <p> <d>   where the registrar and the binaries are; /pki and /dist unless said
@@ -31,9 +33,10 @@
  * successor's epoch on its own word first, so the swap starts registered. A
  * RE-SYNC is the same restart when the list is a sibling marketplace's -- this
  * loader's marketplace key retired: Check, whenever it sees one, fetches the
- * successor and has the loader put it in place. A HEAL is the loader's own
- * (core/CommandExecutor.h, heal_at_quiet_point): it runs Update through this
- * type, against the remotes built into it.
+ * successor and has the loader put it in place. An account's words (join,
+ * admit, retire, the portal's) are not asked for here: they are the owner's,
+ * said at the loader (etcs --join, ...), and given to the site's account page
+ * or POSTed to its registrar.
  */
 class Upstream : public DirectoryBase<Upstream>, public DeletableBase<Upstream>
 {
@@ -58,66 +61,30 @@ public:
     }
 
     // --- verbs ---------------------------------------------------------------------------
+    // The loader's grant, for the length of its heal: what this asks of it carries it.
+    bool Grant(const std::string& hex)
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        grant_ = hex;
+        return hex.size() == 64;
+    }
+
     bool Register(bool next = false)
     {
         std::string registrar, chain, pki;
         if (!registrar_key(registrar, pki)) return false;
         ETCS::TrustEvent ask(ETCS::TrustEvent::Op::Request);
+        ask.grant = grant();
         ask.a = registrar;
         if (next) ask.b = "next";
         if (!ask()) { ETCS_LOG("Upstream", "Register: " << ask.out); return false; }
         if (!post(pki + "/register", ask.out, chain)) return false;
         ETCS::TrustEvent install(ETCS::TrustEvent::Op::Install);
+        install.grant = grant();
         install.a = chain;
         const bool ok = install();
         ETCS_LOG("Upstream", "Register: " << install.out);
         return ok;
-    }
-
-    std::string Join(const std::string& member)
-    {
-        std::string registrar, pki;
-        if (!registrar_key(registrar, pki)) return std::string();
-        ETCS::TrustEvent w(ETCS::TrustEvent::Op::Join);
-        w.a = registrar; w.b = member;
-        if (!w()) { ETCS_LOG("Upstream", "Join: " << w.out); return std::string(); }
-        return w.out;
-    }
-
-    bool Admit(const std::string& key, const std::string& signature)
-    {
-        std::string registrar, pki, said;
-        if (!registrar_key(registrar, pki)) return false;
-        ETCS::TrustEvent w(ETCS::TrustEvent::Op::Admit);
-        w.a = registrar; w.b = key;
-        if (!w()) { ETCS_LOG("Upstream", "Admit: " << w.out); return false; }
-        if (!post(pki + "/admit", key + " " + signature + " " + w.out, said)) return false;
-        ETCS_LOG("Upstream", "Admit: " << said);
-        return said == "admitted\n";
-    }
-
-    bool Retire(const std::string& key)
-    {
-        std::string registrar, pki, said;
-        if (!registrar_key(registrar, pki)) return false;
-        ETCS::TrustEvent w(ETCS::TrustEvent::Op::Retire);
-        w.a = registrar; w.b = key;
-        if (!w()) { ETCS_LOG("Upstream", "Retire: " << w.out); return false; }
-        if (!post(pki + "/retire", key + " " + w.out, said)) return false;
-        ETCS_LOG("Upstream", "Retire: " << said);
-        return said == "retired\n";
-    }
-
-    bool Portal(const std::string& code)
-    {
-        std::string registrar, pki, said;
-        if (!registrar_key(registrar, pki)) return false;
-        ETCS::TrustEvent w(ETCS::TrustEvent::Op::Portal);
-        w.a = registrar; w.b = code;
-        if (!w()) { ETCS_LOG("Upstream", "Portal: " << w.out); return false; }
-        if (!post(pki + "/portal/signin", code + " " + w.out, said)) return false;
-        ETCS_LOG("Upstream", "Portal: " << said);
-        return said == "signed in\n";
     }
 
     bool Check()
@@ -126,6 +93,7 @@ public:
         { std::lock_guard<std::mutex> l(mu_); dist = dist_; }
         if (!get(dist + "/manifest", list)) return false;
         ETCS::TrustEvent survey(ETCS::TrustEvent::Op::Survey);
+        survey.grant = grant();
         survey.a = list;
         const bool ok = survey();
         std::istringstream lines(survey.out);
@@ -154,6 +122,7 @@ public:
             if (!(ls >> verb >> name >> file) || verb != "fetch") continue;
             if (!get(dist + "/" + file, bytes)) { ++failed; continue; }
             ETCS::TrustEvent put(ETCS::TrustEvent::Op::Replace);
+            put.grant = grant();
             put.a = list; put.b = std::move(bytes); put.name = name;
             if (put()) { ++placed; successor = successor || name == "etcs"; ETCS_LOG("Upstream", "Update: " << name << " -> " << put.out); }
             else       { ++failed; ETCS_LOG("Upstream", "Update: " << name << " refused: " << put.out); }
@@ -163,6 +132,7 @@ public:
         ETCS_LOG("Upstream", "Update: " << placed << " staged, " << failed << " not");
         if (failed || !staged) return failed == 0;
         ETCS::TrustEvent go(ETCS::TrustEvent::Op::Resync);
+        go.grant = grant();
         const bool ok = go();
         ETCS_LOG("Upstream", "Update: " << go.out);
         return ok;
@@ -182,10 +152,12 @@ public:
             ETCS_LOG("Upstream", "re-sync: this loader's identity moved; fetching its successor");
             if (!get(dist + "/" + file, bytes)) return false;
             ETCS::TrustEvent put(ETCS::TrustEvent::Op::Replace);
+            put.grant = grant();
             put.a = list; put.b = std::move(bytes); put.name = name;
             if (!put()) { ETCS_LOG("Upstream", "re-sync: the successor was refused: " << put.out); return false; }
             if (!Register(true)) ETCS_LOG("Upstream", "re-sync: the successor starts unregistered, and registers itself");
             ETCS::TrustEvent go(ETCS::TrustEvent::Op::Resync);
+            go.grant = grant();
             const bool ok = go();
             ETCS_LOG("Upstream", "re-sync: " << go.out);
             return ok;
@@ -212,6 +184,8 @@ public:
     void SetRunContext(const ETCS::SignalContext& ctx) { std::lock_guard<std::mutex> l(mu_); run_ctx_ = ctx; }
 
 private:
+    std::string grant() const { std::lock_guard<std::mutex> l(mu_); return grant_; }
+
     // The site registrar's key, hex, and where it is.
     bool registrar_key(std::string& key, std::string& pki) const
     {
@@ -291,7 +265,7 @@ private:
     std::string         relation_;
     ETCS::SignalContext run_ctx_;
     std::string         pki_ = "/pki", dist_ = "/dist";
-    std::string         list_, report_;
+    std::string         list_, report_, grant_;
 };
 
 #endif // CRYPTPROVIDER_UPSTREAM_H__

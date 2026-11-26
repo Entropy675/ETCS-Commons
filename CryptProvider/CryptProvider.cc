@@ -39,5 +39,5 @@ ETCS_TAG_BLOCK_BASIC(Registrar,
 )
 
 ETCS_TAG_BLOCK_BASIC(Upstream,
-    SetEmbassy, SetRelation, Paths, Register, Join, Admit, Retire, Portal, Check, Update, List, Delete
+    SetEmbassy, SetRelation, Paths, Grant, Register, Check, Update, List, Delete
 )

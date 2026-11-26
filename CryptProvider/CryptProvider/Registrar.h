@@ -41,7 +41,9 @@
  *   POST <mount>/portal/close     "<token>"
  *
  * A session ends when it closes, when its member is retired, or after
- * SessionLife seconds. A code is good once.
+ * SessionLife seconds -- five minutes at most while nobody has signed in. A
+ * code is good once. A full table drops its oldest, and a member's ninth
+ * session its first.
  *
  * A word is the loader's answer to its TrustEvent (core/Trust.h), sent as it
  * came: two keys and two signatures are past what a path carries (256 bytes).
@@ -333,7 +335,11 @@ public:
             req.reply = portal_answer(seg[2], w);
             return by_reference(io, req.reply);
         }
-        if (seg[1] == "register" && w.size() == 4) return by_reference(io, registered(w[0], w[1], w[2], w[3]));
+        if (seg[1] == "register" && w.size() == 4)
+        {
+            req.reply = registered(w[0], w[1], w[2], w[3]);
+            return by_reference(io, req.reply);
+        }
         if (seg[1] == "admit" && w.size() == 4) return inline_answer(io, admitted(w[2], w[0], w[3], w[1]));
         if (seg[1] == "retire" && w.size() == 3) return inline_answer(io, retired(w[1], w[0], w[2]));
         inline_answer(io, "refused: not the words " + seg[1] + " takes\n");
@@ -365,12 +371,14 @@ private:
         if (!heads_.count(head) || !epochs_.count(epoch)) return outsider;
         Bytes idx{};
         if (!derive("ETCSMEM1", key, idx.data())) return unkeyed;
+        // Only the key's own word is told it was retired: its standing is no one else's to ask.
         const auto row = members_.find(idx);
-        if (row != members_.end() && row->second.retired) return gone;
+        const bool retired = row != members_.end() && row->second.retired;
         const std::string words = key_hex + head_hex + epoch_hex + sig_hex;
         const auto it = issued_.find(words);
-        if (it != issued_.end()) return it->second;
+        if (it != issued_.end() && !retired) return it->second;
         if (!verify(ETCS::sig::registration_statement(key, pub_, head, epoch), key, s)) return refused;
+        if (retired) return gone;
 
         Keypair* k = etcs_crypt::as<Keypair>(keypair_);
         uint8_t seed[32], secret[64];
@@ -389,20 +397,32 @@ private:
         const bool fresh = row == members_.end();
         if (fresh && !etcs_crypt::random_bytes(r.account.data(), 32)) return unkept;
         if (!fresh) r = row->second;
-        if (r.next != Bytes{} && r.epoch != epoch)
+        // Only a registration in a later epoch than its last moves the row: one
+        // asked again in an epoch still served -- by a loader kept back, or the
+        // words said again -- changes nothing its newest certificate stands for.
+        const bool later = place(epoch) > place(r.epoch);
+        if (r.next != Bytes{} && later)
         {
             if (current_[r.account] > 1) ETCS_LOG("Registrar", "a move was dropped: the key came to share its account meanwhile");
             else r.account = r.next;
             r.next = Bytes{};
         }
-        r.epoch = epoch;
-        if (!keep(idx, r, key)) return unkept;
+        if (later) r.epoch = epoch;
+        if ((fresh || later) && !keep(idx, r, key)) return unkept;
         std::vector<ETCS::sig::Certificate> chain{ leaf, ident };
         chain.insert(chain.end(), above_.begin(), above_.end());
         const std::string bytes = ETCS::sig::encode_chain(chain);
         ETCS_LOG("Registrar", "registered " << key_hex << " under ACE identity " << etcs_crypt::hex(ident.subject.data(), 32)
                  << (fresh ? ", a new account" : ""));
+        if (issued_.size() >= kIssued) issued_.clear();
         return issued_[words] = etcs_crypt::hex(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()) + "\n";
+    }
+
+    // Where an epoch stands among those given: later is larger; 0 for none of them.
+    size_t place(const Bytes& e) const
+    {
+        for (size_t i = given_.size(); i-- > 0; ) if (given_[i] == e) return i + 1;
+        return 0;
     }
 
     // The member's word and the joining key's, each naming the other and one
@@ -568,13 +588,15 @@ private:
             it = it->second.until < now ? sessions_.erase(it) : std::next(it);
         if (verb == "open" && w.empty())
         {
-            if (sessions_.size() >= kSessions) return "refused: too many portal sessions open; try again shortly\n";
+            // Opening costs nothing, so a full table gives way: the oldest one
+            // still waiting, else the oldest. Nobody holds the portal shut.
+            if (sessions_.size() >= kSessions) drop_oldest([](const Session&) { return true; });
             Bytes code{}, token{};
             if (!etcs_crypt::random_bytes(code.data(), 32) || !etcs_crypt::random_bytes(token.data(), 32))
                 return "refused: no randomness\n";
             Session& x = sessions_[etcs_crypt::hex(token.data(), 32)];
             x.code = code;
-            x.until = now + life_;
+            x.until = now + std::min(life_, kWaiting);
             return etcs_crypt::hex(code.data(), 32) + " " + etcs_crypt::hex(token.data(), 32) + "\n";
         }
         if (verb == "signin" && w.size() == 3)
@@ -589,6 +611,9 @@ private:
             if (!x) return "refused: no portal is waiting on that code\n";
             if (!verify(ETCS::sig::portal_statement(member, pub_, code), member, s)) return "refused: the word does not verify\n";
             if (!current_member(member)) return "refused: that key is not a current member of any account\n";
+            size_t held = 0;
+            for (const auto& [t, v] : sessions_) held += v.signed_in && v.member == member;
+            if (held >= kPerMember) drop_oldest([&](const Session& v) { return v.signed_in && v.member == member; });
             x->member = member;
             x->signed_in = true;
             x->until = now + life_;
@@ -626,6 +651,20 @@ private:
             return said;
         }
         return "refused: not the words portal/" + verb + " takes\n";
+    }
+
+    // The oldest session `of` picks goes: one not signed in before one that is.
+    template <typename F> void drop_oldest(F of)
+    {
+        auto gone = sessions_.end();
+        for (auto it = sessions_.begin(); it != sessions_.end(); ++it)
+        {
+            if (!of(it->second)) continue;
+            if (gone == sessions_.end() || (gone->second.signed_in && !it->second.signed_in)
+                || (gone->second.signed_in == it->second.signed_in && it->second.until < gone->second.until))
+                gone = it;
+        }
+        if (gone != sessions_.end()) sessions_.erase(gone);
     }
 
     bool current_member(const ETCS::sig::Key& key) const
@@ -708,10 +747,11 @@ private:
     std::map<Bytes, Sealed>             sealed_;       // by row name
     std::map<std::string, Session>      sessions_;     // by token, hex
     std::chrono::seconds                life_{ 900 };
-    static constexpr size_t             kSessions = 1024;
+    static constexpr size_t             kSessions = 1024, kPerMember = 8, kIssued = 4096;
+    static constexpr std::chrono::seconds kWaiting{ 300 };  // a session not yet signed in
     std::map<Bytes, Row>                members_;   // by the secret's BLAKE2b of the key
     std::map<Bytes, size_t>             current_;   // per account, its members not retired
-    std::map<std::string, std::string>  issued_;    // never erased: a reference answer points into it
+    std::map<std::string, std::string>  issued_;    // answers already made, by their words; emptied when full
 };
 
 #endif // CRYPTPROVIDER_REGISTRAR_H__
