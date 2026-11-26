@@ -298,7 +298,6 @@ DEFINE_WORK_FUNC(Upstream, Paths)
 }
 DEFINE_WORK_FUNC(Upstream, Register) { self.SetRunContext(ctx); const bool ok = self.Register(); data.reset(); data << ok; }
 DEFINE_WORK_FUNC(Upstream, Check)    { self.SetRunContext(ctx); const bool ok = self.Check();    data.reset(); data << ok; }
-DEFINE_WORK_FUNC(Upstream, Heal)     { self.SetRunContext(ctx); const bool ok = self.Heal();     data.reset(); data << ok; }
 DEFINE_WORK_FUNC(Upstream, Update)   { self.SetRunContext(ctx); const bool ok = self.Update();   data.reset(); data << ok; }
 // Join <member key> -- "<key> <signature>", for the member to Admit with.
 DEFINE_WORK_FUNC(Upstream, Join)

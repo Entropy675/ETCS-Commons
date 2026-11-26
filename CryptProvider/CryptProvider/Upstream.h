@@ -21,7 +21,6 @@
  *   Portal <code>   as a member, let in the account page showing <code>
  *   Check           the site's list against what is here; the report is List's
  *   Update          Check, then fetch what the site has moved past, stage it, and swap
- *   Heal            Update, if the loader refused a module of this identity for another epoch
  *   Paths <p> <d>   where the registrar and the binaries are; /pki and /dist unless said
  *
  * A HOT SWAP: Update stages what it fetches (core/Trust.h, staged_dir) and,
@@ -32,7 +31,9 @@
  * successor's epoch on its own word first, so the swap starts registered. A
  * RE-SYNC is the same restart when the list is a sibling marketplace's -- this
  * loader's marketplace key retired: Check, whenever it sees one, fetches the
- * successor and has the loader put it in place.
+ * successor and has the loader put it in place. A HEAL is the loader's own
+ * (core/CommandExecutor.h, heal_at_quiet_point): it runs Update through this
+ * type, against the remotes built into it.
  */
 class Upstream : public DirectoryBase<Upstream>, public DeletableBase<Upstream>
 {
@@ -167,14 +168,6 @@ public:
         return ok;
     }
 
-    bool Heal()
-    {
-        ETCS::TrustEvent ask(ETCS::TrustEvent::Op::Heal);
-        if (!ask()) { ETCS_LOG("Upstream", "Heal: " << ask.out); return false; }
-        if (ask.out.empty()) { ETCS_LOG("Upstream", "Heal: nothing was refused for another epoch"); return true; }
-        ETCS_LOG("Upstream", "Heal: refused for another epoch: " << ask.out << "; updating");
-        return Update();
-    }
 
     // The report's "resync etcs <file>": fetch it, have the loader put it in
     // place (bridged), then restart on it. Nothing else of the list is taken.
