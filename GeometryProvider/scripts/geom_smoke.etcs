@@ -1,0 +1,25 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+spawn GeometryProvider::Seashell shell
+shell.Create(1.0, 0.25, 3.0)
+shell.SetPose(0, 0, 0, 1, 0, 0, 0)
+shell.Sample(32)
+
+spawn GeometryProvider::Pyramid pyr
+pyr.Create(2.0, 1.5, 4)
+pyr.SetFractal(0, 0.5)
+pyr.SetPose(5, 0, 0, 1, 0, 0, 0)
+pyr.PathOnFace(1, 0.5)
+
+spawn GeometryProvider::GrainSet pile
+pile.Create()
+pile.SetRepose(34.0)
+pile.SpawnGrain(0.0, 0.1, 0.0, 0.05)
+pile.SpawnGrain(0.1, 0.1, 0.0, 0.05)
+pile.Observe()
+pile.Observe()
+
+shell.Delete()
+pyr.Delete()
+pile.Delete()
