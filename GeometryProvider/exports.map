@@ -1,0 +1,16 @@
+ETCS_ABI {
+  global:
+    RegisterDynamicLoader;
+    RegisterRootSignalContext;
+    *_Cleanup;
+    *Provider;
+    *_Work;
+    *_List;
+    *_Stream;
+    *_GetHash;
+    *_GetArena;
+    *_Make;
+    *_MakeChild
+  local:
+    *;
+};

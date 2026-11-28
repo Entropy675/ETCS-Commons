@@ -1,0 +1,27 @@
+#!/usr/bin/env etcs
+#IMPORT ACE_ROOT/modules
+
+# Smoke: one of each geometry reference + a GrainSet observe cycle.
+spawn GeometryProvider::Seashell shell
+shell.Create(1.0, 0.25, 3.0)
+shell.Sample(32)
+
+spawn GeometryProvider::Pyramid pyr
+pyr.Create(2.0, 1.5, 4)
+pyr.SetFractal(0, 0.5)
+pyr.PathOnFace(1, 0.5)
+
+spawn GeometryProvider::GrainSet pile
+pile.Create()
+pile.SetRepose(34.0)
+pile.SpawnGrain(0.0, 0.1, 0.0, 0.05)
+pile.SpawnGrain(0.1, 0.1, 0.0, 0.05)
+pile.SpawnGrain(0.0, 0.1, 0.1, 0.05)
+pile.Observe()
+pile.Sample()
+# Second observe should hit the memo path.
+pile.Observe()
+
+shell.Delete()
+pyr.Delete()
+pile.Delete()
